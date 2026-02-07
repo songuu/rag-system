@@ -1266,6 +1266,11 @@ export default function HomePage() {
 
             {/* 中间: 导航链接 - 图标为主 */}
             <div className="flex items-center gap-1">
+              <Link href="/blog" className="p-2 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="技术博客">
+                <i className="fas fa-book-open"></i>
+                <span className="hidden sm:inline">博客</span>
+              </Link>
+              <div className="w-px h-6 bg-gray-200 mx-1"></div>
               <Link href="/history" className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors" title="历史对话">
                 <i className="fas fa-history"></i>
               </Link>

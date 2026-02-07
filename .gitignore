@@ -48,3 +48,6 @@ dist
 uploads
 milvus_data
 uploads
+
+# Auto-generated blog data
+public/articles-data.json

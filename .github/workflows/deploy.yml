@@ -9,9 +9,15 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      STATIC_EXPORT: 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,21 +32,23 @@ jobs:
         with:
           node-version: "20"
           cache: 'pnpm'
-          cache-dependency-path: ./rag-nextjs/pnpm-lock.yaml
 
       - name: Install dependencies
-        # 使用 --no-frozen-lockfile 解决你之前遇到的工作区配置错误
-        run: pnpm install --no-frozen-lockfile 
-        working-directory: ./rag-nextjs
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Generate articles data
+        run: node scripts/generate-articles.mjs
+
+      - name: Remove API routes (not needed for static export)
+        run: rm -rf src/app/api
 
       - name: Build with Next.js
         run: pnpm run build
-        working-directory: ./rag-nextjs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./rag-nextjs/out
+          path: ./out
 
   deploy:
     environment:
