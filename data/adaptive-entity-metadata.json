@@ -1,0 +1,134 @@
+{
+  "version": "1.0",
+  "updatedAt": "2026-01-22T05:53:16.658Z",
+  "entities": [
+    {
+      "standardName": "上海",
+      "type": "LOCATION",
+      "aliases": [
+        "魔都",
+        "Shanghai",
+        "沪"
+      ],
+      "hierarchy": [
+        "中国",
+        "上海"
+      ]
+    },
+    {
+      "standardName": "北京",
+      "type": "LOCATION",
+      "aliases": [
+        "帝都",
+        "Beijing",
+        "京"
+      ],
+      "hierarchy": [
+        "中国",
+        "北京"
+      ]
+    },
+    {
+      "standardName": "深圳",
+      "type": "LOCATION",
+      "aliases": [
+        "鹏城",
+        "Shenzhen"
+      ],
+      "hierarchy": [
+        "中国",
+        "广东",
+        "深圳"
+      ]
+    },
+    {
+      "standardName": "Apple",
+      "type": "ORGANIZATION",
+      "aliases": [
+        "苹果",
+        "苹果公司",
+        "Apple Inc.",
+        "AAPL"
+      ]
+    },
+    {
+      "standardName": "Google",
+      "type": "ORGANIZATION",
+      "aliases": [
+        "谷歌",
+        "Alphabet",
+        "GOOG"
+      ]
+    },
+    {
+      "standardName": "Microsoft",
+      "type": "ORGANIZATION",
+      "aliases": [
+        "微软",
+        "MS",
+        "MSFT"
+      ]
+    },
+    {
+      "standardName": "Tesla",
+      "type": "ORGANIZATION",
+      "aliases": [
+        "特斯拉",
+        "TSLA"
+      ]
+    },
+    {
+      "standardName": "SpaceX",
+      "type": "ORGANIZATION",
+      "aliases": [
+        "太空探索技术公司",
+        "Space Exploration Technologies Corp."
+      ]
+    },
+    {
+      "standardName": "Elon Musk",
+      "type": "PERSON",
+      "aliases": [
+        "马斯克",
+        "埃隆·马斯克",
+        "老马",
+        "Musk"
+      ]
+    },
+    {
+      "standardName": "Tim Cook",
+      "type": "PERSON",
+      "aliases": [
+        "库克",
+        "蒂姆·库克"
+      ]
+    },
+    {
+      "standardName": "iPhone 15",
+      "type": "PRODUCT",
+      "aliases": [
+        "iPhone15",
+        "iPhone 15 Pro",
+        "iPhone 15 Pro Max"
+      ]
+    },
+    {
+      "standardName": "ChatGPT",
+      "type": "PRODUCT",
+      "aliases": [
+        "GPT",
+        "GPT-4",
+        "GPT-4o",
+        "OpenAI GPT"
+      ]
+    },
+    {
+      "standardName": "马斯克",
+      "type": "OTHER",
+      "aliases": [
+        "老马",
+        "elon musk"
+      ]
+    }
+  ]
+}
