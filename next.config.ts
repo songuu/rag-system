@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
     unoptimized: true,   // 必须：GitHub Pages 不支持 Next.js 默认的图片优化
   },
 
-  basePath: '/ai-rag',
+  basePath: '/rag-system',
   
   // 排除某些原生模块，确保 pdf-parse 正常工作
   serverExternalPackages: ['pdf-parse', '@napi-rs/canvas', 'pdfjs-dist', 'canvas'],
