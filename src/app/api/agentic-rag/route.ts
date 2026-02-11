@@ -27,7 +27,6 @@ function getAgenticRAG(config?: {
   llmModel?: string;
   embeddingModel?: string;
 }): AgenticRAGSystem {
-  // 如果配置变化，重新创建实例
   if (!agenticRAGInstance || config) {
     const milvusConfig = getMilvusConfig();
     agenticRAGInstance = new AgenticRAGSystem({
@@ -36,7 +35,7 @@ function getAgenticRAG(config?: {
       embeddingModel: config?.embeddingModel || 'nomic-embed-text',
       milvusConfig,
       enableHallucinationCheck: true,
-      enableSelfReflection: true,
+      enableSemanticCache: true,
     });
   }
   return agenticRAGInstance;
@@ -49,10 +48,12 @@ export async function POST(request: NextRequest) {
       question,
       topK = 5,
       similarityThreshold = 0.3,
-      maxRetries = 2,
+      maxRetries = 1,
       llmModel = 'llama3.1',
       embeddingModel = 'nomic-embed-text',
       stream = false,
+      streamTokens = false,
+      skipSemanticCache = false,
     } = body;
 
     if (!question || typeof question !== 'string') {
@@ -66,30 +67,46 @@ export async function POST(request: NextRequest) {
 
     const agenticRAG = getAgenticRAG({ llmModel, embeddingModel });
 
-    // 流式响应
+    // 流式响应 (SSE 流式输出)
     if (stream) {
       const encoder = new TextEncoder();
+      const HALLUCINATION_WAIT_MS = 3000;
+
       const streamResponse = new ReadableStream({
         async start(controller) {
+          const enqueue = (type: string, payload: Record<string, unknown> = {}) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type, ...payload })}\n\n`));
+          };
+
           try {
             const generator = agenticRAG.streamQuery(question, {
               topK: parseInt(topK),
               similarityThreshold: parseFloat(similarityThreshold),
               maxRetries: parseInt(maxRetries),
+              skipSemanticCache,
+              onToken: streamTokens
+                ? (token: string) => enqueue('token', { token })
+                : undefined,
+              onHallucinationCorrection: (correction) => {
+                enqueue('hallucination_correction', {
+                  original: correction.original,
+                  corrected: correction.corrected,
+                });
+              },
             });
 
             for await (const chunk of generator) {
-              const data = JSON.stringify(chunk);
-              controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+              enqueue('state', { state: chunk });
             }
-            
-            controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+
+            // 等待异步幻觉检查可能发送的修正事件
+            await new Promise((r) => setTimeout(r, HALLUCINATION_WAIT_MS));
+            enqueue('done', {});
             controller.close();
           } catch (error) {
-            const errorData = JSON.stringify({
+            enqueue('error', {
               error: error instanceof Error ? error.message : String(error),
             });
-            controller.enqueue(encoder.encode(`data: ${errorData}\n\n`));
             controller.close();
           }
         },
@@ -109,24 +126,22 @@ export async function POST(request: NextRequest) {
       topK: parseInt(topK),
       similarityThreshold: parseFloat(similarityThreshold),
       maxRetries: parseInt(maxRetries),
+      skipSemanticCache,
     });
 
     return NextResponse.json({
       success: !result.error,
       question,
       answer: result.answer,
-      
-      // 工作流信息
+
       workflow: {
         steps: result.workflowSteps,
         totalDuration: result.totalDuration,
         retryCount: result.retryCount,
       },
-      
-      // 查询分析
+
       queryAnalysis: result.queryAnalysis,
-      
-      // 检索结果
+
       retrievalDetails: {
         documents: result.retrievedDocuments.map((doc, i) => ({
           index: i,
@@ -134,31 +149,25 @@ export async function POST(request: NextRequest) {
           metadata: doc.metadata,
           score: doc.score,
           relevanceScore: doc.relevanceScore,
-          factualScore: doc.factualScore,
         })),
-        quality: result.retrievalQuality,
-        selfReflection: result.selfReflection,
+        retrievalGrade: result.retrievalGrade,
+        quality: result.retrievalGrade
+          ? {
+              overallScore: result.retrievalGrade.score,
+              relevanceScore: result.retrievalGrade.semanticScore,
+              coverageScore: 1,
+              diversityScore: 1,
+              isAcceptable: result.retrievalGrade.isRelevant,
+              suggestions: result.retrievalGrade.isRelevant ? [] : ['建议重写查询'],
+            }
+          : undefined,
       },
-      
-      // 检索评估结果 (Retrieval Grader)
-      retrievalGrade: result.retrievalGrade,
-      
-      // 调试信息 (LangSmith Trace)
+
       debugInfo: result.debugInfo,
-      
-      // 幻觉检查
-      hallucinationCheck: result.hallucinationCheck,
-      
-      // 上下文
       context: result.context,
-      
-      // 模型信息
-      models: {
-        llm: llmModel,
-        embedding: embeddingModel,
-      },
-      
-      // 元数据
+
+      models: { llm: llmModel, embedding: embeddingModel },
+
       timestamp: new Date().toISOString(),
       error: result.error,
     });
@@ -181,23 +190,30 @@ export async function GET() {
   const milvusConfig = getMilvusConfig();
   return NextResponse.json({
     name: 'Agentic RAG System',
-    version: '1.0.0',
-    description: '基于 LangGraph 的代理化检索增强生成系统',
+    version: '2.0.0',
+    description: '基于新架构的代理化检索增强生成系统',
+    architecture: {
+      bffSemanticCache: 'BFF 层语义缓存，命中直接返回',
+      fanOut: '并发执行: analyze_query + retrieve_original',
+      gradeRetrieval: 'Reranker 模型评分，最大 1 次重试',
+      generate: '大模型生成，立即 SSE 流式输出',
+      asyncHallucinationCheck: '异步后台幻觉检查，严重时发送修正事件',
+    },
     features: [
-      '查询分析与优化',
-      '智能检索判断',
-      '自省评分机制',
-      '检索质量评估',
-      '幻觉检查',
-      '自动重试机制',
+      'BFF 语义缓存',
+      '并发查询分析与原始检索',
+      'Reranker 检索质量评估',
+      '最大 1 次重试',
+      'SSE 流式输出',
+      '异步幻觉检查与修正',
     ],
     workflow: [
-      { step: 'analyze_query', description: '分析查询意图，优化查询语句' },
-      { step: 'retrieve', description: '从向量数据库检索相关文档' },
-      { step: 'self_reflect', description: '对检索结果进行自省评分' },
-      { step: 'evaluate_quality', description: '评估检索质量，决定是否重试' },
-      { step: 'generate', description: '基于上下文生成回答' },
-      { step: 'check_hallucination', description: '检查答案是否存在幻觉' },
+      { step: 'semantic_cache', description: 'BFF 层语义缓存检查' },
+      { step: 'fan_out_join', description: '并发: analyze_query + retrieve_original' },
+      { step: 'grade_retrieval', description: 'Reranker 模型评分' },
+      { step: 'rewrite_query', description: '低分时重写查询 (仅 1 次)' },
+      { step: 'generate', description: '大模型生成' },
+      { step: 'async_hallucination_check', description: '异步幻觉检查' },
     ],
     config: {
       ollamaBaseUrl: OLLAMA_BASE_URL,
