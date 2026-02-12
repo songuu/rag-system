@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { getAllArticles } from '@/lib/articles';
+import { getAllArticles, getCategories } from '@/lib/articles';
+import type { Article } from '@/lib/articles';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
@@ -7,128 +8,214 @@ export const metadata: Metadata = {
   description: '深入了解 RAG（检索增强生成）系统的各种架构、技术实现与最佳实践',
 };
 
-// 分类对应的颜色
-const categoryColors: Record<string, { bg: string; text: string; border: string; badge: string }> = {
-  '系统概览': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', badge: 'bg-blue-100 text-blue-800' },
-  'RAG 架构': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', badge: 'bg-purple-100 text-purple-800' },
-  '向量技术': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', badge: 'bg-emerald-100 text-emerald-800' },
-  '系统能力': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', badge: 'bg-amber-100 text-amber-800' },
-  '配置部署': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200', badge: 'bg-rose-100 text-rose-800' },
+// 分类对应的渐变色（用于卡片占位图）
+const categoryGradients: Record<string, string> = {
+  '系统概览': 'from-blue-500 via-indigo-500 to-violet-600',
+  'RAG 架构': 'from-purple-500 via-fuchsia-500 to-pink-600',
+  '向量技术': 'from-emerald-500 via-teal-500 to-cyan-600',
+  '系统能力': 'from-amber-500 via-orange-500 to-rose-600',
+  '配置部署': 'from-rose-500 via-pink-500 to-red-600',
 };
 
-export default function BlogPage() {
-  const articles = getAllArticles();
-  const categories = [...new Set(articles.map((a) => a.category))];
+// 分类 Tab 徽章
+const categoryBadgeStyles: Record<string, string> = {
+  '系统概览': 'bg-blue-50 text-blue-700 hover:bg-blue-100',
+  'RAG 架构': 'bg-purple-50 text-purple-700 hover:bg-purple-100',
+  '向量技术': 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
+  '系统能力': 'bg-amber-50 text-amber-700 hover:bg-amber-100',
+  '配置部署': 'bg-rose-50 text-rose-700 hover:bg-rose-100',
+};
 
-  // 按分类分组
-  const grouped = categories.map((cat) => ({
-    name: cat,
-    articles: articles.filter((a) => a.category === cat),
-  }));
+function ArticleCard({
+  article,
+  variant = 'default',
+}: {
+  article: Article;
+  variant?: 'featured' | 'default';
+}) {
+  const gradient = categoryGradients[article.category] || categoryGradients['系统概览'];
+  const badgeStyle = categoryBadgeStyles[article.category] || categoryBadgeStyles['系统概览'];
+
+  if (variant === 'featured') {
+    return (
+      <Link
+        href={`/blog/${article.slug}`}
+        className="group block rounded-2xl overflow-hidden border border-gray-200 bg-white hover:border-gray-300 hover:shadow-xl transition-all duration-300"
+      >
+        <div className="grid md:grid-cols-2 gap-0">
+          {/* 占位图 */}
+          <div
+            className={`aspect-[4/3] md:aspect-auto md:min-h-[280px] bg-gradient-to-br ${gradient} flex items-center justify-center`}
+          >
+            <span className="text-6xl md:text-7xl opacity-80 group-hover:scale-110 transition-transform duration-300">
+              {article.icon}
+            </span>
+          </div>
+          <div className="flex flex-col justify-center p-6 md:p-8">
+            <span className={`inline-flex w-fit text-xs font-medium px-2.5 py-1 rounded-md ${badgeStyle} mb-3`}>
+              {article.category}
+            </span>
+            <h2 className="text-xl md:text-2xl font-bold text-gray-900 group-hover:text-blue-600 transition-colors mb-2 line-clamp-2">
+              {article.title}
+            </h2>
+            <p className="text-gray-600 text-sm md:text-base leading-relaxed line-clamp-3 mb-4">
+              {article.description}
+            </p>
+            <div className="flex items-center gap-3 text-sm text-gray-500">
+              <span className="flex items-center gap-1.5">
+                <span className="w-6 h-6 rounded-full bg-gray-200 flex items-center justify-center text-xs font-medium text-gray-600">
+                  RAG
+                </span>
+                RAG 系统
+              </span>
+              <span>·</span>
+              <span>{article.readingTime} 分钟阅读</span>
+            </div>
+          </div>
+        </div>
+      </Link>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-blue-50">
-      {/* Hero Section */}
-      <header className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-700"></div>
-        <div className="absolute inset-0 opacity-10" style={{
-          backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cdefs%3E%3Cpattern id='grid' width='60' height='60' patternUnits='userSpaceOnUse'%3E%3Cpath d='M 10 0 L 0 0 0 10' fill='none' stroke='white' stroke-width='1'/%3E%3C/pattern%3E%3C/defs%3E%3Crect width='100%25' height='100%25' fill='url(%23grid)'/%3E%3C/svg%3E")`,
-        }}></div>
-        <div className="relative max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24">
-          <div className="text-center">
-            <div className="inline-flex items-center px-4 py-1.5 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 text-white/90 text-sm mb-6">
-              <span className="mr-2">📖</span>
-              {articles.length} 篇技术文章
-            </div>
-            <h1 className="text-4xl sm:text-5xl font-bold text-white mb-4 tracking-tight">
-              RAG 系统技术博客
-            </h1>
-            <p className="text-lg sm:text-xl text-blue-100 max-w-2xl mx-auto leading-relaxed">
-              深入探索检索增强生成（RAG）系统的架构设计、核心技术与实践经验
-            </p>
-            <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-              {categories.map((cat) => {
-                const count = articles.filter(a => a.category === cat).length;
-                return (
-                  <a
-                    key={cat}
-                    href={`#${encodeURIComponent(cat)}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white/10 backdrop-blur-sm hover:bg-white/20 border border-white/20 text-white text-sm rounded-lg transition-all"
-                  >
-                    {cat}
-                    <span className="text-xs bg-white/20 px-1.5 py-0.5 rounded-full">{count}</span>
-                  </a>
-                );
-              })}
-            </div>
+    <Link
+      href={`/blog/${article.slug}`}
+      className="group block rounded-xl overflow-hidden border border-gray-200 bg-white hover:border-gray-300 hover:shadow-lg transition-all duration-300"
+    >
+      {/* 卡片顶部占位图 */}
+      <div
+        className={`aspect-video bg-gradient-to-br ${gradient} flex items-center justify-center`}
+      >
+        <span className="text-4xl opacity-80 group-hover:scale-110 transition-transform duration-300">
+          {article.icon}
+        </span>
+      </div>
+      <div className="p-5">
+        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded ${badgeStyle} mb-2`}>
+          {article.category}
+        </span>
+        <h3 className="text-base font-semibold text-gray-900 group-hover:text-blue-600 transition-colors line-clamp-2 mb-2">
+          {article.title}
+        </h3>
+        <p className="text-sm text-gray-600 leading-relaxed line-clamp-2 mb-3">
+          {article.description}
+        </p>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span className="w-5 h-5 rounded-full bg-gray-200 flex items-center justify-center text-[10px] font-medium text-gray-600">
+            RAG
+          </span>
+          <span>{article.readingTime} 分钟阅读</span>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+export default async function BlogPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ category?: string }>;
+}) {
+  const params = await searchParams;
+  const selectedCategory = params.category || 'all';
+
+  const allArticles = getAllArticles();
+  const categoryOrder = ['系统概览', 'RAG 架构', '向量技术', '系统能力', '配置部署'];
+  const categories = getCategories().sort(
+    (a, b) => categoryOrder.indexOf(a) - categoryOrder.indexOf(b),
+  );
+
+  const filteredArticles =
+    selectedCategory === 'all'
+      ? allArticles
+      : allArticles.filter((a) => a.category === selectedCategory);
+
+  const featuredArticle = filteredArticles[0];
+  const remainingArticles = filteredArticles.slice(1);
+
+  return (
+    <div className="min-h-screen bg-white">
+      {/* 顶部导航区 - LobeHub 风格 */}
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 border-b border-gray-200">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 py-6">
+            <h1 className="text-2xl font-bold text-gray-900">全部文章</h1>
+            {/* 分类 Tab */}
+            <nav className="flex flex-wrap gap-2">
+              <Link
+                href="/blog"
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  selectedCategory === 'all'
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                全部
+              </Link>
+              {categories.map((cat) => (
+                <Link
+                  key={cat}
+                  href={`/blog?category=${encodeURIComponent(cat)}`}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    selectedCategory === cat
+                      ? 'bg-gray-900 text-white'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  {cat}
+                </Link>
+              ))}
+            </nav>
           </div>
         </div>
       </header>
 
-      {/* Articles by Category */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="space-y-16">
-          {grouped.map(({ name, articles: catArticles }) => {
-            const colors = categoryColors[name] || categoryColors['系统概览'];
-            return (
-              <section key={name} id={encodeURIComponent(name)}>
-                <div className="flex items-center gap-3 mb-8">
-                  <h2 className="text-2xl font-bold text-gray-900">{name}</h2>
-                  <span className={`px-2.5 py-0.5 text-xs font-medium rounded-full ${colors.badge}`}>
-                    {catArticles.length} 篇
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {catArticles.map((article) => (
-                    <Link
-                      key={article.slug}
-                      href={`/blog/${article.slug}`}
-                      className={`group relative flex flex-col rounded-xl border ${colors.border} ${colors.bg} hover:shadow-lg hover:-translate-y-1 transition-all duration-300 overflow-hidden`}
-                    >
-                      {/* Card Top Accent */}
-                      <div className="h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+      {/* 文章列表 */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        {filteredArticles.length === 0 ? (
+          <div className="text-center py-20">
+            <p className="text-gray-500">该分类下暂无文章</p>
+          </div>
+        ) : (
+          <div className="space-y-12">
+            {/* Featured / Latest 首篇大卡 */}
+            <section>
+              <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
+                最新
+              </h2>
+              <ArticleCard article={featuredArticle} variant="featured" />
+            </section>
 
-                      <div className="flex-1 p-6">
-                        <div className="flex items-start justify-between mb-3">
-                          <span className="text-3xl">{article.icon}</span>
-                          <span className="text-xs text-gray-500 font-mono">
-                            {article.readingTime} min
-                          </span>
-                        </div>
-                        <h3 className={`text-lg font-semibold ${colors.text} group-hover:underline decoration-2 underline-offset-4 mb-2 leading-snug line-clamp-2`}>
-                          {article.title}
-                        </h3>
-                        <p className="text-sm text-gray-600 leading-relaxed line-clamp-3">
-                          {article.description}
-                        </p>
-                      </div>
-
-                      {/* Card Footer */}
-                      <div className="px-6 py-3 border-t border-gray-100 bg-white/50 flex items-center justify-between">
-                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${colors.badge}`}>
-                          {article.category}
-                        </span>
-                        <span className="text-xs text-gray-400 group-hover:text-blue-500 transition-colors flex items-center gap-1">
-                          阅读全文
-                          <svg className="w-3 h-3 transform group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                          </svg>
-                        </span>
-                      </div>
-                    </Link>
+            {/* 其余文章网格 */}
+            {remainingArticles.length > 0 && (
+              <section>
+                <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-4">
+                  更多文章
+                </h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {remainingArticles.map((article) => (
+                    <ArticleCard key={article.slug} article={article} />
                   ))}
                 </div>
               </section>
-            );
-          })}
-        </div>
+            )}
+          </div>
+        )}
       </main>
 
-      {/* Footer */}
-      <footer className="border-t bg-gray-50 mt-16">
+      {/* Footer - LobeHub 风格简洁 */}
+      <footer className="border-t border-gray-200 mt-20">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="text-center text-sm text-gray-500">
-            <p>RAG System Technical Blog · 基于 Next.js + LangChain + Milvus 构建</p>
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <p className="text-sm text-gray-500">
+              RAG System Technical Blog · 基于 Next.js + LangChain + Milvus 构建
+            </p>
+            <Link
+              href="/"
+              className="text-sm text-gray-500 hover:text-gray-900 transition-colors"
+            >
+              返回首页
+            </Link>
           </div>
         </div>
       </footer>
