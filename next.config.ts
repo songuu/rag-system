@@ -19,7 +19,7 @@ const nextConfig: NextConfig = {
     },
     basePath: '/rag-system',
   } : {
-    images: {
+  images: {
       unoptimized: true,
     },
   }),

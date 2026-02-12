@@ -1,13 +1,26 @@
 /**
  * 构建时生成文章数据 JSON 文件
  * 在 next build 之前运行，将 markdown 文件转换为可供前端使用的 JSON 数据
+ * 若配置 NOTION_TOKEN + NOTION_PARENT_PAGE_ID，则自动同步到 Notion
  */
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.join(__dirname, '..');
+
+// 加载 .env.local（若存在）以支持 Notion 同步配置
+const envPath = path.join(ROOT_DIR, '.env.local');
+if (fs.existsSync(envPath)) {
+  for (const line of fs.readFileSync(envPath, 'utf-8').split(/\r?\n/)) {
+    const m = line.match(/^([^#=]+)=(.*)$/);
+    if (m && !process.env[m[1].trim()]) {
+      process.env[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, '');
+    }
+  }
+}
 
 // 文章配置
 const ARTICLE_CONFIG = {
@@ -158,3 +171,17 @@ console.log(`✅ Generated ${articles.length} articles → public/articles-data.
 articles.forEach((a) => {
   console.log(`  ${a.icon} [${a.category}] ${a.title} (${a.readingTime} min)`);
 });
+
+// 若配置了 Notion，则自动同步
+if (process.env.NOTION_TOKEN && process.env.NOTION_PARENT_PAGE_ID) {
+  console.log('\n📤 同步到 Notion...');
+  try {
+    execSync('node scripts/sync-to-notion.mjs', {
+      stdio: 'inherit',
+      env: process.env,
+    });
+  } catch (e) {
+    console.error('Notion 同步失败:', e.message);
+    process.exitCode = 1;
+  }
+}
