@@ -22,6 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 import { createEmbedding, getModelFactory } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
+import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
 
 // ============== 类型定义 ==============
 
@@ -39,6 +40,8 @@ export interface DocumentMetadata {
   chunkIndex?: number;
   totalChunks?: number;
   pageNumber?: number;
+  originalContent?: string;
+  contextualPreamble?: string;
   [key: string]: any;
 }
 
@@ -65,11 +68,15 @@ export interface PipelineConfig {
   // 文本分割配置
   chunkSize?: number;
   chunkOverlap?: number;
-  
+
   // 嵌入模型配置
   embeddingModel?: string;
   ollamaBaseUrl?: string;
-  
+
+  // Contextual Retrieval 配置
+  contextualRetrieval?: boolean;
+  contextualRetrievalModel?: string;
+
   // 存储配置
   storageBackend?: 'memory' | 'milvus';
   milvusConfig?: {
@@ -80,7 +87,7 @@ export interface PipelineConfig {
 
 // 处理进度回调
 export interface ProcessingProgress {
-  stage: 'loading' | 'splitting' | 'embedding' | 'storing';
+  stage: 'loading' | 'splitting' | 'contextualizing' | 'embedding' | 'storing';
   current: number;
   total: number;
   message: string;
@@ -92,6 +99,8 @@ const DEFAULT_CONFIG: Required<PipelineConfig> = {
   chunkOverlap: 50,
   embeddingModel: 'nomic-embed-text',
   ollamaBaseUrl: 'http://localhost:11434',
+  contextualRetrieval: false,
+  contextualRetrievalModel: '',
   storageBackend: 'milvus',
   milvusConfig: {
     address: 'localhost:19530',
@@ -783,7 +792,52 @@ export class DocumentPipeline {
       total: 1,
       message: `分割完成: ${chunks.length} 个块`
     });
-    
+
+    // 2.5 Contextual Retrieval - 为每个 chunk 生成上下文提要
+    const crConfig = loadContextualRetrievalConfig();
+    const crEnabled = this.config.contextualRetrieval ?? crConfig.enabled;
+
+    if (crEnabled && chunks.length > 0) {
+      onProgress?.({
+        stage: 'contextualizing',
+        current: 0,
+        total: chunks.length,
+        message: '正在生成上下文提要...'
+      });
+
+      const crResults = await contextualizeChunks({
+        fullDocument: document.content,
+        chunks: chunks.map(c => ({ text: c.content })),
+        config: {
+          enabled: true,
+          model: this.config.contextualRetrievalModel || crConfig.model,
+        },
+        onProgress: (current, total) => {
+          onProgress?.({
+            stage: 'contextualizing',
+            current,
+            total,
+            message: `正在生成上下文提要 (${current}/${total})...`
+          });
+        },
+      });
+
+      // 替换 chunk 内容为 contextualized 版本，保存原始内容和 preamble 到 metadata
+      for (let i = 0; i < chunks.length; i++) {
+        const cr = crResults[i];
+        chunks[i].metadata.originalContent = cr.originalText;
+        chunks[i].metadata.contextualPreamble = cr.contextualPreamble;
+        chunks[i].content = cr.contextualizedText;
+      }
+
+      onProgress?.({
+        stage: 'contextualizing',
+        current: chunks.length,
+        total: chunks.length,
+        message: `上下文提要生成完成`
+      });
+    }
+
     // 3. 生成嵌入
     const processedDocs = await generateEmbeddings(chunks, {
       embeddingModel: this.config.embeddingModel,

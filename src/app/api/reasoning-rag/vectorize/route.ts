@@ -13,6 +13,7 @@ import { MilvusVectorStore } from '@/lib/milvus-client';
 import { createEmbedding, getModelFactory } from '@/lib/model-config';
 import { getEmbeddingConfigSummary, getEmbeddingDimension, ALL_EMBEDDING_DIMENSIONS, SILICONFLOW_MODELS } from '@/lib/embedding-config';
 import { getReasoningRAGConfig, getReasoningRAGConfigSummary } from '@/lib/milvus-config';
+import { loadContextualRetrievalConfig, contextualizeChunks } from '@/lib/contextual-retrieval';
 
 // 获取 Reasoning RAG 配置（从环境变量）
 function getConfig() {
@@ -248,6 +249,32 @@ export async function POST(request: NextRequest) {
         const chunks = splitTextIntoChunks(content, chunkSize, chunkOverlap);
         console.log(`[Reasoning Vectorize] ${filename}: ${chunks.length} chunks`);
 
+        // Contextual Retrieval: 为每个 chunk 生成上下文提要
+        const crConfig = loadContextualRetrievalConfig();
+        let contextualMetadata: Array<{ originalContent?: string; contextualPreamble?: string }> = [];
+
+        if (crConfig.enabled && chunks.length > 0) {
+          console.log(`[Reasoning Vectorize] Contextual Retrieval 已启用, 开始生成上下文提要...`);
+
+          const crResults = await contextualizeChunks({
+            fullDocument: content,
+            chunks: chunks.map(c => ({ text: c.text })),
+            config: { enabled: true },
+          });
+
+          // 替换 chunk.text 为 contextualized 版本
+          for (let i = 0; i < chunks.length; i++) {
+            const cr = crResults[i];
+            contextualMetadata.push({
+              originalContent: cr.originalText,
+              contextualPreamble: cr.contextualPreamble,
+            });
+            chunks[i].text = cr.contextualizedText;
+          }
+
+          console.log(`[Reasoning Vectorize] Contextual Retrieval 处理完成`);
+        }
+
         // 分批生成嵌入向量（每批最多 10 个 chunk，避免超出 API 限制）
         const BATCH_SIZE = 10;
         const chunkTexts = chunks.map(c => c.text);
@@ -289,7 +316,8 @@ export async function POST(request: NextRequest) {
             startIndex: chunk.startIndex,
             endIndex: chunk.endIndex,
             collection: ragConfig.collection,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            ...(contextualMetadata[i] || {}),
           }
         }));
 

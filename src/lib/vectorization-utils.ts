@@ -17,6 +17,7 @@ import {
   ModelConfig 
 } from './model-config';
 import { getEmbeddingConfigSummary, getEmbeddingDimension } from './embedding-config';
+import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
 
 // ==================== 配置常量 ====================
 
@@ -221,6 +222,47 @@ export async function vectorizeAndInsert(
         collectionName,
         error: '没有生成任何文本块',
       };
+    }
+
+    // Contextual Retrieval: 为每个 chunk 生成上下文提要
+    const crConfig = loadContextualRetrievalConfig();
+    if (crConfig.enabled && chunks.length > 0) {
+      console.log(`[VectorizationUtils] Contextual Retrieval 已启用, 开始生成上下文提要...`);
+
+      // 按 source 文档分组
+      const chunksBySource = new Map<string, { indices: number[]; chunks: typeof chunks }>();
+      for (let i = 0; i < chunks.length; i++) {
+        const source = chunks[i].metadata.source || 'unknown';
+        if (!chunksBySource.has(source)) {
+          chunksBySource.set(source, { indices: [], chunks: [] });
+        }
+        chunksBySource.get(source)!.indices.push(i);
+        chunksBySource.get(source)!.chunks.push(chunks[i]);
+      }
+
+      // 对每组 chunks 调用 contextualizeChunks
+      for (const [source, group] of chunksBySource) {
+        // 从 documents 找到对应的全文
+        const doc = documents.find(d => (d.filename || 'unknown') === source);
+        const fullDocument = doc?.content || group.chunks.map(c => c.text).join('\n');
+
+        const crResults = await contextualizeChunks({
+          fullDocument,
+          chunks: group.chunks.map(c => ({ text: c.text })),
+          config: { enabled: true },
+        });
+
+        // 替换 chunk.text 为 contextualized 版本
+        for (let j = 0; j < group.indices.length; j++) {
+          const idx = group.indices[j];
+          const cr = crResults[j];
+          chunks[idx].metadata.originalContent = cr.originalText;
+          chunks[idx].metadata.contextualPreamble = cr.contextualPreamble;
+          chunks[idx].text = cr.contextualizedText;
+        }
+      }
+
+      console.log(`[VectorizationUtils] Contextual Retrieval 处理完成`);
     }
 
     // 初始化集合
