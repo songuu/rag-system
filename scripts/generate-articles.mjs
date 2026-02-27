@@ -39,6 +39,11 @@ const ARTICLE_CONFIG = {
     icon: '📚',
     description: '上下文管理系统指南，优化多轮对话中的上下文窗口管理',
   },
+  'CONTEXTUAL_RETRIEVAL_GUIDE.md': {
+    category: 'RAG 架构',
+    icon: '🔮',
+    description: '上下文检索增强系统，在 Embedding 前注入全文语境提升检索相关性',
+  },
   'CONVERSATION_EXPANSION_GUIDE.md': {
     category: '系统能力',
     icon: '💬',
@@ -115,7 +120,7 @@ const EXCLUDED_FILES = ['README.md'];
 
 function extractTitle(content) {
   const match = content.match(/^#\s+(.+)$/m);
-  return match ? match[1].replace(/[🎯🚀📊🧠💬🔍🤖🕸️🛤️📚⚙️🗄️🔗🔄🦙🧩🪞🌲✨]/g, '').trim() : '未命名文章';
+  return match ? match[1].replace(/[🎯🚀📊🧠💬🔍🤖🕸️🛤️📚⚙️🗄️🔗🔄🦙🧩🪞🌲✨🔮]/g, '').trim() : '未命名文章';
 }
 
 function estimateReadingTime(content) {

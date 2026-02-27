@@ -36,6 +36,7 @@ const ARTICLE_CONFIG = {
   ADAPTIVE_ENTITY_RAG_GUIDE: { category: 'RAG 架构', icon: '🛤️' },
   AGENTIC_RAG_GUIDE: { category: 'RAG 架构', icon: '🤖' },
   CONTEXT_MANAGEMENT_GUIDE: { category: '系统能力', icon: '📚' },
+  CONTEXTUAL_RETRIEVAL_GUIDE: { category: 'RAG 架构', icon: '🔮' },
   CONVERSATION_EXPANSION_GUIDE: { category: '系统能力', icon: '💬' },
   DOMAIN_VECTORS_GUIDE: { category: '向量技术', icon: '🎯' },
   ENV_CONFIG_GUIDE: { category: '配置部署', icon: '⚙️' },
@@ -54,7 +55,7 @@ const ARTICLE_CONFIG = {
 
 function extractTitle(content) {
   const match = content.match(/^#\s+(.+)$/m);
-  return match ? match[1].replace(/[🎯🚀📊🧠💬🔍🤖🕸️🛤️📚⚙️🗄️🔗🔄🦙🧩🪞🌲✨]/g, '').trim() : '未命名文章';
+  return match ? match[1].replace(/[🎯🚀📊🧠💬🔍🤖🕸️🛤️📚⚙️🗄️🔗🔄🦙🧩🪞🌲✨🔮]/g, '').trim() : '未命名文章';
 }
 
 function slugFromFileName(fileName) {
