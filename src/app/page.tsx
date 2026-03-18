@@ -1298,6 +1298,9 @@ export default function HomePage() {
               <Link href="/entity-extraction" className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors" title="实体抽取">
                 <i className="fas fa-project-diagram"></i>
               </Link>
+              <Link href="/mirofish" className="p-2 text-pink-500 hover:text-pink-700 hover:bg-pink-50 rounded-lg transition-colors" title="MiroFish 群体模拟">
+                <i className="fas fa-fish"></i>
+              </Link>
               <Link href="/adaptive-entity-rag" className="p-2 text-cyan-500 hover:text-cyan-700 hover:bg-cyan-50 rounded-lg transition-colors" title="自适应实体路由 RAG">
                 <i className="fas fa-route"></i>
               </Link>
