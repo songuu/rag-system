@@ -234,6 +234,201 @@ export interface ProfileBatchGenerateResponse {
   error?: string;
 }
 
+// ==================== 项目类型 ====================
+
+/** 项目状态 */
+export type ProjectStatus = 'created' | 'graph_built' | 'env_setup' | 'simulating' | 'report_generated' | 'completed';
+
+/** 项目信息 */
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  status: ProjectStatus;
+  current_step: number; // 0-4 对应5个步骤
+  simulation_requirement: string;
+  texts: string[];
+  ontology?: Ontology;
+  graph_id?: string;
+  simulation_id?: string;
+  report_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 创建项目请求 */
+export interface CreateProjectRequest {
+  name: string;
+  description?: string;
+  simulation_requirement: string;
+}
+
+// ==================== 模拟类型 ====================
+
+/** 平台类型 */
+export type PlatformType = 'twitter' | 'reddit';
+
+/** Agent动作类型 */
+export type AgentActionType =
+  | 'post'
+  | 'comment'
+  | 'like'
+  | 'repost'
+  | 'follow'
+  | 'debate'
+  | 'quote'
+  | 'upvote'
+  | 'downvote';
+
+/** 模拟配置 */
+export interface SimulationConfig {
+  simulation_id: string;
+  project_id: string;
+  platforms: PlatformType[];
+  round_count: number;
+  posts_per_round: number;
+  agents_per_round: number;
+  temperature: number;
+  seed_topics: string[];
+  time_interval: number; // 秒
+}
+
+/** 模拟状态 */
+export type SimulationStatus = 'created' | 'preparing' | 'running' | 'paused' | 'completed' | 'failed';
+
+/** 模拟帖子 */
+export interface SimulationPost {
+  id: string;
+  simulation_id: string;
+  platform: PlatformType;
+  round: number;
+  author_id: string;
+  author_name: string;
+  author_type: string;
+  action: AgentActionType;
+  content: string;
+  parent_id?: string; // 回复/评论的目标
+  target_id?: string; // 转发/引用的目标
+  likes: number;
+  replies_count: number;
+  reposts: number;
+  sentiment: 'positive' | 'neutral' | 'negative';
+  topics: string[];
+  timestamp: string;
+}
+
+/** 模拟运行信息 */
+export interface SimulationInfo {
+  simulation_id: string;
+  project_id: string;
+  status: SimulationStatus;
+  config: SimulationConfig;
+  current_round: number;
+  total_posts: number;
+  total_comments: number;
+  total_likes: number;
+  participants: string[];
+  agent_profiles: EntityProfile[];
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Agent统计 */
+export interface AgentStats {
+  agent_id: string;
+  agent_name: string;
+  agent_type: string;
+  post_count: number;
+  comment_count: number;
+  like_count: number;
+  repost_count: number;
+  avg_sentiment: number;
+  top_topics: string[];
+}
+
+/** 模拟时间线条目 */
+export interface TimelineEntry {
+  round: number;
+  timestamp: string;
+  posts: SimulationPost[];
+  stats: {
+    total_posts: number;
+    sentiment_distribution: { positive: number; neutral: number; negative: number };
+    hot_topics: string[];
+    active_agents: number;
+  };
+}
+
+// ==================== 报告类型 ====================
+
+/** 报告状态 */
+export type ReportStatus = 'generating' | 'completed' | 'failed';
+
+/** 报告章节 */
+export interface ReportSection {
+  index: number;
+  title: string;
+  content: string;
+  type: 'overview' | 'sentiment' | 'coalition' | 'timeline' | 'prediction' | 'conclusion';
+}
+
+/** 报告信息 */
+export interface ReportInfo {
+  report_id: string;
+  simulation_id: string;
+  project_id: string;
+  status: ReportStatus;
+  title: string;
+  summary: string;
+  sections: ReportSection[];
+  key_findings: string[];
+  sentiment_trend: Array<{ round: number; positive: number; neutral: number; negative: number }>;
+  generated_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ==================== 交互类型 ====================
+
+/** 对话消息 */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  timestamp: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** 采访请求 */
+export interface InterviewRequest {
+  simulation_id: string;
+  agent_id: string;
+  question: string;
+}
+
+/** 采访响应 */
+export interface InterviewResponse {
+  agent_id: string;
+  agent_name: string;
+  question: string;
+  answer: string;
+  sentiment: string;
+  confidence: number;
+  timestamp: string;
+}
+
+// ==================== 进度回调类型 ====================
+
+/** 抽取进度 */
+export interface ExtractionProgress {
+  stage: string;
+  current: number;
+  total: number;
+  message: string;
+}
+
 // ==================== 常量 ====================
 
 /** 本体生成常量 */

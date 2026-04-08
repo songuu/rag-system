@@ -4,7 +4,10 @@
       "Bash(gh api:*)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(npx tsc:*)",
-      "WebFetch(domain:minimax-algeng-chat-tts.oss-cn-wulanchabu.aliyuncs.com)"
+      "WebFetch(domain:minimax-algeng-chat-tts.oss-cn-wulanchabu.aliyuncs.com)",
+      "Bash(curl -s https://raw.githubusercontent.com/666ghj/MiroFish/main/frontend/src/views/Process.vue)",
+      "Bash(npm run:*)",
+      "Bash(curl -s \"https://minimax-algeng-chat-tts.oss-cn-wulanchabu.aliyuncs.com/ccv2%2F2026-03-19%2FMiniMax-M2.5%2F2034113027426492492%2F7a04c4c3a8c474f47c442bc4b65a1946bd6c635c38efe86bd316c874b5aa9dac..png?Expires=1774013361&OSSAccessKeyId=LTAI5tGLnRTkBjLuYPjNcKQ8&Signature=iBPh0AGShwJ3DjJ4IIq2xbng%2Fd4%3D\" -o /tmp/header.png)"
     ]
   }
 }

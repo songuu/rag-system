@@ -70,14 +70,16 @@ interface PhaseStatus {
 export default function MiroFishProcessPage() {
   const router = useRouter();
 
-  // 工作流阶段: 0=本体生成, 1=图谱构建, 2=完成
-  const [currentPhase, setCurrentPhase] = useState<number>(-1);
+  // 当前步骤: 0=本体生成, 1=图谱构建, 2=Profile生成, 3=模拟
+  const [currentStep, setCurrentStep] = useState<number>(0);
   const [statusText, setStatusText] = useState<string>('初始化中');
   const [statusClass, setStatusClass] = useState<string>('processing');
 
   // 数据状态
   const [simulationRequirement, setSimulationRequirement] = useState<string>('');
   const [inputText, setInputText] = useState<string>('');
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+  const [uploading, setUploading] = useState<boolean>(false);
   const [ontology, setOntology] = useState<Ontology | null>(null);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
 
@@ -106,27 +108,33 @@ export default function MiroFishProcessPage() {
   // 颜色配置
   const colors = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C'];
 
+  // 步骤名称
+  const stepNames = ['Ontology', 'Graph Building', 'Profile Generation', 'Simulation'];
+
   // ==================== 计算属性 ====================
 
-  // 根据阶段更新状态
+  // 根据步骤更新状态
   useEffect(() => {
     if (error) {
       setStatusClass('error');
       setStatusText('构建失败');
-    } else if (currentPhase >= 2) {
+    } else if (currentStep >= 3) {
       setStatusClass('completed');
       setStatusText('构建完成');
-    } else if (currentPhase === 1) {
+    } else if (currentStep === 2) {
+      setStatusClass('processing');
+      setStatusText('Profile生成中');
+    } else if (currentStep === 1) {
       setStatusClass('processing');
       setStatusText('图谱构建中');
-    } else if (currentPhase === 0) {
+    } else if (currentStep === 0) {
       setStatusClass('processing');
       setStatusText('本体生成中');
     } else {
       setStatusClass('processing');
       setStatusText('初始化中');
     }
-  }, [currentPhase, error]);
+  }, [currentStep, error]);
 
   // 从图谱数据提取实体类型统计
   useEffect(() => {
@@ -151,6 +159,37 @@ export default function MiroFishProcessPage() {
 
   // ==================== 方法 ====================
 
+  // 文件上传处理
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setUploading(true);
+    const newFiles: File[] = [];
+
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        // 读取文件内容
+        const text = await file.text();
+        newFiles.push(file);
+
+        // 将文件内容添加到输入文本
+        setInputText(prev => prev + (prev ? '\n\n' : '') + text);
+      }
+      setUploadedFiles(prev => [...prev, ...newFiles]);
+    } catch (err) {
+      setError('文件读取失败');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // 移除已上传文件
+  const removeFile = (index: number) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
   // 本体生成
   const generateOntology = async () => {
     if (!simulationRequirement.trim()) {
@@ -166,7 +205,7 @@ export default function MiroFishProcessPage() {
     setOntologyLoading(true);
     setError(null);
     setOntologyProgress({ phase: 0, status: 'processing', message: '正在生成本体...' });
-    setCurrentPhase(0);
+    setCurrentStep(0);
 
     try {
       const response = await fetch('/api/mirofish/ontology', {
@@ -186,7 +225,7 @@ export default function MiroFishProcessPage() {
 
       setOntology(data.ontology);
       setOntologyProgress({ phase: 0, status: 'completed', message: '本体生成完成' });
-      setCurrentPhase(1);
+      setCurrentStep(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : '本体生成失败');
       setOntologyProgress({ phase: 0, status: 'error', message: err instanceof Error ? err.message : '本体生成失败' });
@@ -198,20 +237,13 @@ export default function MiroFishProcessPage() {
   // 构建图谱
   const buildGraph = async () => {
     if (!inputText.trim()) {
-      setError('请输入要构建图谱的文本');
-      return;
-    }
-
-    if (!ontology) {
-      setError('请先生成本体');
+      setError('请输入分析文本');
       return;
     }
 
     setGraphBuilding(true);
-    setGraphLoading(true);
-    setError(null);
-    setBuildProgress({ progress: 0, message: '正在创建任务...' });
-    setCurrentPhase(1);
+    setBuildProgress({ progress: 0, message: '开始构建图谱...' });
+    setCurrentStep(1);
 
     try {
       const response = await fetch('/api/mirofish/graph', {
@@ -220,7 +252,6 @@ export default function MiroFishProcessPage() {
         body: JSON.stringify({
           text: inputText,
           ontology: ontology,
-          graphName: 'MiroFish Graph',
         }),
       });
 
@@ -230,85 +261,63 @@ export default function MiroFishProcessPage() {
         throw new Error(data.error || '图谱构建失败');
       }
 
-      setCurrentTaskId(data.taskId);
+      // 启动轮询获取图谱数据
+      if (data.taskId) {
+        setCurrentTaskId(data.taskId);
+      } else if (data.graph) {
+        setGraphData(data.graph);
+        setCurrentStep(2);
+      }
+
+      setBuildProgress({ progress: 100, message: '图谱构建完成' });
     } catch (err) {
       setError(err instanceof Error ? err.message : '图谱构建失败');
+    } finally {
       setGraphBuilding(false);
-      setGraphLoading(false);
     }
   };
 
-  // 轮询图谱状态
-  useEffect(() => {
-    if (!currentTaskId || !graphBuilding) return;
+  // 获取步骤状态类名
+  const getStepStatusClass = (step: number): string => {
+    if (error) return 'error';
+    if (step < currentStep) return 'completed';
+    if (step === currentStep) return 'active';
+    return 'waiting';
+  };
 
-    const pollStatus = async () => {
-      try {
-        const response = await fetch(
-          `/api/mirofish/graph?action=status&taskId=${currentTaskId}`
-        );
-        const data = await response.json();
+  // 获取步骤状态文本
+  const getStepStatusText = (step: number): string => {
+    if (error) return '失败';
+    if (step < currentStep) return '完成';
+    if (step === currentStep) {
+      if (step === 0 && ontologyLoading) return '生成中';
+      if (step === 1 && graphBuilding) return '构建中';
+      return '进行中';
+    }
+    return '待开始';
+  };
 
-        if (data.success) {
-          setBuildProgress({
-            progress: data.progress || 0,
-            message: data.message || '',
-          });
-
-          if (data.status === 'completed' && data.graphId) {
-            // 获取图谱数据
-            const graphResponse = await fetch(
-              `/api/mirofish/graph?action=data&graphId=${data.graphId}`
-            );
-            const graphResult = await graphResponse.json();
-
-            if (graphResult.success) {
-              setGraphData(graphResult.graph);
-              setCurrentPhase(2);
-            }
-
-            setGraphBuilding(false);
-            setGraphLoading(false);
-            setCurrentTaskId(null);
-          } else if (data.status === 'failed') {
-            setError(data.error || '图谱构建失败');
-            setGraphBuilding(false);
-            setGraphLoading(false);
-          }
-        }
-      } catch (err) {
-        console.error('获取状态失败:', err);
-      }
-    };
-
-    const interval = setInterval(pollStatus, 2000);
-    return () => clearInterval(interval);
-  }, [currentTaskId, graphBuilding]);
+  // 返回首页
+  const goHome = () => {
+    router.push('/mirofish');
+  };
 
   // 刷新图谱
   const refreshGraph = useCallback(() => {
-    if (graphData?.graph_id) {
-      setGraphLoading(true);
-      fetch(`/api/mirofish/graph?action=data&graphId=${graphData.graph_id}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.success) {
-            setGraphData(data.graph);
-          }
-        })
-        .finally(() => setGraphLoading(false));
+    if (graphData) {
+      // 触发重新渲染
+      setGraphData({ ...graphData });
     }
-  }, [graphData?.graph_id]);
+  }, [graphData]);
 
-  // 全屏切换
+  // 切换全屏
   const toggleFullScreen = () => {
     setIsFullScreen(!isFullScreen);
-    setTimeout(() => renderGraph(), 350);
   };
 
-  // 渲染图谱
-  const renderGraph = useCallback(() => {
-    if (!graphData || !graphSvgRef.current || !graphContainerRef.current) return;
+  // D3 图谱渲染
+  useEffect(() => {
+    if (!graphData?.nodes?.length || !graphSvgRef.current || !graphContainerRef.current) return;
 
     const svg = d3.select(graphSvgRef.current);
     svg.selectAll('*').remove();
@@ -317,37 +326,31 @@ export default function MiroFishProcessPage() {
     const width = container.clientWidth;
     const height = container.clientHeight;
 
-    svg.attr('width', width).attr('height', height);
+    if (width === 0 || height === 0) return;
 
-    // 创建节点和边的数据
-    const nodes = graphData.nodes.map(n => ({
-      id: n.uuid,
-      name: n.name,
-      labels: n.labels,
-      ...n,
+    const nodes = graphData.nodes.map((node, idx) => ({
+      ...node,
+      // 分配颜色
+      color: colors[idx % colors.length],
     }));
 
-    const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const nodeMap = new Map(nodes.map(n => [n.name, n]));
 
     const links = graphData.edges
-      .filter(e => nodeMap.has(e.source_node_name) && nodeMap.has(e.target_node_name))
-      .map(e => ({
-        id: e.uuid,
-        source: e.source_node_name,
-        target: e.target_node_name,
-        name: e.name,
-        fact: e.fact,
-        ...e,
+      .filter(edge => nodeMap.has(edge.source_node_name) && nodeMap.has(edge.target_node_name))
+      .map(edge => ({
+        source: edge.source_node_name,
+        target: edge.target_node_name,
+        name: edge.name,
+        data: edge,
       }));
 
-    // 创建力导向图
     const simulation = d3.forceSimulation(nodes as d3.SimulationNodeDatum[])
-      .force('link', d3.forceLink(links).id((d: any) => d.id).distance(100))
+      .force('link', d3.forceLink(links).id((d: any) => d.name).distance(100))
       .force('charge', d3.forceManyBody().strength(-300))
       .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(40));
+      .force('collision', d3.forceCollide().radius(30));
 
-    // 绘制边
     const link = svg.append('g')
       .selectAll('line')
       .data(links)
@@ -356,116 +359,73 @@ export default function MiroFishProcessPage() {
       .attr('stroke-width', 1.5)
       .attr('opacity', 0.6);
 
-    // 绘制节点
     const node = svg.append('g')
-      .selectAll('circle')
+      .selectAll('g')
       .data(nodes)
-      .join('circle')
-      .attr('r', 12)
-      .attr('fill', (d, i) => colors[i % colors.length])
-      .attr('stroke', '#fff')
-      .attr('stroke-width', 2)
-      .style('cursor', 'pointer')
-      .call(d3.drag<SVGCircleElement, any>()
+      .join('g')
+      .attr('cursor', 'pointer')
+      .call(d3.drag<SVGGElement, any>()
         .on('start', (event, d) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
-          (d as any).fx = d.x;
-          (d as any).fy = d.y;
+          d.fx = d.x;
+          d.fy = d.y;
         })
         .on('drag', (event, d) => {
-          (d as any).fx = event.x;
-          (d as any).fy = event.y;
+          d.fx = event.x;
+          d.fy = event.y;
         })
         .on('end', (event, d) => {
           if (!event.active) simulation.alphaTarget(0);
-          (d as any).fx = null;
-          (d as any).fy = null;
-        }))
-      .on('click', (event, d) => {
-        event.stopPropagation();
-        setSelectedItem({ type: 'node', data: d });
-      });
+          d.fx = null;
+          d.fy = null;
+        }));
 
-    // 添加标签
-    const label = svg.append('g')
-      .selectAll('text')
-      .data(nodes)
-      .join('text')
-      .text(d => d.name)
-      .attr('font-size', 10)
-      .attr('fill', '#333')
-      .attr('text-anchor', 'middle')
-      .attr('dy', 25);
+    node.append('circle')
+      .attr('r', 12)
+      .attr('fill', (d: any) => d.color || '#004E89')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 2);
 
-    // 更新位置
+    node.append('text')
+      .text((d: any) => d.name)
+      .attr('x', 16)
+      .attr('y', 4)
+      .attr('font-size', '11px')
+      .attr('fill', '#333');
+
+    node.on('click', (event, d) => {
+      event.stopPropagation();
+      setSelectedItem({ type: 'node', data: d });
+    });
+
+    link.on('click', (event, d) => {
+      event.stopPropagation();
+      setSelectedItem({ type: 'edge', data: d.data });
+    });
+
     simulation.on('tick', () => {
       link
-        .attr('x1', d => (d.source as any).x)
-        .attr('y1', d => (d.source as any).y)
-        .attr('x2', d => (d.target as any).x)
-        .attr('y2', d => (d.target as any).y);
+        .attr('x1', (d: any) => d.source.x)
+        .attr('y1', (d: any) => d.source.y)
+        .attr('x2', (d: any) => d.target.x)
+        .attr('y2', (d: any) => d.target.y);
 
-      node
-        .attr('cx', d => d.x!)
-        .attr('cy', d => d.y!);
-
-      label
-        .attr('x', d => d.x!)
-        .attr('y', d => d.y!);
+      node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
     });
-  }, [graphData]);
 
-  // 初始化渲染图谱
-  useEffect(() => {
-    if (graphData && !isFullScreen) {
-      setTimeout(renderGraph, 100);
-    }
-  }, [graphData, renderGraph, isFullScreen]);
-
-  // 格式化日期
-  const formatDate = (dateStr?: string) => {
-    if (!dateStr) return '-';
-    return new Date(dateStr).toLocaleString('zh-CN');
-  };
-
-  // 获取阶段状态类
-  const getPhaseStatusClass = (phase: number) => {
-    if (phase > currentPhase) return 'waiting';
-    if (phase === currentPhase) return currentPhase === 2 && !error ? 'completed' : 'processing';
-    return 'completed';
-  };
-
-  // 获取阶段状态文本
-  const getPhaseStatusText = (phase: number) => {
-    const status = getPhaseStatusClass(phase);
-    const texts: Record<string, Record<number, string>> = {
-      waiting: { 0: '等待中', 1: '等待中', 2: '等待中' },
-      processing: { 0: '生成中', 1: '构建中', 2: '完成' },
-      completed: { 0: '已完成', 1: '已完成', 2: '已完成' },
-      error: { 0: '失败', 1: '失败', 2: '失败' },
+    return () => {
+      simulation.stop();
     };
-    return texts[status]?.[phase] || '等待中';
-  };
-
-  // 进入下一步
-  const goToNextStep = () => {
-    alert('环境搭建功能开发中...');
-  };
-
-  // 返回首页
-  const goHome = () => {
-    router.push('/mirofish');
-  };
+  }, [graphData]);
 
   // ==================== 渲染 ====================
 
   return (
-    <div className="process-page" style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif" }}>
+    <div className="process-page" style={{ height: '100vh', display: 'flex', flexDirection: 'column', fontFamily: "'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif", background: '#F5F5F5' }}>
       {/* 顶部导航栏 */}
       <nav className="navbar" style={{
         height: '60px',
-        background: '#fff',
-        borderBottom: '1px solid #EAEAEA',
+        background: '#000',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
@@ -473,16 +433,49 @@ export default function MiroFishProcessPage() {
         position: 'relative',
         zIndex: 100,
       }}>
-        {/* 左侧品牌 */}
-        <div className="nav-brand" onClick={goHome} style={{
-          fontFamily: "'JetBrains Mono', monospace",
-          fontWeight: 800,
-          fontSize: '18px',
-          letterSpacing: '1px',
-          cursor: 'pointer',
-          color: '#000',
-        }}>
-          MIROFISH
+        {/* 左侧品牌 + 项目选择 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
+          {/* 品牌 */}
+          <div className="nav-brand" onClick={goHome} style={{
+            fontFamily: "'JetBrains Mono', monospace",
+            fontWeight: 800,
+            fontSize: '16px',
+            letterSpacing: '1px',
+            cursor: 'pointer',
+            color: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+          }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" aria-label="MiroFish Logo">
+              <circle cx="12" cy="8" r="4" fill="#7C3AED"/>
+              <path d="M4 20C4 16 7.5 13 12 13C16.5 13 20 16 20 20" stroke="#7C3AED" strokeWidth="2" strokeLinecap="round"/>
+              <circle cx="8" cy="18" r="2" fill="#7C3AED"/>
+              <circle cx="16" cy="18" r="2" fill="#7C3AED"/>
+            </svg>
+            <span style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A855F7 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>MIROFISH</span>
+          </div>
+
+          {/* 项目选择 */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            background: 'rgba(255,255,255,0.1)',
+            padding: '8px 14px',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            border: '1px solid rgba(255,255,255,0.15)',
+            transition: 'all 0.2s',
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7C3AED" strokeWidth="2" aria-label="项目列表">
+              <path d="M3 7h18M3 12h18M3 17h18"/>
+            </svg>
+            <span style={{ fontSize: '13px', color: '#fff', fontWeight: 500 }}>proj_f95898d38529</span>
+            <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="#9CA3AF" strokeWidth="1.5" aria-label="下拉">
+              <path d="M3 4.5L6 7.5L9 4.5"/>
+            </svg>
+          </div>
         </div>
 
         {/* 中间步骤指示器 */}
@@ -492,20 +485,21 @@ export default function MiroFishProcessPage() {
           transform: 'translateX(-50%)',
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
+          gap: '10px',
         }}>
           <div style={{
-            background: '#000',
+            background: '#7C3AED',
             color: '#fff',
-            padding: '4px 12px',
+            padding: '5px 12px',
             borderRadius: '4px',
-            fontSize: '12px',
+            fontSize: '11px',
             fontWeight: 700,
+            letterSpacing: '0.5px',
           }}>
-            STEP 01
+            STEP {String(currentStep + 1).padStart(2, '0')}
           </div>
-          <div style={{ fontSize: '14px', fontWeight: 700 }}>
-            图谱构建
+          <div style={{ fontSize: '14px', fontWeight: 600, color: '#fff', letterSpacing: '0.5px' }}>
+            {stepNames[currentStep]}
           </div>
         </div>
 
@@ -513,17 +507,42 @@ export default function MiroFishProcessPage() {
         <div className="nav-status" style={{
           display: 'flex',
           alignItems: 'center',
-          gap: '8px',
-          fontSize: '12px',
+          gap: '16px',
         }}>
-          <span className="status-dot" style={{
-            width: '8px',
-            height: '8px',
+          {/* 菜单图标 */}
+          <div style={{
+            width: '36px',
+            height: '36px',
+            borderRadius: '8px',
+            background: 'rgba(255,255,255,0.1)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            transition: 'background 0.2s',
+          }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
+              <path d="M4 6h16M4 12h16M4 18h16"/>
+            </svg>
+          </div>
+
+          {/* 头像 */}
+          <div style={{
+            width: '36px',
+            height: '36px',
             borderRadius: '50%',
-            background: statusClass === 'error' ? '#F44336' : statusClass === 'completed' ? '#4CAF50' : '#FF5722',
-            animation: statusClass === 'processing' ? 'pulse 1s infinite' : 'none',
-          }} />
-          <span style={{ color: '#666', fontWeight: 500 }}>{statusText}</span>
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: '14px',
+            color: '#fff',
+            fontWeight: 600,
+            cursor: 'pointer',
+            boxShadow: '0 2px 8px rgba(102, 126, 234, 0.4)',
+          }}>
+            U
+          </div>
         </div>
       </nav>
 
@@ -533,70 +552,595 @@ export default function MiroFishProcessPage() {
         display: 'flex',
         overflow: 'hidden',
       }}>
-        {/* 左侧: 实时图谱展示 */}
+        {/* 左侧: 流程控制区 */}
         <div className="left-panel" style={{
-          flex: isFullScreen ? '1' : '1',
+          flex: 1,
           display: 'flex',
           flexDirection: 'column',
-          borderRight: isFullScreen ? 'none' : '1px solid #EAEAEA',
           background: '#fff',
-          transition: 'all 0.3s ease',
+          margin: '16px',
+          marginRight: '8px',
+          borderRadius: '12px',
+          overflow: 'hidden',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+        }}>
+          {/* 流程内容 */}
+          <div style={{ flex: 1, overflow: 'auto', padding: '20px' }}>
+
+            {/* STEP 1: Ontology */}
+            <div style={{
+              background: currentStep === 0 ? '#F0F9FF' : '#fff',
+              border: `1px solid ${currentStep === 0 ? '#7C3AED' : '#E5E7EB'}`,
+              borderRadius: '10px',
+              marginBottom: '16px',
+              overflow: 'hidden',
+              transition: 'all 0.2s',
+            }}>
+              <div style={{
+                padding: '14px 18px',
+                borderBottom: '1px solid #E5E7EB',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '14px',
+              }}>
+                <span style={{
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  background: getStepStatusClass(0) === 'completed' ? '#10B981' : getStepStatusClass(0) === 'error' ? '#EF4444' : getStepStatusClass(0) === 'active' ? '#7C3AED' : '#9CA3AF',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                }}>
+                  {getStepStatusClass(0) === 'completed' ? '✓' : '1'}
+                </span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#111' }}>STEP 1 Ontology</div>
+                  <div style={{ fontSize: '11px', color: '#6B7280' }}>上传文档 & 生成 Ontology</div>
+                </div>
+                <span style={{
+                  fontSize: '11px',
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  background: getStepStatusClass(0) === 'completed' ? '#D1FAE5' : getStepStatusClass(0) === 'error' ? '#FEE2E2' : getStepStatusClass(0) === 'active' ? '#EDE9FE' : '#F3F4F6',
+                  color: getStepStatusClass(0) === 'completed' ? '#059669' : getStepStatusClass(0) === 'error' ? '#DC2626' : getStepStatusClass(0) === 'active' ? '#7C3AED' : '#6B7280',
+                  fontWeight: 500,
+                }}>
+                  {getStepStatusText(0)}
+                </span>
+              </div>
+
+              <div style={{ padding: '18px' }}>
+                {/* 输入表单 */}
+                <div style={{ marginBottom: '14px' }}>
+                  <div style={{ fontSize: '12px', color: '#6B7280', marginBottom: '6px', fontWeight: 500 }}>模拟需求描述</div>
+                  <textarea
+                    value={simulationRequirement}
+                    onChange={e => setSimulationRequirement(e.target.value)}
+                    placeholder="例如：模拟一个关于某品牌产品争议的社交媒体舆论场..."
+                    disabled={currentStep > 0}
+                    style={{
+                      width: '100%',
+                      height: '56px',
+                      padding: '10px 12px',
+                      border: '1px solid #D1D5DB',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      resize: 'none',
+                      fontFamily: 'inherit',
+                      background: currentStep > 0 ? '#F9FAFB' : '#fff',
+                    }}
+                  />
+                </div>
+
+                {/* 文件上传区域 */}
+                <div style={{ marginBottom: '14px' }}>
+                  <div style={{ fontSize: '12px', color: '#6B7280', marginBottom: '6px', fontWeight: 500 }}>上传文档</div>
+                  <div style={{
+                    border: '2px dashed #D1D5DB',
+                    borderRadius: '8px',
+                    padding: '20px',
+                    textAlign: 'center',
+                    background: currentStep > 0 ? '#F9FAFB' : '#fff',
+                    cursor: currentStep > 0 ? 'not-allowed' : 'pointer',
+                    transition: 'all 0.2s',
+                  }}>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".txt,.md,.json,.doc,.docx,.pdf"
+                      onChange={handleFileUpload}
+                      disabled={currentStep > 0}
+                      style={{
+                        display: 'none',
+                      }}
+                      id="file-upload"
+                    />
+                    <label htmlFor="file-upload" style={{
+                      cursor: currentStep > 0 ? 'not-allowed' : 'pointer',
+                      display: 'block',
+                    }}>
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="1.5" style={{ margin: '0 auto 8px' }} aria-label="上传文件">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                      </svg>
+                      <div style={{ fontSize: '13px', color: '#6B7280', marginBottom: '4px' }}>
+                        {uploading ? '上传中...' : '点击或拖拽文件到此处上传'}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#9CA3AF' }}>
+                        支持 TXT, MD, JSON, DOC, DOCX, PDF
+                      </div>
+                    </label>
+                  </div>
+                  {/* 已上传文件列表 */}
+                  {uploadedFiles.length > 0 && (
+                    <div style={{ marginTop: '10px' }}>
+                      {uploadedFiles.map((file, index) => (
+                        <div key={index} style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '8px 12px',
+                          background: '#F3F4F6',
+                          borderRadius: '6px',
+                          marginBottom: '6px',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, overflow: 'hidden' }}>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7C3AED" strokeWidth="2" aria-label="文件">
+                              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                              <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
+                            </svg>
+                            <span style={{ fontSize: '12px', color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {file.name}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeFile(index)}
+                            disabled={currentStep > 0}
+                            style={{
+                              border: 'none',
+                              background: 'none',
+                              color: '#9CA3AF',
+                              cursor: currentStep > 0 ? 'not-allowed' : 'pointer',
+                              padding: '2px',
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <div style={{ fontSize: '12px', color: '#6B7280', marginBottom: '6px', fontWeight: 500 }}>分析文本</div>
+                  <textarea
+                    value={inputText}
+                    onChange={e => setInputText(e.target.value)}
+                    placeholder="输入要分析的文本内容，用于提取实体类型..."
+                    disabled={currentStep > 0}
+                    style={{
+                      width: '100%',
+                      height: '72px',
+                      padding: '10px 12px',
+                      border: '1px solid #D1D5DB',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      resize: 'none',
+                      fontFamily: 'inherit',
+                      background: currentStep > 0 ? '#F9FAFB' : '#fff',
+                    }}
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={generateOntology}
+                  disabled={ontologyLoading || currentStep > 0}
+                  style={{
+                    width: '100%',
+                    padding: '10px',
+                    background: ontologyLoading || currentStep > 0 ? '#E5E7EB' : '#7C3AED',
+                    color: ontologyLoading || currentStep > 0 ? '#9CA3AF' : '#fff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: ontologyLoading || currentStep > 0 ? 'not-allowed' : 'pointer',
+                    transition: 'background 0.2s',
+                  }}
+                >
+                  {ontologyLoading ? '生成本体中...' : '开始生成'}
+                </button>
+
+                {/* 本体生成进度 */}
+                {ontologyProgress && currentStep === 0 && (
+                  <div style={{
+                    marginTop: '12px',
+                    padding: '10px',
+                    background: '#F3F4F6',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    color: '#6B7280',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                  }}>
+                    <div style={{
+                      width: '16px',
+                      height: '16px',
+                      border: '2px solid #7C3AED',
+                      borderTopColor: 'transparent',
+                      borderRadius: '50%',
+                      animation: 'spin 1s linear infinite',
+                    }} />
+                    {ontologyProgress.message}
+                  </div>
+                )}
+
+                {/* 已生成的本体信息 */}
+                {ontology && currentStep > 0 && (
+                  <>
+                    <div style={{ marginTop: '14px' }}>
+                      <div style={{ fontSize: '12px', color: '#6B7280', marginBottom: '8px' }}>
+                        生成的实体类型 ({ontology.entity_types?.length || 0})
+                      </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                        {ontology.entity_types?.slice(0, 8).map((entity, i) => (
+                          <span key={i} style={{
+                            padding: '3px 10px',
+                            background: '#EDE9FE',
+                            color: '#7C3AED',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            fontWeight: 500,
+                          }}>
+                            {entity.name}
+                          </span>
+                        ))}
+                        {(ontology.entity_types?.length || 0) > 8 && (
+                          <span style={{ fontSize: '12px', color: '#9CA3AF' }}>
+                            +{ontology.entity_types.length - 8} 更多
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* STEP 2: Graph Building */}
+            <div style={{
+              background: currentStep === 1 ? '#F0F9FF' : '#fff',
+              border: `1px solid ${currentStep === 1 ? '#7C3AED' : '#E5E7EB'}`,
+              borderRadius: '10px',
+              marginBottom: '16px',
+              overflow: 'hidden',
+              transition: 'all 0.2s',
+            }}>
+              <div style={{
+                padding: '14px 18px',
+                borderBottom: '1px solid #E5E7EB',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '14px',
+              }}>
+                <span style={{
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  background: getStepStatusClass(1) === 'completed' ? '#10B981' : getStepStatusClass(1) === 'error' ? '#EF4444' : getStepStatusClass(1) === 'active' ? '#7C3AED' : '#9CA3AF',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                }}>
+                  {getStepStatusClass(1) === 'completed' ? '✓' : '2'}
+                </span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#111' }}>STEP 2 Graph Building</div>
+                  <div style={{ fontSize: '11px', color: '#6B7280' }}>构建知识图谱</div>
+                </div>
+                <span style={{
+                  fontSize: '11px',
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  background: getStepStatusClass(1) === 'completed' ? '#D1FAE5' : getStepStatusClass(1) === 'error' ? '#FEE2E2' : getStepStatusClass(1) === 'active' ? '#EDE9FE' : '#F3F4F6',
+                  color: getStepStatusClass(1) === 'completed' ? '#059669' : getStepStatusClass(1) === 'error' ? '#DC2626' : getStepStatusClass(1) === 'active' ? '#7C3AED' : '#6B7280',
+                  fontWeight: 500,
+                }}>
+                  {getStepStatusText(1)}
+                </span>
+              </div>
+
+              <div style={{ padding: '18px' }}>
+                {currentStep < 1 ? (
+                  <div style={{
+                    padding: '20px',
+                    background: '#F9FAFB',
+                    borderRadius: '6px',
+                    textAlign: 'center',
+                    color: '#9CA3AF',
+                    fontSize: '13px',
+                  }}>
+                    等待本体生成完成...
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={buildGraph}
+                      disabled={graphBuilding || currentStep > 1}
+                      style={{
+                        width: '100%',
+                        padding: '10px',
+                        background: graphBuilding || currentStep > 1 ? '#E5E7EB' : '#7C3AED',
+                        color: graphBuilding || currentStep > 1 ? '#9CA3AF' : '#fff',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                        cursor: graphBuilding || currentStep > 1 ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {graphBuilding ? '构建中...' : '开始构建'}
+                    </button>
+
+                    {/* 构建进度 */}
+                    {buildProgress && currentStep >= 1 && (
+                      <div style={{ marginTop: '14px' }}>
+                        <div style={{
+                          height: '6px',
+                          background: '#E5E7EB',
+                          borderRadius: '3px',
+                          overflow: 'hidden',
+                        }}>
+                          <div style={{
+                            height: '100%',
+                            width: `${buildProgress.progress}%`,
+                            background: buildProgress.progress === 100 ? '#10B981' : '#7C3AED',
+                            borderRadius: '3px',
+                            transition: 'width 0.3s',
+                          }} />
+                        </div>
+                        <div style={{
+                          marginTop: '8px',
+                          fontSize: '12px',
+                          color: '#6B7280',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                        }}>
+                          <span>{buildProgress.message}</span>
+                          <span>{buildProgress.progress}%</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* STEP 3: Profile Generation */}
+            <div style={{
+              background: currentStep === 2 ? '#F0F9FF' : '#fff',
+              border: `1px solid ${currentStep === 2 ? '#7C3AED' : '#E5E7EB'}`,
+              borderRadius: '10px',
+              marginBottom: '16px',
+              overflow: 'hidden',
+              transition: 'all 0.2s',
+            }}>
+              <div style={{
+                padding: '14px 18px',
+                borderBottom: '1px solid #E5E7EB',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '14px',
+              }}>
+                <span style={{
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  background: getStepStatusClass(2) === 'completed' ? '#10B981' : getStepStatusClass(2) === 'error' ? '#EF4444' : getStepStatusClass(2) === 'active' ? '#7C3AED' : '#9CA3AF',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                }}>
+                  {getStepStatusClass(2) === 'completed' ? '✓' : '3'}
+                </span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#111' }}>STEP 3 Profile Generation</div>
+                  <div style={{ fontSize: '11px', color: '#6B7280' }}>生成 Profile</div>
+                </div>
+                <span style={{
+                  fontSize: '11px',
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  background: getStepStatusClass(2) === 'completed' ? '#D1FAE5' : getStepStatusClass(2) === 'error' ? '#FEE2E2' : getStepStatusClass(2) === 'active' ? '#EDE9FE' : '#F3F4F6',
+                  color: getStepStatusClass(2) === 'completed' ? '#059669' : getStepStatusClass(2) === 'error' ? '#DC2626' : getStepStatusClass(2) === 'active' ? '#7C3AED' : '#6B7280',
+                  fontWeight: 500,
+                }}>
+                  {getStepStatusText(2)}
+                </span>
+              </div>
+
+              <div style={{ padding: '18px' }}>
+                {currentStep < 2 ? (
+                  <div style={{
+                    padding: '20px',
+                    background: '#F9FAFB',
+                    borderRadius: '6px',
+                    textAlign: 'center',
+                    color: '#9CA3AF',
+                    fontSize: '13px',
+                  }}>
+                    等待图谱构建完成...
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      background: '#E5E7EB',
+                      color: '#9CA3AF',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'not-allowed',
+                    }}
+                  >
+                    开始生成
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* STEP 4: Simulation */}
+            <div style={{
+              background: currentStep === 3 ? '#F0F9FF' : '#fff',
+              border: `1px solid ${currentStep === 3 ? '#7C3AED' : '#E5E7EB'}`,
+              borderRadius: '10px',
+              marginBottom: '16px',
+              overflow: 'hidden',
+              transition: 'all 0.2s',
+            }}>
+              <div style={{
+                padding: '14px 18px',
+                borderBottom: '1px solid #E5E7EB',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '14px',
+              }}>
+                <span style={{
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '50%',
+                  background: getStepStatusClass(3) === 'completed' ? '#10B981' : getStepStatusClass(3) === 'error' ? '#EF4444' : getStepStatusClass(3) === 'active' ? '#7C3AED' : '#9CA3AF',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                }}>
+                  {getStepStatusClass(3) === 'completed' ? '✓' : '4'}
+                </span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '15px', fontWeight: 600, color: '#111' }}>STEP 4 Simulation</div>
+                  <div style={{ fontSize: '11px', color: '#6B7280' }}>启动模拟</div>
+                </div>
+                <span style={{
+                  fontSize: '11px',
+                  padding: '3px 10px',
+                  borderRadius: '12px',
+                  background: getStepStatusClass(3) === 'completed' ? '#D1FAE5' : getStepStatusClass(3) === 'error' ? '#FEE2E2' : getStepStatusClass(3) === 'active' ? '#EDE9FE' : '#F3F4F6',
+                  color: getStepStatusClass(3) === 'completed' ? '#059669' : getStepStatusClass(3) === 'error' ? '#DC2626' : getStepStatusClass(3) === 'active' ? '#7C3AED' : '#6B7280',
+                  fontWeight: 500,
+                }}>
+                  {getStepStatusText(3)}
+                </span>
+              </div>
+
+              <div style={{ padding: '18px' }}>
+                {currentStep < 3 ? (
+                  <div style={{
+                    padding: '20px',
+                    background: '#F9FAFB',
+                    borderRadius: '6px',
+                    textAlign: 'center',
+                    color: '#9CA3AF',
+                    fontSize: '13px',
+                  }}>
+                    等待 Profile 生成完成...
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      background: '#E5E7EB',
+                      color: '#9CA3AF',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      cursor: 'not-allowed',
+                    }}
+                  >
+                    开始模拟
+                  </button>
+                )}
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        {/* 右侧: 图谱数据展示 */}
+        <div className="right-panel" style={{
+          width: '320px',
+          display: 'flex',
+          flexDirection: 'column',
+          background: '#fff',
+          margin: '16px',
+          marginLeft: '8px',
+          borderRadius: '12px',
+          overflow: 'hidden',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
         }}>
           {/* 面板头部 */}
-          <div className="panel-header" style={{
+          <div style={{
             height: '48px',
-            borderBottom: '1px solid #EAEAEA',
+            borderBottom: '1px solid #E5E7EB',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
+            gap: '8px',
             padding: '0 16px',
-            background: '#FAFAFA',
+            background: '#F9FAFB',
           }}>
-            <div className="header-left" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ color: '#000' }}>◆</span>
-              <span style={{ fontSize: '14px', fontWeight: 600 }}>实时知识图谱</span>
-            </div>
-            <div className="header-right" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              {graphData && (
-                <>
-                  <span style={{ fontSize: '12px', color: '#666' }}>{graphData.node_count} 节点</span>
-                  <span style={{ color: '#E0E0E0' }}>|</span>
-                  <span style={{ fontSize: '12px', color: '#666' }}>{graphData.edge_count} 关系</span>
-                  <span style={{ color: '#E0E0E0' }}>|</span>
-                </>
-              )}
-              <div style={{ display: 'flex', gap: '4px' }}>
-                <button onClick={refreshGraph} disabled={graphLoading} style={{
-                  width: '28px',
-                  height: '28px',
-                  border: '1px solid #E0E0E0',
-                  background: '#fff',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '14px',
-                  transition: 'all 0.2s',
-                }} title="刷新图谱">
-                  ↻
-                </button>
-                <button onClick={toggleFullScreen} style={{
-                  width: '28px',
-                  height: '28px',
-                  border: '1px solid #E0E0E0',
-                  background: '#fff',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '14px',
-                  transition: 'all 0.2s',
-                }} title={isFullScreen ? '退出全屏' : '全屏显示'}>
-                  {isFullScreen ? '↙' : '↗'}
-                </button>
+            <span style={{ fontSize: '14px', color: '#7C3AED' }}>◆</span>
+            <span style={{ fontSize: '14px', fontWeight: 600, color: '#111' }}>图谱数据</span>
+          </div>
+
+          {/* 统计数据 */}
+          <div style={{
+            display: 'flex',
+            borderBottom: '1px solid #E5E7EB',
+          }}>
+            <div style={{
+              flex: 1,
+              padding: '16px',
+              textAlign: 'center',
+              borderRight: '1px solid #E5E7EB',
+            }}>
+              <div style={{ fontSize: '24px', fontWeight: 700, color: '#7C3AED' }}>
+                {graphData?.node_count || 0}
               </div>
+              <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '4px' }}>Nodes</div>
+            </div>
+            <div style={{
+              flex: 1,
+              padding: '16px',
+              textAlign: 'center',
+            }}>
+              <div style={{ fontSize: '24px', fontWeight: 700, color: '#7C3AED' }}>
+                {graphData?.edge_count || 0}
+              </div>
+              <div style={{ fontSize: '12px', color: '#6B7280', marginTop: '4px' }}>Edges</div>
             </div>
           </div>
 
@@ -605,30 +1149,31 @@ export default function MiroFishProcessPage() {
             flex: 1,
             position: 'relative',
             overflow: 'hidden',
+            minHeight: '300px',
           }}>
             {graphData ? (
               <>
                 <svg ref={graphSvgRef} style={{ width: '100%', height: '100%' }} />
                 {/* 构建中提示 */}
-                {currentPhase === 1 && graphBuilding && (
+                {currentStep === 1 && graphBuilding && (
                   <div style={{
                     position: 'absolute',
-                    top: '16px',
-                    left: '16px',
-                    background: 'rgba(0,0,0,0.7)',
+                    top: '12px',
+                    left: '12px',
+                    background: 'rgba(124, 58, 237, 0.9)',
                     color: '#fff',
-                    padding: '8px 16px',
-                    borderRadius: '20px',
-                    fontSize: '12px',
+                    padding: '6px 12px',
+                    borderRadius: '16px',
+                    fontSize: '11px',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '8px',
+                    gap: '6px',
                   }}>
                     <span style={{
-                      width: '8px',
-                      height: '8px',
+                      width: '6px',
+                      height: '6px',
                       borderRadius: '50%',
-                      background: '#FF5722',
+                      background: '#fff',
                       animation: 'pulse 1s infinite',
                     }} />
                     实时更新中...
@@ -639,59 +1184,53 @@ export default function MiroFishProcessPage() {
                 {selectedItem && (
                   <div style={{
                     position: 'absolute',
-                    top: '16px',
-                    right: '16px',
-                    width: '280px',
+                    top: '12px',
+                    right: '12px',
+                    width: '240px',
                     background: '#fff',
-                    border: '1px solid #E0E0E0',
+                    border: '1px solid #E5E7EB',
                     borderRadius: '8px',
                     boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-                    maxHeight: 'calc(100% - 32px)',
+                    maxHeight: 'calc(100% - 24px)',
                     overflow: 'auto',
                   }}>
                     <div style={{
-                      padding: '12px 16px',
-                      borderBottom: '1px solid #E0E0E0',
+                      padding: '10px 14px',
+                      borderBottom: '1px solid #E5E7EB',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                     }}>
-                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#666' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600, color: '#6B7280' }}>
                         {selectedItem.type === 'node' ? 'Node Details' : 'Relationship'}
                       </span>
-                      <button onClick={() => setSelectedItem(null)} style={{
+                      <button type="button" onClick={() => setSelectedItem(null)} style={{
                         border: 'none',
                         background: 'none',
                         fontSize: '18px',
                         cursor: 'pointer',
-                        color: '#999',
+                        color: '#9CA3AF',
                       }}>×</button>
                     </div>
-                    <div style={{ padding: '16px' }}>
+                    <div style={{ padding: '14px' }}>
                       {selectedItem.type === 'node' ? (
                         <>
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>Name</div>
-                            <div style={{ fontSize: '14px', fontWeight: 600, color: '#000' }}>
+                          <div style={{ marginBottom: '10px' }}>
+                            <div style={{ fontSize: '10px', color: '#9CA3AF', marginBottom: '3px' }}>Name</div>
+                            <div style={{ fontSize: '13px', fontWeight: 600, color: '#111' }}>
                               {(selectedItem.data as GraphNode).name}
                             </div>
                           </div>
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>UUID</div>
-                            <div style={{ fontSize: '11px', color: '#666', wordBreak: 'break-all' }}>
-                              {(selectedItem.data as GraphNode).uuid}
-                            </div>
-                          </div>
                           {(selectedItem.data as GraphNode).labels?.length > 0 && (
-                            <div style={{ marginBottom: '12px' }}>
-                              <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>Labels</div>
+                            <div style={{ marginBottom: '10px' }}>
+                              <div style={{ fontSize: '10px', color: '#9CA3AF', marginBottom: '3px' }}>Labels</div>
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                                 {(selectedItem.data as GraphNode).labels?.map((label, i) => (
                                   <span key={i} style={{
-                                    padding: '2px 8px',
-                                    background: '#F0F0F0',
+                                    padding: '2px 6px',
+                                    background: '#F3F4F6',
                                     borderRadius: '4px',
-                                    fontSize: '11px',
+                                    fontSize: '10px',
                                   }}>
                                     {label}
                                   </span>
@@ -701,8 +1240,8 @@ export default function MiroFishProcessPage() {
                           )}
                           {(selectedItem.data as GraphNode).summary && (
                             <div>
-                              <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>Summary</div>
-                              <p style={{ fontSize: '12px', color: '#666', lineHeight: 1.5 }}>
+                              <div style={{ fontSize: '10px', color: '#9CA3AF', marginBottom: '3px' }}>Summary</div>
+                              <p style={{ fontSize: '11px', color: '#6B7280', lineHeight: 1.5 }}>
                                 {(selectedItem.data as GraphNode).summary}
                               </p>
                             </div>
@@ -710,20 +1249,20 @@ export default function MiroFishProcessPage() {
                         </>
                       ) : (
                         <>
-                          <div style={{ marginBottom: '12px' }}>
-                            <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>Relationship</div>
-                            <div style={{ fontSize: '13px', color: '#000' }}>
-                              <span style={{ color: '#004E89' }}>{(selectedItem.data as GraphEdge).source_node_name}</span>
-                              <span style={{ margin: '0 8px' }}>→</span>
-                              <span style={{ color: '#FF6B35' }}>{(selectedItem.data as GraphEdge).name}</span>
-                              <span style={{ margin: '0 8px' }}>→</span>
-                              <span style={{ color: '#004E89' }}>{(selectedItem.data as GraphEdge).target_node_name}</span>
+                          <div style={{ marginBottom: '10px' }}>
+                            <div style={{ fontSize: '10px', color: '#9CA3AF', marginBottom: '3px' }}>Relationship</div>
+                            <div style={{ fontSize: '12px', color: '#111' }}>
+                              <span style={{ color: '#7C3AED' }}>{(selectedItem.data as GraphEdge).source_node_name}</span>
+                              <span style={{ margin: '0 6px' }}>→</span>
+                              <span style={{ color: '#7C3AED' }}>{(selectedItem.data as GraphEdge).name}</span>
+                              <span style={{ margin: '0 6px' }}>→</span>
+                              <span style={{ color: '#7C3AED' }}>{(selectedItem.data as GraphEdge).target_node_name}</span>
                             </div>
                           </div>
                           {(selectedItem.data as GraphEdge).fact && (
                             <div>
-                              <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>Fact</div>
-                              <p style={{ fontSize: '12px', color: '#666', lineHeight: 1.5 }}>
+                              <div style={{ fontSize: '10px', color: '#9CA3AF', marginBottom: '3px' }}>Fact</div>
+                              <p style={{ fontSize: '11px', color: '#6B7280', lineHeight: 1.5 }}>
                                 {(selectedItem.data as GraphEdge).fact}
                               </p>
                             </div>
@@ -741,42 +1280,18 @@ export default function MiroFishProcessPage() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 height: '100%',
-                color: '#999',
+                color: '#9CA3AF',
               }}>
-                <div className="loading-animation" style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    width: '40px',
-                    height: '40px',
-                    border: '3px solid #F0F0F0',
-                    borderTop: '3px solid #004E89',
-                    borderRadius: '50%',
-                    animation: 'spin 1s linear infinite',
-                  }} />
-                </div>
-                <p>图谱数据加载中...</p>
-              </div>
-            ) : currentPhase < 1 ? (
-              <div style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                height: '100%',
-                color: '#999',
-              }}>
-                <svg viewBox="0 0 100 100" style={{ width: '80px', height: '80px', marginBottom: '16px' }}>
-                  <circle cx="50" cy="20" r="8" fill="none" stroke="#000" strokeWidth="1.5" />
-                  <circle cx="20" cy="60" r="8" fill="none" stroke="#000" strokeWidth="1.5" />
-                  <circle cx="80" cy="60" r="8" fill="none" stroke="#000" strokeWidth="1.5" />
-                  <circle cx="50" cy="80" r="8" fill="none" stroke="#000" strokeWidth="1.5" />
-                  <line x1="50" y1="28" x2="25" y2="54" stroke="#000" strokeWidth="1" />
-                  <line x1="50" y1="28" x2="75" y2="54" stroke="#000" strokeWidth="1" />
-                  <line x1="28" y1="60" x2="72" y2="60" stroke="#000" strokeWidth="1" strokeDasharray="4" />
-                  <line x1="50" y1="72" x2="26" y2="66" stroke="#000" strokeWidth="1" />
-                  <line x1="50" y1="72" x2="74" y2="66" stroke="#000" strokeWidth="1" />
-                </svg>
-                <p style={{ fontSize: '14px', marginBottom: '8px' }}>等待本体生成</p>
-                <p style={{ fontSize: '12px', color: '#CCC' }}>生成完成后将自动开始构建图谱</p>
+                <div style={{
+                  width: '36px',
+                  height: '36px',
+                  border: '3px solid #F3F4F6',
+                  borderTop: '3px solid #7C3AED',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                  marginBottom: '12px',
+                }} />
+                <p style={{ fontSize: '13px' }}>图谱数据加载中...</p>
               </div>
             ) : (
               <div style={{
@@ -785,20 +1300,20 @@ export default function MiroFishProcessPage() {
                 alignItems: 'center',
                 justifyContent: 'center',
                 height: '100%',
-                color: '#999',
+                color: '#9CA3AF',
               }}>
-                <div className="loading-animation" style={{ marginBottom: '16px' }}>
-                  <div style={{
-                    width: '40px',
-                    height: '40px',
-                    border: '3px solid #F0F0F0',
-                    borderTop: '3px solid #004E89',
-                    borderRadius: '50%',
-                    animation: 'spin 1s linear infinite',
-                  }} />
-                </div>
-                <p>图谱构建中</p>
-                <p style={{ fontSize: '12px', color: '#CCC' }}>数据即将显示...</p>
+                <svg viewBox="0 0 100 100" style={{ width: '60px', height: '60px', marginBottom: '12px' }}>
+                  <circle cx="50" cy="20" r="8" fill="none" stroke="#9CA3AF" strokeWidth="1.5" />
+                  <circle cx="20" cy="60" r="8" fill="none" stroke="#9CA3AF" strokeWidth="1.5" />
+                  <circle cx="80" cy="60" r="8" fill="none" stroke="#9CA3AF" strokeWidth="1.5" />
+                  <circle cx="50" cy="80" r="8" fill="none" stroke="#9CA3AF" strokeWidth="1.5" />
+                  <line x1="50" y1="28" x2="25" y2="54" stroke="#9CA3AF" strokeWidth="1" />
+                  <line x1="50" y1="28" x2="75" y2="54" stroke="#9CA3AF" strokeWidth="1" />
+                  <line x1="28" y1="60" x2="72" y2="60" stroke="#9CA3AF" strokeWidth="1" strokeDasharray="4" />
+                  <line x1="50" y1="72" x2="26" y2="66" stroke="#9CA3AF" strokeWidth="1" />
+                  <line x1="50" y1="72" x2="74" y2="66" stroke="#9CA3AF" strokeWidth="1" />
+                </svg>
+                <p style={{ fontSize: '13px' }}>暂无图谱数据</p>
               </div>
             )}
 
@@ -808,15 +1323,14 @@ export default function MiroFishProcessPage() {
                 top: '50%',
                 left: '50%',
                 transform: 'translate(-50%, -50%)',
-                background: '#FFF5F5',
-                border: '1px solid #FED7D7',
+                background: '#FEF2F2',
+                border: '1px solid #FECACA',
                 borderRadius: '8px',
-                padding: '24px',
+                padding: '20px',
                 textAlign: 'center',
-                maxWidth: '400px',
               }}>
-                <div style={{ fontSize: '24px', marginBottom: '12px' }}>⚠</div>
-                <p style={{ color: '#E53E3E', margin: 0 }}>{error}</p>
+                <div style={{ fontSize: '20px', marginBottom: '8px' }}>⚠</div>
+                <p style={{ color: '#DC2626', margin: 0, fontSize: '13px' }}>{error}</p>
               </div>
             )}
           </div>
@@ -824,534 +1338,40 @@ export default function MiroFishProcessPage() {
           {/* 图谱图例 */}
           {graphData && entityTypes.length > 0 && (
             <div style={{
-              height: '40px',
-              borderTop: '1px solid #EAEAEA',
+              height: '36px',
+              borderTop: '1px solid #E5E7EB',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '16px',
-              padding: '0 16px',
-              background: '#FAFAFA',
+              gap: '12px',
+              padding: '0 12px',
+              background: '#F9FAFB',
             }}>
-              {entityTypes.map((type, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {entityTypes.slice(0, 5).map((type, i) => (
+                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <span style={{
-                    width: '10px',
-                    height: '10px',
+                    width: '8px',
+                    height: '8px',
                     borderRadius: '50%',
                     background: type.color,
                   }} />
-                  <span style={{ fontSize: '12px', color: '#666' }}>{type.name}</span>
-                  <span style={{ fontSize: '11px', color: '#999' }}>({type.count})</span>
+                  <span style={{ fontSize: '11px', color: '#6B7280' }}>{type.name}</span>
                 </div>
               ))}
             </div>
           )}
         </div>
-
-        {/* 右侧: 构建流程详情 */}
-        <div className="right-panel" style={{
-          width: isFullScreen ? '0' : '380px',
-          display: 'flex',
-          flexDirection: 'column',
-          background: '#FAFAFA',
-          overflow: 'hidden',
-          transition: 'all 0.3s ease',
-          opacity: isFullScreen ? 0 : 1,
-        }}>
-          {/* 面板头部 */}
-          <div style={{
-            height: '48px',
-            borderBottom: '1px solid #EAEAEA',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '0 16px',
-            background: '#000',
-            color: '#fff',
-          }}>
-            <span style={{ fontSize: '14px' }}>▣</span>
-            <span style={{ fontSize: '14px', fontWeight: 600 }}>构建流程</span>
-          </div>
-
-          {/* 流程内容 */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
-            {/* 阶段1: 本体生成 */}
-            <div style={{
-              background: '#fff',
-              borderRadius: '8px',
-              border: '1px solid #E0E0E0',
-              marginBottom: '16px',
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid #F0F0F0',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                background: currentPhase === 0 ? '#F0F9FF' : '#fff',
-              }}>
-                <span style={{
-                  width: '24px',
-                  height: '24px',
-                  borderRadius: '50%',
-                  background: getPhaseStatusClass(0) === 'completed' ? '#4CAF50' : getPhaseStatusClass(0) === 'error' ? '#F44336' : '#000',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                }}>
-                  01
-                </span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '14px', fontWeight: 600 }}>本体生成</div>
-                  <div style={{ fontSize: '11px', color: '#999' }}>/api/mirofish/ontology</div>
-                </div>
-                <span style={{
-                  fontSize: '11px',
-                  padding: '2px 8px',
-                  borderRadius: '10px',
-                  background: getPhaseStatusClass(0) === 'completed' ? '#E8F5E9' : getPhaseStatusClass(0) === 'error' ? '#FFEBEE' : '#FFF3E0',
-                  color: getPhaseStatusClass(0) === 'completed' ? '#4CAF50' : getPhaseStatusClass(0) === 'error' ? '#F44336' : '#FF9800',
-                }}>
-                  {getPhaseStatusText(0)}
-                </span>
-              </div>
-
-              <div style={{ padding: '16px' }}>
-                <div style={{ marginBottom: '12px' }}>
-                  <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>接口说明</div>
-                  <div style={{ fontSize: '12px', color: '#666' }}>
-                    上传文档后，LLM分析文档内容，自动生成适合舆论模拟的本体结构（实体类型 + 关系类型）
-                  </div>
-                </div>
-
-                {/* 输入表单 */}
-                <div style={{ marginBottom: '12px' }}>
-                  <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>模拟需求描述</div>
-                  <textarea
-                    value={simulationRequirement}
-                    onChange={e => setSimulationRequirement(e.target.value)}
-                    placeholder="例如：模拟一个关于某品牌产品争议的社交媒体舆论场..."
-                    style={{
-                      width: '100%',
-                      height: '60px',
-                      padding: '8px',
-                      border: '1px solid #E0E0E0',
-                      borderRadius: '4px',
-                      fontSize: '12px',
-                      resize: 'none',
-                      fontFamily: 'inherit',
-                    }}
-                  />
-                </div>
-
-                <div style={{ marginBottom: '12px' }}>
-                  <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>分析文本</div>
-                  <textarea
-                    value={inputText}
-                    onChange={e => setInputText(e.target.value)}
-                    placeholder="输入要分析的文本内容，用于提取实体类型..."
-                    style={{
-                      width: '100%',
-                      height: '80px',
-                      padding: '8px',
-                      border: '1px solid #E0E0E0',
-                      borderRadius: '4px',
-                      fontSize: '12px',
-                      resize: 'none',
-                      fontFamily: 'inherit',
-                    }}
-                  />
-                </div>
-
-                <button
-                  onClick={generateOntology}
-                  disabled={ontologyLoading || currentPhase >= 1}
-                  style={{
-                    width: '100%',
-                    padding: '10px',
-                    background: ontologyLoading || currentPhase >= 1 ? '#F0F0F0' : '#000',
-                    color: ontologyLoading || currentPhase >= 1 ? '#999' : '#fff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: ontologyLoading || currentPhase >= 1 ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  {ontologyLoading ? '生成本体中...' : '生成本体'}
-                </button>
-
-                {/* 本体生成进度 */}
-                {ontologyProgress && currentPhase === 0 && (
-                  <div style={{
-                    marginTop: '12px',
-                    padding: '8px',
-                    background: '#F5F5F5',
-                    borderRadius: '4px',
-                    fontSize: '12px',
-                    color: '#666',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                  }}>
-                    <div style={{
-                      width: '16px',
-                      height: '16px',
-                      border: '2px solid #004E89',
-                      borderTopColor: 'transparent',
-                      borderRadius: '50%',
-                      animation: 'spin 1s linear infinite',
-                    }} />
-                    {ontologyProgress.message}
-                  </div>
-                )}
-
-                {/* 已生成的本体信息 */}
-                {ontology && (
-                  <>
-                    <div style={{ marginTop: '12px' }}>
-                      <div style={{ fontSize: '11px', color: '#999', marginBottom: '6px' }}>
-                        生成的实体类型 ({ontology.entity_types?.length || 0})
-                      </div>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                        {ontology.entity_types?.slice(0, 8).map((entity, i) => (
-                          <span key={i} style={{
-                            padding: '2px 8px',
-                            background: '#E3F2FD',
-                            color: '#1976D2',
-                            borderRadius: '4px',
-                            fontSize: '11px',
-                          }}>
-                            {entity.name}
-                          </span>
-                        ))}
-                        {(ontology.entity_types?.length || 0) > 8 && (
-                          <span style={{ fontSize: '11px', color: '#999' }}>
-                            +{ontology.entity_types.length - 8} 更多
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: '12px' }}>
-                      <div style={{ fontSize: '11px', color: '#999', marginBottom: '6px' }}>
-                        生成的关系类型 ({ontology.relation_types?.length || 0})
-                      </div>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        {ontology.relation_types?.slice(0, 5).map((rel, i) => (
-                          <div key={i} style={{
-                            padding: '4px 8px',
-                            background: '#F5F5F5',
-                            borderRadius: '4px',
-                            fontSize: '11px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                          }}>
-                            <span style={{ color: '#004E89' }}>{rel.source_type}</span>
-                            <span>→</span>
-                            <span style={{ color: '#FF6B35' }}>{rel.name}</span>
-                            <span>→</span>
-                            <span style={{ color: '#004E89' }}>{rel.target_type}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* 阶段2: 图谱构建 */}
-            <div style={{
-              background: '#fff',
-              borderRadius: '8px',
-              border: '1px solid #E0E0E0',
-              marginBottom: '16px',
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid #F0F0F0',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                background: currentPhase === 1 ? '#F0F9FF' : '#fff',
-              }}>
-                <span style={{
-                  width: '24px',
-                  height: '24px',
-                  borderRadius: '50%',
-                  background: getPhaseStatusClass(1) === 'completed' ? '#4CAF50' : getPhaseStatusClass(1) === 'error' ? '#F44336' : '#000',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                }}>
-                  02
-                </span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '14px', fontWeight: 600 }}>图谱构建</div>
-                  <div style={{ fontSize: '11px', color: '#999' }}>/api/mirofish/graph</div>
-                </div>
-                <span style={{
-                  fontSize: '11px',
-                  padding: '2px 8px',
-                  borderRadius: '10px',
-                  background: getPhaseStatusClass(1) === 'completed' ? '#E8F5E9' : getPhaseStatusClass(1) === 'error' ? '#FFEBEE' : currentPhase < 1 ? '#F5F5F5' : '#FFF3E0',
-                  color: getPhaseStatusClass(1) === 'completed' ? '#4CAF50' : getPhaseStatusClass(1) === 'error' ? '#F44336' : currentPhase < 1 ? '#999' : '#FF9800',
-                }}>
-                  {getPhaseStatusText(1)}
-                </span>
-              </div>
-
-              <div style={{ padding: '16px' }}>
-                <div style={{ marginBottom: '12px' }}>
-                  <div style={{ fontSize: '11px', color: '#999', marginBottom: '4px' }}>接口说明</div>
-                  <div style={{ fontSize: '12px', color: '#666' }}>
-                    基于生成的本体，将文档分块后调用LLM进行实体抽取，构建知识图谱
-                  </div>
-                </div>
-
-                {/* 等待本体完成 */}
-                {currentPhase < 1 && (
-                  <div style={{
-                    padding: '16px',
-                    background: '#F5F5F5',
-                    borderRadius: '4px',
-                    textAlign: 'center',
-                    color: '#999',
-                    fontSize: '12px',
-                  }}>
-                    等待本体生成完成...
-                  </div>
-                )}
-
-                {/* 构建按钮 */}
-                {currentPhase >= 1 && (
-                  <>
-                    <button
-                      onClick={buildGraph}
-                      disabled={graphBuilding || currentPhase >= 2}
-                      style={{
-                        width: '100%',
-                        padding: '10px',
-                        background: graphBuilding || currentPhase >= 2 ? '#F0F0F0' : '#000',
-                        color: graphBuilding || currentPhase >= 2 ? '#999' : '#fff',
-                        border: 'none',
-                        borderRadius: '6px',
-                        fontSize: '13px',
-                        fontWeight: 600,
-                        cursor: graphBuilding || currentPhase >= 2 ? 'not-allowed' : 'pointer',
-                      }}
-                    >
-                      {graphBuilding ? '构建中...' : '重新构建图谱'}
-                    </button>
-
-                    {/* 构建进度 */}
-                    {buildProgress && currentPhase >= 1 && (
-                      <div style={{ marginTop: '12px' }}>
-                        <div style={{
-                          height: '4px',
-                          background: '#F0F0F0',
-                          borderRadius: '2px',
-                          overflow: 'hidden',
-                        }}>
-                          <div style={{
-                            height: '100%',
-                            background: 'linear-gradient(90deg, #004E89, #FF6B35)',
-                            width: `${buildProgress.progress}%`,
-                            transition: 'width 0.3s ease',
-                          }} />
-                        </div>
-                        <div style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          marginTop: '4px',
-                          fontSize: '11px',
-                          color: '#999',
-                        }}>
-                          <span>{buildProgress.message}</span>
-                          <span>{Math.round(buildProgress.progress)}%</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 构建结果 */}
-                    {graphData && (
-                      <div style={{ marginTop: '12px' }}>
-                        <div style={{ fontSize: '11px', color: '#999', marginBottom: '8px' }}>构建结果</div>
-                        <div style={{ display: 'flex', gap: '12px' }}>
-                          <div style={{
-                            flex: 1,
-                            padding: '12px',
-                            background: '#F5F5F5',
-                            borderRadius: '6px',
-                            textAlign: 'center',
-                          }}>
-                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#004E89' }}>
-                              {graphData.node_count}
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#999' }}>实体节点</div>
-                          </div>
-                          <div style={{
-                            flex: 1,
-                            padding: '12px',
-                            background: '#F5F5F5',
-                            borderRadius: '6px',
-                            textAlign: 'center',
-                          }}>
-                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#FF6B35' }}>
-                              {graphData.edge_count}
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#999' }}>关系边</div>
-                          </div>
-                          <div style={{
-                            flex: 1,
-                            padding: '12px',
-                            background: '#F5F5F5',
-                            borderRadius: '6px',
-                            textAlign: 'center',
-                          }}>
-                            <div style={{ fontSize: '20px', fontWeight: 700, color: '#7B2D8E' }}>
-                              {entityTypes.length}
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#999' }}>实体类型</div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* 阶段3: 完成 */}
-            <div style={{
-              background: '#fff',
-              borderRadius: '8px',
-              border: '1px solid #E0E0E0',
-              marginBottom: '16px',
-              overflow: 'hidden',
-            }}>
-              <div style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid #F0F0F0',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-              }}>
-                <span style={{
-                  width: '24px',
-                  height: '24px',
-                  borderRadius: '50%',
-                  background: currentPhase >= 2 && !error ? '#4CAF50' : '#000',
-                  color: '#fff',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                }}>
-                  03
-                </span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '14px', fontWeight: 600 }}>构建完成</div>
-                  <div style={{ fontSize: '11px', color: '#999' }}>准备进入下一步骤</div>
-                </div>
-                <span style={{
-                  fontSize: '11px',
-                  padding: '2px 8px',
-                  borderRadius: '10px',
-                  background: currentPhase >= 2 && !error ? '#E8F5E9' : '#F5F5F5',
-                  color: currentPhase >= 2 && !error ? '#4CAF50' : '#999',
-                }}>
-                  {currentPhase >= 2 && !error ? '已完成' : '等待中'}
-                </span>
-              </div>
-            </div>
-
-            {/* 下一步按钮 */}
-            {currentPhase >= 2 && !error && (
-              <button
-                onClick={goToNextStep}
-                style={{
-                  width: '100%',
-                  padding: '14px',
-                  background: 'linear-gradient(135deg, #004E89, #7B2D8E)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: '8px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                }}
-              >
-                进入环境搭建
-                <span>→</span>
-              </button>
-            )}
-          </div>
-
-          {/* 项目信息面板 */}
-          <div style={{
-            borderTop: '1px solid #EAEAEA',
-            padding: '16px',
-            background: '#fff',
-          }}>
-            <div style={{
-              fontSize: '12px',
-              fontWeight: 600,
-              marginBottom: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-            }}>
-              <span>◇</span>
-              <span>项目信息</span>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                <span style={{ color: '#999' }}>项目名称</span>
-                <span style={{ color: '#000', fontWeight: 500 }}>MiroFish Graph</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                <span style={{ color: '#999' }}>图谱ID</span>
-                <span style={{ color: '#666', fontFamily: 'monospace', fontSize: '11px' }}>
-                  {graphData?.graph_id || '-'}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                <span style={{ color: '#999' }}>模拟需求</span>
-                <span style={{ color: '#000', fontWeight: 500, maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {simulationRequirement || '-'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
-      {/* 动画关键帧 */}
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
+      {/* 动画样式 */}
+      <style jsx global>{`
         @keyframes spin {
           from { transform: rotate(0deg); }
           to { transform: rotate(360deg); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
         }
       `}</style>
     </div>
