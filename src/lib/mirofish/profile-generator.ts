@@ -4,13 +4,14 @@
  * 为实体生成模拟人设，用于社会舆论模拟
  */
 
-import { createLLM } from '../model-config';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { createLLMFromOverride } from './model-override';
 import type {
   EntityProfile,
   ProfileGenerationOptions,
   ProfileGenerateRequest,
   ProfileBatchGenerateRequest,
+  ModelOverride,
 } from './types';
 
 /** 人设生成系统提示词 */
@@ -95,10 +96,8 @@ const PROFILE_USER_PROMPT = `## 实体信息
 export class ProfileGenerator {
   private llm: BaseChatModel;
 
-  constructor(modelName?: string) {
-    this.llm = createLLM(modelName, {
-      temperature: 0.7, // 较高温度以生成多样性
-    });
+  constructor(modelOverride?: ModelOverride) {
+    this.llm = createLLMFromOverride(modelOverride, { temperature: 0.7 });
   }
 
   /**

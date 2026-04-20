@@ -6,13 +6,14 @@
  * 2. 变量注入（重新模拟）
  */
 
-import { createLLM } from '../model-config';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { createLLMFromOverride } from './model-override';
 import type {
   EntityProfile,
   SimulationPost,
   InterviewRequest,
   InterviewResponse,
+  ModelOverride,
 } from './types';
 
 const INTERVIEW_PROMPT = `你正在扮演以下角色接受采访。请严格按照人设回答。
@@ -47,8 +48,8 @@ const INTERVIEW_PROMPT = `你正在扮演以下角色接受采访。请严格按
 export class InteractionAgent {
   private llm: BaseChatModel;
 
-  constructor() {
-    this.llm = createLLM(undefined, { temperature: 0.7 });
+  constructor(modelOverride?: ModelOverride) {
+    this.llm = createLLMFromOverride(modelOverride, { temperature: 0.7 });
   }
 
   /** 采访单个 Agent */
@@ -144,11 +145,6 @@ export class InteractionAgent {
   }
 }
 
-let interactionAgentInstance: InteractionAgent | null = null;
-
-export function getInteractionAgent(): InteractionAgent {
-  if (!interactionAgentInstance) {
-    interactionAgentInstance = new InteractionAgent();
-  }
-  return interactionAgentInstance;
+export function getInteractionAgent(modelOverride?: ModelOverride): InteractionAgent {
+  return new InteractionAgent(modelOverride);
 }

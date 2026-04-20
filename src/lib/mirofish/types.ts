@@ -239,6 +239,15 @@ export interface ProfileBatchGenerateResponse {
 /** 项目状态 */
 export type ProjectStatus = 'created' | 'graph_built' | 'env_setup' | 'simulating' | 'report_generated' | 'completed';
 
+/** 模型覆盖配置 — 运行时切换 LLM Provider */
+export interface ModelOverride {
+  provider: 'ollama' | 'openai' | 'custom';
+  modelName: string;
+  baseUrl?: string;
+  apiKey?: string;
+  temperature?: number;
+}
+
 /** 项目信息 */
 export interface Project {
   id: string;
@@ -252,6 +261,7 @@ export interface Project {
   graph_id?: string;
   simulation_id?: string;
   report_id?: string;
+  model_config?: ModelOverride;
   created_at: string;
   updated_at: string;
 }

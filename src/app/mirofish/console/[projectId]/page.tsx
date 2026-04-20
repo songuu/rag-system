@@ -4,11 +4,13 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import StepNav from '@/components/mirofish/StepNav';
+import ModelSelector from '@/components/mirofish/ModelSelector';
 import Step1GraphBuild from '@/components/mirofish/Step1GraphBuild';
 import Step2EnvSetup from '@/components/mirofish/Step2EnvSetup';
 import Step3Simulation from '@/components/mirofish/Step3Simulation';
 import Step4Report from '@/components/mirofish/Step4Report';
 import Step5Interaction from '@/components/mirofish/Step5Interaction';
+import type { ModelOverride } from '@/lib/mirofish/types';
 
 interface Project {
   id: string;
@@ -21,6 +23,7 @@ interface Project {
   graph_id?: string;
   simulation_id?: string;
   report_id?: string;
+  model_config?: ModelOverride;
 }
 
 interface Ontology {
@@ -75,6 +78,15 @@ interface EntityProfile {
   background: string;
 }
 
+const STATUS_CONFIG: Record<string, { label: string; color: string; glow: string }> = {
+  created: { label: '已创建', color: 'bg-slate-500/20 text-slate-300', glow: '' },
+  graph_built: { label: '图谱已建', color: 'bg-blue-500/20 text-blue-300', glow: 'shadow-blue-500/10' },
+  env_setup: { label: '环境就绪', color: 'bg-cyan-500/20 text-cyan-300', glow: 'shadow-cyan-500/10' },
+  simulating: { label: '模拟中', color: 'bg-emerald-500/20 text-emerald-300 animate-pulse', glow: 'shadow-emerald-500/20' },
+  report_generated: { label: '报告完成', color: 'bg-purple-500/20 text-purple-300', glow: 'shadow-purple-500/10' },
+  completed: { label: '全部完成', color: 'bg-emerald-500/20 text-emerald-300', glow: 'shadow-emerald-500/10' },
+};
+
 export default function MiroFishConsolePage() {
   const params = useParams();
   const router = useRouter();
@@ -85,14 +97,13 @@ export default function MiroFishConsolePage() {
   const [currentStep, setCurrentStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
 
-  // 工作流数据
   const [ontology, setOntology] = useState<Ontology | null>(null);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [profiles, setProfiles] = useState<EntityProfile[]>([]);
   const [simulationId, setSimulationId] = useState<string | null>(null);
   const [reportId, setReportId] = useState<string | null>(null);
+  const [modelOverride, setModelOverride] = useState<ModelOverride | null>(null);
 
-  // 加载项目
   useEffect(() => {
     const fetchProject = async () => {
       try {
@@ -102,10 +113,10 @@ export default function MiroFishConsolePage() {
           setProject(data.project);
           setCurrentStep(data.project.current_step);
           setMaxStep(data.project.current_step);
-
           if (data.project.ontology) setOntology(data.project.ontology as Ontology);
           if (data.project.simulation_id) setSimulationId(data.project.simulation_id);
           if (data.project.report_id) setReportId(data.project.report_id);
+          if (data.project.model_config) setModelOverride(data.project.model_config);
         } else {
           router.push('/mirofish');
         }
@@ -118,7 +129,6 @@ export default function MiroFishConsolePage() {
     fetchProject();
   }, [projectId, router]);
 
-  // 更新项目状态
   const updateProject = useCallback(async (updates: Record<string, unknown>) => {
     try {
       await fetch(`/api/mirofish/project/${projectId}`, {
@@ -131,7 +141,18 @@ export default function MiroFishConsolePage() {
     }
   }, [projectId]);
 
-  // 步骤完成回调
+  const saveModelConfig = useCallback(async (override: ModelOverride | null) => {
+    const response = await fetch(`/api/mirofish/project/${projectId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_config: override }),
+    });
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || '保存模型配置失败');
+    }
+  }, [projectId]);
+
   const handleStep1Complete = () => {
     const nextStep = 1;
     setCurrentStep(nextStep);
@@ -164,72 +185,83 @@ export default function MiroFishConsolePage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-        <div className="animate-spin w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full" />
+      <div className="flex min-h-screen items-center justify-center bg-[#060612]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="relative h-12 w-12">
+            <div className="absolute inset-0 animate-spin rounded-full border-2 border-purple-500/30 border-t-purple-500" />
+            <div className="absolute inset-2 animate-spin rounded-full border-2 border-violet-400/20 border-b-violet-400" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
+          </div>
+          <span className="text-sm text-white/40">加载项目中...</span>
+        </div>
       </div>
     );
   }
 
   if (!project) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white">
-        项目不存在
+      <div className="flex min-h-screen items-center justify-center bg-[#060612] text-white/60">
+        <div className="text-center">
+          <div className="mb-4 text-5xl">🔍</div>
+          <div className="text-lg">项目不存在</div>
+          <Link href="/mirofish" className="mt-4 inline-block text-sm text-purple-400 hover:text-purple-300">
+            返回项目列表 →
+          </Link>
+        </div>
       </div>
     );
   }
 
+  const statusCfg = STATUS_CONFIG[project.status] ?? STATUS_CONFIG.created;
+
   return (
-    <div className="min-h-screen bg-slate-900">
+    <div className="min-h-screen bg-[#060612]">
+      {/* 背景装饰 */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -left-40 -top-40 h-80 w-80 rounded-full bg-purple-600/[0.04] blur-[100px]" />
+        <div className="absolute -right-20 top-1/3 h-60 w-60 rounded-full bg-violet-600/[0.03] blur-[80px]" />
+        <div className="absolute bottom-0 left-1/3 h-40 w-80 rounded-full bg-blue-600/[0.03] blur-[60px]" />
+      </div>
+
       {/* 顶部导航栏 */}
-      <nav style={{
-        height: '56px',
-        background: '#000',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 24px',
-        position: 'sticky',
-        top: 0,
-        zIndex: 100,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-          <Link href="/mirofish" style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontWeight: 800,
-            fontSize: '15px',
-            letterSpacing: '1px',
-            color: '#fff',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            textDecoration: 'none',
-          }}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-label="MiroFish Logo">
-              <circle cx="12" cy="8" r="4" fill="#7C3AED"/>
-              <path d="M4 20C4 16 7.5 13 12 13C16.5 13 20 16 20 20" stroke="#7C3AED" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            <span style={{ background: 'linear-gradient(135deg, #7C3AED 0%, #A855F7 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>MIROFISH</span>
-          </Link>
+      <nav className="sticky top-0 z-50 border-b border-white/[0.06] bg-black/60 backdrop-blur-xl">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
+          <div className="flex items-center gap-4">
+            <Link
+              href="/mirofish"
+              className="flex items-center gap-2.5 text-[15px] font-extrabold tracking-wider no-underline"
+            >
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-purple-500 to-violet-600 shadow-lg shadow-purple-500/20">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle cx="12" cy="8" r="4" fill="#fff" />
+                  <path d="M4 20C4 16 7.5 13 12 13C16.5 13 20 16 20 20" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </div>
+              <span className="bg-gradient-to-r from-purple-400 to-violet-300 bg-clip-text text-transparent">
+                MIROFISH
+              </span>
+            </Link>
 
-          <div style={{ height: '24px', width: '1px', background: 'rgba(255,255,255,0.15)' }} />
+            <div className="h-5 w-px bg-white/10" />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)' }}>{project.name}</span>
+            <span className="max-w-[200px] truncate text-sm text-white/50">
+              {project.name}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${statusCfg.color} ${statusCfg.glow} shadow-sm`}>
+              {statusCfg.label}
+            </span>
           </div>
         </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{
-            padding: '4px 10px',
-            borderRadius: '6px',
-            fontSize: '12px',
-            background: 'rgba(124, 58, 237, 0.2)',
-            color: '#c4b5fd',
-          }}>
-            {project.status}
-          </span>
-        </div>
       </nav>
+
+      {/* 模型选择器 */}
+      <ModelSelector
+        value={modelOverride}
+        onChange={setModelOverride}
+        onSave={saveModelConfig}
+      />
 
       {/* 步骤导航 */}
       <StepNav
@@ -239,13 +271,14 @@ export default function MiroFishConsolePage() {
       />
 
       {/* 内容区域 */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <div className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {currentStep === 0 && (
           <Step1GraphBuild
             projectId={projectId}
             simulationRequirement={project.simulation_requirement}
             ontology={ontology}
             graphData={graphData}
+            modelOverride={modelOverride}
             onOntologyGenerated={setOntology}
             onGraphBuilt={setGraphData}
             onComplete={handleStep1Complete}
@@ -258,6 +291,7 @@ export default function MiroFishConsolePage() {
             simulationRequirement={project.simulation_requirement}
             graphNodes={graphData.nodes}
             profiles={profiles}
+            modelOverride={modelOverride}
             onProfilesGenerated={setProfiles}
             onSimulationCreated={(simId) => {
               setSimulationId(simId);
@@ -279,6 +313,7 @@ export default function MiroFishConsolePage() {
             simulationId={simulationId}
             projectId={projectId}
             reportId={reportId}
+            modelOverride={modelOverride}
             onReportGenerated={setReportId}
             onComplete={handleStep4Complete}
           />
@@ -288,6 +323,7 @@ export default function MiroFishConsolePage() {
           <Step5Interaction
             simulationId={simulationId}
             reportId={reportId}
+            modelOverride={modelOverride}
             agents={profiles.map(p => ({
               entity_id: p.entity_id,
               entity_name: p.entity_name,

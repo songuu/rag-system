@@ -10,6 +10,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { MiroFishGraphBuilder } from '@/lib/mirofish/graph-builder';
 import { getTaskManager } from '@/lib/mirofish/task-manager';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 import type { GraphBuildRequest } from '@/lib/mirofish/types';
 
 // 存储构建器实例
@@ -17,7 +18,7 @@ const builders = new Map<string, MiroFishGraphBuilder>();
 
 export async function POST(request: NextRequest) {
   try {
-    const body: GraphBuildRequest = await request.json();
+    const body: GraphBuildRequest & { modelOverride?: unknown } = await request.json();
 
     // 验证必填字段
     if (!body.text) {
@@ -30,12 +31,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+
     // 创建图谱构建器
-    const builder = new MiroFishGraphBuilder({
-      chunkSize: body.chunkSize,
-      chunkOverlap: body.chunkOverlap,
-      batchSize: body.batchSize,
-    });
+    const builder = new MiroFishGraphBuilder(
+      {
+        chunkSize: body.chunkSize,
+        chunkOverlap: body.chunkOverlap,
+        batchSize: body.batchSize,
+      },
+      modelOverride
+    );
 
     // 异步构建图谱
     const taskId = await builder.buildGraphAsync({

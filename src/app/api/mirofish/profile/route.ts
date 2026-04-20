@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ProfileGenerator } from '@/lib/mirofish/profile-generator';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 import type {
   ProfileGenerateRequest,
   ProfileBatchGenerateRequest,
@@ -15,6 +16,7 @@ import type {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
 
     // 判断是否为批量请求
     const isBatch = body.entities !== undefined;
@@ -38,7 +40,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const generator = new ProfileGenerator();
+      const generator = new ProfileGenerator(modelOverride);
       const profiles = await generator.generateProfiles(batchRequest);
 
       return NextResponse.json({
@@ -64,7 +66,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      const generator = new ProfileGenerator();
+      const generator = new ProfileGenerator(modelOverride);
       const profile = await generator.generateProfile(profileRequest);
 
       return NextResponse.json({

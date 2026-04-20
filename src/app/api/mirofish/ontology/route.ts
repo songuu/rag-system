@@ -6,11 +6,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { OntologyGenerator } from '@/lib/mirofish/ontology-generator';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 import type { OntologyGenerateRequest } from '@/lib/mirofish/types';
 
 export async function POST(request: NextRequest) {
   try {
-    const body: OntologyGenerateRequest = await request.json();
+    const body: OntologyGenerateRequest & { modelOverride?: unknown } = await request.json();
 
     // 验证必填字段
     if (!body.texts || !body.simulationRequirement) {
@@ -23,8 +24,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 创建生成器并生成 ontology
-    const generator = new OntologyGenerator();
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const generator = new OntologyGenerator(modelOverride);
     const ontology = await generator.generate({
       texts: body.texts,
       simulationRequirement: body.simulationRequirement,

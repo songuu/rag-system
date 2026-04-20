@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getReportAgent } from '@/lib/mirofish/report-agent';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 import { reportStore } from '../../report/route';
 
 export async function POST(request: NextRequest) {
@@ -16,6 +17,7 @@ export async function POST(request: NextRequest) {
       question: string;
       history?: Array<{ role: string; content: string }>;
     };
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
 
     if (!report_id || !question) {
       return NextResponse.json(
@@ -39,7 +41,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const agent = getReportAgent();
+    const agent = getReportAgent(modelOverride);
     const answer = await agent.chat(report, question, history || []);
 
     return NextResponse.json({

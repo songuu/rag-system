@@ -8,6 +8,7 @@
 import { EntityExtractor } from '../entity-extraction';
 import { TextProcessor } from './text-processor';
 import { getTaskManager } from './task-manager';
+import { createLLMFromOverride } from './model-override';
 import type {
   Ontology,
   GraphData,
@@ -16,6 +17,7 @@ import type {
   GraphInfo,
   GraphBuildRequest,
   ExtractionProgress,
+  ModelOverride,
 } from './types';
 
 /**
@@ -30,17 +32,22 @@ export class MiroFishGraphBuilder {
     batchSize: number;
   };
   private ontology?: Ontology;
+  private modelOverride?: ModelOverride;
 
-  constructor(config?: {
-    chunkSize?: number;
-    chunkOverlap?: number;
-    batchSize?: number;
-  }) {
+  constructor(
+    config?: {
+      chunkSize?: number;
+      chunkOverlap?: number;
+      batchSize?: number;
+    },
+    modelOverride?: ModelOverride
+  ) {
     this.config = {
       chunkSize: config?.chunkSize || 500,
       chunkOverlap: config?.chunkOverlap || 100,
       batchSize: config?.batchSize || 3,
     };
+    this.modelOverride = modelOverride;
   }
 
   /**
@@ -113,11 +120,17 @@ export class MiroFishGraphBuilder {
 
       const processedText = TextProcessor.preprocessText(text);
 
-      // 2. 创建实体提取器
-      const extractor = new EntityExtractor({
-        chunkSize: this.config.chunkSize,
-        chunkOverlap: this.config.chunkOverlap,
-      });
+      // 2. 创建实体提取器（注入运行时模型覆盖）
+      const llmInstance = this.modelOverride
+        ? createLLMFromOverride(this.modelOverride, { temperature: 0.1 })
+        : undefined;
+      const extractor = new EntityExtractor(
+        {
+          chunkSize: this.config.chunkSize,
+          chunkOverlap: this.config.chunkOverlap,
+        },
+        llmInstance ? { llmInstance } : {}
+      );
 
       // 设置进度回调
       if (onProgress) {

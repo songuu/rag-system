@@ -344,19 +344,25 @@ export class EntityExtractor {
   private estimatedTimeout: number = 0;
   private aborted: boolean = false;
 
-  constructor(config: Partial<ExtractionConfig> = {}) {
+  constructor(
+    config: Partial<ExtractionConfig> = {},
+    options: { llmInstance?: BaseChatModel } = {}
+  ) {
     // 使用动态获取的默认配置，确保使用正确的模型名
     const defaultConfig = getDefaultExtractionConfig();
     this.config = { ...defaultConfig, ...config };
-    
-    // 使用统一模型配置系统
-    // 如果没有指定模型，createLLM 会自动使用当前提供商的默认模型
-    this.llm = createLLM(this.config.llmModel !== 'default' ? this.config.llmModel : undefined, {
-      temperature: 0.1, // 低温度以获得更稳定的抽取结果
-    });
+
+    // 允许调用方注入已构造好的 LLM 实例（用于运行时模型覆盖）
+    if (options.llmInstance) {
+      this.llm = options.llmInstance;
+    } else {
+      this.llm = createLLM(this.config.llmModel !== 'default' ? this.config.llmModel : undefined, {
+        temperature: 0.1,
+      });
+    }
 
     this.embeddings = createEmbedding(this.config.embeddingModel !== 'default' ? this.config.embeddingModel : undefined);
-    
+
     const factory = getModelFactory();
     console.log(`[EntityExtractor] 初始化完成, 提供商: ${factory.getProvider()}, LLM: ${this.config.llmModel}, Embedding: ${this.config.embeddingModel}`);
   }

@@ -5,14 +5,15 @@
  * 每个 Agent 基于 persona 做出社交行为决策
  */
 
-import { createLLM } from '../model-config';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { createLLMFromOverride } from './model-override';
 import type {
   EntityProfile,
   SimulationPost,
   PlatformType,
   AgentActionType,
   SimulationConfig,
+  ModelOverride,
 } from './types';
 
 /** Agent 决策结果 */
@@ -77,8 +78,8 @@ const REDDIT_DESC = 'Reddit - 论坛式社交平台，支持长文本和层级�
 export class SimulationEngine {
   private llm: BaseChatModel;
 
-  constructor(temperature: number = 0.8) {
-    this.llm = createLLM(undefined, { temperature });
+  constructor(temperature: number = 0.8, modelOverride?: ModelOverride) {
+    this.llm = createLLMFromOverride(modelOverride, { temperature });
   }
 
   /**

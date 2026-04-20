@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getInteractionAgent } from '@/lib/mirofish/interaction-agent';
 import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,6 +18,7 @@ export async function POST(request: NextRequest) {
       question: string;
       batch?: boolean;
     };
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
 
     if (!simulation_id || !question) {
       return NextResponse.json(
@@ -34,7 +36,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const interactionAgent = getInteractionAgent();
+    const interactionAgent = getInteractionAgent(modelOverride);
     const allPosts = runner.getPosts(simulation_id);
 
     // 批量采访所有 Agent

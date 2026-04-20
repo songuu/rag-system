@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getReportAgent } from '@/lib/mirofish/report-agent';
 import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 import type { ReportInfo } from '@/lib/mirofish/types';
 
 // 内存存储报告
@@ -22,6 +23,7 @@ export async function POST(request: NextRequest) {
       simulation_id: string;
       project_id: string;
     };
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
 
     if (!simulation_id) {
       return NextResponse.json(
@@ -61,7 +63,7 @@ export async function POST(request: NextRequest) {
     // 异步生成报告
     const posts = runner.getPosts(simulation_id);
     const timeline = runner.getTimeline(simulation_id);
-    const agent = getReportAgent();
+    const agent = getReportAgent(modelOverride);
 
     agent.generateReport(simulationInfo, posts, timeline)
       .then(reportData => {

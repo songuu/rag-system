@@ -8,6 +8,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getProjectStore } from '@/lib/mirofish/project-store';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -40,6 +41,7 @@ const ALLOWED_UPDATE_FIELDS = new Set([
   'name', 'description', 'status', 'current_step',
   'simulation_requirement', 'texts', 'ontology',
   'graph_id', 'simulation_id', 'report_id',
+  'model_config',
 ]);
 
 const VALID_STATUSES = new Set([
@@ -71,6 +73,13 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       if (typeof step !== 'number' || step < 0 || step > 4 || !Number.isInteger(step)) {
         return NextResponse.json({ success: false, error: 'current_step 必须为 0-4 的整数' }, { status: 400 });
       }
+    }
+    if (body.model_config !== undefined && body.model_config !== null) {
+      const validated = validateModelOverride(body.model_config);
+      if (!validated) {
+        return NextResponse.json({ success: false, error: 'model_config 格式无效' }, { status: 400 });
+      }
+      body.model_config = validated;
     }
 
     const store = getProjectStore();

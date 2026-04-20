@@ -14,6 +14,7 @@ import type {
   EntityProfile,
   TimelineEntry,
   AgentStats,
+  ModelOverride,
 } from './types';
 
 /** 模拟事件监听器 */
@@ -50,7 +51,11 @@ class SimulationRunner {
   private starting: Set<string> = new Set(); // 竞态防护
 
   /** 创建模拟 */
-  create(config: SimulationConfig, profiles: EntityProfile[]): SimulationInfo {
+  create(
+    config: SimulationConfig,
+    profiles: EntityProfile[],
+    modelOverride?: ModelOverride
+  ): SimulationInfo {
     const now = new Date().toISOString();
 
     const info: SimulationInfo = {
@@ -70,7 +75,7 @@ class SimulationRunner {
 
     const instance: SimulationInstance = {
       info,
-      engine: new SimulationEngine(config.temperature),
+      engine: new SimulationEngine(config.temperature, modelOverride),
       posts: [],
       timeline: [],
       listeners: new Set(),

@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
+import { validateModelOverride } from '@/lib/mirofish/model-override';
 import type { SimulationConfig, EntityProfile } from '@/lib/mirofish/types';
 
 export async function POST(request: NextRequest) {
@@ -16,6 +17,7 @@ export async function POST(request: NextRequest) {
       config: SimulationConfig;
       profiles: EntityProfile[];
     };
+    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
 
     if (!config?.project_id) {
       return NextResponse.json(
@@ -62,7 +64,7 @@ export async function POST(request: NextRequest) {
     };
 
     const runner = getSimulationRunner();
-    const info = runner.create(fullConfig, profiles);
+    const info = runner.create(fullConfig, profiles, modelOverride);
 
     return NextResponse.json({ success: true, simulation: info });
   } catch (error) {

@@ -5,15 +5,16 @@
  * 分析文本内容，生成适合社会舆论模拟的实体和关系类型定义
  */
 
-import { createLLM } from '../model-config';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import type {
-  Ontology,
-  EntityTypeDefinition,
-  EdgeTypeDefinition,
-  OntologyGenerateRequest,
+import { createLLMFromOverride } from './model-override';
+import {
+  ONTOLOGY_CONSTANTS,
+  type Ontology,
+  type EntityTypeDefinition,
+  type EdgeTypeDefinition,
+  type OntologyGenerateRequest,
+  type ModelOverride,
 } from './types';
-import { ONTOLOGY_CONSTANTS } from './types';
 
 // 本体生成的系统提示词
 const ONTOLOGY_SYSTEM_PROMPT = `你是一个专业的知识图谱本体设计专家。你的任务是分析给定的文本内容和模拟需求，设计适合**社交媒体舆论模拟**的实体和关系类型定义。
@@ -167,13 +168,9 @@ B. **具体类型（8个，根据文本内容设计）**：
  */
 export class OntologyGenerator {
   private llm: BaseChatModel;
-  private modelName?: string;
 
-  constructor(modelName?: string) {
-    this.modelName = modelName;
-    this.llm = createLLM(modelName, {
-      temperature: 0.3,
-    });
+  constructor(modelOverride?: ModelOverride) {
+    this.llm = createLLMFromOverride(modelOverride, { temperature: 0.3 });
   }
 
   /**
