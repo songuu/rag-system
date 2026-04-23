@@ -1,0 +1,1 @@
+{"date":"2026-04-23","skill":"vercel-react-best-practices","task":"OpenMAIC classroom React UI refactor","signal":"helpful","notes":"Used startTransition/useDeferredValue for event-heavy classroom UI and kept generated scene data client-friendly."}

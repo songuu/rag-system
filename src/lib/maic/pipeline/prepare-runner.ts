@@ -8,9 +8,8 @@
 import { createLLM } from '../../model-config';
 import { getMaicStore } from '../course-store';
 import type { PrepareEvent, CoursePrepared } from '../types';
-import { parseSlides } from '../slide-parser';
 import { describePages, buildKnowledgeTree } from './read-stage';
-import { generateLectureScript, generateActiveQuestions } from './plan-stage';
+import { generateLectureScript, generateActiveQuestions, buildCourseStage } from './plan-stage';
 
 type Listener = (event: PrepareEvent) => void;
 
@@ -158,12 +157,16 @@ class PrepareRunner {
     // 5. Active questions
     emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
     const questions = await generateActiveQuestions(llm, tree);
+    emit({ type: 'prepare:scenes', data: { message: '生成 OpenMAIC 场景与动作' } });
+    const { stage, scenes } = buildCourseStage(described, tree, questions);
 
     const prepared: CoursePrepared = {
       pages: described,
       knowledge_tree: tree,
       lecture_script: script,
       active_questions: questions,
+      stage,
+      scenes,
     };
     store.setCoursePrepared(courseId, prepared);
 

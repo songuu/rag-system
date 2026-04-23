@@ -49,11 +49,81 @@ export interface ScriptEntry {
   actions: TeachingAction[];
 }
 
+// ==================== OpenMAIC 风格 Stage / Scene ====================
+
+export type CourseSceneType =
+  | 'slide'
+  | 'quiz'
+  | 'interactive'
+  | 'pbl'
+  | 'mindmap'
+  | 'code';
+
+export type SceneActionType =
+  | 'speech'
+  | 'spotlight'
+  | 'laser'
+  | 'whiteboard'
+  | 'discussion'
+  | 'quiz'
+  | 'widget_highlight'
+  | 'widget_setState';
+
+export interface SceneAction {
+  id: string;
+  type: SceneActionType;
+  title: string;
+  content?: string;
+  target?: string;
+  state?: Record<string, unknown>;
+}
+
+export interface QuizQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  answer_index: number;
+  explanation: string;
+}
+
+export interface CourseScene {
+  id: string;
+  order: number;
+  type: CourseSceneType;
+  title: string;
+  description: string;
+  page_refs: number[];
+  key_points: string[];
+  actions: SceneAction[];
+  quiz?: QuizQuestion[];
+  interactive?: {
+    kind: 'simulation' | 'game' | 'mindmap' | 'code';
+    prompt: string;
+    controls: string[];
+  };
+  pbl?: {
+    challenge: string;
+    roles: string[];
+    milestones: string[];
+    deliverable: string;
+  };
+}
+
+export interface CourseStage {
+  title: string;
+  summary: string;
+  objectives: string[];
+  scene_count: number;
+  estimated_minutes: number;
+}
+
 export interface CoursePrepared {
   pages: SlidePage[];
   knowledge_tree: KnowledgeNode;
   lecture_script: ScriptEntry[];
   active_questions: string[];
+  stage?: CourseStage;
+  scenes?: CourseScene[];
 }
 
 // ==================== 课程 ====================
@@ -133,6 +203,7 @@ export interface PrepareEvent {
     | 'prepare:tree'
     | 'prepare:script'
     | 'prepare:questions'
+    | 'prepare:scenes'
     | 'prepare:done'
     | 'prepare:error';
   data: {

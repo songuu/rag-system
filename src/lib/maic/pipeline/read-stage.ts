@@ -8,6 +8,7 @@
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { SlidePage, KnowledgeNode } from '../types';
+import { mapPagesWithOrderedCallbacks } from './page-order';
 
 const DESCRIBE_PROMPT = `你是一名课堂内容分析师。下面是课程幻灯片某一页的文本:
 
@@ -56,38 +57,33 @@ export async function describePages(
   onPage?: (index: number) => void
 ): Promise<SlidePage[]> {
   const concurrency = 4;
-  const out: SlidePage[] = pages.map(p => ({ ...p }));
-
-  for (let i = 0; i < pages.length; i += concurrency) {
-    const batch = pages.slice(i, i + concurrency);
-    await Promise.all(
-      batch.map(async page => {
-        const prompt = DESCRIBE_PROMPT
-          .replace('{INDEX}', String(page.index))
-          .replace('{TEXT}', truncate(page.raw_text, 2000));
-        try {
-          const resp = await llm.invoke([{ role: 'user', content: prompt }]);
-          const parsed = parseJson<{ description: string; key_points: string[] }>(
-            String(resp.content)
-          );
-          out[page.index] = {
-            ...page,
-            description: parsed?.description ?? page.raw_text.slice(0, 200),
-            key_points: Array.isArray(parsed?.key_points) ? parsed.key_points : [],
-          };
-        } catch {
-          out[page.index] = {
-            ...page,
-            description: page.raw_text.slice(0, 200),
-            key_points: [],
-          };
-        }
-        onPage?.(page.index);
-      })
-    );
-  }
-
-  return out;
+  return mapPagesWithOrderedCallbacks(
+    pages,
+    concurrency,
+    async page => {
+      const prompt = DESCRIBE_PROMPT
+        .replace('{INDEX}', String(page.index))
+        .replace('{TEXT}', truncate(page.raw_text, 2000));
+      try {
+        const resp = await llm.invoke([{ role: 'user', content: prompt }]);
+        const parsed = parseJson<{ description: string; key_points: string[] }>(
+          String(resp.content)
+        );
+        return {
+          ...page,
+          description: parsed?.description ?? page.raw_text.slice(0, 200),
+          key_points: Array.isArray(parsed?.key_points) ? parsed.key_points : [],
+        };
+      } catch {
+        return {
+          ...page,
+          description: page.raw_text.slice(0, 200),
+          key_points: [],
+        };
+      }
+    },
+    onPage
+  );
 }
 
 export async function buildKnowledgeTree(

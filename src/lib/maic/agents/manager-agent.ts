@@ -33,6 +33,7 @@ const MANAGER_PROMPT = `你是课堂调度者,负责决定下一步由哪个 age
 - AskQuestion: 提问 (value.question)
 - ShowFile: 切换到某页 (value.slide_index)
 - Navigate: 引导话题 (value.note)
+- AnswerStudent: 回答学生刚刚提出的问题 (value.student_question)
 - Idle: 短暂回应
 - EndClass: 结束课堂
 
@@ -179,6 +180,8 @@ function pickScriptedAction(
 
 function maybeInjectClassmate(state: ClassroomState, cursor: number): SpeakingRole | null {
   const classmateList: SpeakingRole[] = ['clown', 'thinker', 'notetaker', 'inquisitive'];
+  const latestSpeaker = state.H_t.at(-1)?.speaker;
+  if (latestSpeaker && classmateList.includes(latestSpeaker as SpeakingRole)) return null;
   const classmates = state.R.filter((r): r is SpeakingRole =>
     classmateList.includes(r as SpeakingRole)
   );

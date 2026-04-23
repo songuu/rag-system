@@ -19,6 +19,7 @@ import type {
   ClassroomSession,
   Utterance,
   AgentRole,
+  CoursePrepared,
 } from '../types';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -101,6 +102,63 @@ class SessionController {
     }
   }
 
+  pause(sessionId: string): void {
+    const slot = this.ensureSlot(sessionId);
+    slot.running = false;
+    slot.waitAbort?.abort();
+    const updated = getMaicStore().updateSessionState(sessionId, { status: 'paused' });
+    if (updated) {
+      this.emit(sessionId, { type: 'state', data: updated.state });
+    }
+  }
+
+  resume(sessionId: string): void {
+    const updated = getMaicStore().updateSessionState(sessionId, { status: 'running' });
+    if (updated) {
+      this.emit(sessionId, { type: 'state', data: updated.state });
+    }
+    this.ensureLoop(sessionId);
+  }
+
+  navigateTo(
+    sessionId: string,
+    slideIndex: number,
+    prepared: CoursePrepared | undefined
+  ): void {
+    const pageCount = prepared?.pages.length ?? 1;
+    const P_t = Math.max(0, Math.min(slideIndex, pageCount - 1));
+    const script_cursor = findScriptCursorForSlide(prepared, P_t);
+    const slot = this.ensureSlot(sessionId);
+    slot.running = false;
+    slot.waitAbort?.abort();
+    const updated = getMaicStore().updateSessionState(sessionId, {
+      P_t,
+      script_cursor,
+      status: 'paused',
+    });
+    if (updated) {
+      this.emit(sessionId, { type: 'slide_change', data: { slide_index: P_t } });
+      this.emit(sessionId, { type: 'state', data: updated.state });
+    }
+  }
+
+  restart(sessionId: string): void {
+    const slot = this.ensureSlot(sessionId);
+    slot.pendingStudent = [];
+    slot.running = false;
+    slot.waitAbort?.abort();
+    const updated = getMaicStore().updateSessionState(sessionId, {
+      P_t: 0,
+      H_t: [],
+      script_cursor: 0,
+      status: 'idle',
+    });
+    if (updated) {
+      this.emit(sessionId, { type: 'slide_change', data: { slide_index: 0 } });
+      this.emit(sessionId, { type: 'state', data: updated.state });
+    }
+  }
+
   // ---------- 内部 ----------
 
   private ensureSlot(sessionId: string): RuntimeSlot {
@@ -140,8 +198,8 @@ class SessionController {
 
   private ensureLoop(sessionId: string): void {
     const slot = this.ensureSlot(sessionId);
-    if (slot.loopPromise) return;
     slot.running = true;
+    if (slot.loopPromise) return;
     slot.loopPromise = this.runLoop(sessionId).finally(() => {
       const s = this.slots.get(sessionId);
       if (s) s.loopPromise = null;
@@ -172,7 +230,7 @@ class SessionController {
 
       const current = store.getSession(sessionId);
       if (!current) break;
-      if (current.state.status === 'ended') break;
+      if (current.state.status === 'ended' || current.state.status === 'paused') break;
 
       const studentMsg: string | null = slot.pendingStudent.shift() ?? null;
 
@@ -257,4 +315,17 @@ export function ensureSessionForCourse(
   roles: AgentRole[]
 ): ClassroomSession {
   return getMaicStore().getOrCreateSession(courseId, roles);
+}
+
+function findScriptCursorForSlide(
+  prepared: CoursePrepared | undefined,
+  slideIndex: number
+): number {
+  if (!prepared) return 0;
+  let cursor = 0;
+  for (const entry of prepared.lecture_script) {
+    if (entry.slide_index >= slideIndex) return cursor;
+    cursor += entry.actions.length;
+  }
+  return cursor;
 }
