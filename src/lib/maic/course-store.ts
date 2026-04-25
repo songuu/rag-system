@@ -13,6 +13,8 @@ import type {
   Utterance,
   ClassroomMode,
   AgentRole,
+  SlidePage,
+  MaicRagAsset,
 } from './types';
 
 class MaicStore {
@@ -36,6 +38,9 @@ class MaicStore {
     title: string;
     source_filename: string;
     source_text: string;
+    source_pages?: SlidePage[];
+    source_hash?: string;
+    rag_asset?: MaicRagAsset;
   }): Course {
     const now = new Date().toISOString();
     const course: Course = {

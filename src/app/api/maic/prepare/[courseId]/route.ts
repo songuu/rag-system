@@ -15,6 +15,9 @@ export async function POST(
   if (!course) {
     return NextResponse.json({ success: false, error: '课程不存在' }, { status: 404 });
   }
+  if (course.status === 'ready' && course.prepared) {
+    return NextResponse.json({ success: true, data: { status: 'ready' } });
+  }
 
   const runner = getPrepareRunner();
   if (runner.isRunning(courseId) || course.status === 'preparing') {

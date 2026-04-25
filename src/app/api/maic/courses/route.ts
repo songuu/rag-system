@@ -14,7 +14,7 @@ export async function GET(): Promise<NextResponse> {
       error: c.error,
       created_at: c.created_at,
       updated_at: c.updated_at,
-      page_count: c.prepared?.pages.length ?? 0,
+      page_count: c.prepared?.pages.length ?? c.source_pages?.length ?? 0,
     }));
   return NextResponse.json({ success: true, data: courses });
 }

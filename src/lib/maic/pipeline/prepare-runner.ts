@@ -7,7 +7,12 @@
 
 import { createLLM } from '../../model-config';
 import { getMaicStore } from '../course-store';
-import type { PrepareEvent, CoursePrepared } from '../types';
+import type { Course, PrepareEvent, CoursePrepared, SlidePage } from '../types';
+import {
+  getMaicPrepareCacheIdentity,
+  loadPreparedFromCache,
+  savePreparedToCache,
+} from '../prepare-cache';
 import { describePages, buildKnowledgeTree } from './read-stage';
 import { generateLectureScript, generateActiveQuestions, buildCourseStage } from './plan-stage';
 
@@ -83,25 +88,55 @@ class PrepareRunner {
     const store = getMaicStore();
     const course = store.getCourse(courseId);
     if (!course) throw new Error(`课程不存在: ${courseId}`);
+    if (course.status === 'ready' && course.prepared) {
+      emit({
+        type: 'prepare:done',
+        data: { course_id: courseId, message: '课程已就绪', progress: 1 },
+      });
+      return;
+    }
 
     store.updateCourseStatus(courseId, 'preparing');
     emit({ type: 'prepare:start', data: { course_id: courseId, message: '开始准备课程' } });
 
-    // 1. 已有原始文本时跳过解析;否则保留(upload 阶段已解析并存到 source_text)
-    const pagesRaw = course.source_text
-      ? course.source_text
-          .split(/\n(?=#{1,3}\s)/)
-          .map((t, i) => ({
-            index: i,
-            raw_text: t.trim(),
-            description: '',
-            key_points: [],
-          }))
-      : [];
-    // 若 course.source_text 已是整篇文本但没有明显分页,按段落再切一次
+    const cacheIdentity = getMaicPrepareCacheIdentity({
+      sourceText: course.source_text,
+      pages: course.source_pages,
+    });
+    emit({
+      type: 'prepare:cache',
+      data: { message: '检查课程准备缓存' },
+    });
+
+    const cached = await loadPreparedFromCache(cacheIdentity);
+    if (cached) {
+      store.setCoursePrepared(courseId, cached.prepared);
+      emit({
+        type: 'prepare:cache',
+        data: {
+          message: '命中课程缓存,跳过 LLM 准备阶段',
+          cache_status: 'hit',
+          progress: 1,
+        },
+      });
+      emit({
+        type: 'prepare:done',
+        data: { course_id: courseId, message: '课程准备完成', progress: 1 },
+      });
+      return;
+    }
+
+    emit({
+      type: 'prepare:cache',
+      data: { message: '未命中缓存,开始完整准备流程', cache_status: 'miss' },
+    });
+
+    // 1. 上传阶段已解析出结构化页时直接复用,避免 prepare 阶段二次切页漂移。
+    let pagesRaw = getRawPagesForCourse(course);
+    // 若 course.source_text 已是整篇文本但没有明显分页,按段落再切一次。
     if (pagesRaw.length <= 1 && course.source_text) {
       const chunks = course.source_text.split(/\n{2,}/).filter(s => s.trim().length >= 20);
-      const merged: typeof pagesRaw = [];
+      const merged: SlidePage[] = [];
       let buf = '';
       for (const c of chunks) {
         buf += (buf ? '\n\n' : '') + c.trim();
@@ -112,7 +147,7 @@ class PrepareRunner {
       }
       if (buf.trim().length >= 20)
         merged.push({ index: merged.length, raw_text: buf, description: '', key_points: [] });
-      if (merged.length > 0) pagesRaw.splice(0, pagesRaw.length, ...merged);
+      if (merged.length > 0) pagesRaw = merged;
     }
 
     if (pagesRaw.length === 0) {
@@ -169,6 +204,13 @@ class PrepareRunner {
       scenes,
     };
     store.setCoursePrepared(courseId, prepared);
+    const stored = await savePreparedToCache(cacheIdentity, prepared);
+    if (stored) {
+      emit({
+        type: 'prepare:cache',
+        data: { message: '课程准备结果已写入缓存', cache_status: 'stored' },
+      });
+    }
 
     emit({
       type: 'prepare:done',
@@ -185,3 +227,26 @@ export function getPrepareRunner(): PrepareRunner {
 }
 
 export type { PrepareRunner };
+
+function getRawPagesForCourse(course: Course): SlidePage[] {
+  if (course.source_pages?.length) {
+    return course.source_pages.map((page, index) => ({
+      index,
+      raw_text: page.raw_text.trim(),
+      description: '',
+      key_points: [],
+    }));
+  }
+
+  if (!course.source_text) return [];
+
+  return course.source_text
+    .split(/\n(?=#{1,3}\s)/)
+    .map((text, index) => ({
+      index,
+      raw_text: text.trim(),
+      description: '',
+      key_points: [],
+    }))
+    .filter(page => page.raw_text.length > 0);
+}

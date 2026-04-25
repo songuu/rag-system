@@ -12,11 +12,13 @@ interface PrepareEvent {
     progress?: number;
     error?: string;
     course_id?: string;
+    cache_status?: 'hit' | 'miss' | 'stored';
   };
 }
 
 const STEP_LABELS: Record<string, string> = {
   'prepare:start': '启动',
+  'prepare:cache': '课程缓存',
   'prepare:read_raw': '解析文本',
   'prepare:describe': '生成描述',
   'prepare:tree': '构建知识树',
@@ -125,6 +127,7 @@ export default function PreparePage() {
               </span>{' '}
               <span className="text-emerald-400">{e.type}</span>{' '}
               {e.data.message ?? ''}
+              {e.data.cache_status && ` [cache:${e.data.cache_status}]`}
               {e.data.page_index !== undefined && ` (page ${e.data.page_index + 1})`}
             </div>
           ))}

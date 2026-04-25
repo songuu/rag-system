@@ -126,6 +126,13 @@ export interface CoursePrepared {
   scenes?: CourseScene[];
 }
 
+export interface MaicRagAsset {
+  source_hash: string;
+  parsed_filename: string;
+  manifest_id: string;
+  mirrored_at: string;
+}
+
 // ==================== 课程 ====================
 
 export type CourseStatus = 'uploaded' | 'preparing' | 'ready' | 'failed';
@@ -135,6 +142,9 @@ export interface Course {
   title: string;
   source_filename: string;
   source_text: string;
+  source_pages?: SlidePage[];
+  source_hash?: string;
+  rag_asset?: MaicRagAsset;
   status: CourseStatus;
   prepared?: CoursePrepared;
   error?: string;
@@ -198,6 +208,7 @@ export interface ClassroomSession {
 export interface PrepareEvent {
   type:
     | 'prepare:start'
+    | 'prepare:cache'
     | 'prepare:read_raw'
     | 'prepare:describe'
     | 'prepare:tree'
@@ -213,6 +224,7 @@ export interface PrepareEvent {
     message?: string;
     course_id?: string;
     error?: string;
+    cache_status?: 'hit' | 'miss' | 'stored';
   };
 }
 

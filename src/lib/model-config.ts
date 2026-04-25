@@ -17,24 +17,20 @@
  */
 
 import { ChatOllama, OllamaEmbeddings } from '@langchain/ollama';
-import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
+import { ChatOpenAI } from '@langchain/openai';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
 
 // 导入独立的 Embedding 配置系统
 import {
-  EmbeddingFactory,
   getEmbeddingFactory,
-  createEmbeddingModel,
   getEmbeddingDimension,
-  getEmbeddingProvider,
   selectEmbeddingModelByDimension,
   getEmbeddingConfigSummary,
   validateEmbeddingConfig,
-  EmbeddingProvider,
-  EmbeddingModelConfig,
   ALL_EMBEDDING_DIMENSIONS,
 } from './embedding-config';
+import type { EmbeddingModelConfig, EmbeddingProvider } from './embedding-config';
 
 // ==================== 类型定义 ====================
 
@@ -55,7 +51,7 @@ export interface ModelConfig {
   /** 模型维度 (仅 embedding 模型) */
   dimension?: number;
   /** 额外配置 */
-  options?: Record<string, any>;
+  options?: Record<string, unknown>;
 }
 
 /** 环境变量配置 */
