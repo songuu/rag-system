@@ -33,6 +33,12 @@ interface StageEffect {
   label: string;
 }
 
+interface TtsPlayback {
+  speaking: boolean;
+  queued: number;
+  autoPaused: boolean;
+}
+
 const ROLE_META: Record<SpeakerRole, { name: string; initials: string; tone: string }> = {
   teacher: { name: '老师', initials: 'T', tone: 'from-emerald-300 to-teal-500' },
   ta: { name: '助教', initials: 'TA', tone: 'from-sky-300 to-blue-500' },
@@ -67,12 +73,27 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [whiteboardOpen, setWhiteboardOpen] = useState(true);
   const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [ttsPlayback, setTtsPlayback] = useState<TtsPlayback>({
+    speaking: false,
+    queued: 0,
+    autoPaused: false,
+  });
   const [quizAnswers, setQuizAnswers] = useState<Record<string, number>>({});
   const [codeDraft, setCodeDraft] = useState('const insight = "learning by doing";\nconsole.log(insight);');
   const [runOutput, setRunOutput] = useState('等待运行');
   const [selectedPblRole, setSelectedPblRole] = useState<string | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
   const sceneViewportRef = useRef<HTMLDivElement | null>(null);
+  const ttsQueueRef = useRef<Utterance[]>([]);
+  const ttsSeenIdsRef = useRef<Set<string>>(new Set());
+  const ttsSpeakingRef = useRef(false);
+  const ttsEnabledRef = useRef(false);
+  const ttsAutoPausedRef = useRef(false);
+  const ttsCurrentResolveRef = useRef<(() => void) | null>(null);
+  const ttsKeepAliveTimerRef = useRef<number | null>(null);
+  const ttsRunIdRef = useRef(0);
+  const classroomStatusRef = useRef<ClassroomState['status']>('idle');
+  const manualPauseRequestedRef = useRef(false);
 
   const pages = course?.prepared?.pages ?? [];
   const scenes = useMemo(() => deriveScenes(course), [course]);
@@ -87,6 +108,8 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const currentPage = pages[currentPageIndex];
   const latestUtterance = utterances.at(-1);
   const courseReady = course?.status === 'ready' && !!course.prepared;
+  ttsEnabledRef.current = ttsEnabled;
+  classroomStatusRef.current = classroomState?.status ?? 'idle';
 
   const handleClassroomEvent = useCallback((event: ClassroomEvent) => {
     switch (event.type) {
@@ -173,17 +196,6 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   }, [latestUtterance]);
 
   useEffect(() => {
-    if (!ttsEnabled || !latestUtterance || latestUtterance.speaker === 'student') return;
-    if (typeof window === 'undefined' || !window.speechSynthesis) return;
-    const speech = new SpeechSynthesisUtterance(latestUtterance.content);
-    speech.lang = mostlyChinese(latestUtterance.content) ? 'zh-CN' : 'en-US';
-    speech.rate = 1;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(speech);
-    return () => window.speechSynthesis.cancel();
-  }, [latestUtterance, ttsEnabled]);
-
-  useEffect(() => {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
@@ -226,14 +238,169 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
     [postClassroom]
   );
 
+  const syncTtsPlayback = useCallback(() => {
+    setTtsPlayback({
+      speaking: ttsSpeakingRef.current,
+      queued: ttsQueueRef.current.length,
+      autoPaused: ttsAutoPausedRef.current,
+    });
+  }, []);
+
+  const releaseTtsAutoPause = useCallback(async () => {
+    if (!ttsAutoPausedRef.current) return;
+    ttsAutoPausedRef.current = false;
+    syncTtsPlayback();
+    if (!manualPauseRequestedRef.current) {
+      try {
+        await sendControl('resume');
+      } catch {
+        // The classroom can keep its current state if the resume request is lost.
+      }
+    }
+  }, [sendControl, syncTtsPlayback]);
+
+  const stopTtsPlayback = useCallback(
+    ({ resumeClassroom = true }: { resumeClassroom?: boolean } = {}) => {
+      ttsRunIdRef.current += 1;
+      ttsQueueRef.current = [];
+      ttsSpeakingRef.current = false;
+      if (ttsKeepAliveTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearInterval(ttsKeepAliveTimerRef.current);
+        ttsKeepAliveTimerRef.current = null;
+      }
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+      ttsCurrentResolveRef.current?.();
+      ttsCurrentResolveRef.current = null;
+      if (resumeClassroom) {
+        void releaseTtsAutoPause();
+      } else if (ttsAutoPausedRef.current) {
+        ttsAutoPausedRef.current = false;
+      }
+      syncTtsPlayback();
+    },
+    [releaseTtsAutoPause, syncTtsPlayback]
+  );
+
+  const speakQueuedUtterance = useCallback((utterance: Utterance): Promise<void> => {
+    return new Promise(resolve => {
+      if (typeof window === 'undefined' || !window.speechSynthesis) {
+        resolve();
+        return;
+      }
+
+      const speech = new window.SpeechSynthesisUtterance(utterance.content);
+      speech.lang = mostlyChinese(utterance.content) ? 'zh-CN' : 'en-US';
+      speech.rate = 1;
+
+      const finish = () => {
+        if (ttsKeepAliveTimerRef.current !== null) {
+          window.clearInterval(ttsKeepAliveTimerRef.current);
+          ttsKeepAliveTimerRef.current = null;
+        }
+        if (ttsCurrentResolveRef.current === finish) {
+          ttsCurrentResolveRef.current = null;
+        }
+        resolve();
+      };
+
+      ttsCurrentResolveRef.current = finish;
+      ttsKeepAliveTimerRef.current = window.setInterval(() => {
+        window.speechSynthesis.resume();
+      }, 8000);
+      speech.onend = finish;
+      speech.onerror = finish;
+      window.speechSynthesis.speak(speech);
+    });
+  }, []);
+
+  const playQueuedTts = useCallback(async () => {
+    if (ttsSpeakingRef.current) return;
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+
+    const runId = ttsRunIdRef.current;
+    ttsSpeakingRef.current = true;
+    syncTtsPlayback();
+
+    if (classroomStatusRef.current === 'running' && !ttsAutoPausedRef.current) {
+      ttsAutoPausedRef.current = true;
+      syncTtsPlayback();
+      try {
+        await sendControl('pause');
+      } catch {
+        ttsAutoPausedRef.current = false;
+        syncTtsPlayback();
+      }
+    }
+
+    try {
+      while (
+        ttsRunIdRef.current === runId &&
+        ttsEnabledRef.current &&
+        ttsQueueRef.current.length > 0
+      ) {
+        const nextUtterance = ttsQueueRef.current.shift();
+        syncTtsPlayback();
+        if (nextUtterance) await speakQueuedUtterance(nextUtterance);
+      }
+    } finally {
+      if (ttsRunIdRef.current === runId) {
+        ttsSpeakingRef.current = false;
+        syncTtsPlayback();
+        if (ttsQueueRef.current.length === 0 || !ttsEnabledRef.current) {
+          await releaseTtsAutoPause();
+        }
+      }
+    }
+  }, [releaseTtsAutoPause, sendControl, speakQueuedUtterance, syncTtsPlayback]);
+
+  useEffect(() => {
+    if (!ttsEnabled) {
+      stopTtsPlayback({ resumeClassroom: true });
+    }
+  }, [stopTtsPlayback, ttsEnabled]);
+
+  useEffect(() => {
+    if (!ttsEnabled || !latestUtterance || latestUtterance.speaker === 'student') return;
+    if (ttsSeenIdsRef.current.has(latestUtterance.id)) return;
+    ttsSeenIdsRef.current.add(latestUtterance.id);
+    ttsQueueRef.current.push(latestUtterance);
+    syncTtsPlayback();
+    void playQueuedTts();
+  }, [latestUtterance, playQueuedTts, syncTtsPlayback, ttsEnabled]);
+
+  useEffect(() => {
+    return () => stopTtsPlayback({ resumeClassroom: false });
+  }, [stopTtsPlayback]);
+
+  const pauseClassroom = useCallback(async () => {
+    manualPauseRequestedRef.current = true;
+    stopTtsPlayback({ resumeClassroom: false });
+    await sendControl('pause');
+  }, [sendControl, stopTtsPlayback]);
+
+  const resumeClassroom = useCallback(async () => {
+    manualPauseRequestedRef.current = false;
+    await sendControl('resume');
+  }, [sendControl]);
+
+  const restartClassroom = useCallback(async () => {
+    manualPauseRequestedRef.current = false;
+    stopTtsPlayback({ resumeClassroom: false });
+    await sendControl('restart');
+  }, [sendControl, stopTtsPlayback]);
+
   const navigateToSlide = useCallback(
     async (slideIndex: number) => {
+      manualPauseRequestedRef.current = true;
+      stopTtsPlayback({ resumeClassroom: false });
       const clamped = Math.max(0, Math.min(slideIndex, Math.max(pages.length - 1, 0)));
       await postClassroom({ control: 'navigate', slide_index: clamped });
       const slideScene = scenes.find(scene => scene.type === 'slide' && scene.page_refs.includes(clamped));
       if (slideScene) setSelectedSceneId(slideScene.id);
     },
-    [pages.length, postClassroom, scenes]
+    [pages.length, postClassroom, scenes, stopTtsPlayback]
   );
 
   const selectScene = useCallback(
@@ -343,11 +510,13 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
             pageCount={pages.length}
             scenesCount={scenes.length}
             ttsEnabled={ttsEnabled}
+            ttsSpeaking={ttsPlayback.speaking}
+            ttsQueued={ttsPlayback.queued}
             whiteboardOpen={whiteboardOpen}
             onModeChange={setMode}
-            onPause={() => sendControl('pause')}
-            onResume={() => sendControl('resume')}
-            onRestart={() => sendControl('restart')}
+            onPause={pauseClassroom}
+            onResume={resumeClassroom}
+            onRestart={restartClassroom}
             onPrev={() => navigateToSlide(currentPageIndex - 1)}
             onNext={() => navigateToSlide(currentPageIndex + 1)}
             onToggleTts={() => setTtsEnabled(prev => !prev)}
@@ -488,6 +657,8 @@ interface StageHeaderProps {
   pageCount: number;
   scenesCount: number;
   ttsEnabled: boolean;
+  ttsSpeaking: boolean;
+  ttsQueued: number;
   whiteboardOpen: boolean;
   onModeChange: (mode: ClassroomMode) => void;
   onPause: () => void;
@@ -510,6 +681,8 @@ function StageHeader({
   pageCount,
   scenesCount,
   ttsEnabled,
+  ttsSpeaking,
+  ttsQueued,
   whiteboardOpen,
   onModeChange,
   onPause,
@@ -523,12 +696,13 @@ function StageHeader({
   onExport,
 }: StageHeaderProps) {
   const isPaused = status === 'paused' || status === 'idle';
+  const statusLabel = ttsSpeaking ? 'tts reading' : status;
   return (
     <header className="flex flex-wrap items-center gap-3 border-b border-white/10 bg-black/20 px-4 py-3 backdrop-blur-xl">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.28em] text-slate-400">
           <span className={`h-2 w-2 rounded-full ${connected ? 'bg-teal-300' : 'bg-slate-600'}`} />
-          {connected ? 'Live Classroom' : 'Offline'} / {status}
+          {connected ? 'Live Classroom' : 'Offline'} / {statusLabel}
         </div>
         <h1 className="mt-1 line-clamp-1 text-lg font-semibold">{title}</h1>
       </div>
@@ -558,13 +732,18 @@ function StageHeader({
         <HeaderButton onClick={onNext}>下一页</HeaderButton>
         <HeaderButton onClick={onRestart}>重播</HeaderButton>
         <HeaderButton active={whiteboardOpen} onClick={onToggleWhiteboard}>白板</HeaderButton>
-        <HeaderButton active={ttsEnabled} onClick={onToggleTts}>TTS</HeaderButton>
+        <HeaderButton active={ttsEnabled} onClick={onToggleTts}>
+          {ttsQueued > 0 ? `TTS ${ttsQueued}` : 'TTS'}
+        </HeaderButton>
         <HeaderButton onClick={onToggleChat}>聊天</HeaderButton>
         <HeaderButton onClick={onExport}>导出</HeaderButton>
       </div>
 
       <div className="w-full text-[11px] text-slate-500 md:w-auto">
         Slide {Math.min(pageIndex + 1, pageCount)} / {pageCount} · Scene {scenesCount}
+        {ttsEnabled && (ttsSpeaking || ttsQueued > 0)
+          ? ` · ${ttsSpeaking ? 'TTS reading' : 'TTS queued'}`
+          : ''}
       </div>
     </header>
   );
