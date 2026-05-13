@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -17,10 +18,16 @@ import type {
   Course,
   CourseScene,
   CourseSceneType,
+  SceneAction,
   SlidePage,
   TeachingAction,
   Utterance,
 } from '@/lib/maic/types';
+import {
+  buildDefaultSlideAnimations,
+  getSlideDescriptionElementId,
+  getSlidePointElementId,
+} from '@/lib/maic/slide-animation';
 
 type SpeakerRole = AgentRole | 'student';
 
@@ -29,14 +36,24 @@ interface OpenMaicClassroomProps {
 }
 
 interface StageEffect {
-  kind: 'spotlight' | 'laser' | 'discussion';
+  kind: 'spotlight' | 'laser' | 'discussion' | 'speech' | 'whiteboard';
   label: string;
+  targetId?: string;
+  dimOpacity?: number;
+  color?: string;
 }
 
 interface TtsPlayback {
   speaking: boolean;
   queued: number;
   autoPaused: boolean;
+}
+
+interface CompletionSummary {
+  totalQuestions: number;
+  answeredQuestions: number;
+  correctAnswers: number;
+  sceneStats: Array<{ type: CourseSceneType; count: number }>;
 }
 
 const ROLE_META: Record<SpeakerRole, { name: string; initials: string; tone: string }> = {
@@ -84,6 +101,9 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const [selectedPblRole, setSelectedPblRole] = useState<string | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
   const sceneViewportRef = useRef<HTMLDivElement | null>(null);
+  const quizHydratedRef = useRef(false);
+  const quizInitialSaveSkippedRef = useRef(false);
+  const stageAnimationTimersRef = useRef<number[]>([]);
   const ttsQueueRef = useRef<Utterance[]>([]);
   const ttsSeenIdsRef = useRef<Set<string>>(new Set());
   const ttsSpeakingRef = useRef(false);
@@ -108,6 +128,12 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const currentPage = pages[currentPageIndex];
   const latestUtterance = utterances.at(-1);
   const courseReady = course?.status === 'ready' && !!course.prepared;
+  const courseCompleted = classroomState?.status === 'ended';
+  const quizStorageKey = useMemo(() => `maic:${courseId}:quiz-answers`, [courseId]);
+  const completionSummary = useMemo(
+    () => buildCompletionSummary(scenes, quizAnswers),
+    [quizAnswers, scenes]
+  );
   ttsEnabledRef.current = ttsEnabled;
   classroomStatusRef.current = classroomState?.status ?? 'idle';
 
@@ -135,6 +161,13 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
       default:
         break;
     }
+  }, []);
+
+  const clearStageAnimationTimers = useCallback(() => {
+    for (const timer of stageAnimationTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    stageAnimationTimersRef.current = [];
   }, []);
 
   useEffect(() => {
@@ -180,6 +213,43 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   }, [automaticScene, selectedSceneId]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    quizHydratedRef.current = false;
+    quizInitialSaveSkippedRef.current = false;
+    try {
+      const raw = window.localStorage.getItem(quizStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          setQuizAnswers(normalizeStoredQuizAnswers(parsed as Record<string, unknown>));
+        } else {
+          setQuizAnswers({});
+        }
+      } else {
+        setQuizAnswers({});
+      }
+    } catch {
+      // Corrupt localStorage should not block classroom playback.
+      setQuizAnswers({});
+    } finally {
+      quizHydratedRef.current = true;
+    }
+  }, [quizStorageKey]);
+
+  useEffect(() => {
+    if (!quizHydratedRef.current || typeof window === 'undefined') return;
+    if (!quizInitialSaveSkippedRef.current) {
+      quizInitialSaveSkippedRef.current = true;
+      return;
+    }
+    try {
+      window.localStorage.setItem(quizStorageKey, JSON.stringify(quizAnswers));
+    } catch {
+      // The quiz can still work in-memory when storage quota is unavailable.
+    }
+  }, [quizAnswers, quizStorageKey]);
+
+  useEffect(() => {
     const nextScene = scenes.find(scene =>
       scene.type === 'slide' && scene.page_refs.includes(currentPageIndex)
     );
@@ -187,13 +257,41 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   }, [currentPageIndex, scenes]);
 
   useEffect(() => {
+    clearStageAnimationTimers();
+    if (!selectedScene || selectedScene.type !== 'slide' || selectedScene.actions.length === 0) {
+      return;
+    }
+
+    const schedule = buildSceneEffectSchedule(selectedScene.actions);
+    if (schedule.length === 0) return;
+
+    for (const item of schedule) {
+      const timer = window.setTimeout(() => {
+        setStageEffect(item.effect);
+      }, item.delay);
+      stageAnimationTimersRef.current.push(timer);
+    }
+
+    const lastItem = schedule.at(-1);
+    const clearDelay = (lastItem?.delay ?? 0) + (lastItem?.duration ?? 900);
+    stageAnimationTimersRef.current.push(
+      window.setTimeout(() => setStageEffect(null), Math.max(clearDelay, 1800))
+    );
+
+    return () => {
+      clearStageAnimationTimers();
+    };
+  }, [clearStageAnimationTimers, currentPageIndex, selectedScene]);
+
+  useEffect(() => {
     if (!latestUtterance) return;
+    if (selectedScene?.actions.some(action => toStageEffectFromSceneAction(action))) return;
     const effect = toStageEffect(latestUtterance.action);
     setStageEffect(effect);
     if (!effect) return;
     const timer = window.setTimeout(() => setStageEffect(null), 4200);
     return () => window.clearTimeout(timer);
-  }, [latestUtterance]);
+  }, [latestUtterance, selectedScene]);
 
   useEffect(() => {
     if (chatRef.current) {
@@ -495,7 +593,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
           collapsed={sidebarCollapsed}
           scenes={scenes}
           activeSceneId={selectedScene?.id}
-          stageTitle={course.prepared?.stage.title ?? course.title}
+          stageTitle={course.prepared?.stage?.title ?? course.title}
           onCollapse={() => setSidebarCollapsed(prev => !prev)}
           onSelectScene={selectScene}
         />
@@ -524,6 +622,14 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
             onToggleChat={() => setChatCollapsed(prev => !prev)}
             onExport={exportHtml}
           />
+
+          {courseCompleted && (
+            <CourseCompletionPanel
+              summary={completionSummary}
+              stageTitle={course.prepared?.stage?.title ?? course.title}
+              onRestart={restartClassroom}
+            />
+          )}
 
           <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
             <section ref={sceneViewportRef} className="min-h-0 overflow-hidden rounded-[1.75rem] border border-white/10 bg-white/[0.04] shadow-inner">
@@ -749,6 +855,57 @@ function StageHeader({
   );
 }
 
+function CourseCompletionPanel({
+  summary,
+  stageTitle,
+  onRestart,
+}: {
+  summary: CompletionSummary;
+  stageTitle: string;
+  onRestart: () => void;
+}) {
+  const score = summary.totalQuestions > 0
+    ? Math.round((summary.correctAnswers / summary.totalQuestions) * 100)
+    : 100;
+  return (
+    <section className="mx-4 mt-4 rounded-[1.5rem] border border-teal-300/30 bg-teal-300/10 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="text-xs uppercase tracking-[0.25em] text-teal-100/70">
+            Course Complete
+          </div>
+          <h2 className="mt-1 text-xl font-semibold text-teal-50">{stageTitle}</h2>
+        </div>
+        <button
+          type="button"
+          onClick={() => void onRestart()}
+          className="rounded-2xl border border-teal-200/40 px-4 py-2 text-sm font-semibold text-teal-50 hover:bg-teal-200/10"
+        >
+          重新播放
+        </button>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-4">
+        <CompletionMetric label="Quiz Score" value={`${score}%`} />
+        <CompletionMetric label="Answered" value={`${summary.answeredQuestions}/${summary.totalQuestions}`} />
+        <CompletionMetric label="Scenes" value={String(summary.sceneStats.reduce((sum, item) => sum + item.count, 0))} />
+        <CompletionMetric
+          label="Scene Types"
+          value={String(summary.sceneStats.filter(item => item.count > 0).length)}
+        />
+      </div>
+    </section>
+  );
+}
+
+function CompletionMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+      <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{label}</div>
+      <div className="mt-1 text-2xl font-semibold text-white">{value}</div>
+    </div>
+  );
+}
+
 function HeaderButton({
   children,
   active,
@@ -883,6 +1040,15 @@ function SceneCanvas({
   return <SlideScene scene={scene} page={page} effect={effect} />;
 }
 
+interface SlideElementRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+}
+
 function SlideScene({
   scene,
   page,
@@ -893,6 +1059,53 @@ function SlideScene({
   effect: StageEffect | null;
 }) {
   const points = scene.key_points.length > 0 ? scene.key_points : page?.key_points ?? [];
+  const slideIndex = page?.index ?? scene.page_refs[0] ?? 0;
+  const descriptionElementId = getSlideDescriptionElementId(slideIndex);
+  const slideRef = useRef<HTMLDivElement | null>(null);
+  const targetRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [effectRect, setEffectRect] = useState<SlideElementRect | null>(null);
+  const activeTargetId = effect?.targetId;
+
+  useLayoutEffect(() => {
+    if (!activeTargetId || !slideRef.current) {
+      const frame = window.requestAnimationFrame(() => setEffectRect(null));
+      return () => window.cancelAnimationFrame(frame);
+    }
+
+    const measure = () => {
+      const container = slideRef.current;
+      const target = targetRefs.current[activeTargetId];
+      if (!container || !target) {
+        setEffectRect(null);
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      if (containerRect.width === 0 || containerRect.height === 0) {
+        setEffectRect(null);
+        return;
+      }
+
+      const x = ((targetRect.left - containerRect.left) / containerRect.width) * 100;
+      const y = ((targetRect.top - containerRect.top) / containerRect.height) * 100;
+      const width = (targetRect.width / containerRect.width) * 100;
+      const height = (targetRect.height / containerRect.height) * 100;
+      setEffectRect({
+        x,
+        y,
+        width,
+        height,
+        centerX: x + width / 2,
+        centerY: y + height / 2,
+      });
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [activeTargetId, points.length, scene.id]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="mb-5 flex items-start justify-between gap-4">
@@ -905,34 +1118,55 @@ function SlideScene({
         </div>
       </div>
 
-      <div className="relative flex-1 overflow-hidden rounded-[1.5rem] border border-white/10 bg-gradient-to-br from-slate-100 to-white p-8 text-slate-950 shadow-2xl">
-        {effect?.kind === 'spotlight' && (
-          <div className="pointer-events-none absolute inset-0 bg-slate-950/30 mix-blend-multiply" />
+      <div
+        ref={slideRef}
+        className="relative flex-1 overflow-hidden rounded-[1.5rem] border border-white/10 bg-gradient-to-br from-slate-100 to-white p-8 text-slate-950 shadow-2xl"
+      >
+        {effect?.kind === 'spotlight' && effectRect && (
+          <SlideSpotlightOverlay rect={effectRect} dimOpacity={effect.dimOpacity ?? 0.55} />
         )}
-        {effect?.kind === 'laser' && (
-          <div className="pointer-events-none absolute left-[18%] top-[22%] h-28 w-28 rounded-full border-2 border-red-500/80 shadow-[0_0_32px_rgba(239,68,68,0.75)]" />
+        {effect?.kind === 'laser' && effectRect && (
+          <SlideLaserOverlay rect={effectRect} color={effect.color ?? '#ff3b30'} />
         )}
 
         <div className="relative z-10 max-w-4xl">
-          <p className="mb-8 max-w-3xl text-xl leading-relaxed text-slate-700">
+          <p
+            ref={node => {
+              targetRefs.current[descriptionElementId] = node;
+            }}
+            data-maic-element-id={descriptionElementId}
+            className="mb-8 max-w-3xl text-xl leading-relaxed text-slate-700"
+            style={getElementAnimationStyle(scene, descriptionElementId, 0)}
+          >
             {scene.description}
           </p>
           <div className="grid gap-4 md:grid-cols-2">
-            {points.slice(0, 4).map((point, index) => (
-              <div
-                key={`${point}-${index}`}
-                className={`rounded-2xl border p-5 shadow-sm ${
-                  index === 0 && effect?.kind === 'spotlight'
-                    ? 'border-teal-400 bg-teal-50 shadow-teal-200/80'
-                    : 'border-slate-200 bg-white/80'
-                }`}
-              >
-                <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-                  Key {index + 1}
+            {points.slice(0, 4).map((point, index) => {
+              const elementId = getSlidePointElementId(slideIndex, index);
+              const active = activeTargetId === elementId;
+              return (
+                <div
+                  key={`${point}-${index}`}
+                  ref={node => {
+                    targetRefs.current[elementId] = node;
+                  }}
+                  data-maic-element-id={elementId}
+                  className={`rounded-2xl border p-5 shadow-sm transition duration-500 ${
+                    active && effect?.kind === 'spotlight'
+                      ? 'border-teal-400 bg-teal-50 shadow-teal-200/80'
+                      : active && effect?.kind === 'laser'
+                        ? 'border-red-300 bg-red-50 shadow-red-200/70'
+                        : 'border-slate-200 bg-white/80'
+                  }`}
+                  style={getElementAnimationStyle(scene, elementId, 120 + index * 120)}
+                >
+                  <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+                    Key {index + 1}
+                  </div>
+                  <div className="text-lg font-semibold leading-snug">{point}</div>
                 </div>
-                <div className="text-lg font-semibold leading-snug">{point}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           {points.length === 0 && (
             <pre className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-2xl bg-slate-950 p-5 text-sm text-slate-100">
@@ -940,6 +1174,76 @@ function SlideScene({
             </pre>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SlideSpotlightOverlay({
+  rect,
+  dimOpacity,
+}: {
+  rect: SlideElementRect;
+  dimOpacity: number;
+}) {
+  return (
+    <div className="pointer-events-none absolute inset-0 z-20">
+      <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <defs>
+          <mask id="maic-slide-spotlight-mask">
+            <rect x="0" y="0" width="100" height="100" fill="white" />
+            <rect
+              x={Math.max(rect.x - 0.6, 0)}
+              y={Math.max(rect.y - 0.8, 0)}
+              width={Math.min(rect.width + 1.2, 100)}
+              height={Math.min(rect.height + 1.6, 100)}
+              rx="1.2"
+              fill="black"
+              className="maic-ppt-spotlight-cutout"
+            />
+          </mask>
+        </defs>
+        <rect
+          width="100"
+          height="100"
+          fill={`rgba(2,6,23,${dimOpacity})`}
+          mask="url(#maic-slide-spotlight-mask)"
+        />
+        <rect
+          x={Math.max(rect.x - 0.6, 0)}
+          y={Math.max(rect.y - 0.8, 0)}
+          width={Math.min(rect.width + 1.2, 100)}
+          height={Math.min(rect.height + 1.6, 100)}
+          rx="1.2"
+          fill="none"
+          stroke="rgba(255,255,255,0.78)"
+          strokeWidth="0.65"
+          className="maic-ppt-spotlight-border"
+        />
+      </svg>
+    </div>
+  );
+}
+
+function SlideLaserOverlay({ rect, color }: { rect: SlideElementRect; color: string }) {
+  const startX = rect.centerX > 50 ? 44 : -44;
+  const startY = rect.centerY > 50 ? 44 : -44;
+  return (
+    <div
+      className="pointer-events-none absolute z-30"
+      style={
+        {
+          left: `${rect.centerX}%`,
+          top: `${rect.centerY}%`,
+          '--maic-laser-color': color,
+          '--maic-laser-start-x': `${startX}px`,
+          '--maic-laser-start-y': `${startY}px`,
+        } as React.CSSProperties
+      }
+    >
+      <div className="maic-ppt-laser">
+        <span className="maic-ppt-laser-ring" />
+        <span className="maic-ppt-laser-dot" />
       </div>
     </div>
   );
@@ -1181,7 +1485,7 @@ function ActionTimeline({ scene, effect }: { scene: CourseScene; effect: StageEf
       <div className="mb-3 text-xs uppercase tracking-[0.25em] text-slate-400">Action Engine</div>
       <div className="space-y-2">
         {scene.actions.map(action => {
-          const active = effect && action.type.includes(effect.kind);
+          const active = isSceneActionActive(action, effect);
           return (
             <div
               key={action.id}
@@ -1198,6 +1502,136 @@ function ActionTimeline({ scene, effect }: { scene: CourseScene; effect: StageEf
       </div>
     </div>
   );
+}
+
+interface SceneEffectScheduleItem {
+  effect: StageEffect;
+  delay: number;
+  duration: number;
+}
+
+function buildSceneEffectSchedule(actions: SceneAction[]): SceneEffectScheduleItem[] {
+  const schedule: SceneEffectScheduleItem[] = [];
+  let cursor = 0;
+
+  for (const action of actions) {
+    const effect = toStageEffectFromSceneAction(action);
+    const duration = getSceneActionDuration(action);
+    if (effect) {
+      const delay = action.trigger === 'meantime' ? Math.max(cursor - Math.min(duration, 300), 0) : cursor;
+      schedule.push({ effect, delay, duration });
+    }
+
+    if (action.type === 'spotlight' || action.type === 'laser') {
+      if (action.trigger !== 'meantime') cursor += Math.min(duration, 250);
+    } else {
+      cursor += duration;
+    }
+  }
+
+  return schedule;
+}
+
+function toStageEffectFromSceneAction(action: SceneAction): StageEffect | null {
+  const targetId = action.elementId ?? action.target ?? action.animation?.elId;
+  switch (action.type) {
+    case 'speech':
+      return { kind: 'speech', label: action.title, targetId };
+    case 'spotlight':
+      return {
+        kind: 'spotlight',
+        label: action.title,
+        targetId,
+        dimOpacity: action.dimOpacity,
+      };
+    case 'laser':
+      return {
+        kind: 'laser',
+        label: action.title,
+        targetId,
+        color: action.color,
+      };
+    case 'whiteboard':
+    case 'wb_open':
+    case 'wb_draw_text':
+    case 'wb_draw_shape':
+    case 'wb_draw_chart':
+    case 'wb_draw_latex':
+    case 'wb_draw_table':
+    case 'wb_draw_line':
+    case 'wb_draw_code':
+    case 'wb_clear':
+    case 'wb_delete':
+    case 'wb_close':
+      return { kind: 'whiteboard', label: action.title };
+    case 'discussion':
+      return { kind: 'discussion', label: action.title };
+    default:
+      return null;
+  }
+}
+
+function getSceneActionDuration(action: SceneAction): number {
+  if (typeof action.duration === 'number' && action.duration > 0) return action.duration;
+  if (typeof action.animation?.duration === 'number' && action.animation.duration > 0) {
+    return action.animation.duration;
+  }
+  switch (action.type) {
+    case 'speech':
+      return 1200;
+    case 'spotlight':
+    case 'laser':
+      return 900;
+    case 'whiteboard':
+    case 'wb_open':
+    case 'wb_draw_text':
+    case 'wb_draw_shape':
+    case 'wb_draw_chart':
+    case 'wb_draw_latex':
+    case 'wb_draw_table':
+    case 'wb_draw_line':
+    case 'wb_draw_code':
+      return 800;
+    case 'discussion':
+      return 700;
+    default:
+      return 500;
+  }
+}
+
+function getElementAnimationStyle(
+  scene: CourseScene,
+  elementId: string,
+  fallbackDelay: number
+): React.CSSProperties | undefined {
+  const action = scene.actions.find(candidate =>
+    candidate.elementId === elementId ||
+    candidate.target === elementId ||
+    candidate.animation?.elId === elementId
+  );
+  const animation = action?.animation;
+  if (!animation) return undefined;
+
+  return {
+    animation: `${toCssAnimationName(animation.effect, animation.type)} ${animation.duration}ms cubic-bezier(0.16, 1, 0.3, 1) ${fallbackDelay}ms both`,
+  };
+}
+
+function toCssAnimationName(effect: string, type: string): string {
+  const normalized = effect.toLowerCase();
+  if (normalized.includes('spotlight') || normalized.includes('pulse')) {
+    return 'maicPptAttentionPulse';
+  }
+  if (normalized.includes('fade')) return type === 'attention' ? 'maicPptAttentionPulse' : 'maicPptFadeIn';
+  if (normalized.includes('wipe') || normalized.includes('fly')) return 'maicPptFadeUp';
+  if (normalized.includes('laser')) return 'maicPptFadeUp';
+  return type === 'attention' ? 'maicPptAttentionPulse' : 'maicPptFadeUp';
+}
+
+function isSceneActionActive(action: SceneAction, effect: StageEffect | null): boolean {
+  if (!effect) return false;
+  const actionTarget = action.elementId ?? action.target ?? action.animation?.elId;
+  return action.type === effect.kind || (!!actionTarget && actionTarget === effect.targetId);
 }
 
 function Whiteboard({ scene, utterance }: { scene: CourseScene; utterance?: Utterance }) {
@@ -1391,7 +1825,9 @@ function ChatBubble({ utterance }: { utterance: Utterance }) {
 function deriveScenes(course: Course | null): CourseScene[] {
   const prepared = course?.prepared;
   if (!prepared) return [];
-  if (Array.isArray(prepared.scenes) && prepared.scenes.length > 0) return prepared.scenes;
+  if (Array.isArray(prepared.scenes) && prepared.scenes.length > 0) {
+    return prepared.scenes.map(scene => hydrateSlideSceneAnimations(scene, prepared.pages));
+  }
   const pages = prepared.pages ?? [];
   const fallbackScenes: CourseScene[] = pages.map((page, index) => ({
     id: `fallback_slide_${page.index}`,
@@ -1438,6 +1874,79 @@ function deriveScenes(course: Course | null): CourseScene[] {
     });
   }
   return fallbackScenes;
+}
+
+function hydrateSlideSceneAnimations(scene: CourseScene, pages: SlidePage[]): CourseScene {
+  if (scene.type !== 'slide') return scene;
+  if (scene.actions.some(action => action.animation || action.elementId)) return scene;
+
+  const slideIndex = scene.page_refs[0] ?? 0;
+  const page = pages.find(candidate => candidate.index === slideIndex);
+  const pointCount = Math.min(scene.key_points.length || page?.key_points.length || 1, 4);
+  const animations = page?.animations?.length
+    ? page.animations
+    : buildDefaultSlideAnimations(slideIndex, pointCount);
+
+  return {
+    ...scene,
+    actions: scene.actions.map(action => {
+      if (action.type === 'speech') {
+        const elementId = getSlideDescriptionElementId(slideIndex);
+        return {
+          ...action,
+          elementId,
+          animation: animations.find(animation => animation.elId === elementId) ?? animations[0],
+        };
+      }
+      if (action.type === 'spotlight' || action.type === 'laser') {
+        const pointIndex = action.type === 'spotlight' ? 0 : Math.min(1, pointCount - 1);
+        const elementId = getSlidePointElementId(slideIndex, pointIndex);
+        const animation = animations[pointIndex + 1] ?? animations[0];
+        return {
+          ...action,
+          target: elementId,
+          elementId,
+          animation: { ...animation, elId: elementId },
+          dimOpacity: action.type === 'spotlight' ? 0.55 : action.dimOpacity,
+          color: action.type === 'laser' ? action.color ?? '#ff3b30' : action.color,
+        };
+      }
+      return action;
+    }),
+  };
+}
+
+function buildCompletionSummary(
+  scenes: CourseScene[],
+  quizAnswers: Record<string, number>
+): CompletionSummary {
+  const sceneStats = Object.keys(SCENE_LABELS).map(type => ({
+    type: type as CourseSceneType,
+    count: scenes.filter(scene => scene.type === type).length,
+  }));
+  const questions = scenes.flatMap(scene => scene.quiz ?? []);
+  const answeredQuestions = questions.filter(question => quizAnswers[question.id] !== undefined);
+  const correctAnswers = answeredQuestions.filter(
+    question => quizAnswers[question.id] === question.answer_index
+  ).length;
+
+  return {
+    totalQuestions: questions.length,
+    answeredQuestions: answeredQuestions.length,
+    correctAnswers,
+    sceneStats,
+  };
+}
+
+function normalizeStoredQuizAnswers(raw: Record<string, unknown>): Record<string, number> {
+  const answers: Record<string, number> = {};
+  for (const [questionId, value] of Object.entries(raw)) {
+    const numericValue = Number(value);
+    if (Number.isInteger(numericValue) && numericValue >= 0) {
+      answers[questionId] = numericValue;
+    }
+  }
+  return answers;
 }
 
 function appendUtterance(existing: Utterance[], utterance: Utterance): Utterance[] {

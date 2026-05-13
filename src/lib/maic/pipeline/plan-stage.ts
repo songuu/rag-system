@@ -15,10 +15,22 @@ import type {
   CourseStage,
   QuizQuestion,
   SceneAction,
+  CourseGenerationLanguage,
+  CourseGenerationOptions,
+  CourseSceneCapabilities,
+  PPTAnimation,
 } from '../types';
 import { mapPagesWithOrderedCallbacks } from './page-order';
+import { buildLanguageDirective } from './read-stage';
+import {
+  getSlideDescriptionElementId,
+  getSlidePointAnimation,
+  getSlidePointElementId,
+} from '../slide-animation';
 
 const SCRIPT_PROMPT = `你是一位资深讲师。请为下面这页幻灯片生成讲述脚本,输出 JSON 数组,每个元素是一个教学动作。
+
+{LANGUAGE_DIRECTIVE}
 
 <slide index="{INDEX}">
 描述: {DESCRIPTION}
@@ -38,6 +50,8 @@ const SCRIPT_PROMPT = `你是一位资深讲师。请为下面这页幻灯片生
 
 const QUESTIONS_PROMPT = `基于以下课程知识树,生成 6 个高质量的课堂主动提问(覆盖不同层次):
 
+{LANGUAGE_DIRECTIVE}
+
 <tree>
 {TREE}
 </tree>
@@ -51,7 +65,8 @@ const QUESTIONS_PROMPT = `基于以下课程知识树,生成 6 个高质量的�
 export async function generateLectureScript(
   llm: BaseChatModel,
   pages: SlidePage[],
-  onPage?: (index: number) => void
+  onPage?: (index: number) => void,
+  language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<ScriptEntry[]> {
   const concurrency = 4;
   return mapPagesWithOrderedCallbacks(
@@ -59,6 +74,7 @@ export async function generateLectureScript(
     concurrency,
     async page => {
       const prompt = SCRIPT_PROMPT
+        .replace('{LANGUAGE_DIRECTIVE}', buildLanguageDirective(language))
         .replaceAll('{INDEX}', String(page.index))
         .replace('{DESCRIPTION}', page.description || '(无)')
         .replace('{POINTS}', page.key_points.join('; ') || '(无)')
@@ -92,10 +108,13 @@ export async function generateLectureScript(
 
 export async function generateActiveQuestions(
   llm: BaseChatModel,
-  tree: KnowledgeNode
+  tree: KnowledgeNode,
+  language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<string[]> {
   const treeText = JSON.stringify(tree, null, 2);
-  const prompt = QUESTIONS_PROMPT.replace('{TREE}', truncate(treeText, 3000));
+  const prompt = QUESTIONS_PROMPT
+    .replace('{LANGUAGE_DIRECTIVE}', buildLanguageDirective(language))
+    .replace('{TREE}', truncate(treeText, 3000));
   try {
     const resp = await llm.invoke([{ role: 'user', content: prompt }]);
     const parsed = parseJson<string[]>(String(resp.content));
@@ -116,25 +135,34 @@ export async function generateActiveQuestions(
 export function buildCourseStage(
   pages: SlidePage[],
   tree: KnowledgeNode,
-  questions: string[]
+  questions: string[],
+  options: CourseGenerationOptions = {}
 ): { stage: CourseStage; scenes: CourseScene[] } {
   const objectives = collectObjectives(tree, pages);
+  const capabilities = normalizeCapabilities(options.capabilities);
   const scenes: CourseScene[] = [];
 
   for (const page of pages) {
     const order = scenes.length;
-    scenes.push(buildSlideScene(page, order, questions[page.index % Math.max(questions.length, 1)]));
+    scenes.push(
+      buildSlideScene(
+        page,
+        order,
+        questions[page.index % Math.max(questions.length, 1)],
+        capabilities
+      )
+    );
 
-    if ((page.index + 1) % 2 === 0) {
+    if (capabilities.quiz && (page.index + 1) % 2 === 0) {
       scenes.push(buildQuizScene(page, scenes.length, questions));
     }
 
-    if (page.index === 0 || (page.index + 1) % 3 === 0) {
+    if (capabilities.interactive && (page.index === 0 || (page.index + 1) % 3 === 0)) {
       scenes.push(buildInteractiveScene(page, scenes.length));
     }
   }
 
-  if (pages.length > 0) {
+  if (capabilities.pbl && pages.length > 0) {
     scenes.push(buildPblScene(pages, scenes.length, tree));
   }
 
@@ -153,9 +181,80 @@ export function buildCourseStage(
 function buildSlideScene(
   page: SlidePage,
   order: number,
-  discussionQuestion: string | undefined
+  discussionQuestion: string | undefined,
+  capabilities: Required<CourseSceneCapabilities>
 ): CourseScene {
   const keyPoints = normalizeKeyPoints(page);
+  const visiblePointCount = Math.min(keyPoints.length, 4);
+  const descriptionElementId = getSlideDescriptionElementId(page.index);
+  const actions: SceneAction[] = [
+    sceneAction('speech', page.index, '教师讲解', page.description || page.raw_text.slice(0, 240), undefined, {
+      elementId: descriptionElementId,
+      animation: capabilities.animations
+        ? {
+            id: `anim_scene_${page.index}_description`,
+            elId: descriptionElementId,
+            effect: 'fade',
+            type: 'in',
+            duration: 450,
+            trigger: 'auto',
+          }
+        : undefined,
+    }),
+    sceneAction(
+      'discussion',
+      page.index,
+      '圆桌讨论',
+      discussionQuestion || `这一页最值得追问的问题是什么?`
+    ),
+  ];
+  if (capabilities.spotlight) {
+    const targetId = getSlidePointElementId(page.index, 0);
+    const animation = actionAnimationForPoint(page, 0, visiblePointCount, targetId, capabilities);
+    actions.splice(
+      1,
+      0,
+      sceneAction('spotlight', page.index, '聚光重点', keyPoints[0] || page.description, targetId, {
+        elementId: targetId,
+        dimOpacity: 0.55,
+        duration: animation?.duration,
+        trigger: animation?.trigger,
+        animation,
+      })
+    );
+  }
+  if (capabilities.laser) {
+    const targetId = getSlidePointElementId(page.index, Math.min(1, Math.max(visiblePointCount - 1, 0)));
+    const animation = actionAnimationForPoint(
+      page,
+      Math.min(1, Math.max(visiblePointCount - 1, 0)),
+      visiblePointCount,
+      targetId,
+      capabilities
+    );
+    actions.splice(
+      Math.min(actions.length, 2),
+      0,
+      sceneAction('laser', page.index, '激光指示', keyPoints[1] || keyPoints[0], targetId, {
+        elementId: targetId,
+        color: '#ff3b30',
+        duration: animation?.duration,
+        trigger: animation?.trigger,
+        animation,
+      })
+    );
+  }
+  if (capabilities.whiteboard) {
+    actions.splice(
+      Math.min(actions.length, 3),
+      0,
+      sceneAction('whiteboard', page.index, '白板推导', keyPoints.join('\n') || page.description, undefined, {
+        duration: capabilities.animations ? 800 : undefined,
+        trigger: capabilities.animations ? 'auto' : undefined,
+      })
+    );
+  }
+
   return {
     id: `scene_slide_${page.index}`,
     order,
@@ -164,18 +263,7 @@ function buildSlideScene(
     description: page.description || page.raw_text.slice(0, 180),
     page_refs: [page.index],
     key_points: keyPoints,
-    actions: [
-      sceneAction('speech', page.index, '教师讲解', page.description || page.raw_text.slice(0, 240)),
-      sceneAction('spotlight', page.index, '聚光重点', keyPoints[0] || page.description, 'primary-point'),
-      sceneAction('laser', page.index, '激光指示', keyPoints[1] || keyPoints[0], 'secondary-point'),
-      sceneAction('whiteboard', page.index, '白板推导', keyPoints.join('\n') || page.description),
-      sceneAction(
-        'discussion',
-        page.index,
-        '圆桌讨论',
-        discussionQuestion || `这一页最值得追问的问题是什么?`
-      ),
-    ],
+    actions,
   };
 }
 
@@ -272,7 +360,8 @@ function sceneAction(
   seed: number,
   title: string,
   content?: string,
-  target?: string
+  target?: string,
+  overrides: Partial<SceneAction> = {}
 ): SceneAction {
   return {
     id: `${type}_${seed}_${title.replace(/\s+/g, '_')}`,
@@ -280,7 +369,20 @@ function sceneAction(
     title,
     content,
     target,
+    ...overrides,
   };
+}
+
+function actionAnimationForPoint(
+  page: SlidePage,
+  pointIndex: number,
+  pointCount: number,
+  targetId: string,
+  capabilities: Required<CourseSceneCapabilities>
+): PPTAnimation | undefined {
+  if (!capabilities.animations || pointCount <= 0) return undefined;
+  const animation = getSlidePointAnimation(page, pointIndex, pointCount);
+  return { ...animation, elId: targetId };
 }
 
 function collectObjectives(tree: KnowledgeNode, pages: SlidePage[]): string[] {
@@ -324,4 +426,18 @@ function parseJson<T>(raw: string): T | null {
   } catch {
     return null;
   }
+}
+
+function normalizeCapabilities(
+  capabilities: CourseSceneCapabilities | undefined
+): Required<CourseSceneCapabilities> {
+  return {
+    quiz: capabilities?.quiz ?? true,
+    interactive: capabilities?.interactive ?? true,
+    pbl: capabilities?.pbl ?? true,
+    whiteboard: capabilities?.whiteboard ?? true,
+    spotlight: capabilities?.spotlight ?? true,
+    laser: capabilities?.laser ?? true,
+    animations: capabilities?.animations ?? true,
+  };
 }

@@ -9,6 +9,7 @@
 
 import { parseDocument } from '../document-parser';
 import type { SlidePage } from './types';
+import { parsePptxSlides } from './pptx-parser';
 
 export interface ParsedSlides {
   filename: string;
@@ -23,6 +24,10 @@ export async function parseSlides(
   buffer: Buffer,
   filename: string
 ): Promise<ParsedSlides> {
+  if (filename.toLowerCase().endsWith('.pptx')) {
+    return parsePptxSlides(buffer, filename);
+  }
+
   const result = await parseDocument(buffer, filename);
   if (!result.success || !result.document) {
     throw new Error(`无法解析 slides: ${result.error ?? 'unknown'}`);

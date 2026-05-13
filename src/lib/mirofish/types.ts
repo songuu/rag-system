@@ -111,6 +111,7 @@ export interface EntityProfile {
   // 社交媒体
   social_media_style: string;
   typical_posts: string[];
+  behavioral_anchors?: BehavioralAnchors;
 
   // 观点倾向
   viewpoints: Record<string, string>;
@@ -122,6 +123,15 @@ export interface EntityProfile {
   // 生成元数据
   generated_at: string;
   model?: string;
+}
+
+/** MiroFish 最新 prompt layer 建议的行为锚点 */
+export interface BehavioralAnchors {
+  posting_style: 'terse' | 'verbose' | 'meme-heavy' | 'data-driven' | 'emotional';
+  active_hours: number[];
+  stance: 'supportive' | 'opposing' | 'neutral' | 'observer' | 'amplifier';
+  opinion_drift_rate: number;
+  influence_weight: number;
 }
 
 /** 人设生成选项 */

@@ -34,7 +34,37 @@ export interface SlidePage {
   raw_text: string;
   description: string;
   key_points: string[];
+  animations?: PPTAnimation[];
+  turning_mode?: TurningMode;
 }
+
+// ==================== OpenMAIC/PPTist 动画兼容层 ====================
+
+export type AnimationType = 'in' | 'out' | 'attention';
+export type AnimationTrigger = 'click' | 'meantime' | 'auto';
+
+export interface PPTAnimation {
+  id: string;
+  elId: string;
+  effect: string;
+  type: AnimationType;
+  duration: number;
+  trigger: AnimationTrigger;
+}
+
+export type TurningMode =
+  | 'no'
+  | 'fade'
+  | 'slideX'
+  | 'slideY'
+  | 'random'
+  | 'slideX3D'
+  | 'slideY3D'
+  | 'rotate'
+  | 'scaleY'
+  | 'scaleX'
+  | 'scale'
+  | 'scaleReverse';
 
 export interface KnowledgeNode {
   id: string;
@@ -63,11 +93,25 @@ export type SceneActionType =
   | 'speech'
   | 'spotlight'
   | 'laser'
+  | 'play_video'
   | 'whiteboard'
+  | 'wb_open'
+  | 'wb_draw_text'
+  | 'wb_draw_shape'
+  | 'wb_draw_chart'
+  | 'wb_draw_latex'
+  | 'wb_draw_table'
+  | 'wb_draw_line'
+  | 'wb_draw_code'
+  | 'wb_clear'
+  | 'wb_delete'
+  | 'wb_close'
   | 'discussion'
   | 'quiz'
   | 'widget_highlight'
-  | 'widget_setState';
+  | 'widget_setState'
+  | 'widget_annotation'
+  | 'widget_reveal';
 
 export interface SceneAction {
   id: string;
@@ -75,6 +119,12 @@ export interface SceneAction {
   title: string;
   content?: string;
   target?: string;
+  elementId?: string;
+  dimOpacity?: number;
+  color?: string;
+  duration?: number;
+  trigger?: AnimationTrigger;
+  animation?: PPTAnimation;
   state?: Record<string, unknown>;
 }
 
@@ -124,6 +174,23 @@ export interface CoursePrepared {
   active_questions: string[];
   stage?: CourseStage;
   scenes?: CourseScene[];
+}
+
+export type CourseGenerationLanguage = 'zh-CN' | 'en-US';
+
+export interface CourseSceneCapabilities {
+  quiz?: boolean;
+  interactive?: boolean;
+  pbl?: boolean;
+  whiteboard?: boolean;
+  spotlight?: boolean;
+  laser?: boolean;
+  animations?: boolean;
+}
+
+export interface CourseGenerationOptions {
+  language?: CourseGenerationLanguage;
+  capabilities?: CourseSceneCapabilities;
 }
 
 export interface MaicRagAsset {

@@ -7,10 +7,12 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import type { SlidePage, KnowledgeNode } from '../types';
+import type { SlidePage, KnowledgeNode, CourseGenerationLanguage } from '../types';
 import { mapPagesWithOrderedCallbacks } from './page-order';
 
 const DESCRIBE_PROMPT = `你是一名课堂内容分析师。下面是课程幻灯片某一页的文本:
+
+{LANGUAGE_DIRECTIVE}
 
 <slide index="{INDEX}">
 {TEXT}
@@ -26,6 +28,8 @@ const DESCRIBE_PROMPT = `你是一名课堂内容分析师。下面是课程幻�
 只输出 JSON,不要其他文字。`;
 
 const TREE_PROMPT = `你是课程知识工程师。基于以下幻灯片摘要,构建一棵树形知识分类。
+
+{LANGUAGE_DIRECTIVE}
 
 <slides>
 {SLIDES_SUMMARY}
@@ -54,7 +58,8 @@ const TREE_PROMPT = `你是课程知识工程师。基于以下幻灯片摘要,�
 export async function describePages(
   llm: BaseChatModel,
   pages: SlidePage[],
-  onPage?: (index: number) => void
+  onPage?: (index: number) => void,
+  language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<SlidePage[]> {
   const concurrency = 4;
   return mapPagesWithOrderedCallbacks(
@@ -62,6 +67,7 @@ export async function describePages(
     concurrency,
     async page => {
       const prompt = DESCRIBE_PROMPT
+        .replace('{LANGUAGE_DIRECTIVE}', buildLanguageDirective(language))
         .replace('{INDEX}', String(page.index))
         .replace('{TEXT}', truncate(page.raw_text, 2000));
       try {
@@ -88,12 +94,15 @@ export async function describePages(
 
 export async function buildKnowledgeTree(
   llm: BaseChatModel,
-  pages: SlidePage[]
+  pages: SlidePage[],
+  language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<KnowledgeNode> {
   const summary = pages
     .map(p => `[p${p.index}] ${p.description || p.raw_text.slice(0, 120)}`)
     .join('\n');
-  const prompt = TREE_PROMPT.replace('{SLIDES_SUMMARY}', truncate(summary, 5000));
+  const prompt = TREE_PROMPT
+    .replace('{LANGUAGE_DIRECTIVE}', buildLanguageDirective(language))
+    .replace('{SLIDES_SUMMARY}', truncate(summary, 5000));
 
   try {
     const resp = await llm.invoke([{ role: 'user', content: prompt }]);
@@ -145,4 +154,11 @@ function parseJson<T>(raw: string): T | null {
   } catch {
     return null;
   }
+}
+
+export function buildLanguageDirective(language: CourseGenerationLanguage): string {
+  if (language === 'en-US') {
+    return 'Language directive: write all generated classroom content in English. Keep JSON keys unchanged.';
+  }
+  return '语言指令: 所有生成的课堂内容必须使用中文。JSON key 保持不变。';
 }

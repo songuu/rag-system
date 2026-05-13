@@ -7,3 +7,11 @@ When aligning this project with OpenMAIC-like classroom products, model the runt
 ## MAIC/RAG: One Canonical Course Corpus
 
 When MAIC ingests course material, mirror the parsed text into the existing RAG `uploads/*_parsed.txt` corpus instead of keeping a MAIC-only private text source. MAIC can keep its own prepared classroom artifact cache, but the raw/parsed course text should remain discoverable by the shared RAG reinitialize and sync flows.
+
+## External Product Parity: Optional Compatibility Layer
+
+When tracking fast-moving upstream products such as MiroFish and OpenMAIC, absorb latest capabilities through optional fields, default-on capability flags, prompt-layer refinements, and post-processing guards before considering a wholesale upstream migration. Existing routes, persisted artifacts, and fallback render paths are the source of truth for functional parity.
+
+## OpenMAIC PPT Animation Parity
+
+For OpenMAIC PPT/slide parity, keep the local runtime on the existing `Course -> Prepared -> Scene -> Action` model and add official animation semantics as metadata: `PPTAnimation`, `TurningMode`, stable slide element ids, and optional scene action timing/effect fields. Prefer a lightweight parser and renderer bridge over importing the full upstream PPTist editor unless the product explicitly needs editable canvas parity.

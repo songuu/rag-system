@@ -11,7 +11,6 @@ import { createLLMFromOverride } from './model-override';
 import type {
   EntityProfile,
   SimulationPost,
-  InterviewRequest,
   InterviewResponse,
   ModelOverride,
 } from './types';
@@ -24,6 +23,7 @@ const INTERVIEW_PROMPT = `你正在扮演以下角色接受采访。请严格按
 职业: {occupation}
 性格: {personality}
 说话风格: {speaking_style}
+行为锚点: {behavioral_anchors}
 背景: {background}
 观点倾向:
 {viewpoints}
@@ -34,7 +34,8 @@ const INTERVIEW_PROMPT = `你正在扮演以下角色接受采访。请严格按
 ## 采访问题
 {question}
 
-请以角色身份回答，保持说话风格和观点一致。回答要自然，像真人接受采访一样。
+请以第一人称、自然口语化的方式直接回答，保持说话风格、观点和行为锚点一致。
+不要调用任何工具，不要解释推理过程，不要用"作为AI"开头，直接表达你真实的想法、情绪和立场。
 
 **输出JSON格式：**
 \`\`\`json
@@ -74,6 +75,7 @@ export class InteractionAgent {
       .replace('{occupation}', profile.occupation || '未知')
       .replace('{personality}', (profile.personality_traits || []).join(', '))
       .replace('{speaking_style}', profile.speaking_style || '普通')
+      .replace('{behavioral_anchors}', formatBehavioralAnchors(profile))
       .replace('{background}', profile.background || '')
       .replace('{viewpoints}', viewpointsText || '无特定观点')
       .replace('{agent_posts}', postsText)
@@ -95,7 +97,7 @@ export class InteractionAgent {
         confidence: typeof data.confidence === 'number' ? data.confidence : 0.5,
         timestamp: new Date().toISOString(),
       };
-    } catch (error) {
+    } catch {
       return {
         agent_id: profile.entity_id,
         agent_name: profile.entity_name,
@@ -147,4 +149,17 @@ export class InteractionAgent {
 
 export function getInteractionAgent(modelOverride?: ModelOverride): InteractionAgent {
   return new InteractionAgent(modelOverride);
+}
+
+function formatBehavioralAnchors(profile: EntityProfile): string {
+  const anchors = profile.behavioral_anchors;
+  if (!anchors) return '无特定行为锚点';
+
+  return [
+    `posting_style=${anchors.posting_style}`,
+    `active_hours=${anchors.active_hours.join(',')}`,
+    `stance=${anchors.stance}`,
+    `opinion_drift_rate=${anchors.opinion_drift_rate}`,
+    `influence_weight=${anchors.influence_weight}`,
+  ].join('; ');
 }

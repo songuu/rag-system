@@ -34,7 +34,7 @@ export function UploadDropzone({ onUploaded }: Props) {
       <div className="mb-3 text-4xl">📚</div>
       <div className="mb-2 text-lg font-medium">上传课程资料</div>
       <div className="mb-4 text-sm text-slate-400">
-        支持 PDF / Markdown / TXT / Word。系统会自动解析、生成知识树与讲课脚本。
+        支持 PPTX / PDF / Markdown / TXT / Word。系统会自动解析、生成知识树与讲课脚本。
       </div>
       <button
         type="button"
@@ -47,7 +47,7 @@ export function UploadDropzone({ onUploaded }: Props) {
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.md,.markdown,.txt,.docx,.doc,.json"
+        accept=".pptx,.pdf,.md,.markdown,.txt,.docx,.doc,.json"
         className="hidden"
         onChange={e => {
           const f = e.target.files?.[0];

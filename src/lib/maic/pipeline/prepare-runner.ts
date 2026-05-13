@@ -233,8 +233,10 @@ function getRawPagesForCourse(course: Course): SlidePage[] {
     return course.source_pages.map((page, index) => ({
       index,
       raw_text: page.raw_text.trim(),
-      description: '',
-      key_points: [],
+      description: page.description,
+      key_points: page.key_points,
+      animations: page.animations,
+      turning_mode: page.turning_mode,
     }));
   }
 

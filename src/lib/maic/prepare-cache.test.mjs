@@ -37,6 +37,35 @@ test('MAIC source hash preserves slide page boundaries', () => {
   assert.notEqual(splitPagesHash, mergedPageHash);
 });
 
+test('MAIC source hash includes explicit PPT animation metadata', () => {
+  const basePage = { index: 0, raw_text: '动画页', description: '', key_points: [] };
+  const withoutAnimations = createMaicSourceHash({
+    sourceText: '动画页',
+    pages: [basePage],
+  });
+  const withAnimations = createMaicSourceHash({
+    sourceText: '动画页',
+    pages: [
+      {
+        ...basePage,
+        animations: [
+          {
+            id: 'anim_1',
+            elId: 'pptx-sp-4',
+            effect: 'fade',
+            type: 'in',
+            duration: 700,
+            trigger: 'click',
+          },
+        ],
+        turning_mode: 'fade',
+      },
+    ],
+  });
+
+  assert.notEqual(withoutAnimations, withAnimations);
+});
+
 test('MAIC prepare cache identity is stable for the same source and model config', () => {
   const input = {
     sourceText: '稳定缓存内容',

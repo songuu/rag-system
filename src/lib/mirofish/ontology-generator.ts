@@ -10,11 +10,14 @@ import { createLLMFromOverride } from './model-override';
 import {
   ONTOLOGY_CONSTANTS,
   type Ontology,
+  type OntologyAttribute,
   type EntityTypeDefinition,
   type EdgeTypeDefinition,
   type OntologyGenerateRequest,
   type ModelOverride,
 } from './types';
+
+const RESERVED_ATTRIBUTE_NAMES = new Set<string>(ONTOLOGY_CONSTANTS.RESERVED_ATTRIBUTES);
 
 // 本体生成的系统提示词
 const ONTOLOGY_SYSTEM_PROMPT = `你是一个专业的知识图谱本体设计专家。你的任务是分析给定的文本内容和模拟需求，设计适合**社交媒体舆论模拟**的实体和关系类型定义。
@@ -250,7 +253,7 @@ export class OntologyGenerator {
 
     try {
       return JSON.parse(jsonMatch[0]);
-    } catch (error) {
+    } catch {
       // 尝试修复常见的 JSON 问题
       cleaned = this.fixJsonIssues(jsonMatch[0]);
       try {
@@ -288,12 +291,41 @@ export class OntologyGenerator {
    */
   private validateAndProcess(result: Partial<Ontology>): Ontology {
     // 确保必要字段存在
-    const entityTypes: EntityTypeDefinition[] = Array.isArray(result.entity_types)
+    const rawEntityTypes: EntityTypeDefinition[] = Array.isArray(result.entity_types)
       ? result.entity_types
       : [];
-    const edgeTypes: EdgeTypeDefinition[] = Array.isArray(result.edge_types)
+    const rawEdgeTypes: EdgeTypeDefinition[] = Array.isArray(result.edge_types)
       ? result.edge_types
       : [];
+    const entityNameMap = new Map<string, string>();
+    const usedEntityNames = new Set<string>();
+    const entityTypes = rawEntityTypes.map((entity, index) => {
+      const normalizedName = makeUniqueName(
+        normalizeEntityTypeName(entity.name || `Entity${index + 1}`),
+        usedEntityNames
+      );
+      entityNameMap.set(entity.name, normalizedName);
+      return {
+        ...entity,
+        name: normalizedName,
+        attributes: normalizeAttributes(entity.attributes),
+      };
+    });
+    const usedEdgeNames = new Set<string>();
+    const edgeTypes = rawEdgeTypes.map((edge, index) => ({
+      ...edge,
+      name: makeUniqueName(
+        normalizeEdgeTypeName(edge.name || `RELATED_TO_${index + 1}`),
+        usedEdgeNames
+      ),
+      source_targets: Array.isArray(edge.source_targets)
+        ? edge.source_targets.map(sourceTarget => ({
+            source: resolveEntityTypeName(sourceTarget.source, entityNameMap),
+            target: resolveEntityTypeName(sourceTarget.target, entityNameMap),
+          }))
+        : [],
+      attributes: normalizeAttributes(edge.attributes),
+    }));
 
     // 验证实体类型
     for (const entity of entityTypes) {
@@ -330,15 +362,11 @@ export class OntologyGenerator {
     const fallbacks: EntityTypeDefinition[] = [];
 
     if (!hasPerson) {
-      fallbacks.push({
-        ...ONTOLOGY_CONSTANTS.FALLBACK_ENTITY_TYPES.Person,
-      } as EntityTypeDefinition);
+      fallbacks.push(cloneEntityType(ONTOLOGY_CONSTANTS.FALLBACK_ENTITY_TYPES.Person));
     }
 
     if (!hasOrganization) {
-      fallbacks.push({
-        ...ONTOLOGY_CONSTANTS.FALLBACK_ENTITY_TYPES.Organization,
-      } as EntityTypeDefinition);
+      fallbacks.push(cloneEntityType(ONTOLOGY_CONSTANTS.FALLBACK_ENTITY_TYPES.Organization));
     }
 
     // 如果需要添加兜底类型
@@ -450,4 +478,83 @@ export class OntologyGenerator {
 
     return lines.join('\n');
   }
+}
+
+export function normalizeEntityTypeName(name: string): string {
+  const words = splitIdentifier(name);
+  if (words.length === 0) return 'Entity';
+  return words.map(toPascalWord).join('');
+}
+
+export function normalizeEdgeTypeName(name: string): string {
+  const words = splitIdentifier(name);
+  if (words.length === 0) return 'RELATED_TO';
+  return words.map(word => word.toUpperCase()).join('_');
+}
+
+function normalizeAttributeName(name: string): string {
+  const words = splitIdentifier(name);
+  let normalized = words.length > 0
+    ? words.map(word => word.toLowerCase()).join('_')
+    : 'description';
+  if (/^\d/.test(normalized)) normalized = `field_${normalized}`;
+  if (RESERVED_ATTRIBUTE_NAMES.has(normalized)) normalized = `custom_${normalized}`;
+  return normalized;
+}
+
+function normalizeAttributes(attributes: OntologyAttribute[] | undefined): OntologyAttribute[] {
+  if (!Array.isArray(attributes)) return [];
+  const usedAttributeNames = new Set<string>();
+  return attributes.map((attribute, index) => ({
+    ...attribute,
+    name: makeUniqueName(
+      normalizeAttributeName(attribute.name || `field_${index + 1}`),
+      usedAttributeNames
+    ),
+  }));
+}
+
+function resolveEntityTypeName(name: string, entityNameMap: Map<string, string>): string {
+  const normalized = normalizeEntityTypeName(name);
+  return entityNameMap.get(name) || entityNameMap.get(normalized) || normalized;
+}
+
+function makeUniqueName(name: string, usedNames: Set<string>): string {
+  let candidate = name;
+  let index = 2;
+  while (usedNames.has(candidate)) {
+    candidate = `${name}${index}`;
+    index += 1;
+  }
+  usedNames.add(candidate);
+  return candidate;
+}
+
+function splitIdentifier(value: string): string[] {
+  return String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function toPascalWord(word: string): string {
+  if (/^[A-Z0-9]{2,4}$/.test(word)) return word;
+  const lower = word.toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function cloneEntityType(entity: {
+  name: string;
+  description: string;
+  attributes: readonly OntologyAttribute[];
+  examples: readonly string[];
+}): EntityTypeDefinition {
+  return {
+    name: entity.name,
+    description: entity.description,
+    attributes: entity.attributes.map(attribute => ({ ...attribute })),
+    examples: [...entity.examples],
+  };
 }

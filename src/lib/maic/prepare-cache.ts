@@ -51,10 +51,19 @@ export function createMaicSourceHash(input: {
   pages?: SlidePage[];
 }): string {
   const pageBoundaryAwareSource = input.pages?.length
-    ? input.pages.map(page => ({
-        index: page.index,
-        raw_text: normalizeText(page.raw_text),
-      }))
+    ? input.pages.map(page => {
+        const hasAnimationMetadata = !!page.animations?.length || !!page.turning_mode;
+        return {
+          index: page.index,
+          raw_text: normalizeText(page.raw_text),
+          ...(hasAnimationMetadata
+            ? {
+                animations: page.animations ?? [],
+                turning_mode: page.turning_mode,
+              }
+            : {}),
+        };
+      })
     : normalizeText(input.sourceText);
 
   return createHash('sha256')
