@@ -55,6 +55,10 @@ test('stage builder keeps current capabilities enabled by default', () => {
   assert.ok(scenes.some(scene => scene.type === 'pbl'));
   assert.ok(scenes[0].actions.some(action => action.type === 'whiteboard'));
   assert.ok(scenes[0].actions.some(action => action.type === 'spotlight' && action.animation));
+  assert.equal(
+    scenes[0].actions.find(action => action.type === 'spotlight')?.focusHold,
+    'until_next_focus'
+  );
 });
 
 test('stage builder maps slide animations to stable OpenMAIC action targets', () => {
@@ -83,6 +87,57 @@ test('stage builder maps slide animations to stable OpenMAIC action targets', ()
   assert.equal(spotlight?.elementId, 'slide-0-point-0');
   assert.equal(spotlight?.animation?.elId, 'slide-0-point-0');
   assert.equal(spotlight?.animation?.duration, 720);
+});
+
+test('stage builder uses model-derived PPT focus plan instead of first key point heuristic', () => {
+  const { scenes } = buildCourseStage(pages, tree, ['问题一'], {
+    capabilities: { quiz: false, interactive: false, pbl: false },
+    focusPlans: [
+      {
+        slide_index: 0,
+        source: 'model',
+        primary: {
+          kind: 'key_point',
+          index: 1,
+          elementId: 'slide-0-point-1',
+          text: '示例',
+          label: '模型选择的重点',
+          reason: '示例最适合帮助学生迁移核心概念。',
+          confidence: 0.91,
+        },
+        secondary: {
+          kind: 'key_point',
+          index: 0,
+          elementId: 'slide-0-point-0',
+          text: '核心概念',
+        },
+        focusHold: 'until_next_focus',
+        confidence: 0.91,
+      },
+    ],
+  });
+
+  const spotlight = scenes[0].actions.find(action => action.type === 'spotlight');
+  const laser = scenes[0].actions.find(action => action.type === 'laser');
+  assert.equal(spotlight?.elementId, 'slide-0-point-1');
+  assert.equal(spotlight?.title, '模型选择的重点');
+  assert.equal(spotlight?.focusSource, 'model');
+  assert.equal(spotlight?.focusConfidence, 0.91);
+  assert.equal(laser?.elementId, 'slide-0-point-0');
+});
+
+test('stage builder keeps PPT spotlight focus hovering unless explicitly disabled', () => {
+  const { scenes } = buildCourseStage(pages, tree, ['问题一'], {
+    capabilities: {
+      quiz: false,
+      interactive: false,
+      pbl: false,
+      focusHover: false,
+    },
+  });
+
+  const spotlight = scenes[0].actions.find(action => action.type === 'spotlight');
+  assert.equal(spotlight?.focusHold, 'duration');
 });
 
 test('stage builder can conditionally remove capabilities without changing slide fallback', () => {

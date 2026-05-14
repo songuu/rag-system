@@ -8,6 +8,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { ProfileGenerator } from '@/lib/mirofish/profile-generator';
 import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getMiroFishProfileBatchCacheIdentity,
+  getMiroFishProfileCacheIdentity,
+  loadMiroFishProfileBatchFromCache,
+  loadMiroFishProfileFromCache,
+  saveMiroFishProfileBatchToCache,
+  saveMiroFishProfileToCache,
+} from '@/lib/mirofish/artifact-cache';
 import type {
   ProfileGenerateRequest,
   ProfileBatchGenerateRequest,
@@ -40,12 +48,27 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const cacheIdentity = getMiroFishProfileBatchCacheIdentity({
+        request: batchRequest,
+        modelOverride,
+      });
+      const cached = await loadMiroFishProfileBatchFromCache(cacheIdentity);
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          profiles: cached.artifact,
+          cache_status: 'hit',
+        });
+      }
+
       const generator = new ProfileGenerator(modelOverride);
       const profiles = await generator.generateProfiles(batchRequest);
+      const stored = await saveMiroFishProfileBatchToCache(cacheIdentity, profiles);
 
       return NextResponse.json({
         success: true,
         profiles,
+        cache_status: stored ? 'stored' : 'miss',
       });
     } else {
       // 单个生成
@@ -66,12 +89,27 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const cacheIdentity = getMiroFishProfileCacheIdentity({
+        request: profileRequest,
+        modelOverride,
+      });
+      const cached = await loadMiroFishProfileFromCache(cacheIdentity);
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          profile: cached.artifact,
+          cache_status: 'hit',
+        });
+      }
+
       const generator = new ProfileGenerator(modelOverride);
       const profile = await generator.generateProfile(profileRequest);
+      const stored = await saveMiroFishProfileToCache(cacheIdentity, profile);
 
       return NextResponse.json({
         success: true,
         profile,
+        cache_status: stored ? 'stored' : 'miss',
       });
     }
   } catch (error) {

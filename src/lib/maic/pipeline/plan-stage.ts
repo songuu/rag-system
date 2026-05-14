@@ -18,7 +18,10 @@ import type {
   CourseGenerationLanguage,
   CourseGenerationOptions,
   CourseSceneCapabilities,
+  FocusHoldMode,
   PPTAnimation,
+  SlideFocusPlan,
+  SlideFocusTarget,
 } from '../types';
 import { mapPagesWithOrderedCallbacks } from './page-order';
 import { buildLanguageDirective } from './read-stage';
@@ -59,6 +62,43 @@ const QUESTIONS_PROMPT = `基于以下课程知识树,生成 6 个高质量的�
 输出 JSON 数组:
 \`\`\`json
 ["问题1", "问题2", "问题3", "问题4", "问题5", "问题6"]
+\`\`\`
+只输出 JSON。`;
+
+const FOCUS_PROMPT = `你是 OpenMAIC PPT 播放策略设计师。请根据幻灯片内容判断课堂播放时最应该重点悬停的元素。
+
+{LANGUAGE_DIRECTIVE}
+
+判定原则:
+- 不要机械选择第一个要点;必须基于教学目标、概念中心性、学生可能误解点、承上启下关系判断。
+- primary_candidate_id 是必须重点悬停的元素。
+- secondary_candidate_id 是可选的激光指示元素,应与 primary 不同,用于辅助解释。
+- hold_mode 默认选择 until_next_focus;只有非常短暂的提示才选择 duration。
+- confidence 取 0 到 1。
+
+<course>
+标题: {TREE_TITLE}
+摘要: {TREE_SUMMARY}
+</course>
+
+<slide index="{INDEX}">
+描述: {DESCRIPTION}
+要点: {POINTS}
+候选元素(JSON):
+{CANDIDATES}
+原文: {TEXT}
+</slide>
+
+重点策略格式 (严格 JSON 对象):
+\`\`\`json
+{
+  "primary_candidate_id": "point_1",
+  "secondary_candidate_id": "point_0",
+  "focus_label": "重点名称",
+  "rationale": "为什么这里是本页最该悬停的重点",
+  "confidence": 0.86,
+  "hold_mode": "until_next_focus"
+}
 \`\`\`
 只输出 JSON。`;
 
@@ -132,6 +172,44 @@ export async function generateActiveQuestions(
   ];
 }
 
+export async function generateSlideFocusPlans(
+  llm: BaseChatModel,
+  pages: SlidePage[],
+  tree: KnowledgeNode,
+  onPage?: (index: number) => void,
+  language: CourseGenerationLanguage = 'zh-CN'
+): Promise<SlideFocusPlan[]> {
+  const concurrency = 4;
+  return mapPagesWithOrderedCallbacks(
+    pages,
+    concurrency,
+    async page => {
+      const candidates = buildFocusCandidates(page);
+      const prompt = FOCUS_PROMPT
+        .replace('{LANGUAGE_DIRECTIVE}', buildLanguageDirective(language))
+        .replace('{TREE_TITLE}', tree.title || '(无)')
+        .replace('{TREE_SUMMARY}', truncate(tree.summary || '', 700) || '(无)')
+        .replaceAll('{INDEX}', String(page.index))
+        .replace('{DESCRIPTION}', page.description || '(无)')
+        .replace('{POINTS}', page.key_points.join('; ') || '(无)')
+        .replace('{CANDIDATES}', JSON.stringify(candidates, null, 2))
+        .replace('{TEXT}', truncate(page.raw_text, 1600));
+
+      try {
+        const resp = await llm.invoke([{ role: 'user', content: prompt }]);
+        const parsed = parseJson<Record<string, unknown>>(String(resp.content));
+        const plan = normalizeModelFocusPlan(page, candidates, parsed);
+        if (plan) return plan;
+      } catch {
+        /* fallthrough */
+      }
+
+      return buildFallbackSlideFocusPlan(page);
+    },
+    onPage
+  );
+}
+
 export function buildCourseStage(
   pages: SlidePage[],
   tree: KnowledgeNode,
@@ -140,6 +218,9 @@ export function buildCourseStage(
 ): { stage: CourseStage; scenes: CourseScene[] } {
   const objectives = collectObjectives(tree, pages);
   const capabilities = normalizeCapabilities(options.capabilities);
+  const focusPlanBySlide = new Map(
+    (options.focusPlans ?? []).map(plan => [plan.slide_index, plan])
+  );
   const scenes: CourseScene[] = [];
 
   for (const page of pages) {
@@ -149,7 +230,8 @@ export function buildCourseStage(
         page,
         order,
         questions[page.index % Math.max(questions.length, 1)],
-        capabilities
+        capabilities,
+        focusPlanBySlide.get(page.index)
       )
     );
 
@@ -182,11 +264,13 @@ function buildSlideScene(
   page: SlidePage,
   order: number,
   discussionQuestion: string | undefined,
-  capabilities: Required<CourseSceneCapabilities>
+  capabilities: Required<CourseSceneCapabilities>,
+  modelFocusPlan?: SlideFocusPlan
 ): CourseScene {
   const keyPoints = normalizeKeyPoints(page);
   const visiblePointCount = Math.min(keyPoints.length, 4);
   const descriptionElementId = getSlideDescriptionElementId(page.index);
+  const focusPlan = modelFocusPlan ?? buildFallbackSlideFocusPlan(page);
   const actions: SceneAction[] = [
     sceneAction('speech', page.index, '教师讲解', page.description || page.raw_text.slice(0, 240), undefined, {
       elementId: descriptionElementId,
@@ -209,37 +293,40 @@ function buildSlideScene(
     ),
   ];
   if (capabilities.spotlight) {
-    const targetId = getSlidePointElementId(page.index, 0);
-    const animation = actionAnimationForPoint(page, 0, visiblePointCount, targetId, capabilities);
+    const focusTarget = focusPlan.primary;
+    const targetId = focusTarget.elementId;
+    const animation = actionAnimationForFocusTarget(page, focusTarget, visiblePointCount, capabilities);
     actions.splice(
       1,
       0,
-      sceneAction('spotlight', page.index, '聚光重点', keyPoints[0] || page.description, targetId, {
+      sceneAction('spotlight', page.index, focusTarget.label || '聚光重点', focusTarget.text, targetId, {
         elementId: targetId,
-        dimOpacity: 0.55,
+        dimOpacity: focusPlan.dimOpacity ?? 0.55,
         duration: animation?.duration,
         trigger: animation?.trigger,
+        focusHold: capabilities.focusHover ? focusPlan.focusHold ?? 'until_next_focus' : 'duration',
+        focusSource: focusPlan.source,
+        focusReason: focusTarget.reason ?? focusPlan.rationale,
+        focusConfidence: focusTarget.confidence ?? focusPlan.confidence,
         animation,
       })
     );
   }
-  if (capabilities.laser) {
-    const targetId = getSlidePointElementId(page.index, Math.min(1, Math.max(visiblePointCount - 1, 0)));
-    const animation = actionAnimationForPoint(
-      page,
-      Math.min(1, Math.max(visiblePointCount - 1, 0)),
-      visiblePointCount,
-      targetId,
-      capabilities
-    );
+  if (capabilities.laser && focusPlan.secondary) {
+    const focusTarget = focusPlan.secondary;
+    const targetId = focusTarget.elementId;
+    const animation = actionAnimationForFocusTarget(page, focusTarget, visiblePointCount, capabilities);
     actions.splice(
       Math.min(actions.length, 2),
       0,
-      sceneAction('laser', page.index, '激光指示', keyPoints[1] || keyPoints[0], targetId, {
+      sceneAction('laser', page.index, focusTarget.label || '激光指示', focusTarget.text, targetId, {
         elementId: targetId,
         color: '#ff3b30',
         duration: animation?.duration,
         trigger: animation?.trigger,
+        focusSource: focusPlan.source,
+        focusReason: focusTarget.reason,
+        focusConfidence: focusTarget.confidence,
         animation,
       })
     );
@@ -385,6 +472,158 @@ function actionAnimationForPoint(
   return { ...animation, elId: targetId };
 }
 
+function actionAnimationForFocusTarget(
+  page: SlidePage,
+  target: SlideFocusTarget,
+  pointCount: number,
+  capabilities: Required<CourseSceneCapabilities>
+): PPTAnimation | undefined {
+  if (!capabilities.animations) return undefined;
+  if (target.kind === 'description') {
+    const descriptionId = getSlideDescriptionElementId(page.index);
+    return (
+      page.animations?.find(animation => animation.elId === descriptionId) ?? {
+        id: `anim_scene_${page.index}_description_focus`,
+        elId: descriptionId,
+        effect: 'spotlight',
+        type: 'attention',
+        duration: 650,
+        trigger: 'auto',
+      }
+    );
+  }
+  return actionAnimationForPoint(page, target.index ?? 0, pointCount, target.elementId, capabilities);
+}
+
+export function buildFallbackSlideFocusPlan(page: SlidePage): SlideFocusPlan {
+  const candidates = buildFocusCandidates(page);
+  const primary =
+    candidates.find(candidate => candidate.kind === 'key_point') ??
+    candidates.find(candidate => candidate.kind === 'description') ??
+    fallbackDescriptionCandidate(page);
+  const secondary = candidates.find(
+    candidate => candidate.kind === 'key_point' && candidate.elementId !== primary.elementId
+  );
+
+  return {
+    slide_index: page.index,
+    source: 'fallback',
+    primary,
+    secondary,
+    focusHold: 'until_next_focus',
+    dimOpacity: 0.55,
+    rationale: '模型重点解析不可用时,使用本页结构化要点作为稳定兜底。',
+    confidence: 0.35,
+  };
+}
+
+interface FocusCandidate extends SlideFocusTarget {
+  id: string;
+}
+
+function buildFocusCandidates(page: SlidePage): FocusCandidate[] {
+  const candidates: FocusCandidate[] = [];
+  const description = (page.description || page.raw_text.slice(0, 220)).trim();
+  if (description) {
+    candidates.push({
+      id: 'description',
+      kind: 'description',
+      elementId: getSlideDescriptionElementId(page.index),
+      text: description,
+      label: '悬停描述',
+    });
+  }
+
+  page.key_points.slice(0, 4).forEach((point, index) => {
+    const text = point.trim();
+    if (!text) return;
+    candidates.push({
+      id: `point_${index}`,
+      kind: 'key_point',
+      index,
+      elementId: getSlidePointElementId(page.index, index),
+      text,
+      label: `悬停要点 ${index + 1}`,
+    });
+  });
+
+  if (candidates.length === 0) candidates.push(fallbackDescriptionCandidate(page));
+  return candidates;
+}
+
+function fallbackDescriptionCandidate(page: SlidePage): FocusCandidate {
+  return {
+    id: 'description',
+    kind: 'description',
+    elementId: getSlideDescriptionElementId(page.index),
+    text: page.raw_text.slice(0, 220) || `第 ${page.index + 1} 页`,
+    label: '悬停描述',
+  };
+}
+
+function normalizeModelFocusPlan(
+  page: SlidePage,
+  candidates: FocusCandidate[],
+  raw: Record<string, unknown> | null
+): SlideFocusPlan | null {
+  if (!raw) return null;
+  const primaryId = readString(raw.primary_candidate_id);
+  const primary = candidates.find(candidate => candidate.id === primaryId);
+  if (!primary) return null;
+
+  const secondaryId = readString(raw.secondary_candidate_id);
+  const secondary = candidates.find(
+    candidate => candidate.id === secondaryId && candidate.elementId !== primary.elementId
+  );
+  const confidence = clampConfidence(raw.confidence);
+  const rationale = readString(raw.rationale);
+  const holdMode = normalizeFocusHoldMode(raw.hold_mode);
+  const focusLabel = readString(raw.focus_label);
+
+  return {
+    slide_index: page.index,
+    source: 'model',
+    primary: {
+      ...primary,
+      label: focusLabel || primary.label,
+      reason: rationale,
+      confidence,
+    },
+    secondary: secondary
+      ? {
+          ...secondary,
+          reason: secondary.text ? `辅助解释: ${secondary.text}` : undefined,
+          confidence,
+        }
+      : undefined,
+    focusHold: holdMode,
+    dimOpacity: 0.55,
+    rationale,
+    confidence,
+  };
+}
+
+function normalizeFocusHoldMode(value: unknown): FocusHoldMode {
+  if (
+    value === 'none' ||
+    value === 'until_next_focus' ||
+    value === 'until_slide_change' ||
+    value === 'duration'
+  ) {
+    return value;
+  }
+  return 'until_next_focus';
+}
+
+function clampConfidence(value: unknown): number | undefined {
+  if (typeof value !== 'number' || Number.isNaN(value)) return undefined;
+  return Math.max(0, Math.min(1, value));
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
 function collectObjectives(tree: KnowledgeNode, pages: SlidePage[]): string[] {
   const fromTree = tree.children
     .flatMap(child => [child.title, ...child.children.map(grandChild => grandChild.title)])
@@ -439,5 +678,6 @@ function normalizeCapabilities(
     spotlight: capabilities?.spotlight ?? true,
     laser: capabilities?.laser ?? true,
     animations: capabilities?.animations ?? true,
+    focusHover: capabilities?.focusHover ?? true,
   };
 }

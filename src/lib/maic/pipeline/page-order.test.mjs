@@ -16,7 +16,7 @@ registerHooks({
 });
 
 const { describePages } = await import('./read-stage.ts');
-const { generateLectureScript } = await import('./plan-stage.ts');
+const { generateLectureScript, generateSlideFocusPlans } = await import('./plan-stage.ts');
 
 const pages = Array.from({ length: 4 }, (_, index) => ({
   index,
@@ -58,6 +58,32 @@ test('generateLectureScript emits page callbacks in slide order even if LLM call
   );
 });
 
+test('generateSlideFocusPlans lets the model choose the PPT focus target in slide order', async () => {
+  const callbackOrder = [];
+  const describedPages = pages.map(page => ({
+    ...page,
+    description: `第 ${page.index + 1} 页描述`,
+    key_points: [`第 ${page.index + 1} 页普通背景`, `第 ${page.index + 1} 页模型重点`],
+  }));
+  const tree = { title: '课程主题', summary: '课程摘要', page_refs: [], children: [] };
+
+  const focusPlans = await generateSlideFocusPlans(
+    createOutOfOrderLLM(),
+    describedPages,
+    tree,
+    pageIndex => {
+      callbackOrder.push(pageIndex);
+    }
+  );
+
+  assert.deepEqual(callbackOrder, [0, 1, 2, 3]);
+  assert.deepEqual(
+    focusPlans.map(plan => plan.primary.elementId),
+    ['slide-0-point-1', 'slide-1-point-1', 'slide-2-point-1', 'slide-3-point-1']
+  );
+  assert.ok(focusPlans.every(plan => plan.source === 'model'));
+});
+
 function createOutOfOrderLLM() {
   return {
     async invoke(messages) {
@@ -71,6 +97,19 @@ function createOutOfOrderLLM() {
             { type: 'ShowFile', value: { slide_index: pageIndex } },
             { type: 'ReadScript', value: { script: `讲解第 ${pageIndex + 1} 页` } },
           ]),
+        };
+      }
+
+      if (prompt.includes('重点策略格式')) {
+        return {
+          content: JSON.stringify({
+            primary_candidate_id: 'point_1',
+            secondary_candidate_id: 'point_0',
+            focus_label: '模型判断重点',
+            rationale: '第二个要点最能解释本页核心概念。',
+            confidence: 0.88,
+            hold_mode: 'until_next_focus',
+          }),
         };
       }
 

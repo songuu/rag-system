@@ -24,6 +24,7 @@ const STEP_LABELS: Record<string, string> = {
   'prepare:tree': '构建知识树',
   'prepare:script': '生成讲课脚本',
   'prepare:questions': '生成主动提问',
+  'prepare:focus': '解析重点悬停',
   'prepare:scenes': '生成场景动作',
   'prepare:done': '完成',
   'prepare:error': '错误',

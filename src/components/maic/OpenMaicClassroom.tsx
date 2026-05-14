@@ -27,6 +27,7 @@ import {
   buildDefaultSlideAnimations,
   getSlideDescriptionElementId,
   getSlidePointElementId,
+  shouldHoldFocus,
 } from '@/lib/maic/slide-animation';
 
 type SpeakerRole = AgentRole | 'student';
@@ -41,6 +42,7 @@ interface StageEffect {
   targetId?: string;
   dimOpacity?: number;
   color?: string;
+  focusHold?: SceneAction['focusHold'];
 }
 
 interface TtsPlayback {
@@ -85,6 +87,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const [sending, setSending] = useState(false);
   const [connected, setConnected] = useState(false);
   const [stageEffect, setStageEffect] = useState<StageEffect | null>(null);
+  const [heldFocusEffect, setHeldFocusEffect] = useState<StageEffect | null>(null);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
@@ -129,6 +132,10 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const latestUtterance = utterances.at(-1);
   const courseReady = course?.status === 'ready' && !!course.prepared;
   const courseCompleted = classroomState?.status === 'ended';
+  const visibleStageEffect = useMemo(() => {
+    if (stageEffect?.kind === 'spotlight' || stageEffect?.kind === 'laser') return stageEffect;
+    return heldFocusEffect ?? stageEffect;
+  }, [heldFocusEffect, stageEffect]);
   const quizStorageKey = useMemo(() => `maic:${courseId}:quiz-answers`, [courseId]);
   const completionSummary = useMemo(
     () => buildCompletionSummary(scenes, quizAnswers),
@@ -258,6 +265,8 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
 
   useEffect(() => {
     clearStageAnimationTimers();
+    setStageEffect(null);
+    setHeldFocusEffect(null);
     if (!selectedScene || selectedScene.type !== 'slide' || selectedScene.actions.length === 0) {
       return;
     }
@@ -267,16 +276,19 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
 
     for (const item of schedule) {
       const timer = window.setTimeout(() => {
+        if (item.hold) {
+          setHeldFocusEffect(item.effect);
+          setStageEffect(current => (current?.kind === 'spotlight' ? null : current));
+          return;
+        }
         setStageEffect(item.effect);
+        const clearTimer = window.setTimeout(() => {
+          setStageEffect(current => (isSameStageEffect(current, item.effect) ? null : current));
+        }, item.duration);
+        stageAnimationTimersRef.current.push(clearTimer);
       }, item.delay);
       stageAnimationTimersRef.current.push(timer);
     }
-
-    const lastItem = schedule.at(-1);
-    const clearDelay = (lastItem?.delay ?? 0) + (lastItem?.duration ?? 900);
-    stageAnimationTimersRef.current.push(
-      window.setTimeout(() => setStageEffect(null), Math.max(clearDelay, 1800))
-    );
 
     return () => {
       clearStageAnimationTimers();
@@ -636,7 +648,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
               <SceneViewport
                 scene={selectedScene}
                 page={currentPage}
-                effect={stageEffect}
+                effect={visibleStageEffect}
                 whiteboardOpen={whiteboardOpen}
                 utterance={latestUtterance}
                 quizAnswers={quizAnswers}
@@ -1062,9 +1074,21 @@ function SlideScene({
   const slideIndex = page?.index ?? scene.page_refs[0] ?? 0;
   const descriptionElementId = getSlideDescriptionElementId(slideIndex);
   const slideRef = useRef<HTMLDivElement | null>(null);
-  const targetRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const targetRefs = useRef<Record<string, HTMLElement | null>>({});
   const [effectRect, setEffectRect] = useState<SlideElementRect | null>(null);
-  const activeTargetId = effect?.targetId;
+  const [hoverTarget, setHoverTarget] = useState<{ sceneId: string; targetId: string } | null>(null);
+  const hoverTargetId = hoverTarget?.sceneId === scene.id ? hoverTarget.targetId : null;
+  const hoverEffect: StageEffect | null = hoverTargetId
+    ? {
+        kind: 'spotlight',
+        label: '重点悬停',
+        targetId: hoverTargetId,
+        dimOpacity: 0.48,
+        focusHold: 'until_next_focus',
+      }
+    : null;
+  const visibleEffect = hoverEffect ?? effect;
+  const activeTargetId = visibleEffect?.targetId;
 
   useLayoutEffect(() => {
     if (!activeTargetId || !slideRef.current) {
@@ -1122,11 +1146,11 @@ function SlideScene({
         ref={slideRef}
         className="relative flex-1 overflow-hidden rounded-[1.5rem] border border-white/10 bg-gradient-to-br from-slate-100 to-white p-8 text-slate-950 shadow-2xl"
       >
-        {effect?.kind === 'spotlight' && effectRect && (
-          <SlideSpotlightOverlay rect={effectRect} dimOpacity={effect.dimOpacity ?? 0.55} />
+        {visibleEffect?.kind === 'spotlight' && effectRect && (
+          <SlideSpotlightOverlay rect={effectRect} dimOpacity={visibleEffect.dimOpacity ?? 0.55} />
         )}
-        {effect?.kind === 'laser' && effectRect && (
-          <SlideLaserOverlay rect={effectRect} color={effect.color ?? '#ff3b30'} />
+        {visibleEffect?.kind === 'laser' && effectRect && (
+          <SlideLaserOverlay rect={effectRect} color={visibleEffect.color ?? '#ff3b30'} />
         )}
 
         <div className="relative z-10 max-w-4xl">
@@ -1150,11 +1174,24 @@ function SlideScene({
                   ref={node => {
                     targetRefs.current[elementId] = node;
                   }}
+                  tabIndex={0}
                   data-maic-element-id={elementId}
+                  onMouseEnter={() => setHoverTarget({ sceneId: scene.id, targetId: elementId })}
+                  onMouseLeave={() =>
+                    setHoverTarget(current =>
+                      current?.sceneId === scene.id && current.targetId === elementId ? null : current
+                    )
+                  }
+                  onFocus={() => setHoverTarget({ sceneId: scene.id, targetId: elementId })}
+                  onBlur={() =>
+                    setHoverTarget(current =>
+                      current?.sceneId === scene.id && current.targetId === elementId ? null : current
+                    )
+                  }
                   className={`rounded-2xl border p-5 shadow-sm transition duration-500 ${
-                    active && effect?.kind === 'spotlight'
+                    active && visibleEffect?.kind === 'spotlight'
                       ? 'border-teal-400 bg-teal-50 shadow-teal-200/80'
-                      : active && effect?.kind === 'laser'
+                      : active && visibleEffect?.kind === 'laser'
                         ? 'border-red-300 bg-red-50 shadow-red-200/70'
                         : 'border-slate-200 bg-white/80'
                   }`}
@@ -1508,6 +1545,7 @@ interface SceneEffectScheduleItem {
   effect: StageEffect;
   delay: number;
   duration: number;
+  hold: boolean;
 }
 
 function buildSceneEffectSchedule(actions: SceneAction[]): SceneEffectScheduleItem[] {
@@ -1519,7 +1557,7 @@ function buildSceneEffectSchedule(actions: SceneAction[]): SceneEffectScheduleIt
     const duration = getSceneActionDuration(action);
     if (effect) {
       const delay = action.trigger === 'meantime' ? Math.max(cursor - Math.min(duration, 300), 0) : cursor;
-      schedule.push({ effect, delay, duration });
+      schedule.push({ effect, delay, duration, hold: shouldHoldFocus(action) });
     }
 
     if (action.type === 'spotlight' || action.type === 'laser') {
@@ -1543,6 +1581,7 @@ function toStageEffectFromSceneAction(action: SceneAction): StageEffect | null {
         label: action.title,
         targetId,
         dimOpacity: action.dimOpacity,
+        focusHold: action.focusHold,
       };
     case 'laser':
       return {
@@ -1569,6 +1608,14 @@ function toStageEffectFromSceneAction(action: SceneAction): StageEffect | null {
     default:
       return null;
   }
+}
+
+function isSameStageEffect(current: StageEffect | null, next: StageEffect): boolean {
+  return (
+    current?.kind === next.kind &&
+    current.label === next.label &&
+    current.targetId === next.targetId
+  );
 }
 
 function getSceneActionDuration(action: SceneAction): number {
@@ -1909,6 +1956,8 @@ function hydrateSlideSceneAnimations(scene: CourseScene, pages: SlidePage[]): Co
           animation: { ...animation, elId: elementId },
           dimOpacity: action.type === 'spotlight' ? 0.55 : action.dimOpacity,
           color: action.type === 'laser' ? action.color ?? '#ff3b30' : action.color,
+          focusHold:
+            action.type === 'spotlight' ? action.focusHold ?? 'until_next_focus' : action.focusHold,
         };
       }
       return action;

@@ -77,6 +77,7 @@ test('MAIC prepare cache identity is stable for the same source and model config
 
   assert.equal(first.cache_key, second.cache_key);
   assert.equal(first.source_hash, second.source_hash);
+  assert.equal(first.source_hash, createMaicSourceHash(input));
   assert.match(first.cache_file, /maic-cache[/\\][a-f0-9]{32}\.json$/);
 });
 

@@ -42,6 +42,8 @@ export interface SlidePage {
 
 export type AnimationType = 'in' | 'out' | 'attention';
 export type AnimationTrigger = 'click' | 'meantime' | 'auto';
+export type FocusHoldMode = 'none' | 'until_next_focus' | 'until_slide_change' | 'duration';
+export type FocusSource = 'model' | 'fallback';
 
 export interface PPTAnimation {
   id: string;
@@ -65,6 +67,27 @@ export type TurningMode =
   | 'scaleX'
   | 'scale'
   | 'scaleReverse';
+
+export interface SlideFocusTarget {
+  kind: 'description' | 'key_point';
+  elementId: string;
+  text: string;
+  index?: number;
+  label?: string;
+  reason?: string;
+  confidence?: number;
+}
+
+export interface SlideFocusPlan {
+  slide_index: number;
+  source: FocusSource;
+  primary: SlideFocusTarget;
+  secondary?: SlideFocusTarget;
+  focusHold?: FocusHoldMode;
+  dimOpacity?: number;
+  rationale?: string;
+  confidence?: number;
+}
 
 export interface KnowledgeNode {
   id: string;
@@ -124,6 +147,10 @@ export interface SceneAction {
   color?: string;
   duration?: number;
   trigger?: AnimationTrigger;
+  focusHold?: FocusHoldMode;
+  focusSource?: FocusSource;
+  focusReason?: string;
+  focusConfidence?: number;
   animation?: PPTAnimation;
   state?: Record<string, unknown>;
 }
@@ -172,6 +199,7 @@ export interface CoursePrepared {
   knowledge_tree: KnowledgeNode;
   lecture_script: ScriptEntry[];
   active_questions: string[];
+  focus_plans?: SlideFocusPlan[];
   stage?: CourseStage;
   scenes?: CourseScene[];
 }
@@ -186,11 +214,13 @@ export interface CourseSceneCapabilities {
   spotlight?: boolean;
   laser?: boolean;
   animations?: boolean;
+  focusHover?: boolean;
 }
 
 export interface CourseGenerationOptions {
   language?: CourseGenerationLanguage;
   capabilities?: CourseSceneCapabilities;
+  focusPlans?: SlideFocusPlan[];
 }
 
 export interface MaicRagAsset {
@@ -281,6 +311,7 @@ export interface PrepareEvent {
     | 'prepare:tree'
     | 'prepare:script'
     | 'prepare:questions'
+    | 'prepare:focus'
     | 'prepare:scenes'
     | 'prepare:done'
     | 'prepare:error';

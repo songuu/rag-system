@@ -15,3 +15,15 @@ When tracking fast-moving upstream products such as MiroFish and OpenMAIC, absor
 ## OpenMAIC PPT Animation Parity
 
 For OpenMAIC PPT/slide parity, keep the local runtime on the existing `Course -> Prepared -> Scene -> Action` model and add official animation semantics as metadata: `PPTAnimation`, `TurningMode`, stable slide element ids, and optional scene action timing/effect fields. Prefer a lightweight parser and renderer bridge over importing the full upstream PPTist editor unless the product explicitly needs editable canvas parity.
+
+## OpenMAIC PPT Focus Hover Is Sticky
+
+Treat PPT focus hover as a playback semantic, not a disposable visual flourish. `spotlight` actions should persist as held focus until the next focus target or slide/scene change; non-focus actions such as speech, discussion, whiteboard, and laser must not clear the held focus unless they explicitly carry a focus target.
+
+## OpenMAIC PPT Focus Is Model-Derived
+
+Do not choose PPT spotlight targets by fixed key-point order except as a fallback. The prepare pipeline should ask the model to produce a validated `SlideFocusPlan` from the slide description, raw text, key points, and course context, then map that plan to stable slide element ids for playback.
+
+## RAG Evolves Through A Kernel, Not More API Branches
+
+For this project, future RAG capability should be expressed as a `RAG Kernel` policy, retrieval lane, corpus adapter, evaluator, or cache layer before adding another top-level `/api/ask` branch. The current system already has many modes; the next architecture step is a shared kernel plus retrieval control plane that unifies dense/sparse/graph retrieval, fusion, reranking, context packing, trace, and evaluation while preserving existing MiroFish/OpenMAIC product behavior.

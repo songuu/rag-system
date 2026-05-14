@@ -7,6 +7,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { OntologyGenerator } from '@/lib/mirofish/ontology-generator';
 import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getMiroFishOntologyCacheIdentity,
+  loadMiroFishOntologyFromCache,
+  saveMiroFishOntologyToCache,
+} from '@/lib/mirofish/artifact-cache';
 import type { OntologyGenerateRequest } from '@/lib/mirofish/types';
 
 export async function POST(request: NextRequest) {
@@ -25,16 +30,35 @@ export async function POST(request: NextRequest) {
     }
 
     const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const cacheIdentity = getMiroFishOntologyCacheIdentity({
+      request: {
+        texts: body.texts,
+        simulationRequirement: body.simulationRequirement,
+        additionalContext: body.additionalContext,
+      },
+      modelOverride,
+    });
+    const cached = await loadMiroFishOntologyFromCache(cacheIdentity);
+    if (cached) {
+      return NextResponse.json({
+        success: true,
+        ontology: cached.artifact,
+        cache_status: 'hit',
+      });
+    }
+
     const generator = new OntologyGenerator(modelOverride);
     const ontology = await generator.generate({
       texts: body.texts,
       simulationRequirement: body.simulationRequirement,
       additionalContext: body.additionalContext,
     });
+    const stored = await saveMiroFishOntologyToCache(cacheIdentity, ontology);
 
     return NextResponse.json({
       success: true,
       ontology,
+      cache_status: stored ? 'stored' : 'miss',
     });
   } catch (error) {
     console.error('[MiroFish Ontology API] 生成失败:', error);

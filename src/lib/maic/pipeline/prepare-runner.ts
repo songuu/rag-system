@@ -14,7 +14,12 @@ import {
   savePreparedToCache,
 } from '../prepare-cache';
 import { describePages, buildKnowledgeTree } from './read-stage';
-import { generateLectureScript, generateActiveQuestions, buildCourseStage } from './plan-stage';
+import {
+  generateLectureScript,
+  generateActiveQuestions,
+  generateSlideFocusPlans,
+  buildCourseStage,
+} from './plan-stage';
 
 type Listener = (event: PrepareEvent) => void;
 
@@ -192,14 +197,26 @@ class PrepareRunner {
     // 5. Active questions
     emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
     const questions = await generateActiveQuestions(llm, tree);
+    emit({ type: 'prepare:focus', data: { message: '解析 PPT 重点悬停策略' } });
+    const focusPlans = await generateSlideFocusPlans(llm, described, tree, idx => {
+      emit({
+        type: 'prepare:focus',
+        data: {
+          page_index: idx,
+          total_pages: described.length,
+          progress: (idx + 1) / described.length,
+        },
+      });
+    });
     emit({ type: 'prepare:scenes', data: { message: '生成 OpenMAIC 场景与动作' } });
-    const { stage, scenes } = buildCourseStage(described, tree, questions);
+    const { stage, scenes } = buildCourseStage(described, tree, questions, { focusPlans });
 
     const prepared: CoursePrepared = {
       pages: described,
       knowledge_tree: tree,
       lecture_script: script,
       active_questions: questions,
+      focus_plans: focusPlans,
       stage,
       scenes,
     };

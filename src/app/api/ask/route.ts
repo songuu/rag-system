@@ -3,15 +3,24 @@ import { getRagSystem } from '@/lib/rag-instance';
 import { analyzeQuery } from '@/lib/semantic-analyzer';
 import { getMilvusInstance, MilvusConfig } from '@/lib/milvus-client';
 import { Embeddings } from '@langchain/core/embeddings';
-import { AgenticRAGSystem } from '@/lib/agentic-rag';
+import { AgenticRAGSystem, type RetrievedDocument as AgenticRetrievedDocumentBase } from '@/lib/agentic-rag';
 import { createAdaptiveEntityRAG } from '@/lib/adaptive-entity-rag';
 import { 
   createLLM, 
   createEmbedding,
-  getModelFactory,
-  getConfigSummary,
 } from '@/lib/model-config';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
+import {
+  RagKernel,
+  createRagPolicy,
+  resolveRagPolicyId,
+  type RagKernelEnvelope,
+  type RagQueryRequest,
+} from '@/lib/rag';
+
+type AgenticRetrievedDocument = AgenticRetrievedDocumentBase & {
+  factualScore?: number;
+};
 
 // 获取默认 Milvus 配置（使用统一配置系统）
 function getDefaultMilvusConfig(): MilvusConfig {
@@ -39,7 +48,7 @@ function getEmbeddingModel(modelName: string): Embeddings {
  * LangChain chat models 的 invoke() 返回 AIMessage 对象
  * content 可能是字符串或复杂类型，需要安全提取
  */
-function extractLLMContent(response: any): string {
+function extractLLMContent(response: unknown): string {
   // 如果已经是字符串，直接返回
   if (typeof response === 'string') {
     return response;
@@ -52,7 +61,7 @@ function extractLLMContent(response: any): string {
   
   // 如果有 content 属性（AIMessage 对象）
   if (typeof response === 'object' && 'content' in response) {
-    const content = response.content;
+    const content = (response as { content?: unknown }).content;
     
     // content 是字符串
     if (typeof content === 'string') {
@@ -62,9 +71,12 @@ function extractLLMContent(response: any): string {
     // content 是数组（多部分消息）
     if (Array.isArray(content)) {
       return content
-        .map(part => {
+        .map((part: unknown) => {
           if (typeof part === 'string') return part;
-          if (part && typeof part === 'object' && 'text' in part) return part.text;
+          if (part && typeof part === 'object' && 'text' in part) {
+            const text = (part as { text?: unknown }).text;
+            return typeof text === 'string' ? text : '';
+          }
           return '';
         })
         .filter(Boolean)
@@ -112,89 +124,28 @@ export async function POST(request: NextRequest) {
 
     console.log(`[Ask API] 使用模型 - LLM: ${llmModel}, Embedding: ${embeddingModel}, 后端: ${storageBackend}, Agentic: ${useAgenticRAG}, AdaptiveEntity: ${useAdaptiveEntityRAG}`);
 
-    // 使用自适应实体路由 RAG 模式
-    if (useAdaptiveEntityRAG && storageBackend === 'milvus') {
-      return await handleAdaptiveEntityQuery(question, {
-        topK: parseInt(topK),
-        llmModel,
-        embeddingModel,
-        maxRetries: parseInt(maxRetries),
-        enableReranking,
-      });
-    }
-
-    // 使用 Agentic RAG 模式
-    if (useAgenticRAG && storageBackend === 'milvus') {
-      return await handleAgenticQuery(question, {
-        topK: parseInt(topK),
-        similarityThreshold: parseFloat(similarityThreshold),
-        llmModel,
-        embeddingModel,
-        maxRetries: parseInt(maxRetries),
-      });
-    }
-
-    // 根据存储后端选择不同的检索方式
-    if (storageBackend === 'milvus') {
-      return await handleMilvusQuery(question, {
-        topK: parseInt(topK),
-        similarityThreshold: parseFloat(similarityThreshold),
-        llmModel,
-        embeddingModel,
-        userId,
-        sessionId
-      });
-    }
-
-    // 默认使用内存存储
-    const ragSystem = await getRagSystem();
-    
-    const result = await ragSystem.askWithDetails(question.trim(), {
+    const ragRequest: RagQueryRequest = {
+      question: question.trim(),
       topK: parseInt(topK),
       similarityThreshold: parseFloat(similarityThreshold),
       llmModel,
       embeddingModel,
+      storageBackend,
       userId,
-      sessionId
-    });
+      sessionId,
+      useAgenticRAG,
+      useAdaptiveEntityRAG,
+      maxRetries: parseInt(maxRetries),
+      enableReranking,
+      raw: body,
+    };
 
-    // 使用语义分析器进行深度分析
-    const queryEmbedding = result.retrievalDetails.queryEmbedding;
-    const queryAnalysis = analyzeQuery(
-      question,
-      queryEmbedding,
-      embeddingModel, // 使用实际选择的模型名称
-      result.retrievalDetails.queryVectorizationTime || 0
-    );
+    const kernel = createAskKernel(ragRequest);
+    const policyId = resolveRagPolicyId(ragRequest);
+    const result = await kernel.execute(ragRequest, policyId);
 
-    return NextResponse.json({
-      success: true,
-      question,
-      answer: result.answer,
-      models: {
-        llm: llmModel,
-        embedding: embeddingModel
-      },
-      retrievalDetails: {
-        searchResults: result.retrievalDetails.searchResults.map(r => ({
-          document: {
-            content: r.document.pageContent,
-            metadata: r.document.metadata
-          },
-          similarity: r.similarity,
-          index: r.index
-        })),
-        queryEmbedding: queryEmbedding.slice(0, 10),
-        threshold: result.retrievalDetails.threshold,
-        topK: result.retrievalDetails.topK,
-        totalDocuments: result.retrievalDetails.totalDocuments,
-        searchTime: result.retrievalDetails.searchTime
-      },
-      queryAnalysis,
-      context: result.context,
-      traceId: result.traceId,
-      timestamp: new Date().toISOString(),
-    });
+    attachRagKernelHeaders(result.output, result.envelope);
+    return result.output;
 
   } catch (error) {
     console.error("问答处理错误:", error);
@@ -206,6 +157,109 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+function createAskKernel(ragRequest: RagQueryRequest): RagKernel<NextResponse> {
+  return new RagKernel<NextResponse>([
+    createRagPolicy({
+      id: 'adaptive-entity',
+      description: 'Adaptive entity-routing RAG backed by Milvus.',
+      execute: () => handleAdaptiveEntityQuery(ragRequest.question, {
+        topK: ragRequest.topK,
+        llmModel: ragRequest.llmModel,
+        embeddingModel: ragRequest.embeddingModel,
+        maxRetries: ragRequest.maxRetries ?? 2,
+        enableReranking: ragRequest.enableReranking ?? true,
+      }),
+    }),
+    createRagPolicy({
+      id: 'agentic',
+      description: 'Agentic RAG backed by Milvus with retrieval grading.',
+      execute: () => handleAgenticQuery(ragRequest.question, {
+        topK: ragRequest.topK,
+        similarityThreshold: ragRequest.similarityThreshold,
+        llmModel: ragRequest.llmModel,
+        embeddingModel: ragRequest.embeddingModel,
+        maxRetries: ragRequest.maxRetries ?? 2,
+      }),
+    }),
+    createRagPolicy({
+      id: 'milvus-2step',
+      description: 'Two-step Milvus dense-vector retrieval and generation.',
+      execute: () => handleMilvusQuery(ragRequest.question, {
+        topK: ragRequest.topK,
+        similarityThreshold: ragRequest.similarityThreshold,
+        llmModel: ragRequest.llmModel,
+        embeddingModel: ragRequest.embeddingModel,
+        userId: ragRequest.userId,
+        sessionId: ragRequest.sessionId,
+      }),
+    }),
+    createRagPolicy({
+      id: 'memory',
+      description: 'Legacy in-memory vector store RAG path.',
+      execute: () => handleMemoryQuery(ragRequest),
+    }),
+  ]);
+}
+
+function attachRagKernelHeaders(
+  response: NextResponse,
+  envelope: RagKernelEnvelope
+): void {
+  response.headers.set('x-rag-policy', envelope.policy_id);
+  response.headers.set('x-rag-trace-id', envelope.trace_id);
+}
+
+async function handleMemoryQuery(ragRequest: RagQueryRequest) {
+  const ragSystem = await getRagSystem();
+
+  const result = await ragSystem.askWithDetails(ragRequest.question, {
+    topK: ragRequest.topK,
+    similarityThreshold: ragRequest.similarityThreshold,
+    llmModel: ragRequest.llmModel,
+    embeddingModel: ragRequest.embeddingModel,
+    userId: ragRequest.userId,
+    sessionId: ragRequest.sessionId
+  });
+
+  // 使用语义分析器进行深度分析
+  const queryEmbedding = result.retrievalDetails.queryEmbedding;
+  const queryAnalysis = analyzeQuery(
+    ragRequest.question,
+    queryEmbedding,
+    ragRequest.embeddingModel,
+    result.retrievalDetails.queryVectorizationTime || 0
+  );
+
+  return NextResponse.json({
+    success: true,
+    question: ragRequest.question,
+    answer: result.answer,
+    models: {
+      llm: ragRequest.llmModel,
+      embedding: ragRequest.embeddingModel
+    },
+    retrievalDetails: {
+      searchResults: result.retrievalDetails.searchResults.map(r => ({
+        document: {
+          content: r.document.pageContent,
+          metadata: r.document.metadata
+        },
+        similarity: r.similarity,
+        index: r.index
+      })),
+      queryEmbedding: queryEmbedding.slice(0, 10),
+      threshold: result.retrievalDetails.threshold,
+      topK: result.retrievalDetails.topK,
+      totalDocuments: result.retrievalDetails.totalDocuments,
+      searchTime: result.retrievalDetails.searchTime
+    },
+    queryAnalysis,
+    context: result.context,
+    traceId: result.traceId,
+    timestamp: new Date().toISOString(),
+  });
 }
 
 // Milvus 查询处理
@@ -344,7 +398,6 @@ async function handleAgenticQuery(
         collectionName: milvusConfig.collectionName,
       },
       enableHallucinationCheck: true,
-      enableSelfReflection: true,
     });
 
     const result = await agenticRAG.query(question, {
@@ -376,23 +429,27 @@ async function handleAgenticQuery(
       
       // 检索详情
       retrievalDetails: {
-        searchResults: result.retrievedDocuments.map((doc, i) => ({
-          document: {
-            content: doc.content,
-            metadata: doc.metadata,
-          },
-          similarity: doc.score,
-          relevanceScore: doc.relevanceScore,
-          factualScore: doc.factualScore,
-          index: i,
-        })),
+        searchResults: result.retrievedDocuments.map((doc, i) => {
+          const scoredDocument = doc as AgenticRetrievedDocument;
+
+          return {
+            document: {
+              content: scoredDocument.content,
+              metadata: scoredDocument.metadata,
+            },
+            similarity: scoredDocument.score,
+            relevanceScore: scoredDocument.relevanceScore,
+            factualScore: scoredDocument.factualScore,
+            index: i,
+          };
+        }),
         quality: result.retrievalQuality,
         selfReflection: result.selfReflection,
         totalDocuments: result.retrievedDocuments.length,
         // 添加标准字段以兼容前端显示
         threshold: similarityThreshold,
         topK: topK,
-        searchTime: result.workflowSteps?.find((s: any) => s.step === '文档检索')?.duration || 0,
+        searchTime: result.workflowSteps?.find((step: { step?: string; duration?: number }) => step.step === '文档检索')?.duration || 0,
       },
       
       // 幻觉检查

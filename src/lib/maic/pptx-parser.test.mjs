@@ -16,7 +16,11 @@ registerHooks({
 });
 
 const { extractPptxAnimationsFromSlideXml } = await import('./pptx-parser.ts');
-const { buildDefaultSlideAnimations, getSlidePointElementId } = await import('./slide-animation.ts');
+const {
+  buildDefaultSlideAnimations,
+  getSlidePointElementId,
+  shouldHoldFocus,
+} = await import('./slide-animation.ts');
 
 test('PPTX timing XML is converted to OpenMAIC-style PPTAnimation metadata', () => {
   const xml = `
@@ -60,6 +64,26 @@ test('default slide animations expose stable local slide element ids', () => {
   assert.equal(animations[0].elId, 'slide-3-description');
   assert.equal(animations[1].elId, getSlidePointElementId(3, 0));
   assert.equal(animations[2].type, 'attention');
+});
+
+test('spotlight focus defaults to a persistent hover during playback', () => {
+  assert.equal(
+    shouldHoldFocus({
+      id: 'focus_1',
+      type: 'spotlight',
+      title: '聚光重点',
+    }),
+    true
+  );
+  assert.equal(
+    shouldHoldFocus({
+      id: 'focus_2',
+      type: 'spotlight',
+      title: '短暂强调',
+      focusHold: 'duration',
+    }),
+    false
+  );
 });
 
 function isRelativeImport(specifier) {

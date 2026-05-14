@@ -1,4 +1,4 @@
-import type { PPTAnimation, SlidePage, SceneAction } from './types';
+import type { FocusHoldMode, PPTAnimation, SlidePage, SceneAction } from './types';
 
 const DEFAULT_ANIMATION_DURATION = 650;
 
@@ -64,5 +64,16 @@ export function getSlidePointAnimation(
 }
 
 export function isFireAndForgetAction(action: SceneAction): boolean {
-  return action.type === 'spotlight' || action.type === 'laser';
+  return action.type === 'laser' || (action.type === 'spotlight' && !shouldHoldFocus(action));
+}
+
+export function getFocusHoldMode(action: SceneAction): FocusHoldMode {
+  if (action.focusHold) return action.focusHold;
+  if (action.type === 'spotlight') return 'until_next_focus';
+  return 'none';
+}
+
+export function shouldHoldFocus(action: SceneAction): boolean {
+  const mode = getFocusHoldMode(action);
+  return action.type === 'spotlight' && (mode === 'until_next_focus' || mode === 'until_slide_change');
 }
