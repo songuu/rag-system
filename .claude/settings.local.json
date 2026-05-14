@@ -3,7 +3,15 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(xargs grep:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(curl -s \"https://api.github.com/repos/AIDC-AI/OpenMAIC/releases\")",
+      "Bash(curl -s \"https://api.github.com/search/repositories?q=OpenMAIC\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/THU-MAIC/OpenMAIC/main/CHANGELOG.md\")",
+      "Bash(curl -s \"https://api.github.com/repos/THU-MAIC/OpenMAIC/commits?since=2026-04-26T00:00:00Z&per_page=40\")",
+      "Bash(grep *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git *)"
     ]
   }
 }

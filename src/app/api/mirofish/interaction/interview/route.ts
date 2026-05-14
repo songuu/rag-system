@@ -28,8 +28,8 @@ export async function POST(request: NextRequest) {
     }
 
     const runner = getSimulationRunner();
-    const info = runner.get(simulation_id);
-    if (!info) {
+    const snapshot = runner.getSnapshot(simulation_id);
+    if (!snapshot) {
       return NextResponse.json(
         { success: false, error: '模拟不存在' },
         { status: 404 }
@@ -37,12 +37,12 @@ export async function POST(request: NextRequest) {
     }
 
     const interactionAgent = getInteractionAgent(modelOverride);
-    const allPosts = runner.getPosts(simulation_id);
+    const allPosts = snapshot.posts;
 
     // 批量采访所有 Agent
     if (batch) {
       const responses = await interactionAgent.batchInterview(
-        info.agent_profiles,
+        snapshot.info.agent_profiles,
         question,
         allPosts
       );
@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const profile = info.agent_profiles.find(p => p.entity_id === agent_id);
+    const profile = snapshot.info.agent_profiles.find(p => p.entity_id === agent_id);
     if (!profile) {
       return NextResponse.json(
         { success: false, error: 'Agent 不存在' },

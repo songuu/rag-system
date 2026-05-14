@@ -15,6 +15,7 @@ export async function GET(): Promise<NextResponse> {
       created_at: c.created_at,
       updated_at: c.updated_at,
       page_count: c.prepared?.pages.length ?? c.source_pages?.length ?? 0,
+      scene_types: Array.from(new Set(c.prepared?.scenes?.map(scene => scene.type) ?? [])),
     }));
   return NextResponse.json({ success: true, data: courses });
 }

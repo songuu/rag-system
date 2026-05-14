@@ -406,6 +406,7 @@ function buildInteractiveScene(page: SlidePage, order: number): CourseScene {
     actions: [
       sceneAction('widget_setState', page.index, '设置交互参数', keyPoints[0] || page.description),
       sceneAction('widget_highlight', page.index, '高亮关键变量', keyPoints[1] || keyPoints[0]),
+      sceneAction('widget_annotation', page.index, '交互标注', keyPoints[2] || keyPoints[0]),
       sceneAction('speech', page.index, '教师引导', '请尝试改变参数,观察结果如何变化。'),
     ],
     interactive: {

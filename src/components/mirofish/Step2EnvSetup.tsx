@@ -51,8 +51,8 @@ const PERSONALITY_COLORS: Record<string, string> = {
   default: 'bg-violet-500/15 text-violet-300',
 };
 
-function getTraitColor(_trait: string): string {
-  return PERSONALITY_COLORS.default;
+function getTraitColor(trait: string): string {
+  return PERSONALITY_COLORS[trait] ?? PERSONALITY_COLORS.default;
 }
 
 export default function Step2EnvSetup({
@@ -67,6 +67,7 @@ export default function Step2EnvSetup({
 }: Step2Props) {
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [simulationLoading, setSimulationLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [topicInput, setTopicInput] = useState('');
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
@@ -122,23 +123,46 @@ export default function Step2EnvSetup({
   const createSimulation = async () => {
     if (profiles.length === 0) { setError('请先生成Agent人设'); return; }
     if (config.seed_topics.length === 0) { setError('请至少添加一个种子话题'); return; }
+    setSimulationLoading(true);
     setError(null);
     try {
+      const selectedEntityIds = selectedEntities.length > 0 ? selectedEntities : undefined;
+
+      const prepareResponse = await fetch('/api/mirofish/simulation/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          graphNodes,
+          selectedEntityIds,
+          config,
+          profiles,
+          modelOverride: modelOverride || undefined,
+        }),
+      });
+      const prepareData = await prepareResponse.json();
+      if (!prepareData.success) throw new Error(prepareData.error || '准备模拟环境失败');
+
+      const prepared = prepareData.data;
+      onProfilesGenerated(prepared.profiles || profiles);
+
       const response = await fetch('/api/mirofish/simulation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          config: { ...config, project_id: projectId, agents_per_round: Math.min(config.agents_per_round, profiles.length) },
-          profiles,
+          project_id: projectId,
+          prepare_id: prepared.prepare_id,
           modelOverride: modelOverride || undefined,
         }),
       });
       const data = await response.json();
       if (!data.success) throw new Error(data.error || '创建模拟失败');
-      onSimulationCreated(data.simulation.simulation_id, config);
+      onSimulationCreated(data.simulation.simulation_id, prepared.config || config);
       onComplete();
     } catch (err) {
       setError(err instanceof Error ? err.message : '创建模拟失败');
+    } finally {
+      setSimulationLoading(false);
     }
   };
 
@@ -350,10 +374,13 @@ export default function Step2EnvSetup({
               <button
                 type="button"
                 onClick={createSimulation}
+                disabled={simulationLoading}
                 className="group w-full rounded-2xl bg-gradient-to-r from-purple-600 via-violet-600 to-fuchsia-600 p-px shadow-lg shadow-purple-500/20"
               >
                 <div className="flex items-center justify-center gap-2 rounded-[15px] bg-[#060612] px-6 py-3.5 transition-colors group-hover:bg-[#0a0a1a]">
-                  <span className="text-sm font-semibold text-white">🚀 创建模拟并进入下一步</span>
+                  <span className="text-sm font-semibold text-white">
+                    {simulationLoading ? '准备环境并创建模拟...' : '🚀 创建模拟并进入下一步'}
+                  </span>
                   <span className="text-purple-400 transition-transform group-hover:translate-x-1">→</span>
                 </div>
               </button>

@@ -121,27 +121,15 @@ async function parseMarkdownFile(buffer: Buffer, filename: string): Promise<Pars
  */
 async function parsePdfFile(buffer: Buffer, filename: string): Promise<ParseResult> {
   console.log(`[PDF Parser] 开始解析: ${filename}, 大小: ${buffer.length} bytes`);
+  let parser: Awaited<ReturnType<typeof createPdfParser>> | null = null;
   
   try {
-    // 动态导入 pdf-parse v2.x
-    const { PDFParse } = await import('pdf-parse');
-    console.log('[PDF Parser] pdf-parse 模块加载成功');
-    
-    // 使用 v2 API: 需要先创建 PDFParse 实例
-    const parser = new PDFParse({ data: buffer });
+    parser = await createPdfParser(buffer);
     console.log('[PDF Parser] PDFParse 实例创建成功');
     
     // 获取文本内容
     const textResult = await parser.getText();
     console.log(`[PDF Parser] 文本提取成功, 长度: ${textResult.text.length}`);
-    
-    // 获取文档信息（页数等）
-    const infoResult = await parser.getInfo();
-    console.log(`[PDF Parser] 文档信息获取成功, 页数: ${infoResult.total}`);
-    
-    // 释放资源
-    await parser.destroy();
-    console.log('[PDF Parser] 资源已释放');
     
     return {
       success: true,
@@ -151,7 +139,7 @@ async function parsePdfFile(buffer: Buffer, filename: string): Promise<ParseResu
           filename,
           extension: '.pdf',
           size: buffer.length,
-          pages: infoResult.total,
+          pages: textResult.total,
           parseMethod: 'pdf-parse-v2',
         },
       },
@@ -162,7 +150,18 @@ async function parsePdfFile(buffer: Buffer, filename: string): Promise<ParseResu
       success: false,
       error: `PDF 解析失败: ${error instanceof Error ? error.message : String(error)}`,
     };
+  } finally {
+    if (parser) {
+      await parser.destroy();
+      console.log('[PDF Parser] 资源已释放');
+    }
   }
+}
+
+async function createPdfParser(buffer: Buffer) {
+  const { PDFParse } = await import('pdf-parse');
+  console.log('[PDF Parser] pdf-parse 模块加载成功');
+  return new PDFParse({ data: buffer });
 }
 
 /**

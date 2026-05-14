@@ -17,7 +17,7 @@
  */
 
 import { ChatOllama, OllamaEmbeddings } from '@langchain/ollama';
-import { ChatOpenAI } from '@langchain/openai';
+import { AzureChatOpenAI, ChatOpenAI } from '@langchain/openai';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
 
@@ -36,7 +36,7 @@ import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
 // ==================== 类型定义 ====================
 
 /** 模型提供商 */
-export type ModelProvider = 'ollama' | 'openai' | 'azure' | 'custom';
+export type ModelProvider = 'ollama' | 'openai' | 'azure' | 'custom' | 'openrouter' | 'lemonade';
 
 /** 模型类型 */
 export type ModelType = 'llm' | 'embedding' | 'reasoning';
@@ -75,6 +75,18 @@ export interface EnvConfig {
   OPENAI_LLM_MODEL: string;
   OPENAI_EMBEDDING_MODEL: string;
   OPENAI_REASONING_MODEL: string;
+
+  // OpenRouter 配置（OpenAI-compatible）
+  OPENROUTER_API_KEY?: string;
+  OPENROUTER_BASE_URL: string;
+  OPENROUTER_LLM_MODEL: string;
+  OPENROUTER_REASONING_MODEL: string;
+
+  // Lemonade 本地 OpenAI-compatible 配置
+  LEMONADE_API_KEY?: string;
+  LEMONADE_BASE_URL: string;
+  LEMONADE_LLM_MODEL: string;
+  LEMONADE_REASONING_MODEL: string;
 
   // Azure OpenAI 配置
   AZURE_OPENAI_API_KEY?: string;
@@ -131,6 +143,16 @@ const DEFAULT_OPENAI_CONFIG = {
   reasoning: 'gpt-4o',
 };
 
+const DEFAULT_OPENROUTER_CONFIG = {
+  llm: 'deepseek/deepseek-v4-flash',
+  reasoning: 'deepseek/deepseek-v4-pro',
+};
+
+const DEFAULT_LEMONADE_CONFIG = {
+  llm: 'Qwen3.5-4B-GGUF',
+  reasoning: 'Qwen3.5-4B-GGUF',
+};
+
 // ==================== 环境变量解析 ====================
 
 /**
@@ -162,6 +184,20 @@ export function loadEnvConfig(): EnvConfig {
     OPENAI_LLM_MODEL: process.env.OPENAI_LLM_MODEL || DEFAULT_OPENAI_CONFIG.llm,
     OPENAI_EMBEDDING_MODEL: process.env.OPENAI_EMBEDDING_MODEL || DEFAULT_OPENAI_CONFIG.embedding,
     OPENAI_REASONING_MODEL: process.env.OPENAI_REASONING_MODEL || DEFAULT_OPENAI_CONFIG.reasoning,
+
+    // OpenRouter
+    OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+    OPENROUTER_LLM_MODEL: process.env.OPENROUTER_LLM_MODEL || DEFAULT_OPENROUTER_CONFIG.llm,
+    OPENROUTER_REASONING_MODEL:
+      process.env.OPENROUTER_REASONING_MODEL || DEFAULT_OPENROUTER_CONFIG.reasoning,
+
+    // Lemonade
+    LEMONADE_API_KEY: process.env.LEMONADE_API_KEY,
+    LEMONADE_BASE_URL: process.env.LEMONADE_BASE_URL || 'http://localhost:13305/v1',
+    LEMONADE_LLM_MODEL: process.env.LEMONADE_LLM_MODEL || DEFAULT_LEMONADE_CONFIG.llm,
+    LEMONADE_REASONING_MODEL:
+      process.env.LEMONADE_REASONING_MODEL || DEFAULT_LEMONADE_CONFIG.reasoning,
 
     // Azure
     AZURE_OPENAI_API_KEY: process.env.AZURE_OPENAI_API_KEY,
@@ -356,6 +392,12 @@ export class ModelFactory {
       case 'custom':
         llm = this.createCustomLLM(modelName, options);
         break;
+      case 'openrouter':
+        llm = this.createOpenRouterLLM(modelName, options);
+        break;
+      case 'lemonade':
+        llm = this.createLemonadeLLM(modelName, options);
+        break;
       default:
         throw new Error(`不支持的模型提供商: ${provider}`);
     }
@@ -379,6 +421,7 @@ export class ModelFactory {
   private createOpenAILLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOpenAI {
     const actualModel = modelName || this.envConfig.OPENAI_LLM_MODEL;
     const apiKey = options.apiKey || this.envConfig.OPENAI_API_KEY;
+    const baseURL = options.baseUrl || this.envConfig.OPENAI_BASE_URL;
 
     if (!apiKey) {
       throw new Error('OpenAI API Key 未配置。请设置 OPENAI_API_KEY 环境变量。');
@@ -391,29 +434,28 @@ export class ModelFactory {
       modelName: actualModel,
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
-      configuration: this.envConfig.OPENAI_BASE_URL ? {
-        baseURL: options.baseUrl || this.envConfig.OPENAI_BASE_URL,
-      } : undefined,
+      configuration: baseURL ? { baseURL } : undefined,
       ...options.options,
     });
   }
 
-  private createAzureLLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOpenAI {
+  private createAzureLLM(modelName?: string, options: Partial<ModelConfig> = {}): AzureChatOpenAI {
     const deployment = modelName || this.envConfig.AZURE_OPENAI_LLM_DEPLOYMENT;
     const apiKey = options.apiKey || this.envConfig.AZURE_OPENAI_API_KEY;
     const endpoint = options.baseUrl || this.envConfig.AZURE_OPENAI_ENDPOINT;
 
-    if (!apiKey || !endpoint) {
-      throw new Error('Azure OpenAI 配置不完整。请设置 AZURE_OPENAI_API_KEY 和 AZURE_OPENAI_ENDPOINT。');
+    if (!apiKey || !endpoint || !deployment) {
+      throw new Error(
+        'Azure OpenAI 配置不完整。请设置 AZURE_OPENAI_API_KEY、AZURE_OPENAI_ENDPOINT 和 AZURE_OPENAI_LLM_DEPLOYMENT。'
+      );
     }
 
     console.log(`[ModelFactory] 创建 Azure OpenAI LLM: ${deployment}`);
 
-    return new ChatOpenAI({
+    return new AzureChatOpenAI({
       azureOpenAIApiKey: apiKey,
+      azureOpenAIEndpoint: endpoint,
       azureOpenAIApiDeploymentName: deployment,
-      azureOpenAIApiInstanceName: endpoint.replace('https://', '').replace('.openai.azure.com', ''),
-      azureOpenAIApiVersion: '2024-02-15-preview',
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
       ...options.options,
@@ -441,6 +483,79 @@ export class ModelFactory {
         baseURL: baseUrl,
       },
       ...options.options,
+    });
+  }
+
+  private createOpenRouterLLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOpenAI {
+    const actualModel = modelName || this.envConfig.OPENROUTER_LLM_MODEL;
+    const apiKey = options.apiKey || this.envConfig.OPENROUTER_API_KEY;
+    const baseUrl = options.baseUrl || this.envConfig.OPENROUTER_BASE_URL;
+
+    if (!apiKey) {
+      throw new Error('OpenRouter API Key 未配置。请设置 OPENROUTER_API_KEY 环境变量。');
+    }
+
+    console.log(`[ModelFactory] 创建 OpenRouter LLM: ${actualModel}`);
+
+    return this.createOpenAICompatibleLLM({
+      label: 'OpenRouter',
+      modelName: actualModel,
+      apiKey,
+      baseUrl,
+      temperature: options.temperature ?? 0.7,
+      maxTokens: options.maxTokens,
+      options: options.options,
+    });
+  }
+
+  private createLemonadeLLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOpenAI {
+    const actualModel = modelName || this.envConfig.LEMONADE_LLM_MODEL;
+    const apiKey = options.apiKey || this.envConfig.LEMONADE_API_KEY || 'lemonade';
+    const baseUrl = options.baseUrl || this.envConfig.LEMONADE_BASE_URL;
+
+    console.log(`[ModelFactory] 创建 Lemonade LLM: ${actualModel} @ ${baseUrl}`);
+
+    return this.createOpenAICompatibleLLM({
+      label: 'Lemonade',
+      modelName: actualModel,
+      apiKey,
+      baseUrl,
+      temperature: options.temperature ?? 0.7,
+      maxTokens: options.maxTokens,
+      options: options.options,
+    });
+  }
+
+  private createOpenAICompatibleLLM({
+    label,
+    modelName,
+    apiKey,
+    baseUrl,
+    temperature,
+    maxTokens,
+    options,
+  }: {
+    label: string;
+    modelName: string;
+    apiKey: string;
+    baseUrl: string;
+    temperature: number;
+    maxTokens?: number;
+    options?: Record<string, unknown>;
+  }): ChatOpenAI {
+    if (!baseUrl) {
+      throw new Error(`${label} Base URL 未配置。`);
+    }
+
+    return new ChatOpenAI({
+      apiKey,
+      model: modelName,
+      temperature,
+      maxTokens,
+      configuration: {
+        baseURL: baseUrl,
+      },
+      ...options,
     });
   }
 
@@ -550,6 +665,46 @@ export class ModelFactory {
         });
         break;
 
+      case 'openrouter': {
+        const openRouterModel = modelName || this.envConfig.OPENROUTER_REASONING_MODEL;
+        const apiKey = reasoningOptions.apiKey || this.envConfig.OPENROUTER_API_KEY;
+        const baseUrl = reasoningOptions.baseUrl || this.envConfig.OPENROUTER_BASE_URL;
+
+        if (!apiKey) {
+          throw new Error('[ModelFactory] OpenRouter Reasoning 需要配置 OPENROUTER_API_KEY');
+        }
+
+        console.log(`[ModelFactory] 创建 OpenRouter 推理模型: ${openRouterModel}`);
+        model = this.createOpenAICompatibleLLM({
+          label: 'OpenRouter Reasoning',
+          modelName: openRouterModel,
+          apiKey,
+          baseUrl,
+          temperature: reasoningOptions.temperature,
+          maxTokens: reasoningOptions.maxTokens,
+          options: reasoningOptions.options,
+        });
+        break;
+      }
+
+      case 'lemonade': {
+        const lemonadeModel = modelName || this.envConfig.LEMONADE_REASONING_MODEL;
+        const apiKey = reasoningOptions.apiKey || this.envConfig.LEMONADE_API_KEY || 'lemonade';
+        const baseUrl = reasoningOptions.baseUrl || this.envConfig.LEMONADE_BASE_URL;
+
+        console.log(`[ModelFactory] 创建 Lemonade 推理模型: ${lemonadeModel} @ ${baseUrl}`);
+        model = this.createOpenAICompatibleLLM({
+          label: 'Lemonade Reasoning',
+          modelName: lemonadeModel,
+          apiKey,
+          baseUrl,
+          temperature: reasoningOptions.temperature,
+          maxTokens: reasoningOptions.maxTokens,
+          options: reasoningOptions.options,
+        });
+        break;
+      }
+
       default:
         throw new Error(`不支持的推理模型提供商: ${provider}`);
     }
@@ -621,9 +776,22 @@ export class ModelFactory {
         baseUrl = this.envConfig.CUSTOM_BASE_URL || '';
         hasApiKey = !!this.envConfig.CUSTOM_API_KEY;
         break;
+      case 'openrouter':
+        llmModel = this.envConfig.OPENROUTER_LLM_MODEL;
+        baseUrl = this.envConfig.OPENROUTER_BASE_URL;
+        hasApiKey = !!this.envConfig.OPENROUTER_API_KEY;
+        break;
+      case 'lemonade':
+        llmModel = this.envConfig.LEMONADE_LLM_MODEL;
+        baseUrl = this.envConfig.LEMONADE_BASE_URL;
+        hasApiKey = true;
+        break;
       case 'azure':
+        llmModel = this.envConfig.AZURE_OPENAI_LLM_DEPLOYMENT || '';
+        baseUrl = this.envConfig.AZURE_OPENAI_ENDPOINT || '';
+        hasApiKey = !!this.envConfig.AZURE_OPENAI_API_KEY;
+        break;
       case 'ollama':
-      default:
         llmModel = this.envConfig.OLLAMA_LLM_MODEL;
         baseUrl = this.envConfig.OLLAMA_BASE_URL;
         hasApiKey = true;
@@ -650,6 +818,16 @@ export class ModelFactory {
         reasoningModel = this.envConfig.CUSTOM_REASONING_MODEL || '';
         reasoningBaseUrl = this.envConfig.CUSTOM_REASONING_BASE_URL || '';
         hasReasoningApiKey = !!this.envConfig.CUSTOM_REASONING_API_KEY;
+        break;
+      case 'openrouter':
+        reasoningModel = this.envConfig.OPENROUTER_REASONING_MODEL;
+        reasoningBaseUrl = this.envConfig.OPENROUTER_BASE_URL;
+        hasReasoningApiKey = !!this.envConfig.OPENROUTER_API_KEY;
+        break;
+      case 'lemonade':
+        reasoningModel = this.envConfig.LEMONADE_REASONING_MODEL;
+        reasoningBaseUrl = this.envConfig.LEMONADE_BASE_URL;
+        hasReasoningApiKey = true;
         break;
       case 'azure':
         reasoningModel = this.envConfig.AZURE_OPENAI_LLM_DEPLOYMENT || '';
@@ -694,6 +872,9 @@ export class ModelFactory {
         if (!this.envConfig.AZURE_OPENAI_ENDPOINT) {
           errors.push('AZURE_OPENAI_ENDPOINT 环境变量未设置');
         }
+        if (!this.envConfig.AZURE_OPENAI_LLM_DEPLOYMENT) {
+          errors.push('AZURE_OPENAI_LLM_DEPLOYMENT 环境变量未设置');
+        }
         break;
 
       case 'custom':
@@ -702,6 +883,21 @@ export class ModelFactory {
         }
         if (!this.envConfig.CUSTOM_BASE_URL) {
           errors.push('CUSTOM_BASE_URL 环境变量未设置');
+        }
+        break;
+
+      case 'openrouter':
+        if (!this.envConfig.OPENROUTER_API_KEY) {
+          errors.push('OPENROUTER_API_KEY 环境变量未设置');
+        }
+        if (!this.envConfig.OPENROUTER_BASE_URL) {
+          errors.push('OPENROUTER_BASE_URL 环境变量未设置');
+        }
+        break;
+
+      case 'lemonade':
+        if (!this.envConfig.LEMONADE_BASE_URL) {
+          errors.push('LEMONADE_BASE_URL 环境变量未设置');
         }
         break;
 
@@ -821,6 +1017,20 @@ export function isCustomAPIProvider(): boolean {
  */
 export function isCustomProvider(): boolean {
   return getModelFactory().getProvider() === 'custom';
+}
+
+/**
+ * 检查是否为 OpenRouter 提供商
+ */
+export function isOpenRouterProvider(): boolean {
+  return getModelFactory().getProvider() === 'openrouter';
+}
+
+/**
+ * 检查是否为 Lemonade 提供商
+ */
+export function isLemonadeProvider(): boolean {
+  return getModelFactory().getProvider() === 'lemonade';
 }
 
 // ==================== 原有兼容层 ====================

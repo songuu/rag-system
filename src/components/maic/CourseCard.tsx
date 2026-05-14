@@ -9,6 +9,7 @@ interface CourseSummary {
   status: string;
   page_count: number;
   updated_at: string;
+  scene_types?: string[];
   error?: string;
 }
 
@@ -34,6 +35,9 @@ export function CourseCard({
   onDelete: (id: string) => void;
 }) {
   const canEnter = course.status === 'ready';
+  const hasDeepInteractive = course.scene_types?.some(type =>
+    ['interactive', 'mindmap', 'code', 'pbl'].includes(type)
+  );
   const primaryHref = canEnter
     ? `/maic/classroom/${course.course_id}`
     : `/maic/prepare/${course.course_id}`;
@@ -58,6 +62,11 @@ export function CourseCard({
 
       <div className="mb-4 text-sm text-slate-400">
         {course.page_count > 0 ? `${course.page_count} 页` : '尚未解析'}
+        {hasDeepInteractive && (
+          <span className="ml-2 rounded-full border border-sky-300/30 bg-sky-300/10 px-2 py-0.5 text-[11px] text-sky-200">
+            Deep-Interactive
+          </span>
+        )}
         {course.error && <span className="ml-2 text-rose-400">· {course.error}</span>}
       </div>
 

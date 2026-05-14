@@ -23,6 +23,21 @@ interface Step3Props {
   onComplete: () => void;
 }
 
+interface SimulationSnapshot {
+  info: {
+    status: string;
+    current_round: number;
+    config?: { round_count?: number };
+  };
+  posts: SimulationPost[];
+  timeline: Array<{
+    stats: {
+      sentiment_distribution: { positive: number; neutral: number; negative: number };
+      hot_topics: string[];
+    };
+  }>;
+}
+
 const SENTIMENT_CONFIG = {
   positive: { label: '正面', color: 'emerald', dotClass: 'bg-emerald-400', bgClass: 'bg-emerald-500/10 border-emerald-500/20', textClass: 'text-emerald-300', barClass: 'bg-emerald-500' },
   neutral: { label: '中性', color: 'slate', dotClass: 'bg-white/40', bgClass: 'bg-white/[0.03] border-white/[0.08]', textClass: 'text-white/50', barClass: 'bg-white/30' },
@@ -106,6 +121,19 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  const applySnapshot = useCallback((snapshot: SimulationSnapshot) => {
+    setStatus(snapshot.info.status);
+    setCurrentRound(snapshot.info.current_round || 0);
+    setTotalRounds(snapshot.info.config?.round_count || 0);
+    setPosts(snapshot.posts || []);
+
+    const latestTimeline = snapshot.timeline?.at(-1);
+    if (latestTimeline?.stats) {
+      setSentimentDist(latestTimeline.stats.sentiment_distribution);
+      setHotTopics(latestTimeline.stats.hot_topics || []);
+    }
+  }, []);
+
   // 自动滚动
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -147,8 +175,13 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
 
         switch (data.type) {
           case 'connected':
-            setStatus(data.data.status);
-            setCurrentRound(data.data.current_round || 0);
+            if (data.data.snapshot) {
+              applySnapshot(data.data.snapshot);
+            } else {
+              setStatus(data.data.status);
+              setCurrentRound(data.data.current_round || 0);
+              setTotalRounds(data.data.total_rounds || 0);
+            }
             break;
 
           case 'round_start':
@@ -188,7 +221,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
     es.onerror = () => {
       es.close();
     };
-  }, [simulationId]);
+  }, [applySnapshot, simulationId]);
 
   // 停止模拟
   const stopSimulation = async () => {
@@ -216,12 +249,20 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
   useEffect(() => {
     const fetchStatus = async () => {
       try {
-        const response = await fetch(`/api/mirofish/simulation/${simulationId}`);
+        const [response, snapshotResponse] = await Promise.all([
+          fetch(`/api/mirofish/simulation/${simulationId}`),
+          fetch(`/api/mirofish/simulation/${simulationId}?action=snapshot`),
+        ]);
         const data = await response.json();
+        const snapshotData = await snapshotResponse.json();
         if (data.success && data.simulation) {
-          setStatus(data.simulation.status);
-          setCurrentRound(data.simulation.current_round);
-          setTotalRounds(data.simulation.config?.round_count || 0);
+          if (snapshotData.success && snapshotData.snapshot) {
+            applySnapshot(snapshotData.snapshot);
+          } else {
+            setStatus(data.simulation.status);
+            setCurrentRound(data.simulation.current_round);
+            setTotalRounds(data.simulation.config?.round_count || 0);
+          }
 
           if (data.simulation.status === 'running') {
             connectSSE();
@@ -232,7 +273,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
       }
     };
     fetchStatus();
-  }, [simulationId, connectSSE]);
+  }, [applySnapshot, simulationId, connectSSE]);
 
   // 过滤帖子
   const filteredPosts = useMemo(() => {
@@ -287,6 +328,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
               {status === 'running' ? '运行中' :
                status === 'completed' ? '已完成' :
                status === 'failed' ? '失败' :
+               status === 'ready' ? '就绪' :
                status === 'paused' ? '已暂停' : '就绪'}
             </span>
           </div>
@@ -314,7 +356,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
 
           {/* 控制按钮 */}
           <div className="mt-5 flex gap-3">
-            {(status === 'created' || status === 'paused') && (
+            {(status === 'created' || status === 'ready' || status === 'paused') && (
               <button
                 type="button"
                 onClick={startSimulation}

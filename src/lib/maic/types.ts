@@ -115,6 +115,7 @@ export type CourseSceneType =
 export type SceneActionType =
   | 'speech'
   | 'spotlight'
+  | 'highlight'
   | 'laser'
   | 'play_video'
   | 'whiteboard'

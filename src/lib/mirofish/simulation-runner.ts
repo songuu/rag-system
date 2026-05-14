@@ -9,13 +9,15 @@ import { SimulationEngine } from './simulation-engine';
 import type {
   SimulationConfig,
   SimulationInfo,
-  SimulationStatus,
   SimulationPost,
   EntityProfile,
   TimelineEntry,
   AgentStats,
   ModelOverride,
+  SimulationSnapshot,
+  SimulationSnapshotSummary,
 } from './types';
+import { summarizeSimulationSnapshot } from './simulation-context';
 
 /** 模拟事件监听器 */
 type SimulationEventListener = (event: SimulationEvent) => void;
@@ -29,6 +31,7 @@ export interface SimulationEvent {
     posts?: SimulationPost[];
     post?: SimulationPost;
     stats?: TimelineEntry['stats'];
+    snapshot?: SimulationSnapshotSummary;
     error?: string;
   };
 }
@@ -61,7 +64,7 @@ class SimulationRunner {
     const info: SimulationInfo = {
       simulation_id: config.simulation_id,
       project_id: config.project_id,
-      status: 'created',
+      status: 'ready',
       config,
       current_round: 0,
       total_posts: 0,
@@ -111,6 +114,25 @@ class SimulationRunner {
   getTimeline(simulationId: string): TimelineEntry[] {
     const instance = this.simulations.get(simulationId);
     return instance?.timeline || [];
+  }
+
+  /** 获取模拟快照 */
+  getSnapshot(simulationId: string): SimulationSnapshot | null {
+    const instance = this.simulations.get(simulationId);
+    if (!instance) return null;
+
+    return {
+      info: { ...instance.info },
+      posts: [...instance.posts],
+      timeline: [...instance.timeline],
+      stats: this.getAgentStats(simulationId),
+    };
+  }
+
+  /** 获取轻量快照摘要 */
+  getSnapshotSummary(simulationId: string): SimulationSnapshotSummary | null {
+    const snapshot = this.getSnapshot(simulationId);
+    return snapshot ? summarizeSimulationSnapshot(snapshot) : null;
   }
 
   /** 获取 Agent 统计 */
@@ -310,7 +332,10 @@ class SimulationRunner {
         instance.info.completed_at = new Date().toISOString();
         instance.info.updated_at = new Date().toISOString();
 
-        this.emit(instance, { type: 'simulation_complete', data: {} });
+        this.emit(instance, {
+          type: 'simulation_complete',
+          data: { snapshot: this.getSnapshotSummary(simulationId) ?? undefined },
+        });
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {

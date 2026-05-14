@@ -7,6 +7,7 @@
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createLLMFromOverride } from './model-override';
+import { buildRoundContext, selectPostingAgents } from './simulation-context';
 import type {
   EntityProfile,
   SimulationPost,
@@ -146,21 +147,21 @@ export class SimulationEngine {
   ): Promise<SimulationPost[]> {
     const roundPosts: SimulationPost[] = [];
 
-    // 最近的帖子（用于上下文）
-    const recentPosts = existingPosts.slice(-20);
-
     // 选择本轮活跃的 Agent（随机选择）
     const activeAgents = this.selectActiveAgents(profiles, config.agents_per_round, new Date());
 
     // 对每个平台、每个活跃 Agent 生成行为
     for (const platform of config.platforms) {
+      const roundContext = buildRoundContext(existingPosts, roundPosts);
+      const postingAgents = selectPostingAgents(activeAgents, config);
+
       // 并行处理多个 Agent
-      const promises = activeAgents.map(agent =>
+      const promises = postingAgents.map(agent =>
         this.generateAgentAction(
           agent,
           platform,
           config.seed_topics,
-          [...recentPosts, ...roundPosts],
+          roundContext.recentPosts,
           round,
           config.simulation_id
         )

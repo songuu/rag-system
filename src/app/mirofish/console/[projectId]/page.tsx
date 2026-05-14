@@ -20,7 +20,10 @@ interface Project {
   current_step: number;
   simulation_requirement: string;
   ontology?: unknown;
+  graph_data?: GraphData;
   graph_id?: string;
+  agent_profiles?: EntityProfile[];
+  simulation_config?: unknown;
   simulation_id?: string;
   report_id?: string;
   model_config?: ModelOverride;
@@ -114,6 +117,8 @@ export default function MiroFishConsolePage() {
           setCurrentStep(data.project.current_step);
           setMaxStep(data.project.current_step);
           if (data.project.ontology) setOntology(data.project.ontology as Ontology);
+          if (data.project.graph_data) setGraphData(data.project.graph_data);
+          if (data.project.agent_profiles) setProfiles(data.project.agent_profiles);
           if (data.project.simulation_id) setSimulationId(data.project.simulation_id);
           if (data.project.report_id) setReportId(data.project.report_id);
           if (data.project.model_config) setModelOverride(data.project.model_config);
@@ -157,7 +162,7 @@ export default function MiroFishConsolePage() {
     const nextStep = 1;
     setCurrentStep(nextStep);
     setMaxStep(prev => Math.max(prev, nextStep));
-    updateProject({ current_step: nextStep, status: 'graph_built', ontology });
+    updateProject({ current_step: nextStep, status: 'graph_built', ontology, graph_data: graphData });
   };
 
   const handleStep2Complete = (simIdOverride?: string) => {

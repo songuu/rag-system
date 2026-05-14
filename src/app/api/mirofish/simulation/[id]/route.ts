@@ -41,6 +41,17 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ success: true, stats });
     }
 
+    if (action === 'snapshot') {
+      const snapshot = runner.getSnapshot(id);
+      if (!snapshot) {
+        return NextResponse.json(
+          { success: false, error: '模拟不存在' },
+          { status: 404 }
+        );
+      }
+      return NextResponse.json({ success: true, snapshot });
+    }
+
     // 默认返回模拟详情
     const info = runner.get(id);
     if (!info) {

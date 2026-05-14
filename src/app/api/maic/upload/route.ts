@@ -5,6 +5,11 @@ import {
   getMaicPrepareCacheIdentity,
   loadPreparedFromCache,
 } from '@/lib/maic/prepare-cache';
+import {
+  getMaicParsedSlidesCacheIdentity,
+  loadParsedSlidesFromCache,
+  saveParsedSlidesToCache,
+} from '@/lib/maic/parsed-slides-cache';
 import { mirrorMaicCourseToRagUploads } from '@/lib/maic/rag-bridge';
 
 export const runtime = 'nodejs';
@@ -29,7 +34,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const parsed = await parseSlides(buffer, file.name);
+    const parsedCacheIdentity = getMaicParsedSlidesCacheIdentity({ buffer, filename: file.name });
+    const cachedParsed = await loadParsedSlidesFromCache(parsedCacheIdentity);
+    const parsed = cachedParsed ?? await parseSlides(buffer, file.name);
+    if (!cachedParsed) {
+      await saveParsedSlidesToCache(parsedCacheIdentity, parsed);
+    }
     const cacheIdentity = getMaicPrepareCacheIdentity({
       sourceText: parsed.raw_text,
       pages: parsed.pages,
@@ -69,6 +79,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         title: course.title,
         pages: parsed.pages.length,
         cached: !!cached,
+        parsed_cached: !!cachedParsed,
         rag_asset: ragAsset,
       },
     });

@@ -33,8 +33,8 @@ export async function POST(request: NextRequest) {
     }
 
     const runner = getSimulationRunner();
-    const simulationInfo = runner.get(simulation_id);
-    if (!simulationInfo) {
+    const snapshot = runner.getSnapshot(simulation_id);
+    if (!snapshot) {
       return NextResponse.json(
         { success: false, error: '模拟不存在' },
         { status: 404 }
@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
     const initialReport: ReportInfo = {
       report_id: reportId,
       simulation_id,
-      project_id: project_id || simulationInfo.project_id,
+      project_id: project_id || snapshot.info.project_id,
       status: 'generating',
       title: '生成中...',
       summary: '',
@@ -61,11 +61,9 @@ export async function POST(request: NextRequest) {
     reports.set(reportId, initialReport);
 
     // 异步生成报告
-    const posts = runner.getPosts(simulation_id);
-    const timeline = runner.getTimeline(simulation_id);
     const agent = getReportAgent(modelOverride);
 
-    agent.generateReport(simulationInfo, posts, timeline)
+    agent.generateReport(snapshot.info, snapshot.posts, snapshot.timeline)
       .then(reportData => {
         const report: ReportInfo = {
           ...reportData,

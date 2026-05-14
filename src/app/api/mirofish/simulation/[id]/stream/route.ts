@@ -25,22 +25,10 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   }
 
   const encoder = new TextEncoder();
-
   let cleanupFn: (() => void) | null = null;
 
   const stream = new ReadableStream({
     start(controller) {
-      // 发送初始状态
-      const initData = JSON.stringify({
-        type: 'connected',
-        data: {
-          simulation_id: id,
-          status: info.status,
-          current_round: info.current_round,
-        },
-      });
-      controller.enqueue(encoder.encode(`data: ${initData}\n\n`));
-
       // 监听模拟事件
       const listener = (event: SimulationEvent) => {
         try {
@@ -71,6 +59,19 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 
       // 使用 AbortSignal 监听客户端断开
       _request.signal.addEventListener('abort', cleanupFn);
+
+      // 发送初始状态。listener 先注册，避免运行中模拟在连接窗口丢事件。
+      const initData = JSON.stringify({
+        type: 'connected',
+        data: {
+          simulation_id: id,
+          status: info.status,
+          current_round: info.current_round,
+          total_rounds: info.config.round_count,
+          snapshot: runner.getSnapshot(id),
+        },
+      });
+      controller.enqueue(encoder.encode(`data: ${initData}\n\n`));
     },
     cancel() {
       // ReadableStream cancel hook — 客户端断开时可靠触发

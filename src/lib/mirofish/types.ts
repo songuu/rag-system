@@ -268,7 +268,13 @@ export interface Project {
   simulation_requirement: string;
   texts: string[];
   ontology?: Ontology;
+  graph_data?: GraphData;
   graph_id?: string;
+  agent_profiles?: EntityProfile[];
+  simulation_config?: NormalizedSimulationConfig;
+  prepare_id?: string;
+  prepare_fingerprint?: string;
+  prepared_at?: string;
   simulation_id?: string;
   report_id?: string;
   model_config?: ModelOverride;
@@ -300,10 +306,19 @@ export type AgentActionType =
   | 'upvote'
   | 'downvote';
 
-/** 模拟配置 */
-export interface SimulationConfig {
-  simulation_id: string;
-  project_id: string;
+/** 模拟配置草稿 */
+export interface SimulationConfigDraft {
+  platforms?: PlatformType[];
+  round_count?: number;
+  posts_per_round?: number;
+  agents_per_round?: number;
+  temperature?: number;
+  seed_topics?: string[];
+  time_interval?: number; // 秒
+}
+
+/** 已归一化的模拟配置（不含运行实例 ID） */
+export interface NormalizedSimulationConfig {
   platforms: PlatformType[];
   round_count: number;
   posts_per_round: number;
@@ -313,8 +328,14 @@ export interface SimulationConfig {
   time_interval: number; // 秒
 }
 
+/** 模拟配置 */
+export interface SimulationConfig extends NormalizedSimulationConfig {
+  simulation_id: string;
+  project_id: string;
+}
+
 /** 模拟状态 */
-export type SimulationStatus = 'created' | 'preparing' | 'running' | 'paused' | 'completed' | 'failed';
+export type SimulationStatus = 'created' | 'preparing' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
 
 /** 模拟帖子 */
 export interface SimulationPost {
@@ -379,6 +400,34 @@ export interface TimelineEntry {
     hot_topics: string[];
     active_agents: number;
   };
+}
+
+/** 模拟快照 */
+export interface SimulationSnapshot {
+  info: SimulationInfo;
+  posts: SimulationPost[];
+  timeline: TimelineEntry[];
+  stats: AgentStats[];
+}
+
+/** SSE 初始事件使用的轻量快照摘要 */
+export interface SimulationSnapshotSummary {
+  total_posts: number;
+  timeline_count: number;
+  agent_count: number;
+  latest_round?: number;
+  latest_stats?: TimelineEntry['stats'];
+}
+
+/** 模拟准备结果 */
+export interface SimulationPrepareResult {
+  prepare_id: string;
+  prepare_fingerprint: string;
+  already_prepared: boolean;
+  profiles: EntityProfile[];
+  config: NormalizedSimulationConfig;
+  prepared_at: string;
+  message: string;
 }
 
 // ==================== 报告类型 ====================

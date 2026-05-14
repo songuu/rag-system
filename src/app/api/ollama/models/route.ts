@@ -1,6 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 import { getConfigSummary, getCurrentProvider, getReasoningProvider } from '@/lib/model-config';
 import { getEmbeddingConfigSummary, getEmbeddingProvider } from '@/lib/embedding-config';
+import {
+  OPENMAIC_LATEST_MODEL_NOTES,
+  RECOMMENDED_MODELS,
+  categorizeModelName,
+  getModelCapabilityProfile,
+  type ModelCategory,
+} from '@/lib/model-catalog';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 
@@ -38,8 +46,10 @@ interface RuntimeModelInfo {
   modifiedAt?: string;
   digest?: string;
   dimension?: number;
-  category?: 'reasoning' | 'llm' | 'embedding' | 'unknown';
+  category?: ModelCategory;
   supportsThinking?: boolean;
+  thinkingControl?: string;
+  openMaicLatest?: boolean;
   isRemote?: boolean;
   provider?: string;
   isConfiguredFallback?: boolean;
@@ -113,6 +123,7 @@ function generateRemoteModelInfo(config: ProviderConfig) {
 
   // 远程 LLM 模型
   if (!config.llm.isOllama) {
+    const category = categorizeModelName(config.llm.model);
     result.llmModels.push({
       name: config.llm.model,
       displayName: `${config.llm.model}`,
@@ -121,6 +132,7 @@ function generateRemoteModelInfo(config: ProviderConfig) {
       sizeFormatted: `云端 (${config.llm.provider})`,
       modified_at: new Date().toISOString(),
       category: 'llm',
+      ...getModelCapabilityProfile(config.llm.provider, config.llm.model, category),
       isRemote: true,
       provider: config.llm.provider,
     });
@@ -138,6 +150,7 @@ function generateRemoteModelInfo(config: ProviderConfig) {
       modified_at: new Date().toISOString(),
       dimension: config.embedding.dimension,
       category: 'embedding',
+      ...getModelCapabilityProfile(config.embedding.provider, config.embedding.model, 'embedding'),
       isRemote: true,
       provider: config.embedding.provider,
     });
@@ -145,6 +158,11 @@ function generateRemoteModelInfo(config: ProviderConfig) {
 
   // 远程推理模型
   if (!config.reasoning.isOllama) {
+    const capability = getModelCapabilityProfile(
+      config.reasoning.provider,
+      config.reasoning.model,
+      'reasoning'
+    );
     result.reasoningModels.push({
       name: config.reasoning.model,
       displayName: `${config.reasoning.model}`,
@@ -153,7 +171,7 @@ function generateRemoteModelInfo(config: ProviderConfig) {
       sizeFormatted: `云端 (${config.reasoning.provider})`,
       modified_at: new Date().toISOString(),
       category: 'reasoning',
-      supportsThinking: true,
+      ...capability,
       isRemote: true,
       provider: config.reasoning.provider,
     });
@@ -229,215 +247,8 @@ function generateConfiguredOllamaFallbackModels(config: ProviderConfig) {
   return result;
 }
 
-// 已知的模型分类
-const MODEL_CATEGORIES = {
-  reasoning: {
-    // 推理模型 - 支持思维链的高级模型
-    patterns: ['deepseek-r1', 'qwen3', 'o1', 'o3', 'gpt-oss'],
-    include: ['deepseek-r1', 'qwen3'],
-    exclude: ['embedding']
-  },
-  llm: {
-    patterns: [
-      'llama', 'mistral', 'mixtral', 'gemma', 'phi', 'qwen',
-      'deepseek', 'yi', 'solar', 'vicuna', 'orca', 'starling',
-      'openchat', 'neural', 'dolphin', 'wizard', 'falcon'
-    ],
-    exclude: ['embed', 'embedding', 'deepseek-r1', 'qwen3']
-  },
-  embedding: {
-    patterns: [
-      'embed', 'embedding', 'bge', 'gte', 'jina', 'e5',
-      'instructor', 'multilingual-e5'
-    ],
-    include: ['nomic-embed', 'mxbai-embed', 'snowflake-arctic-embed']
-  }
-};
-
-// 推荐的模型配置
-const RECOMMENDED_MODELS = {
-  reasoning: [
-    {
-      name: 'deepseek-r1:7b',
-      displayName: 'DeepSeek R1 7B',
-      description: '深度推理模型，支持思维链 (Chain of Thought)',
-      size: '4.7 GB',
-      contextLength: 32768,
-      supportsThinking: true,
-      recommended: true
-    },
-    {
-      name: 'deepseek-r1:14b',
-      displayName: 'DeepSeek R1 14B',
-      description: '更强大的深度推理模型',
-      size: '8.9 GB',
-      contextLength: 32768,
-      supportsThinking: true,
-      recommended: true
-    },
-    {
-      name: 'deepseek-r1:32b',
-      displayName: 'DeepSeek R1 32B',
-      description: '顶级深度推理模型，最强推理能力',
-      size: '19 GB',
-      contextLength: 65536,
-      supportsThinking: true,
-      recommended: false
-    },
-    {
-      name: 'qwen3:8b',
-      displayName: 'Qwen 3 8B',
-      description: '阿里通义千问第三代，支持推理',
-      size: '4.9 GB',
-      contextLength: 32768,
-      supportsThinking: true,
-      recommended: true
-    },
-    {
-      name: 'qwen3:14b',
-      displayName: 'Qwen 3 14B',
-      description: '更强大的通义千问推理版',
-      size: '9.0 GB',
-      contextLength: 32768,
-      supportsThinking: true,
-      recommended: false
-    }
-  ],
-  llm: [
-    {
-      name: 'llama3.1:latest',
-      displayName: 'Llama 3.1',
-      description: '最新的 Meta Llama 模型，性能优异',
-      size: '4.7 GB',
-      contextLength: 128000,
-      recommended: true
-    },
-    {
-      name: 'llama3.2:latest',
-      displayName: 'Llama 3.2',
-      description: 'Meta 最新版本，更快更准确',
-      size: '2.0 GB',
-      contextLength: 128000,
-      recommended: true
-    },
-    {
-      name: 'qwen2.5:latest',
-      displayName: 'Qwen 2.5',
-      description: '阿里通义千问，中文优化',
-      size: '4.4 GB',
-      contextLength: 32768,
-      recommended: true
-    },
-    {
-      name: 'mistral:latest',
-      displayName: 'Mistral',
-      description: '高性能开源模型',
-      size: '4.1 GB',
-      contextLength: 32768,
-      recommended: false
-    },
-    {
-      name: 'gemma2:latest',
-      displayName: 'Gemma 2',
-      description: 'Google 轻量级模型',
-      size: '5.4 GB',
-      contextLength: 8192,
-      recommended: false
-    }
-  ],
-  embedding: [
-    {
-      name: 'nomic-embed-text:latest',
-      displayName: 'Nomic Embed Text',
-      description: '高质量英文嵌入模型',
-      dimension: 768,
-      size: '274 MB',
-      recommended: true
-    },
-    {
-      name: 'mxbai-embed-large:latest',
-      displayName: 'MixedBread AI Embed',
-      description: '大型嵌入模型，性能优异',
-      dimension: 1024,
-      size: '669 MB',
-      recommended: true
-    },
-    {
-      name: 'bge-large:latest',
-      displayName: 'BGE Large',
-      description: 'BAAI 出品，中英文支持',
-      dimension: 1024,
-      size: '1.3 GB',
-      recommended: false
-    },
-    {
-      name: 'snowflake-arctic-embed:latest',
-      displayName: 'Snowflake Arctic Embed',
-      description: '多语言嵌入模型',
-      dimension: 1024,
-      size: '669 MB',
-      recommended: false
-    }
-  ]
-};
-
-// 判断模型类型
-function categorizeModel(modelName: string): 'reasoning' | 'llm' | 'embedding' | 'unknown' {
-  const nameLower = modelName.toLowerCase();
-
-  // 首先检查是否为推理模型
-  if (MODEL_CATEGORIES.reasoning.include.some(pattern => nameLower.includes(pattern) && !nameLower.includes('embedding'))) {
-    return 'reasoning';
-  }
-
-  if (MODEL_CATEGORIES.reasoning.patterns.some(pattern => nameLower.includes(pattern) && !nameLower.includes('embedding'))) {
-    return 'reasoning';
-  }
-
-  // 检查是否为 embedding 模型
-  if (MODEL_CATEGORIES.embedding.include.some(pattern => nameLower.includes(pattern))) {
-    return 'embedding';
-  }
-
-  if (MODEL_CATEGORIES.embedding.patterns.some(pattern => nameLower.includes(pattern))) {
-    return 'embedding';
-  }
-
-  // 排除 embedding 和 reasoning 后检查 LLM
-  if (MODEL_CATEGORIES.llm.exclude.some(pattern => nameLower.includes(pattern))) {
-    return 'unknown';
-  }
-
-  if (MODEL_CATEGORIES.llm.patterns.some(pattern => nameLower.includes(pattern))) {
-    return 'llm';
-  }
-
-  return 'unknown';
-}
-
-// 获取模型详细信息
-async function getModelDetails(modelName: string) {
-  try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/show`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: modelName })
-    });
-
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    return null;
-  }
-}
-
 // GET: 获取模型列表（统一处理所有提供商）
-export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams;
-  const action = searchParams.get('action');
-
+export async function GET() {
   try {
     // 获取当前提供商配置
     const providerConfig = getProviderConfig();
@@ -464,12 +275,12 @@ export async function GET(request: NextRequest) {
         if (statusResponse.ok) {
           ollamaOnline = true;
           const data = await statusResponse.json();
-          allOllamaModels = data.models || [];
+          allOllamaModels = Array.isArray(data.models) ? data.models : [];
 
           // 分类 Ollama 本地模型
           for (const model of allOllamaModels) {
             const modelName = model.name;
-            const category = categorizeModel(modelName);
+            const category = categorizeModelName(modelName);
 
             const modelInfo = {
               name: modelName,
@@ -480,7 +291,7 @@ export async function GET(request: NextRequest) {
               modifiedAt: model.modified_at,
               digest: model.digest,
               category,
-              supportsThinking: category === 'reasoning',
+              ...getModelCapabilityProfile('ollama', modelName, category),
               isRemote: false,
               provider: 'ollama',
             };
@@ -526,6 +337,7 @@ export async function GET(request: NextRequest) {
           reasoning: { provider: providerConfig.reasoning.provider, model: providerConfig.reasoning.model, baseUrl: providerConfig.reasoning.baseUrl },
         },
         recommended: null, // 远程提供商不需要推荐
+        openMaicLatest: OPENMAIC_LATEST_MODEL_NOTES,
         status: {
           hasRecommendedReasoning: true,
           hasRecommendedLLM: true,
@@ -566,6 +378,7 @@ export async function GET(request: NextRequest) {
           embedding: { provider: providerConfig.embedding.provider, model: providerConfig.embedding.model, dimension: providerConfig.embedding.dimension },
           reasoning: { provider: providerConfig.reasoning.provider, model: providerConfig.reasoning.model, baseUrl: providerConfig.reasoning.baseUrl },
         },
+        openMaicLatest: OPENMAIC_LATEST_MODEL_NOTES,
         status: {
           ollamaOnline: false,
           ollamaRequired: true,
@@ -591,6 +404,7 @@ export async function GET(request: NextRequest) {
           reasoning: { provider: providerConfig.reasoning.provider, model: providerConfig.reasoning.model, baseUrl: providerConfig.reasoning.baseUrl },
         },
         recommended: RECOMMENDED_MODELS,
+        openMaicLatest: OPENMAIC_LATEST_MODEL_NOTES,
         message: '未检测到已安装的模型',
         suggestion: '请安装推荐的模型'
       });
@@ -653,6 +467,7 @@ export async function GET(request: NextRequest) {
         reasoning: { provider: providerConfig.reasoning.provider, model: providerConfig.reasoning.model, baseUrl: providerConfig.reasoning.baseUrl },
       },
       recommended: recommendedStatus,
+      openMaicLatest: OPENMAIC_LATEST_MODEL_NOTES,
       status: {
         hasRecommendedReasoning,
         hasRecommendedLLM,

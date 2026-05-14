@@ -40,7 +40,9 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
 const ALLOWED_UPDATE_FIELDS = new Set([
   'name', 'description', 'status', 'current_step',
   'simulation_requirement', 'texts', 'ontology',
-  'graph_id', 'simulation_id', 'report_id',
+  'graph_data', 'graph_id', 'agent_profiles',
+  'simulation_config', 'prepare_id', 'prepare_fingerprint',
+  'prepared_at', 'simulation_id', 'report_id',
   'model_config',
 ]);
 

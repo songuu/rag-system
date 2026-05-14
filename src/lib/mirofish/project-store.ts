@@ -81,7 +81,13 @@ class ProjectStore {
       status: 'created',
       current_step: 0,
       ontology: undefined,
+      graph_data: undefined,
       graph_id: undefined,
+      agent_profiles: undefined,
+      simulation_config: undefined,
+      prepare_id: undefined,
+      prepare_fingerprint: undefined,
+      prepared_at: undefined,
       simulation_id: undefined,
       report_id: undefined,
     });

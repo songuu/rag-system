@@ -8,6 +8,18 @@ When aligning this project with OpenMAIC-like classroom products, model the runt
 
 When MAIC ingests course material, mirror the parsed text into the existing RAG `uploads/*_parsed.txt` corpus instead of keeping a MAIC-only private text source. MAIC can keep its own prepared classroom artifact cache, but the raw/parsed course text should remain discoverable by the shared RAG reinitialize and sync flows.
 
+## OpenMAIC Parity: Keep User-Approved Chrome Stable
+
+When a user says the current MAIC header/chrome is acceptable, constrain OpenMAIC visual parity work to the classroom body below that header. Preserve the existing navigation/header contract and focus on stage composition, slide canvas, bottom transcript controls, and participant rails.
+
+## MiroFish: Prepare and Snapshot Boundaries
+
+For MiroFish-style multi-agent simulations, keep environment preparation and runtime observation as explicit lib-layer contracts. A prepare layer should normalize config, reuse or regenerate profiles by fingerprint, and return a `prepare_id`; the simulation runner should expose a snapshot consumed by reports, interaction APIs, and SSE reconnects. Do not let React steps or route handlers independently reconstruct these states.
+
+## OpenAI-Compatible Provider Boundaries
+
+When adding providers inspired by OpenMAIC, only share the generic OpenAI-compatible helper for providers that actually expose the OpenAI chat completions shape, such as OpenRouter, Lemonade, and custom local endpoints. Keep provider-specific SDK classes for special cases like Azure OpenAI; treating Azure as a plain `baseURL` can pass types while producing an invalid deployment URL.
+
 ## External Product Parity: Optional Compatibility Layer
 
 When tracking fast-moving upstream products such as MiroFish and OpenMAIC, absorb latest capabilities through optional fields, default-on capability flags, prompt-layer refinements, and post-processing guards before considering a wholesale upstream migration. Existing routes, persisted artifacts, and fallback render paths are the source of truth for functional parity.
