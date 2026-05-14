@@ -82,6 +82,28 @@ const RECOMMENDED_EMBEDDING_MODELS = [
   { name: 'text-embedding-ada-002', description: 'OpenAI Ada', dimension: 1536, size: '云端' },
 ];
 
+function getRecommendedEmbeddingModelsForProvider(provider: string) {
+  if (provider === 'siliconflow') {
+    return RECOMMENDED_EMBEDDING_MODELS.filter(model =>
+      model.name.includes('/') && !model.name.startsWith('text-embedding')
+    );
+  }
+
+  if (provider === 'openai') {
+    return RECOMMENDED_EMBEDDING_MODELS.filter(model =>
+      model.name.startsWith('text-embedding')
+    );
+  }
+
+  if (provider === 'ollama') {
+    return RECOMMENDED_EMBEDDING_MODELS.filter(model =>
+      !model.name.includes('/') && !model.name.startsWith('text-embedding')
+    );
+  }
+
+  return RECOMMENDED_EMBEDDING_MODELS;
+}
+
 export default function MilvusPage() {
   // 状态管理
   const [connected, setConnected] = useState(false);
@@ -101,6 +123,10 @@ export default function MilvusPage() {
   const [embeddingProvider, setEmbeddingProvider] = useState<string>('ollama');
   const [embeddingDimension, setEmbeddingDimension] = useState<number>(768);
   const isRemoteEmbedding = embeddingProvider !== 'ollama';
+  const providerRecommendedEmbeddingModels = useMemo(
+    () => getRecommendedEmbeddingModelsForProvider(embeddingProvider),
+    [embeddingProvider]
+  );
 
   // 搜索
   const [searchQuery, setSearchQuery] = useState('');
@@ -157,12 +183,12 @@ export default function MilvusPage() {
   const loadOllamaModels = useCallback(async () => {
     setLoadingModels(true);
     try {
-      // 首先获取系统配置，确定使用哪个提供商
-      const healthResponse = await fetch('/api/health');
-      const healthData = await healthResponse.json();
+      // 首先获取统一模型配置，确定使用哪个提供商
+      const configResponse = await fetch('/api/model-config');
+      const configData = await configResponse.json();
       
-      if (healthData.modelConfig?.embedding) {
-        const embConfig = healthData.modelConfig.embedding;
+      if (configData.config?.embedding) {
+        const embConfig = configData.config.embedding;
         setEmbeddingProvider(embConfig.provider || 'ollama');
         setEmbeddingDimension(embConfig.dimension || 768);
         
@@ -182,6 +208,13 @@ export default function MilvusPage() {
       // Ollama 提供商：从本地加载模型列表
       const response = await fetch('/api/ollama/models');
       const data = await response.json();
+
+      if (data.providerConfig?.embedding) {
+        const embConfig = data.providerConfig.embedding;
+        setEmbeddingProvider(embConfig.provider || 'ollama');
+        setEmbeddingDimension(embConfig.dimension || 768);
+        setSelectedEmbeddingModel(embConfig.model || selectedEmbeddingModel);
+      }
 
       if (data.success && data.embeddingModels) {
         setEmbeddingModels(data.embeddingModels);
@@ -761,7 +794,7 @@ export default function MilvusPage() {
                         );
                       })
                     ) : (
-                      RECOMMENDED_EMBEDDING_MODELS.map(model => (
+                      providerRecommendedEmbeddingModels.map(model => (
                         <option key={model.name} value={model.name}>
                           {model.name} ({model.dimension}D)
                         </option>
@@ -1190,7 +1223,7 @@ export default function MilvusPage() {
                 推荐 Embedding 模型
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                {RECOMMENDED_EMBEDDING_MODELS.map(model => {
+                {providerRecommendedEmbeddingModels.map(model => {
                   const isInstalled = embeddingModels.some(m => m.name === model.name);
                   const isSelected = selectedEmbeddingModel === model.name;
 
@@ -1220,7 +1253,9 @@ export default function MilvusPage() {
                       </div>
                       {!isInstalled && (
                         <div className="mt-3 text-xs text-gray-500 font-mono bg-black/30 rounded-lg px-2 py-1">
-                          ollama pull {model.name}
+                          {embeddingProvider === 'ollama'
+                            ? `ollama pull ${model.name}`
+                            : `通过 EMBEDDING_PROVIDER=${embeddingProvider} 配置`}
                         </div>
                       )}
                     </div>
@@ -1277,7 +1312,7 @@ export default function MilvusPage() {
                         <option key={model.name} value={model.name}>{model.name}</option>
                       ))
                     ) : (
-                      RECOMMENDED_EMBEDDING_MODELS.map(model => (
+                      providerRecommendedEmbeddingModels.map(model => (
                         <option key={model.name} value={model.name}>{model.name}</option>
                       ))
                     )}

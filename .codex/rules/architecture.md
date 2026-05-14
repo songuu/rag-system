@@ -27,3 +27,7 @@ Do not choose PPT spotlight targets by fixed key-point order except as a fallbac
 ## RAG Evolves Through A Kernel, Not More API Branches
 
 For this project, future RAG capability should be expressed as a `RAG Kernel` policy, retrieval lane, corpus adapter, evaluator, or cache layer before adding another top-level `/api/ask` branch. The current system already has many modes; the next architecture step is a shared kernel plus retrieval control plane that unifies dense/sparse/graph retrieval, fusion, reranking, context packing, trace, and evaluation while preserving existing MiroFish/OpenMAIC product behavior.
+
+## Runtime Configuration Has One Source
+
+Model, embedding, reasoning, Milvus, and retrieval feature choices should be resolved from a shared runtime configuration snapshot before any page-level fallback is used. UI model selectors may display Ollama installation status, but they must not use Ollama availability as the source of truth for the selected model when `MODEL_PROVIDER`, `EMBEDDING_PROVIDER`, or `REASONING_PROVIDER` already define the runtime model.

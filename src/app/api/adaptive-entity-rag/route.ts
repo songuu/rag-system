@@ -11,6 +11,7 @@ import {
   DocumentInput,
   DEFAULT_EMBEDDING_MODEL,
 } from '@/lib/vectorization-utils';
+import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -169,7 +170,7 @@ export async function GET(request: NextRequest) {
       case 'knowledge-stats': {
         // 获取知识库详细统计
         try {
-          const embeddingModel = searchParams.get('embeddingModel') || 'nomic-embed-text';
+          const embeddingModel = searchParams.get('embeddingModel') || DEFAULT_RUNTIME_MODELS.embedding;
           const milvus = await getAdaptiveMilvus(embeddingModel);
           const stats = await milvus.getCollectionStats();
           
@@ -377,7 +378,7 @@ export async function POST(request: NextRequest) {
         
         // 使用内部方法进行解析
         const { CognitiveParser } = await import('@/lib/adaptive-entity-rag');
-        const parser = new CognitiveParser(llmModel || 'qwen2.5:7b');
+        const parser = new CognitiveParser(llmModel || DEFAULT_RUNTIME_MODELS.llm);
         const parsed = await parser.parse(question);
 
         // 校验实体

@@ -28,6 +28,30 @@ interface ProviderConfig {
   needsOllamaModels: boolean;
 }
 
+interface RuntimeModelInfo {
+  name: string;
+  displayName?: string;
+  tag?: string;
+  size?: number;
+  sizeFormatted?: string;
+  modified_at?: string;
+  modifiedAt?: string;
+  digest?: string;
+  dimension?: number;
+  category?: 'reasoning' | 'llm' | 'embedding' | 'unknown';
+  supportsThinking?: boolean;
+  isRemote?: boolean;
+  provider?: string;
+  isConfiguredFallback?: boolean;
+}
+
+interface OllamaApiModel {
+  name: string;
+  size?: number;
+  modified_at?: string;
+  digest?: string;
+}
+
 /**
  * 获取当前的提供商配置
  * 统一判断 LLM、Embedding、Reasoning 模型的提供商
@@ -78,9 +102,9 @@ function getProviderConfig(): ProviderConfig {
  */
 function generateRemoteModelInfo(config: ProviderConfig) {
   const result: {
-    llmModels: any[];
-    embeddingModels: any[];
-    reasoningModels: any[];
+    llmModels: RuntimeModelInfo[];
+    embeddingModels: RuntimeModelInfo[];
+    reasoningModels: RuntimeModelInfo[];
   } = {
     llmModels: [],
     embeddingModels: [],
@@ -93,7 +117,9 @@ function generateRemoteModelInfo(config: ProviderConfig) {
       name: config.llm.model,
       displayName: `${config.llm.model}`,
       tag: config.llm.provider,
+      size: 0,
       sizeFormatted: `云端 (${config.llm.provider})`,
+      modified_at: new Date().toISOString(),
       category: 'llm',
       isRemote: true,
       provider: config.llm.provider,
@@ -107,7 +133,9 @@ function generateRemoteModelInfo(config: ProviderConfig) {
       name: config.embedding.model,
       displayName: modelDisplayName,
       tag: config.embedding.provider,
+      size: 0,
       sizeFormatted: `云端 (${config.embedding.provider})`,
+      modified_at: new Date().toISOString(),
       dimension: config.embedding.dimension,
       category: 'embedding',
       isRemote: true,
@@ -121,11 +149,80 @@ function generateRemoteModelInfo(config: ProviderConfig) {
       name: config.reasoning.model,
       displayName: `${config.reasoning.model}`,
       tag: config.reasoning.provider,
+      size: 0,
       sizeFormatted: `云端 (${config.reasoning.provider})`,
+      modified_at: new Date().toISOString(),
       category: 'reasoning',
       supportsThinking: true,
       isRemote: true,
       provider: config.reasoning.provider,
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Ollama 离线时仍返回当前配置里的模型,避免前端模型选择器卡在 Loading。
+ * 这些条目不是“已安装模型”,只是 runtime config 的只读回退。
+ */
+function generateConfiguredOllamaFallbackModels(config: ProviderConfig) {
+  const now = new Date().toISOString();
+  const result: {
+    llmModels: RuntimeModelInfo[];
+    embeddingModels: RuntimeModelInfo[];
+    reasoningModels: RuntimeModelInfo[];
+  } = {
+    llmModels: [],
+    embeddingModels: [],
+    reasoningModels: [],
+  };
+
+  if (config.llm.isOllama) {
+    result.llmModels.push({
+      name: config.llm.model,
+      displayName: config.llm.model,
+      tag: 'configured',
+      size: 0,
+      sizeFormatted: '配置值',
+      modified_at: now,
+      category: 'llm',
+      supportsThinking: false,
+      isRemote: false,
+      provider: 'ollama',
+      isConfiguredFallback: true,
+    });
+  }
+
+  if (config.embedding.isOllama) {
+    result.embeddingModels.push({
+      name: config.embedding.model,
+      displayName: config.embedding.model,
+      tag: 'configured',
+      size: 0,
+      sizeFormatted: '配置值',
+      modified_at: now,
+      dimension: config.embedding.dimension,
+      category: 'embedding',
+      isRemote: false,
+      provider: 'ollama',
+      isConfiguredFallback: true,
+    });
+  }
+
+  if (config.reasoning.isOllama) {
+    result.reasoningModels.push({
+      name: config.reasoning.model,
+      displayName: config.reasoning.model,
+      tag: 'configured',
+      size: 0,
+      sizeFormatted: '配置值',
+      modified_at: now,
+      category: 'reasoning',
+      supportsThinking: true,
+      isRemote: false,
+      provider: 'ollama',
+      isConfiguredFallback: true,
     });
   }
 
@@ -349,11 +446,11 @@ export async function GET(request: NextRequest) {
     const remoteModels = generateRemoteModelInfo(providerConfig);
 
     // 初始化结果
-    let reasoningModels: any[] = [...remoteModels.reasoningModels];
-    let llmModels: any[] = [...remoteModels.llmModels];
-    let embeddingModels: any[] = [...remoteModels.embeddingModels];
-    let unknownModels: any[] = [];
-    let allOllamaModels: any[] = [];
+    let reasoningModels: RuntimeModelInfo[] = [...remoteModels.reasoningModels];
+    let llmModels: RuntimeModelInfo[] = [...remoteModels.llmModels];
+    let embeddingModels: RuntimeModelInfo[] = [...remoteModels.embeddingModels];
+    const unknownModels: RuntimeModelInfo[] = [];
+    let allOllamaModels: OllamaApiModel[] = [];
     let ollamaOnline = false;
 
     // 如果需要加载 Ollama 模型（任何一个提供商使用 Ollama）
@@ -378,8 +475,8 @@ export async function GET(request: NextRequest) {
               name: modelName,
               displayName: modelName.split(':')[0],
               tag: modelName.split(':')[1] || 'latest',
-              size: model.size,
-              sizeFormatted: formatBytes(model.size),
+              size: model.size ?? 0,
+              sizeFormatted: formatBytes(model.size ?? 0),
               modifiedAt: model.modified_at,
               digest: model.digest,
               category,
@@ -447,16 +544,23 @@ export async function GET(request: NextRequest) {
     const ollamaRequired = providerConfig.llm.isOllama || providerConfig.embedding.isOllama || providerConfig.reasoning.isOllama;
 
     if (ollamaRequired && !ollamaOnline) {
-      // 返回错误，但仍然包含远程模型信息
+      const fallbackModels = generateConfiguredOllamaFallbackModels(providerConfig);
+      reasoningModels = [...reasoningModels, ...fallbackModels.reasoningModels];
+      llmModels = [...llmModels, ...fallbackModels.llmModels];
+      embeddingModels = [...embeddingModels, ...fallbackModels.embeddingModels];
+
       return NextResponse.json({
-        success: false,
+        success: true,
+        hasModels: true,
+        offline: true,
         error: 'Ollama 服务未运行',
         code: 'OLLAMA_OFFLINE',
         suggestion: '请先启动 Ollama 服务: ollama serve',
-        // 仍然返回远程模型信息
-        reasoningModels: remoteModels.reasoningModels,
-        llmModels: remoteModels.llmModels,
-        embeddingModels: remoteModels.embeddingModels,
+        reasoningModels,
+        llmModels,
+        embeddingModels,
+        unknownModels: [],
+        allModels: [...reasoningModels, ...llmModels, ...embeddingModels],
         providerConfig: {
           llm: { provider: providerConfig.llm.provider, model: providerConfig.llm.model },
           embedding: { provider: providerConfig.embedding.provider, model: providerConfig.embedding.model, dimension: providerConfig.embedding.dimension },
@@ -465,8 +569,11 @@ export async function GET(request: NextRequest) {
         status: {
           ollamaOnline: false,
           ollamaRequired: true,
-        }
-      }, { status: 503 });
+          ready: false,
+          usingConfiguredFallback: true,
+        },
+        warnings: ['Ollama 离线,模型列表使用当前环境配置作为回退。'],
+      });
     }
 
     // 如果没有任何模型

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import CognitiveParsingPanel from '@/components/CognitiveParsingPanel';
+import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
 // ==================== 类型定义 ====================
 
@@ -174,8 +175,8 @@ export default function AdaptiveEntityRAGPage() {
   const [error, setError] = useState<string | null>(null);
   
   // 配置
-  const [llmModel, setLlmModel] = useState('qwen2.5:7b');
-  const [embeddingModel, setEmbeddingModel] = useState('nomic-embed-text');
+  const [llmModel, setLlmModel] = useState(DEFAULT_RUNTIME_MODELS.llm);
+  const [embeddingModel, setEmbeddingModel] = useState(DEFAULT_RUNTIME_MODELS.embedding);
   const [maxRetries, setMaxRetries] = useState(3);
   const [enableReranking, setEnableReranking] = useState(true);
   const [topK, setTopK] = useState(5);
@@ -220,9 +221,55 @@ export default function AdaptiveEntityRAGPage() {
   // 获取可用模型列表
   const loadAvailableModels = useCallback(async () => {
     setLoadingModels(true);
+    const loadingFallbackTimer = window.setTimeout(() => {
+      setLoadingModels(false);
+    }, 2000);
+
     try {
+      // 先读取统一配置快照,避免页面默认值和运行时模型配置漂移。
+      const configResponse = await fetch('/api/model-config');
+      const configData = await configResponse.json();
+
+      if (configData.config?.llm?.model) {
+        setLlmModel(configData.config.llm.model);
+      }
+
+      if (configData.config?.embedding?.model) {
+        setEmbeddingModel(configData.config.embedding.model);
+      }
+
+      if (configData.config?.llm?.model || configData.config?.embedding?.model) {
+        setAvailableModels({
+          success: true,
+          llmModels: configData.config?.llm?.model
+            ? [{
+              name: configData.config.llm.model,
+              size: 0,
+              modified_at: new Date().toISOString(),
+            }]
+            : [],
+          embeddingModels: configData.config?.embedding?.model
+            ? [{
+              name: configData.config.embedding.model,
+              size: 0,
+              modified_at: new Date().toISOString(),
+            }]
+            : [],
+        });
+        setLoadingModels(false);
+      }
+
       const response = await fetch('/api/ollama/models');
       const data = await response.json();
+
+      if (data.providerConfig?.llm?.model) {
+        setLlmModel(data.providerConfig.llm.model);
+      }
+
+      if (data.providerConfig?.embedding?.model) {
+        setEmbeddingModel(data.providerConfig.embedding.model);
+      }
+
       if (data.success) {
         setAvailableModels(data);
         // 如果当前选中的模型不在列表中，选择第一个可用的
@@ -236,6 +283,7 @@ export default function AdaptiveEntityRAGPage() {
     } catch (error) {
       console.error('加载模型列表失败:', error);
     } finally {
+      window.clearTimeout(loadingFallbackTimer);
       setLoadingModels(false);
     }
   }, [llmModel, embeddingModel]);
@@ -243,7 +291,7 @@ export default function AdaptiveEntityRAGPage() {
   // 初始化时加载模型
   useEffect(() => {
     loadAvailableModels();
-  }, []);
+  }, [loadAvailableModels]);
 
   // 格式化文件大小
   const formatSize = (bytes: number): string => {

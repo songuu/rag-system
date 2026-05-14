@@ -6,6 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AgenticRAGSystem, AgentState, WorkflowStep } from '@/lib/agentic-rag';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
+import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 
@@ -31,8 +32,8 @@ function getAgenticRAG(config?: {
     const milvusConfig = getMilvusConfig();
     agenticRAGInstance = new AgenticRAGSystem({
       ollamaBaseUrl: OLLAMA_BASE_URL,
-      llmModel: config?.llmModel || 'llama3.1',
-      embeddingModel: config?.embeddingModel || 'nomic-embed-text',
+      llmModel: config?.llmModel || DEFAULT_RUNTIME_MODELS.llm,
+      embeddingModel: config?.embeddingModel || DEFAULT_RUNTIME_MODELS.embedding,
       milvusConfig,
       enableHallucinationCheck: true,
       enableSemanticCache: true,
@@ -49,8 +50,8 @@ export async function POST(request: NextRequest) {
       topK = 5,
       similarityThreshold = 0.3,
       maxRetries = 1,
-      llmModel = 'llama3.1',
-      embeddingModel = 'nomic-embed-text',
+      llmModel = DEFAULT_RUNTIME_MODELS.llm,
+      embeddingModel = DEFAULT_RUNTIME_MODELS.embedding,
       stream = false,
       streamTokens = false,
       skipSemanticCache = false,

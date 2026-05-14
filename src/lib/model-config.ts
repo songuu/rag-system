@@ -31,6 +31,7 @@ import {
   ALL_EMBEDDING_DIMENSIONS,
 } from './embedding-config';
 import type { EmbeddingModelConfig, EmbeddingProvider } from './embedding-config';
+import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
 
 // ==================== 类型定义 ====================
 
@@ -119,9 +120,9 @@ export const MODEL_DIMENSIONS: Record<string, number> = ALL_EMBEDDING_DIMENSIONS
 
 /** 默认模型配置 */
 const DEFAULT_OLLAMA_CONFIG = {
-  llm: 'llama3.1',
-  embedding: 'nomic-embed-text',
-  reasoning: 'deepseek-r1',
+  llm: DEFAULT_RUNTIME_MODELS.llm,
+  embedding: DEFAULT_RUNTIME_MODELS.embedding,
+  reasoning: DEFAULT_RUNTIME_MODELS.reasoning,
 };
 
 const DEFAULT_OPENAI_CONFIG = {

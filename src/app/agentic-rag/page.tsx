@@ -4,6 +4,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
 import AgenticWorkflowPanel from '@/components/AgenticWorkflowPanel';
 import LangSmithTraceViewer from '@/components/LangSmithTraceViewer';
+import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
 interface AgentState {
   query: string;
@@ -80,8 +81,8 @@ export default function AgenticRAGPage() {
   const [topK, setTopK] = useState(5);
   const [similarityThreshold, setSimilarityThreshold] = useState(0.3);
   const [maxRetries, setMaxRetries] = useState(2);
-  const [llmModel, setLlmModel] = useState('llama3.1');
-  const [embeddingModel, setEmbeddingModel] = useState('nomic-embed-text');
+  const [llmModel, setLlmModel] = useState(DEFAULT_RUNTIME_MODELS.llm);
+  const [embeddingModel, setEmbeddingModel] = useState(DEFAULT_RUNTIME_MODELS.embedding);
   
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<AgentState | null>(null);
@@ -99,13 +100,21 @@ export default function AgenticRAGPage() {
   // 获取可用模型列表
   const loadAvailableModels = useCallback(async () => {
     setLoadingModels(true);
+    const loadingFallbackTimer = window.setTimeout(() => {
+      setLoadingModels(false);
+    }, 2000);
+
     try {
-      // 首先获取系统配置
-      const healthResponse = await fetch('/api/health');
-      const healthData = await healthResponse.json();
-      
-      if (healthData.modelConfig?.embedding) {
-        const embConfig = healthData.modelConfig.embedding;
+      // 先读取统一配置快照,不要把模型选择器绑定到 Ollama 在线状态。
+      const configResponse = await fetch('/api/model-config');
+      const configData = await configResponse.json();
+
+      if (configData.config?.llm?.model) {
+        setLlmModel(configData.config.llm.model);
+      }
+
+      if (configData.config?.embedding) {
+        const embConfig = configData.config.embedding;
         setEmbeddingProvider(embConfig.provider || 'ollama');
         setEmbeddingDimension(embConfig.dimension || 768);
         
@@ -124,13 +133,51 @@ export default function AgenticRAGPage() {
           }));
         }
       }
+
+      if (configData.config?.llm?.model || configData.config?.embedding?.model) {
+        const configuredModels: AvailableModels = {
+          success: true,
+          llmModels: configData.config?.llm?.model
+            ? [{
+              name: configData.config.llm.model,
+              size: 0,
+              modified_at: new Date().toISOString(),
+            }]
+            : [],
+          embeddingModels: configData.config?.embedding?.model
+            ? [{
+              name: configData.config.embedding.model,
+              size: 0,
+              modified_at: new Date().toISOString(),
+            }]
+            : [],
+        };
+
+        setAvailableModels(prev => ({
+          success: true,
+          llmModels: configuredModels.llmModels.length > 0 ? configuredModels.llmModels : prev?.llmModels || [],
+          embeddingModels: configuredModels.embeddingModels.length > 0 ? configuredModels.embeddingModels : prev?.embeddingModels || [],
+        }));
+        setLoadingModels(false);
+      }
       
       // 加载本地 Ollama 模型
       const response = await fetch('/api/ollama/models');
       const data = await response.json();
+
+      if (data.providerConfig?.embedding) {
+        setEmbeddingProvider(data.providerConfig.embedding.provider || 'ollama');
+        setEmbeddingDimension(data.providerConfig.embedding.dimension || 768);
+        setEmbeddingModel(data.providerConfig.embedding.model || embeddingModel);
+      }
+
+      if (data.providerConfig?.llm?.model) {
+        setLlmModel(data.providerConfig.llm.model);
+      }
+
       if (data.success) {
         // 如果是远程 Embedding，保留之前设置的 embeddingModels
-        if (isRemoteEmbedding) {
+        if (data.providerConfig?.embedding?.provider && data.providerConfig.embedding.provider !== 'ollama') {
           setAvailableModels(prev => ({
             ...data,
             embeddingModels: prev?.embeddingModels || data.embeddingModels,
@@ -144,21 +191,23 @@ export default function AgenticRAGPage() {
           setLlmModel(data.llmModels[0].name);
         }
         // 只有 Ollama Embedding 时才自动切换
-        if (!isRemoteEmbedding && data.embeddingModels?.length > 0 && !data.embeddingModels.some((m: ModelInfo) => m.name === embeddingModel)) {
+        const responseEmbeddingProvider = data.providerConfig?.embedding?.provider || embeddingProvider;
+        if (responseEmbeddingProvider === 'ollama' && data.embeddingModels?.length > 0 && !data.embeddingModels.some((m: ModelInfo) => m.name === embeddingModel)) {
           setEmbeddingModel(data.embeddingModels[0].name);
         }
       }
     } catch (error) {
       console.error('Failed to load models:', error);
     } finally {
+      window.clearTimeout(loadingFallbackTimer);
       setLoadingModels(false);
     }
-  }, [llmModel, embeddingModel, isRemoteEmbedding]);
+  }, [llmModel, embeddingModel, embeddingProvider]);
 
   // 初始化时加载模型
   useEffect(() => {
     loadAvailableModels();
-  }, []);
+  }, [loadAvailableModels]);
 
   // 格式化文件大小
   const formatSize = (bytes: number): string => {

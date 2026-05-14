@@ -23,6 +23,7 @@ import {
   getModelFactory,
   isOllamaProvider,
 } from './model-config';
+import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
 
 // ==================== 类型定义 ====================
 
@@ -150,8 +151,8 @@ export interface AdaptiveRAGConfig {
 // ==================== 默认配置 ====================
 
 const DEFAULT_CONFIG: AdaptiveRAGConfig = {
-  llmModel: 'qwen2.5:7b',
-  embeddingModel: 'nomic-embed-text',
+  llmModel: DEFAULT_RUNTIME_MODELS.llm,
+  embeddingModel: DEFAULT_RUNTIME_MODELS.embedding,
   maxRetries: 3,
   constraintPriority: ['PERSON', 'ORGANIZATION', 'PRODUCT', 'EVENT', 'LOCATION', 'DATE', 'CONCEPT', 'OTHER'],
   minResultCount: 3,
