@@ -1,6 +1,6 @@
 # Milvus RAG Pipeline 完整指南
 
-> 最后更新: 2026-01-15
+> 最后更新: 2026-05-15
 
 ## 🎯 概述
 
@@ -14,6 +14,7 @@
 | 🎨 **向量空间可视化** | 查询路径、相似度分布、2D 散点图 |
 | 🧠 **多模型支持** | nomic-embed-text (768D), mxbai-embed-large (1024D) 等 |
 | 📊 **实时统计** | 相似度分布统计、均值/中位数/极值 |
+| ⚙️ **Milvus 2.6 搜索控制** | 支持 consistency、filter templating、grouping、ignore growing、nprobe/ef 覆盖 |
 
 ### 🛡️ 维度不匹配自动处理
 
@@ -121,7 +122,7 @@
 
 ```bash
 # 下载 docker-compose.yml
-wget https://github.com/milvus-io/milvus/releases/download/v2.3.0/milvus-standalone-docker-compose.yml -O docker-compose.yml
+wget https://github.com/milvus-io/milvus/releases/download/v2.6.15/milvus-standalone-docker-compose.yml -O docker-compose.yml
 
 # 启动 Milvus
 docker-compose up -d
@@ -138,7 +139,7 @@ docker run -d \
   --name milvus-standalone \
   -p 19530:19530 \
   -p 9091:9091 \
-  milvusdb/milvus:v2.3-latest \
+  milvusdb/milvus:v2.6.15 \
   milvus run standalone
 ```
 
@@ -171,6 +172,8 @@ MILVUS_USERNAME=
 MILVUS_PASSWORD=
 MILVUS_DATABASE=default
 MILVUS_COLLECTION=rag_documents
+MILVUS_DEFAULT_CONSISTENCY_LEVEL=Bounded
+MILVUS_SEARCH_PARAMS={"nprobe":16}
 
 # Ollama 配置
 OLLAMA_BASE_URL=http://localhost:11434
@@ -299,7 +302,13 @@ EMBEDDING_MODEL=nomic-embed-text
   "action": "search",
   "query": "机器学习是什么？",
   "topK": 5,
-  "threshold": 0.5
+  "threshold": 0.5,
+  "filter": "source in {sources}",
+  "exprValues": { "sources": ["ai_intro.txt"] },
+  "consistencyLevel": "Bounded",
+  "searchParams": { "nprobe": 16 },
+  "groupByField": "source",
+  "groupSize": 1
 }
 
 // 响应
@@ -318,6 +327,8 @@ EMBEDDING_MODEL=nomic-embed-text
   "count": 5
 }
 ```
+
+Milvus 2.6+ 推荐把过滤值放入 `exprValues`，避免把动态值直接拼进 filter 字符串；搜索一致性、`ignoreGrowing`、grouping、`nprobe`/`ef` 等调优项统一由 `src/lib/milvus-client.ts` 和 `src/lib/milvus-config.ts` 承接，API 层只传递策略参数。
 
 #### 插入文档
 
@@ -495,6 +506,8 @@ GET /api/milvus?action=status
 }
 ```
 
+接口返回的 `timings` 字段会拆分 `initMs`、`embeddingMs`、`searchMs`、`totalMs`，用于判断慢在集合准备、embedding 生成还是 Milvus search 本身。重复查询会命中短 TTL query embedding cache；如只是列表预览或健康检查，可通过 `MILVUS_SEARCH_OUTPUT_FIELDS` 减少返回字段。
+
 ### 3. 批量插入
 
 ```typescript
@@ -516,6 +529,8 @@ await milvus.search(embedding, 5, 0.5, 'source == "important.txt"');
 // 按时间过滤
 await milvus.search(embedding, 5, 0.5, 'created_at > 1700000000000');
 ```
+
+复杂过滤或 CJK 字段过滤推荐使用 `filter + exprValues`，不要把长数组或中文值直接拼进 filter 字符串，这会减少 Milvus 解析开销。
 
 ## 🔒 安全配置
 

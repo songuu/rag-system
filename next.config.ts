@@ -28,11 +28,6 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_BASE_PATH: isStaticExport ? '/rag-system' : '',
   },
 
-  // 忽略构建时的 TypeScript 错误（部分 API 路由类型在 Next.js 16 中有变化）
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  
   // 排除某些原生模块，确保 pdf-parse 正常工作
   serverExternalPackages: ['pdf-parse', '@napi-rs/canvas', 'pdfjs-dist', 'canvas'],
   

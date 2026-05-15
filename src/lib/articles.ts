@@ -29,6 +29,11 @@ const ARTICLE_CONFIG: Record<string, { category: string; icon: string; descripti
     icon: '📚',
     description: '上下文管理系统指南，优化多轮对话中的上下文窗口管理',
   },
+  'CONTEXTUAL_RETRIEVAL_GUIDE.md': {
+    category: 'RAG 架构',
+    icon: '🔮',
+    description: '上下文检索增强系统，在 Embedding 前注入全文语境提升检索相关性',
+  },
   'CONVERSATION_EXPANSION_GUIDE.md': {
     category: '系统能力',
     icon: '💬',
@@ -48,6 +53,11 @@ const ARTICLE_CONFIG: Record<string, { category: string; icon: string; descripti
     category: '系统能力',
     icon: '🧠',
     description: '意图蒸馏系统，将模糊的用户查询转化为精准的检索意图',
+  },
+  'LANGCHAIN_LANGGRAPH_GUIDE.md': {
+    category: '系统概览',
+    icon: '🔗',
+    description: 'LangChain 与 LangGraph 最新特性在本项目 RAG 架构中的融入指南',
   },
   'MILVUS_CONFIG_GUIDE.md': {
     category: '配置部署',
@@ -101,15 +111,12 @@ const ARTICLE_CONFIG: Record<string, { category: string; icon: string; descripti
   },
 };
 
-// 排除的文件
-const EXCLUDED_FILES = ['README.md'];
-
 /**
  * 从 Markdown 内容中提取标题（第一个 # 标题）
  */
 function extractTitle(content: string): string {
   const match = content.match(/^#\s+(.+)$/m);
-  return match ? match[1].replace(/[🎯🚀📊🧠💬🔍🤖🕸️🛤️📚⚙️🗄️🔗🔄🦙🧩🪞🌲✨]/g, '').trim() : '未命名文章';
+  return match ? match[1].replace(/[🎯🚀📊🧠💬🔍🤖🕸️🛤️📚⚙️🗄️🔗🔄🦙🧩🪞🌲✨🔮]/g, '').trim() : '未命名文章';
 }
 
 /**
@@ -150,13 +157,12 @@ function fileNameToSlug(fileName: string): string {
  * 获取所有文章列表
  */
 export function getAllArticles(): Article[] {
-  const articlesDir = path.join(process.cwd());
-  const files = fs.readdirSync(articlesDir).filter(
-    (file) => file.endsWith('.md') && !EXCLUDED_FILES.includes(file) && ARTICLE_CONFIG[file]
+  const files = Object.keys(ARTICLE_CONFIG).filter((file) =>
+    fs.existsSync(path.join(/*turbopackIgnore: true*/ process.cwd(), file))
   );
 
   const articles: Article[] = files.map((fileName) => {
-    const filePath = path.join(articlesDir, fileName);
+    const filePath = path.join(/*turbopackIgnore: true*/ process.cwd(), fileName);
     const content = fs.readFileSync(filePath, 'utf-8');
     const config = ARTICLE_CONFIG[fileName] || { category: '其他', icon: '📄' };
 

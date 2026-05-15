@@ -175,8 +175,8 @@ export default function AdaptiveEntityRAGPage() {
   const [error, setError] = useState<string | null>(null);
   
   // 配置
-  const [llmModel, setLlmModel] = useState(DEFAULT_RUNTIME_MODELS.llm);
-  const [embeddingModel, setEmbeddingModel] = useState(DEFAULT_RUNTIME_MODELS.embedding);
+  const [llmModel, setLlmModel] = useState<string>(DEFAULT_RUNTIME_MODELS.llm);
+  const [embeddingModel, setEmbeddingModel] = useState<string>(DEFAULT_RUNTIME_MODELS.embedding);
   const [maxRetries, setMaxRetries] = useState(3);
   const [enableReranking, setEnableReranking] = useState(true);
   const [topK, setTopK] = useState(5);

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MilvusVectorStore, MilvusConfig, getMilvusInstance, resetMilvusInstance, getModelDimension } from '@/lib/milvus-client';
+import { MilvusConfig, getMilvusInstance, resetMilvusInstance, getModelDimension } from '@/lib/milvus-client';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getEmbeddingModel,
+  generateQueryEmbedding,
   selectModelForCollection,
   vectorizeAndInsert,
-  DEFAULT_EMBEDDING_MODEL,
   DocumentInput,
 } from '@/lib/vectorization-utils';
 import { 
@@ -19,6 +19,26 @@ import { getEmbeddingConfigSummary } from '@/lib/embedding-config';
 // 使用独立的 Embedding 配置系统
 const embeddingConfig = getEmbeddingConfigSummary();
 const EMBEDDING_MODEL = embeddingConfig.model;
+
+type RawMilvusDocument = {
+  id?: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+};
+
+type RawImportFile = {
+  content: string;
+  filename: string;
+};
+
+function isRawMilvusDocument(value: unknown): value is RawMilvusDocument {
+  return Boolean(value && typeof value === 'object' && typeof (value as { content?: unknown }).content === 'string');
+}
+
+function isRawImportFile(value: unknown): value is RawImportFile {
+  const record = value as { content?: unknown; filename?: unknown };
+  return Boolean(value && typeof value === 'object' && typeof record.content === 'string' && typeof record.filename === 'string');
+}
 
 /**
  * 获取默认 Milvus 配置（从统一配置系统读取）
@@ -36,6 +56,16 @@ function getDefaultMilvusConfig(): MilvusConfig {
     indexType: connConfig.defaultIndexType,
     metricType: connConfig.defaultMetricType,
     token: connConfig.token,
+    consistencyLevel: connConfig.defaultConsistencyLevel,
+    ignoreGrowing: connConfig.ignoreGrowing,
+    groupByField: connConfig.groupByField,
+    groupSize: connConfig.groupSize,
+    strictGroupSize: connConfig.strictGroupSize,
+    flushOnInsert: connConfig.flushOnInsert,
+    reloadAfterInsert: connConfig.reloadAfterInsert,
+    searchParams: connConfig.searchParams,
+    searchOutputFields: connConfig.searchOutputFields as MilvusConfig['searchOutputFields'],
+    debugLogs: connConfig.debugLogs,
   };
 }
 
@@ -164,7 +194,15 @@ export async function POST(request: NextRequest) {
         
         // 为每个文档生成向量
         console.log(`[Milvus Insert] Generating embeddings for ${documents.length} documents...`);
-        const milvusDocs = await Promise.all(documents.map(async (doc: any) => {
+        const normalizedDocuments = documents.filter(isRawMilvusDocument);
+        if (normalizedDocuments.length !== documents.length) {
+          return NextResponse.json({
+            success: false,
+            error: '文档格式无效：每个文档都必须包含 string 类型的 content',
+          }, { status: 400 });
+        }
+
+        const milvusDocs = await Promise.all(normalizedDocuments.map(async (doc) => {
           const embedding = await embeddings.embedQuery(doc.content);
           return {
             id: doc.id || uuidv4(),
@@ -206,12 +244,25 @@ export async function POST(request: NextRequest) {
 
       // 相似度搜索
       case 'search': {
-        const { query, topK = 5, threshold = 0.0, filter, embeddingModel } = params;
-        
-        console.log(`[Milvus Search] ========== 开始搜索 ==========`);
-        console.log(`[Milvus Search] Query: "${query}"`);
-        console.log(`[Milvus Search] Requested embedding model: "${embeddingModel || 'default'}"`);
-        
+        const requestStartedAt = Date.now();
+        const {
+          query,
+          topK = 5,
+          threshold = 0.0,
+          filter,
+          filterParams,
+          exprValues,
+          consistencyLevel,
+          ignoreGrowing,
+          groupByField,
+          groupSize,
+          strictGroupSize,
+          searchParams,
+          hints,
+          roundDecimal,
+          embeddingModel,
+        } = params;
+
         if (!query || typeof query !== 'string') {
           return NextResponse.json({
             success: false,
@@ -219,24 +270,35 @@ export async function POST(request: NextRequest) {
           }, { status: 400 });
         }
 
-        const milvus = getMilvusInstance(getDefaultMilvusConfig());
+        const defaultConfig = getDefaultMilvusConfig();
+        const debugLogs = defaultConfig.debugLogs === true;
+        const debugSearch = (message: string, ...args: unknown[]) => {
+          if (debugLogs) console.log(message, ...args);
+        };
+
+        debugSearch(`[Milvus Search] ========== 开始搜索 ==========`);
+        debugSearch(`[Milvus Search] Query: "${query}"`);
+        debugSearch(`[Milvus Search] Requested embedding model: "${embeddingModel || 'default'}"`);
+
+        const milvus = getMilvusInstance(defaultConfig);
+        const initStartedAt = Date.now();
         await milvus.connect();
         await milvus.initializeCollection();
+        const initMs = Date.now() - initStartedAt;
 
-        // 获取集合的向量维度
-        const stats = await milvus.getCollectionStats();
-        const collectionDimension = stats?.embeddingDimension || 768;
-        console.log(`[Milvus Search] Collection dimension: ${collectionDimension}D`);
+        // initializeCollection 已做 schema 兼容检查；搜索热路径避免每次读取 stats/describeCollection。
+        const collectionDimension = milvus.getConfig().embeddingDimension;
+        debugSearch(`[Milvus Search] Collection dimension: ${collectionDimension}D`);
 
         // 自动选择与集合维度匹配的模型
         const actualModel = selectModelForCollection(collectionDimension, embeddingModel);
-        console.log(`[Milvus Search] Auto-selected model: "${actualModel}"`);
-        
-        const embeddings = getEmbeddingModel(actualModel);
-        
-        const queryEmbedding = await embeddings.embedQuery(query);
+        debugSearch(`[Milvus Search] Auto-selected model: "${actualModel}"`);
+
+        const embeddingStartedAt = Date.now();
+        const queryEmbedding = await generateQueryEmbedding(query, actualModel);
+        const embeddingMs = Date.now() - embeddingStartedAt;
         const queryDimension = queryEmbedding.length;
-        console.log(`[Milvus Search] Generated query embedding dimension: ${queryDimension}D`);
+        debugSearch(`[Milvus Search] Generated query embedding dimension: ${queryDimension}D`);
         
         // 检查维度是否匹配
         if (queryDimension !== collectionDimension) {
@@ -256,10 +318,25 @@ export async function POST(request: NextRequest) {
           }, { status: 400 });
         }
         
-        console.log(`[Milvus Search] ✅ 维度匹配，开始搜索...`);
-        const results = await milvus.search(queryEmbedding, topK, threshold, filter);
-        console.log(`[Milvus Search] ✅ 找到 ${results.length} 个结果`);
-        console.log(`[Milvus Search] ========== 搜索完成 ==========`);
+        debugSearch(`[Milvus Search] ✅ 维度匹配，开始搜索...`);
+        const searchStartedAt = Date.now();
+        const results = await milvus.search(queryEmbedding, topK, {
+          threshold,
+          filter,
+          exprValues: exprValues || filterParams,
+          consistencyLevel,
+          ignoreGrowing,
+          groupByField,
+          groupSize,
+          strictGroupSize,
+          searchParams,
+          hints,
+          roundDecimal,
+        });
+        const searchMs = Date.now() - searchStartedAt;
+        const totalMs = Date.now() - requestStartedAt;
+        debugSearch(`[Milvus Search] ✅ 找到 ${results.length} 个结果`);
+        debugSearch(`[Milvus Search] ========== 搜索完成 ==========`);
         
         return NextResponse.json({
           success: true,
@@ -269,6 +346,12 @@ export async function POST(request: NextRequest) {
           embeddingModel: actualModel,
           dimension: queryDimension,
           collectionDimension,
+          timings: {
+            initMs,
+            embeddingMs,
+            searchMs,
+            totalMs,
+          },
         });
       }
 
@@ -317,9 +400,17 @@ export async function POST(request: NextRequest) {
         const milvus = getMilvusInstance(getDefaultMilvusConfig());
         
         // 转换为 DocumentInput 格式
-        const documents: DocumentInput[] = files.map((f: any) => ({
-          content: f.content,
-          filename: f.filename,
+        const normalizedFiles = files.filter(isRawImportFile);
+        if (normalizedFiles.length !== files.length) {
+          return NextResponse.json({
+            success: false,
+            error: '文件格式无效：每个文件都必须包含 content 和 filename',
+          }, { status: 400 });
+        }
+
+        const documents: DocumentInput[] = normalizedFiles.map((file) => ({
+          content: file.content,
+          filename: file.filename,
         }));
         
         // 使用公共向量化工具
@@ -339,7 +430,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({
           success: true,
           message: `Imported ${files.length} files as ${result.chunksInserted} chunks`,
-          files: files.map((f: any) => f.filename),
+          files: normalizedFiles.map((file) => file.filename),
           chunkCount: result.chunksInserted,
           embeddingModel: result.embeddingModel,
           dimension: result.dimension,
@@ -423,6 +514,16 @@ export async function GET(request: NextRequest) {
             embeddingDimension: defaultConfig.embeddingDimension,
             indexType: defaultConfig.indexType,
             metricType: defaultConfig.metricType,
+            consistencyLevel: defaultConfig.consistencyLevel,
+            ignoreGrowing: defaultConfig.ignoreGrowing,
+            groupByField: defaultConfig.groupByField,
+            groupSize: defaultConfig.groupSize,
+            strictGroupSize: defaultConfig.strictGroupSize,
+            flushOnInsert: defaultConfig.flushOnInsert,
+            reloadAfterInsert: defaultConfig.reloadAfterInsert,
+            searchParams: defaultConfig.searchParams,
+            searchOutputFields: defaultConfig.searchOutputFields,
+            debugLogs: defaultConfig.debugLogs,
           },
         });
       }
@@ -434,8 +535,9 @@ export async function GET(request: NextRequest) {
           config: {
             ...configSummary,
             embeddingModel: EMBEDDING_MODEL,
-            supportedIndexTypes: ['FLAT', 'IVF_FLAT', 'IVF_SQ8', 'IVF_PQ', 'HNSW', 'ANNOY'],
+            supportedIndexTypes: ['AUTOINDEX', 'FLAT', 'IVF_FLAT', 'IVF_SQ8', 'IVF_PQ', 'HNSW', 'ANNOY'],
             supportedMetricTypes: ['L2', 'IP', 'COSINE'],
+            supportedConsistencyLevels: ['Strong', 'Bounded', 'Session', 'Eventually'],
           },
         });
       }

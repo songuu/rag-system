@@ -70,12 +70,25 @@ MILVUS_ZILLIZ_SERVERLESS=false
 | `MILVUS_DEFAULT_DIMENSION` | `768` | 默认向量维度 |
 | `MILVUS_DEFAULT_INDEX_TYPE` | `IVF_FLAT` | 默认索引类型 |
 | `MILVUS_DEFAULT_METRIC_TYPE` | `COSINE` | 默认距离度量 |
+| `MILVUS_DEFAULT_CONSISTENCY_LEVEL` | `Bounded` | 默认搜索一致性: `Strong` / `Bounded` / `Session` / `Eventually` |
+| `MILVUS_IGNORE_GROWING` | `false` | 搜索时是否跳过 growing segments，偏低延迟场景可启用 |
+| `MILVUS_GROUP_BY_FIELD` | 空 | 搜索结果按字段分组，例如 `source`，用于提升来源多样性 |
+| `MILVUS_GROUP_SIZE` | `0` | 每组返回结果数，留空或 0 表示不显式设置 |
+| `MILVUS_STRICT_GROUP_SIZE` | `false` | grouping search 是否尽量严格填满每组 |
+| `MILVUS_FLUSH_ON_INSERT` | `true` | 插入后是否立即 flush，强一致导入保留 true |
+| `MILVUS_RELOAD_AFTER_INSERT` | `true` | 插入后是否 release/load 让新数据立即可搜 |
+| `MILVUS_SEARCH_PARAMS` | `{}` | JSON object，覆盖搜索参数，如 `{"nprobe":32}` 或 `{"ef":128}` |
+| `MILVUS_SEARCH_OUTPUT_FIELDS` | `id,content,source,metadata_json` | 搜索返回字段，减少不需要的大字段可降低网络和序列化开销 |
+| `MILVUS_DEBUG_LOGS` | `false` | 是否输出 Milvus 热路径调试日志，排障时临时开启 |
+| `MILVUS_QUERY_EMBEDDING_CACHE_TTL_MS` | `600000` | 查询向量缓存 TTL，重复问题可跳过 embedding 生成 |
+| `MILVUS_QUERY_EMBEDDING_CACHE_MAX` | `256` | 查询向量缓存最大条数，设为 `0` 可关闭缓存 |
 
 ### 索引类型说明
 
 | 索引类型 | 适用场景 | 性能特点 |
 |---------|---------|---------|
 | `FLAT` | 小数据集 | 精确搜索，无损失 |
+| `AUTOINDEX` | 托管或不想手调索引的集合 | 由 Milvus/Zilliz 根据数据特征选择索引策略 |
 | `IVF_FLAT` | 中等数据集 | 平衡的性能和精度 |
 | `IVF_SQ8` | 大数据集 | 量化压缩，节省内存 |
 | `IVF_PQ` | 超大数据集 | 高压缩比，较低精度 |
@@ -137,6 +150,51 @@ await milvus.insertDocuments([{
 // 搜索
 const results = await milvus.search(queryEmbedding, 5, 0.5);
 ```
+
+### Milvus 2.6 搜索控制
+
+`milvus.search()` 保留旧签名，同时支持对象式 options:
+
+```typescript
+const results = await milvus.search(queryEmbedding, 8, {
+  threshold: 0.35,
+  filter: 'source in {sources}',
+  exprValues: { sources: ['guide.md', 'notes.md'] },
+  consistencyLevel: 'Bounded',
+  groupByField: 'source',
+  groupSize: 2,
+  searchParams: { nprobe: 32 },
+});
+```
+
+建议:
+
+- CJK 或复杂过滤条件使用 `filter + exprValues`，不要把长数组直接拼进表达式。
+- 刚导入后立即查询，保留 `MILVUS_FLUSH_ON_INSERT=true` 和 `MILVUS_RELOAD_AFTER_INSERT=true`；批量离线导入可关闭以减少 reload 成本。
+- 需要结果来源多样性时用 `MILVUS_GROUP_BY_FIELD=source`，避免同一文档 chunk 淹没结果。
+- HNSW 用 `MILVUS_SEARCH_PARAMS={"ef":128}` 调高召回；IVF 系列用 `{"nprobe":32}` 调高召回。
+
+### 查询速度优化
+
+本项目的 Milvus 搜索热路径已经做了以下优化:
+
+- `initializeCollection()` 在实例已初始化后直接返回，避免每次查询重复 `hasCollection`、`describeCollection`、`getLoadState` 和 `loadCollection`。
+- `/api/milvus` 搜索不再每次调用 `getCollectionStats()`，而是复用初始化时已经校验过的配置维度。
+- 重复 query 的 embedding 会按 `MILVUS_QUERY_EMBEDDING_CACHE_TTL_MS` 短期缓存。
+- 默认关闭热路径调试日志，避免对大字段命中结果执行 `JSON.stringify`。
+- 可用 `MILVUS_SEARCH_OUTPUT_FIELDS=id,source` 做轻量查询；RAG 回答需要正文时保留默认 `content`。
+
+低延迟优先配置示例:
+
+```env
+MILVUS_DEFAULT_CONSISTENCY_LEVEL=Eventually
+MILVUS_IGNORE_GROWING=true
+MILVUS_SEARCH_PARAMS={"nprobe":8}
+MILVUS_SEARCH_OUTPUT_FIELDS=id,content,source
+MILVUS_DEBUG_LOGS=false
+```
+
+注意: `Eventually`、`ignoreGrowing=true` 和较小 `nprobe` 会偏向速度，可能牺牲刚写入数据可见性或召回率；生产默认建议先通过 API 返回的 `timings` 字段观察 `initMs`、`embeddingMs`、`searchMs`，再逐项调整。
 
 ### 使用配置管理器
 

@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 interface ThinkingStep {
   id: string;
   timestamp: number;
-  type: 'reasoning' | 'planning' | 'reflection' | 'decision';
+  type: 'reasoning' | 'planning' | 'reflection' | 'decision' | 'tool_call';
   content: string;
   confidence?: number;
   metadata?: Record<string, any>;
@@ -36,7 +36,8 @@ export default function ThinkingChainDisplay({
     reasoning: { icon: '🧠', label: '推理', color: 'purple', bgColor: 'bg-purple-100', borderColor: 'border-purple-300', textColor: 'text-purple-700' },
     planning: { icon: '📋', label: '规划', color: 'blue', bgColor: 'bg-blue-100', borderColor: 'border-blue-300', textColor: 'text-blue-700' },
     reflection: { icon: '🔍', label: '反思', color: 'amber', bgColor: 'bg-amber-100', borderColor: 'border-amber-300', textColor: 'text-amber-700' },
-    decision: { icon: '⚡', label: '决策', color: 'emerald', bgColor: 'bg-emerald-100', borderColor: 'border-emerald-300', textColor: 'text-emerald-700' }
+    decision: { icon: '⚡', label: '决策', color: 'emerald', bgColor: 'bg-emerald-100', borderColor: 'border-emerald-300', textColor: 'text-emerald-700' },
+    tool_call: { icon: '🛠️', label: '工具调用', color: 'slate', bgColor: 'bg-slate-100', borderColor: 'border-slate-300', textColor: 'text-slate-700' }
   };
   
   if (steps.length === 0 && !isLoading) {

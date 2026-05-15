@@ -82,9 +82,31 @@ export interface RetrievalDetails {
   searchResults: SimilaritySearchResult[];
 }
 
+interface TokenizerLike {
+  encode(text: string, options: Record<string, unknown>): number[];
+  batch_decode(input: number[][], options: Record<string, unknown>): string[];
+  decode(input: number[], options: Record<string, unknown>): string;
+  model?: {
+    vocab?: unknown;
+    encoder?: unknown;
+  };
+  vocab?: unknown;
+  encoder?: unknown;
+  tokenizer_?: {
+    model?: {
+      vocab?: unknown;
+    };
+  };
+  _tokenizer?: {
+    model?: {
+      vocab?: unknown;
+    };
+  };
+}
+
 // 使用 @xenova/transformers 的词元化器
 class SimpleTokenizer {
-  private tokenizer: any = null;
+  private tokenizer: TokenizerLike | null = null;
   private loadingPromise: Promise<void> | null = null;
   private modelName: string = 'Xenova/bert-base-multilingual-cased'; // 支持中英文的多语言模型
   private initialized: boolean = false;
@@ -118,7 +140,7 @@ class SimpleTokenizer {
           // cache_dir: './models',
           // 在服务器端运行时，可以禁用进度回调以提高性能
           progress_callback: undefined,
-        });
+        }) as unknown as TokenizerLike;
         
         this.initialized = true;
         console.log(`[Tokenizer] 模型加载成功: ${this.modelName}`);
@@ -139,11 +161,11 @@ class SimpleTokenizer {
   private extractIdToTokenMap(): Map<number, string> {
     const idToToken = new Map<number, string>();
     
-    const extractFromVocabObject = (vocabObj: any) => {
+    const extractFromVocabObject = (vocabObj: unknown) => {
       if (!vocabObj) return;
       
       if (vocabObj instanceof Map) {
-        vocabObj.forEach((value: any, key: any) => {
+        vocabObj.forEach((value: unknown, key: unknown) => {
           if (typeof key === 'string' && typeof value === 'number') {
             idToToken.set(value, key);
           } else if (typeof value === 'string' && typeof key === 'number') {
@@ -194,13 +216,14 @@ class SimpleTokenizer {
    * @param text 要词元化的文本
    * @returns TokenInfo 数组
    */
-  async tokenize(text: string | any): Promise<TokenInfo[]> {
+  async tokenize(text: unknown): Promise<TokenInfo[]> {
     // 确保 tokenizer 已初始化
     await this.initialize();
 
     if (!this.tokenizer || !this.initialized) {
       throw new Error('Tokenizer not initialized');
     }
+    const tokenizer = this.tokenizer;
 
     // 强制转换为字符串类型 - 增强类型检查
     let textStr: string;
@@ -212,7 +235,8 @@ class SimpleTokenizer {
         textStr = '';
       } else if (typeof text === 'object') {
         // 如果是对象，尝试获取其 text/content/query 属性
-        const extracted = text.text || text.content || text.query || text.pageContent;
+        const textRecord = text as Record<string, unknown>;
+        const extracted = textRecord.text || textRecord.content || textRecord.query || textRecord.pageContent;
         if (typeof extracted === 'string') {
           textStr = extracted;
         } else if (extracted != null) {
@@ -243,7 +267,7 @@ class SimpleTokenizer {
 
     try {
       // 使用真实的 tokenizer 进行编码，获取 token IDs
-      const encoded = this.tokenizer.encode(textStr, {
+      const encoded = tokenizer.encode(textStr, {
         add_special_tokens: true,
         return_tensors: false,
       });
@@ -253,7 +277,7 @@ class SimpleTokenizer {
       
       try {
         // 方法1: 尝试使用 batch_decode
-        tokenTexts = this.tokenizer.batch_decode(
+        tokenTexts = tokenizer.batch_decode(
           encoded.map((id: number) => [id]),
           { skip_special_tokens: false }
         );
@@ -262,7 +286,7 @@ class SimpleTokenizer {
           // 方法2: 使用单个 decode
           tokenTexts = encoded.map((tokenId: number) => {
             try {
-              return this.tokenizer.decode([tokenId], { skip_special_tokens: false }) || `[TOKEN:${tokenId}]`;
+              return tokenizer.decode([tokenId], { skip_special_tokens: false }) || `[TOKEN:${tokenId}]`;
             } catch {
               return `[TOKEN:${tokenId}]`;
             }
@@ -315,10 +339,10 @@ class SimpleTokenizer {
       console.error('Tokenization error:', error);
       // 如果出错，返回一个基本的 token 信息
       return [{
-        token: text,
+        token: textStr,
         tokenId: 1, // UNK token ID
         position: 0,
-        type: this.getTokenType(text)
+        type: this.getTokenType(textStr)
       }];
     }
   }
@@ -519,6 +543,7 @@ class SimpleMemoryVectorStore {
   }
 
   private analyzeSemantics(text: string, embedding: number[]): SemanticAnalysis {
+    void embedding;
     // 简化的语义分析
     const lowerText = text.toLowerCase();
     let context = '';
@@ -621,7 +646,9 @@ export class LocalRAGSystem {
     console.log("--- 正在初始化向量数据库 ---");
 
     // 尝试从 uploads 文件夹读取文档
-    const uploadsDir = docsPath || path.join(process.cwd(), "uploads");
+    const uploadsDir = docsPath
+      ? path.resolve(/*turbopackIgnore: true*/ process.cwd(), docsPath)
+      : path.join(process.cwd(), "uploads");
     let documents: Document[] = [];
 
     try {
@@ -769,8 +796,8 @@ export class LocalRAGSystem {
       sessionId,
       input: { question, topK, similarityThreshold },
       metadata: {
-        model: this.llm.model,
-        embeddingModel: this.embeddings.model,
+        model: this.config.llmModel,
+        embeddingModel: this.config.embeddingModel,
         timestamp: new Date().toISOString()
       },
       tags: ['rag', 'question-answering']
@@ -827,7 +854,7 @@ export class LocalRAGSystem {
         traceId,
         name: 'Answer Generation',
         input: { question, context },
-        model: this.llm.model,
+        model: this.config.llmModel,
         modelParameters: { temperature: 0 },
         metadata: { stage: 'generation' }
       });
@@ -899,7 +926,7 @@ export class LocalRAGSystem {
     return this.observabilityEngine.getTrace(traceId);
   }
 
-  addUserFeedback(traceId: string, score: number | boolean, comment?: string) {
+  addUserFeedback(traceId: string, score: number | boolean | string, comment?: string) {
     return this.observabilityEngine.addScore({
       traceId,
       name: 'user_feedback',

@@ -17,7 +17,7 @@ import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
-import { HumanMessage } from '@langchain/core/messages';
+import { invokeStructuredJson } from './langchain-structured-output';
 import { getMilvusInstance, MilvusConfig } from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
 import {
@@ -205,6 +205,80 @@ const AgentStateAnnotation = Annotation.Root({
   debugInfo: Annotation<AgentState['debugInfo'] | undefined>({ reducer: (_, b) => b }),
 });
 
+const QUERY_ANALYSIS_SCHEMA = {
+  name: 'AgenticQueryAnalysis',
+  schema: {
+    type: 'object',
+    properties: {
+      originalQuery: { type: 'string' },
+      rewrittenQuery: { type: 'string' },
+      intent: { type: 'string', enum: ['factual', 'exploratory', 'comparison', 'procedural', 'greeting', 'unknown'] },
+      complexity: { type: 'string', enum: ['simple', 'moderate', 'complex'] },
+      needsRetrieval: { type: 'boolean' },
+      keywords: { type: 'array', items: { type: 'string' } },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+    },
+    required: ['rewrittenQuery', 'intent', 'complexity', 'needsRetrieval', 'keywords', 'confidence'],
+    additionalProperties: false,
+  },
+};
+
+const RETRIEVAL_GRADE_SCHEMA = {
+  name: 'AgenticRetrievalGrade',
+  schema: {
+    type: 'object',
+    properties: {
+      overall_score: { type: 'number', minimum: 0, maximum: 1 },
+      reasoning: { type: 'string' },
+    },
+    required: ['overall_score', 'reasoning'],
+    additionalProperties: false,
+  },
+};
+
+const HALLUCINATION_CHECK_SCHEMA = {
+  name: 'AgenticHallucinationCheck',
+  schema: {
+    type: 'object',
+    properties: {
+      hasHallucination: { type: 'boolean' },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      severity: { type: 'string', enum: ['none', 'mild', 'severe'] },
+      correctedAnswer: { type: 'string' },
+    },
+    required: ['hasHallucination', 'confidence', 'severity', 'correctedAnswer'],
+    additionalProperties: false,
+  },
+};
+
+type RetrievalGradePayload = {
+  overallScore: number;
+  reasoning: string;
+};
+
+type HallucinationPayload = {
+  hasHallucination: boolean;
+  confidence: number;
+  severity: 'none' | 'mild' | 'severe';
+  correctedAnswer: string;
+};
+
+type AgenticCompiledGraph = {
+  invoke(
+    input: Partial<typeof AgentStateAnnotation.State>,
+    options?: { recursionLimit?: number }
+  ): Promise<unknown>;
+  stream(
+    input: Partial<typeof AgentStateAnnotation.State>,
+    options?: { recursionLimit?: number }
+  ): Promise<AsyncIterable<Partial<typeof AgentStateAnnotation.State>>> | AsyncIterable<Partial<typeof AgentStateAnnotation.State>>;
+};
+
+type MatchingEmbeddings = {
+  embeddings: Embeddings;
+  modelName: string;
+};
+
 // ==================== Agentic RAG 系统类 ====================
 
 export interface AgenticRAGConfig {
@@ -227,6 +301,97 @@ export interface AgenticRAGConfig {
   modelConfig?: Partial<ModelConfig>;
 }
 
+function normalizeQueryAnalysisPayload(value: unknown, originalQuery: string): QueryAnalysis {
+  const record = toRecord(value);
+  const rewrittenQuery = readString(record.rewrittenQuery, originalQuery);
+  const intent = readEnum<QueryAnalysis['intent']>(
+    record.intent,
+    ['factual', 'exploratory', 'comparison', 'procedural', 'greeting', 'unknown'],
+    'unknown'
+  );
+  const complexity = readEnum<QueryAnalysis['complexity']>(
+    record.complexity,
+    ['simple', 'moderate', 'complex'],
+    'moderate'
+  );
+  const keywords = readStringArray(record.keywords);
+
+  return {
+    originalQuery,
+    rewrittenQuery,
+    intent,
+    complexity,
+    needsRetrieval: typeof record.needsRetrieval === 'boolean' ? record.needsRetrieval : true,
+    keywords: keywords.length > 0 ? keywords : splitKeywords(originalQuery),
+    confidence: clampNumber(record.confidence, 0.5),
+  };
+}
+
+function normalizeRetrievalGradePayload(value: unknown, fallbackScore: number): RetrievalGradePayload {
+  const record = toRecord(value);
+  return {
+    overallScore: clampNumber(record.overall_score ?? record.overallScore ?? record.score, fallbackScore),
+    reasoning: readString(record.reasoning, '模型未提供检索评分理由'),
+  };
+}
+
+function normalizeHallucinationPayload(value: unknown): HallucinationPayload {
+  const record = toRecord(value);
+  return {
+    hasHallucination: record.hasHallucination === true,
+    confidence: clampNumber(record.confidence, 0),
+    severity: readEnum<HallucinationPayload['severity']>(record.severity, ['none', 'mild', 'severe'], 'none'),
+    correctedAnswer: readString(record.correctedAnswer, ''),
+  };
+}
+
+function enforceGreetingDecision(analysis: QueryAnalysis, query: string): QueryAnalysis {
+  if (!isGreetingQuery(query)) return { ...analysis, needsRetrieval: true };
+  return {
+    ...analysis,
+    intent: 'greeting',
+    needsRetrieval: false,
+  };
+}
+
+function isGreetingQuery(query: string): boolean {
+  const greetingPatterns = [
+    /^(你好|您好|hi|hello|hey|嗨|哈喽)[\s!！。.]*$/i,
+    /^(谢谢|感谢|thanks|thank you|thx)[\s!！。.]*$/i,
+    /^(再见|拜拜|bye|goodbye)[\s!！。.]*$/i,
+    /^(早上好|下午好|晚上好|早安|晚安)[\s!！。.]*$/i,
+    /^(好的|ok|okay|没问题|收到)[\s!！。.]*$/i,
+  ];
+  return greetingPatterns.some((pattern) => pattern.test(query.trim()));
+}
+
+function splitKeywords(query: string): string[] {
+  return query.split(/\s+/).filter((word) => word.length > 0);
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function readString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function readEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof value === 'string' && allowed.includes(value as T) ? value as T : fallback;
+}
+
+function clampNumber(value: unknown, fallback: number): number {
+  const numberValue = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.min(1, Math.max(0, numberValue));
+}
+
 export class AgenticRAGSystem {
   private llm: BaseChatModel;
   private fastLlm: BaseChatModel;
@@ -234,7 +399,7 @@ export class AgenticRAGSystem {
   private embeddings: Embeddings;
   private milvusConfig: MilvusConfig;
   private config: AgenticRAGConfig;
-  private graph: ReturnType<StateGraph<typeof AgentStateAnnotation.State>['compile']>;
+  private graph: AgenticCompiledGraph;
   private requestedEmbeddingModel: string;
   private semanticCache: SemanticCache;
 
@@ -297,11 +462,19 @@ export class AgenticRAGSystem {
     this.graph = this.buildGraph();
   }
 
-  private async getMatchingEmbeddings(collectionDimension: number): Promise<Embeddings> {
+  private async getMatchingEmbeddings(collectionDimension: number): Promise<MatchingEmbeddings> {
     const requestedDimension = getModelDimension(this.requestedEmbeddingModel);
-    if (requestedDimension === collectionDimension) return this.embeddings;
+    if (requestedDimension === collectionDimension) {
+      return {
+        embeddings: this.embeddings,
+        modelName: this.requestedEmbeddingModel,
+      };
+    }
     const matchingModel = selectModelByDimension(collectionDimension);
-    return createEmbedding(matchingModel);
+    return {
+      embeddings: createEmbedding(matchingModel),
+      modelName: matchingModel,
+    };
   }
 
   // ==================== 节点实现 ====================
@@ -328,44 +501,14 @@ export class AgenticRAGSystem {
 规则: 只有纯粹的问候（如"你好"、"谢谢"）才设 needsRetrieval=false，其余均为 true。
 `);
 
-      const chain = prompt.pipe(this.fastLlm).pipe(new StringOutputParser());
-      const result = await chain.invoke({ query: state.query });
-
-      let analysis: QueryAnalysis;
-      try {
-        const cleaned = result.replace(/```json\n?|\n?```/g, '').trim();
-        analysis = JSON.parse(cleaned);
-        analysis.originalQuery = state.query;
-
-        const greetingPatterns = [
-          /^(你好|您好|hi|hello|hey|嗨|哈喽)[\s!！。.]*$/i,
-          /^(谢谢|感谢|thanks|thank you|thx)[\s!！。.]*$/i,
-          /^(再见|拜拜|bye|goodbye)[\s!！。.]*$/i,
-          /^(早上好|下午好|晚上好|早安|晚安)[\s!！。.]*$/i,
-          /^(好的|ok|okay|没问题|收到)[\s!！。.]*$/i,
-        ];
-        const isGreeting = greetingPatterns.some((p) => p.test(state.query.trim()));
-        if (isGreeting) {
-          analysis.needsRetrieval = false;
-          analysis.intent = 'greeting';
-        } else {
-          analysis.needsRetrieval = true;
-        }
-
-        if (!analysis.keywords?.length) {
-          analysis.keywords = state.query.split(/\s+/).filter((w) => w.length > 0);
-        }
-      } catch {
-        analysis = {
-          originalQuery: state.query,
-          rewrittenQuery: state.query,
-          intent: 'unknown',
-          complexity: 'moderate',
-          needsRetrieval: true,
-          keywords: state.query.split(/\s+/).filter((w) => w.length > 0),
-          confidence: 0.5,
-        };
-      }
+      const messages = await prompt.formatMessages({ query: state.query });
+      const { data: structuredAnalysis } = await invokeStructuredJson<QueryAnalysis>({
+        model: this.fastLlm,
+        input: messages,
+        schema: QUERY_ANALYSIS_SCHEMA,
+        normalize: (value) => normalizeQueryAnalysisPayload(value, state.query),
+      });
+      const analysis = enforceGreetingDecision(structuredAnalysis, state.query);
 
       const stepEnd = Date.now();
       trace('analyze_query', { ...analysis, duration: stepEnd - stepStart });
@@ -427,8 +570,7 @@ export class AgenticRAGSystem {
 
       const stats = await milvus.getCollectionStats();
       const collectionDimension = stats?.embeddingDimension || this.milvusConfig.embeddingDimension || 768;
-      const matchingEmbeddings = await this.getMatchingEmbeddings(collectionDimension);
-      const embeddingModelName = matchingEmbeddings.model || this.requestedEmbeddingModel;
+      const { embeddings: matchingEmbeddings, modelName: embeddingModelName } = await this.getMatchingEmbeddings(collectionDimension);
 
       const embedding = await matchingEmbeddings.embedQuery(query);
       const results = await milvus.search(embedding, state.topK, state.similarityThreshold);
@@ -565,21 +707,16 @@ export class AgenticRAGSystem {
 }}
 `);
 
-      const chain = prompt.pipe(this.rerankerLlm).pipe(new StringOutputParser());
-      const response = await chain.invoke({ query: state.query, docs: docsForPrompt });
-
-      let overallScore = 0.5;
-      let reasoning = '解析失败';
-      try {
-        const match = response.match(/\{[\s\S]*\}/);
-        if (match) {
-          const parsed = JSON.parse(match[0]);
-          overallScore = Math.min(1, Math.max(0, parseFloat(parsed.overall_score) || 0.5));
-          reasoning = parsed.reasoning || reasoning;
-        }
-      } catch {
-        overallScore = state.retrievedDocuments.reduce((s, d) => s + d.score, 0) / state.retrievedDocuments.length;
-      }
+      const fallbackScore = state.retrievedDocuments.reduce((sum, doc) => sum + doc.score, 0) / state.retrievedDocuments.length;
+      const messages = await prompt.formatMessages({ query: state.query, docs: docsForPrompt });
+      const { data: grade } = await invokeStructuredJson<RetrievalGradePayload>({
+        model: this.rerankerLlm,
+        input: messages,
+        schema: RETRIEVAL_GRADE_SCHEMA,
+        normalize: (value) => normalizeRetrievalGradePayload(value, fallbackScore),
+      });
+      const overallScore = grade.overallScore;
+      const reasoning = grade.reasoning;
 
       const isRelevant = overallScore >= (state.gradePassThreshold ?? 0.5);
       const canRetry = state.retryCount < MAX_RETRIES;
@@ -707,7 +844,7 @@ export class AgenticRAGSystem {
 
       const stats = await milvus.getCollectionStats();
       const collectionDimension = stats?.embeddingDimension || this.milvusConfig.embeddingDimension || 768;
-      const matchingEmbeddings = await this.getMatchingEmbeddings(collectionDimension);
+      const { embeddings: matchingEmbeddings } = await this.getMatchingEmbeddings(collectionDimension);
 
       const embedding = await matchingEmbeddings.embedQuery(query);
       const results = await milvus.search(embedding, state.topK, state.similarityThreshold);
@@ -878,20 +1015,21 @@ export class AgenticRAGSystem {
 }}
 `);
 
-      const chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
-      const result = await chain.invoke({ context, answer });
+      const messages = await prompt.formatMessages({ context, answer });
+      const { data: parsed } = await invokeStructuredJson<HallucinationPayload>({
+        model: this.llm,
+        input: messages,
+        schema: HALLUCINATION_CHECK_SCHEMA,
+        normalize: normalizeHallucinationPayload,
+      });
 
-      const match = result.match(/\{[\s\S]*\}/);
-      if (match) {
-        const parsed = JSON.parse(match[0]);
-        if (
-          parsed.hasHallucination === true &&
-          parsed.severity === 'severe' &&
-          parsed.confidence >= 0.8 &&
-          parsed.correctedAnswer
-        ) {
-          onCorrection({ original: answer, corrected: parsed.correctedAnswer });
-        }
+      if (
+        parsed.hasHallucination === true &&
+        parsed.severity === 'severe' &&
+        parsed.confidence >= 0.8 &&
+        parsed.correctedAnswer
+      ) {
+        onCorrection({ original: answer, corrected: parsed.correctedAnswer });
       }
     } catch {
       // 忽略异步检查错误
@@ -932,7 +1070,7 @@ export class AgenticRAGSystem {
    *       v
    *  finalize ──> END
    */
-  private buildGraph() {
+  private buildGraph(): AgenticCompiledGraph {
     const workflow = new StateGraph(AgentStateAnnotation)
       .addNode('fan_out_join', this.fanOutAndJoin.bind(this))
       .addNode('grade_retrieval', this.gradeRetrieval.bind(this))
@@ -958,7 +1096,7 @@ export class AgenticRAGSystem {
       .addEdge('generate', 'finalize')
       .addEdge('finalize', END);
 
-    return workflow.compile();
+    return workflow.compile() as unknown as AgenticCompiledGraph;
   }
 
   // ==================== 公共接口 ====================
@@ -1028,7 +1166,7 @@ export class AgenticRAGSystem {
     };
 
     try {
-      const result = await this.graph.invoke(initialState, { recursionLimit: 30 });
+      const result = await this.graph.invoke(initialState, { recursionLimit: 30 }) as unknown as AgentState;
 
       // 写入语义缓存
       if (this.config.enableSemanticCache && result.answer && !result.error) {

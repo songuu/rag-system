@@ -64,6 +64,11 @@ const ARTICLE_CONFIG = {
     icon: '🧠',
     description: '意图蒸馏系统，将模糊的用户查询转化为精准的检索意图',
   },
+  'LANGCHAIN_LANGGRAPH_GUIDE.md': {
+    category: '系统概览',
+    icon: '🔗',
+    description: 'LangChain 与 LangGraph 最新特性在本项目 RAG 架构中的融入指南',
+  },
   'MILVUS_CONFIG_GUIDE.md': {
     category: '配置部署',
     icon: '🗄️',

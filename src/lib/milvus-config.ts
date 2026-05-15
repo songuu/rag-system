@@ -17,9 +17,10 @@ function getEmbeddingDimensionLazy(): number {
   if (!_getEmbeddingDimension) {
     try {
       // 动态导入避免循环依赖
-      const embeddingConfig = require('./embedding-config');
-      _getEmbeddingDimension = embeddingConfig.getEmbeddingDimension;
-    } catch (e) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const embeddingConfig = require('./embedding-config') as { getEmbeddingDimension?: () => number };
+      _getEmbeddingDimension = embeddingConfig.getEmbeddingDimension || null;
+    } catch {
       console.warn('[MilvusConfig] 无法加载 embedding-config，使用默认维度 768');
       return 768;
     }
@@ -54,8 +55,18 @@ export interface MilvusConnectionConfig {
   // 集合默认配置
   defaultCollection: string;
   defaultDimension: number;
-  defaultIndexType: 'IVF_FLAT' | 'IVF_SQ8' | 'IVF_PQ' | 'HNSW' | 'ANNOY' | 'FLAT';
+  defaultIndexType: 'AUTOINDEX' | 'IVF_FLAT' | 'IVF_SQ8' | 'IVF_PQ' | 'HNSW' | 'ANNOY' | 'FLAT';
   defaultMetricType: 'L2' | 'IP' | 'COSINE';
+  defaultConsistencyLevel: 'Strong' | 'Bounded' | 'Session' | 'Eventually';
+  ignoreGrowing: boolean;
+  groupByField?: string;
+  groupSize?: number;
+  strictGroupSize: boolean;
+  flushOnInsert: boolean;
+  reloadAfterInsert: boolean;
+  searchParams: Record<string, unknown>;
+  searchOutputFields: string[];
+  debugLogs: boolean;
 }
 
 /**
@@ -79,8 +90,89 @@ interface MilvusEnvConfig {
   defaultDatabase: string;
   defaultCollection: string;
   defaultDimension: number;
-  defaultIndexType: string;
-  defaultMetricType: string;
+  defaultIndexType: MilvusConnectionConfig['defaultIndexType'];
+  defaultMetricType: MilvusConnectionConfig['defaultMetricType'];
+  defaultConsistencyLevel: 'Strong' | 'Bounded' | 'Session' | 'Eventually';
+  ignoreGrowing: boolean;
+  groupByField: string;
+  groupSize: number;
+  strictGroupSize: boolean;
+  flushOnInsert: boolean;
+  reloadAfterInsert: boolean;
+  searchParams: Record<string, unknown>;
+  searchOutputFields: string[];
+  debugLogs: boolean;
+}
+
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value === '') return fallback;
+  return ['true', '1', 'yes', 'on'].includes(value.toLowerCase());
+}
+
+function parseOptionalNumber(value: string | undefined, fallback: number = 0): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseJsonObject(value: string | undefined, label: string): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    console.warn(`[MilvusConfig] ${label} 不是有效 JSON object，已忽略`);
+    return {};
+  }
+}
+
+function parseStringList(value: string | undefined, fallback: string[]): string[] {
+  if (!value) return fallback;
+  const items = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : fallback;
+}
+
+function parseConsistencyLevel(value: string | undefined): MilvusEnvConfig['defaultConsistencyLevel'] {
+  const normalized = (value || 'Bounded').trim().toLowerCase();
+  switch (normalized) {
+    case 'strong':
+      return 'Strong';
+    case 'session':
+      return 'Session';
+    case 'eventually':
+    case 'eventual':
+      return 'Eventually';
+    case 'bounded':
+    default:
+      return 'Bounded';
+  }
+}
+
+function parseIndexType(value: string | undefined): MilvusConnectionConfig['defaultIndexType'] {
+  const normalized = (value || 'IVF_FLAT').trim().toUpperCase();
+  const allowed: MilvusConnectionConfig['defaultIndexType'][] = [
+    'AUTOINDEX',
+    'IVF_FLAT',
+    'IVF_SQ8',
+    'IVF_PQ',
+    'HNSW',
+    'ANNOY',
+    'FLAT',
+  ];
+  return allowed.includes(normalized as MilvusConnectionConfig['defaultIndexType'])
+    ? normalized as MilvusConnectionConfig['defaultIndexType']
+    : 'IVF_FLAT';
+}
+
+function parseMetricType(value: string | undefined): MilvusConnectionConfig['defaultMetricType'] {
+  const normalized = (value || 'COSINE').trim().toUpperCase();
+  const allowed: MilvusConnectionConfig['defaultMetricType'][] = ['L2', 'IP', 'COSINE'];
+  return allowed.includes(normalized as MilvusConnectionConfig['defaultMetricType'])
+    ? normalized as MilvusConnectionConfig['defaultMetricType']
+    : 'COSINE';
 }
 
 // ==================== 环境变量解析 ====================
@@ -110,8 +202,23 @@ function loadEnvConfig(): MilvusEnvConfig {
     defaultDimension: process.env.MILVUS_DEFAULT_DIMENSION 
       ? parseInt(process.env.MILVUS_DEFAULT_DIMENSION, 10) 
       : getEmbeddingDimensionLazy(),
-    defaultIndexType: process.env.MILVUS_DEFAULT_INDEX_TYPE || 'IVF_FLAT',
-    defaultMetricType: process.env.MILVUS_DEFAULT_METRIC_TYPE || 'COSINE',
+    defaultIndexType: parseIndexType(process.env.MILVUS_DEFAULT_INDEX_TYPE),
+    defaultMetricType: parseMetricType(process.env.MILVUS_DEFAULT_METRIC_TYPE),
+    defaultConsistencyLevel: parseConsistencyLevel(process.env.MILVUS_DEFAULT_CONSISTENCY_LEVEL),
+    ignoreGrowing: parseBoolean(process.env.MILVUS_IGNORE_GROWING, false),
+    groupByField: process.env.MILVUS_GROUP_BY_FIELD || '',
+    groupSize: parseOptionalNumber(process.env.MILVUS_GROUP_SIZE),
+    strictGroupSize: parseBoolean(process.env.MILVUS_STRICT_GROUP_SIZE, false),
+    flushOnInsert: parseBoolean(process.env.MILVUS_FLUSH_ON_INSERT, true),
+    reloadAfterInsert: parseBoolean(process.env.MILVUS_RELOAD_AFTER_INSERT, true),
+    searchParams: parseJsonObject(process.env.MILVUS_SEARCH_PARAMS, 'MILVUS_SEARCH_PARAMS'),
+    searchOutputFields: parseStringList(process.env.MILVUS_SEARCH_OUTPUT_FIELDS, [
+      'id',
+      'content',
+      'source',
+      'metadata_json',
+    ]),
+    debugLogs: parseBoolean(process.env.MILVUS_DEBUG_LOGS, false),
   };
 }
 
@@ -181,8 +288,18 @@ class MilvusConfigManager {
         database: env.defaultDatabase,
         defaultCollection: env.defaultCollection,
         defaultDimension: env.defaultDimension,
-        defaultIndexType: env.defaultIndexType as any,
-        defaultMetricType: env.defaultMetricType as any,
+        defaultIndexType: env.defaultIndexType,
+        defaultMetricType: env.defaultMetricType,
+        defaultConsistencyLevel: env.defaultConsistencyLevel,
+        ignoreGrowing: env.ignoreGrowing,
+        groupByField: env.groupByField || undefined,
+        groupSize: env.groupSize || undefined,
+        strictGroupSize: env.strictGroupSize,
+        flushOnInsert: env.flushOnInsert,
+        reloadAfterInsert: env.reloadAfterInsert,
+        searchParams: env.searchParams,
+        searchOutputFields: env.searchOutputFields,
+        debugLogs: env.debugLogs,
       };
 
       console.log('[MilvusConfig] Using Zilliz Cloud:', env.zillizEndpoint);
@@ -197,8 +314,18 @@ class MilvusConfigManager {
         database: env.defaultDatabase,
         defaultCollection: env.defaultCollection,
         defaultDimension: env.defaultDimension,
-        defaultIndexType: env.defaultIndexType as any,
-        defaultMetricType: env.defaultMetricType as any,
+        defaultIndexType: env.defaultIndexType,
+        defaultMetricType: env.defaultMetricType,
+        defaultConsistencyLevel: env.defaultConsistencyLevel,
+        ignoreGrowing: env.ignoreGrowing,
+        groupByField: env.groupByField || undefined,
+        groupSize: env.groupSize || undefined,
+        strictGroupSize: env.strictGroupSize,
+        flushOnInsert: env.flushOnInsert,
+        reloadAfterInsert: env.reloadAfterInsert,
+        searchParams: env.searchParams,
+        searchOutputFields: env.searchOutputFields,
+        debugLogs: env.debugLogs,
       };
 
       console.log('[MilvusConfig] Using local Milvus:', env.localAddress);
@@ -231,6 +358,16 @@ class MilvusConfigManager {
     ssl: boolean;
     defaultCollection: string;
     defaultDimension: number;
+    defaultConsistencyLevel: MilvusConnectionConfig['defaultConsistencyLevel'];
+    ignoreGrowing: boolean;
+    groupByField?: string;
+    groupSize?: number;
+    strictGroupSize: boolean;
+    flushOnInsert: boolean;
+    reloadAfterInsert: boolean;
+    searchParams: Record<string, unknown>;
+    searchOutputFields: string[];
+    debugLogs: boolean;
   } {
     const config = this.getConnectionConfig();
     return {
@@ -240,6 +377,16 @@ class MilvusConfigManager {
       ssl: config.ssl,
       defaultCollection: config.defaultCollection,
       defaultDimension: config.defaultDimension,
+      defaultConsistencyLevel: config.defaultConsistencyLevel,
+      ignoreGrowing: config.ignoreGrowing,
+      groupByField: config.groupByField,
+      groupSize: config.groupSize,
+      strictGroupSize: config.strictGroupSize,
+      flushOnInsert: config.flushOnInsert,
+      reloadAfterInsert: config.reloadAfterInsert,
+      searchParams: config.searchParams,
+      searchOutputFields: config.searchOutputFields,
+      debugLogs: config.debugLogs,
     };
   }
 }
@@ -374,6 +521,16 @@ export function getDefaultCollectionConfig() {
     embeddingDimension: config.defaultDimension,
     indexType: config.defaultIndexType,
     metricType: config.defaultMetricType,
+    consistencyLevel: config.defaultConsistencyLevel,
+    ignoreGrowing: config.ignoreGrowing,
+    groupByField: config.groupByField,
+    groupSize: config.groupSize,
+    strictGroupSize: config.strictGroupSize,
+    flushOnInsert: config.flushOnInsert,
+    reloadAfterInsert: config.reloadAfterInsert,
+    searchParams: config.searchParams,
+    searchOutputFields: config.searchOutputFields,
+    debugLogs: config.debugLogs,
   };
 }
 

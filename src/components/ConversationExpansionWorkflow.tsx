@@ -37,6 +37,10 @@ interface CandidateQuestion {
     hasEvidence: boolean;
     isDuplicate: boolean;
     keywordsFound: string[];
+    hallucination?: boolean;
+    entityCoverage?: number;
+    keywordCoverage?: number;
+    foundEntities?: string[];
   };
 }
 
@@ -565,12 +569,12 @@ export default function ConversationExpansionWorkflow({
                             </div>
                             
                             {/* 第三行：找到的实体/关键词 */}
-                            {(q.validationDetails.foundEntities?.length > 0 || q.validationDetails.keywordsFound?.length > 0) && (
+                            {((q.validationDetails.foundEntities?.length ?? 0) > 0 || q.validationDetails.keywordsFound?.length > 0) && (
                               <div className="text-xs text-slate-400">
-                                {q.validationDetails.foundEntities?.length > 0 && (
-                                  <span>匹配实体: {q.validationDetails.foundEntities.slice(0, 3).join(', ')}</span>
+                                {(q.validationDetails.foundEntities?.length ?? 0) > 0 && (
+                                  <span>匹配实体: {q.validationDetails.foundEntities?.slice(0, 3).join(', ')}</span>
                                 )}
-                                {q.validationDetails.foundEntities?.length > 0 && q.validationDetails.keywordsFound?.length > 0 && (
+                                {(q.validationDetails.foundEntities?.length ?? 0) > 0 && q.validationDetails.keywordsFound?.length > 0 && (
                                   <span className="mx-1">|</span>
                                 )}
                                 {q.validationDetails.keywordsFound?.length > 0 && (

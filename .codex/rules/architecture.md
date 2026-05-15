@@ -43,3 +43,19 @@ For this project, future RAG capability should be expressed as a `RAG Kernel` po
 ## Runtime Configuration Has One Source
 
 Model, embedding, reasoning, Milvus, and retrieval feature choices should be resolved from a shared runtime configuration snapshot before any page-level fallback is used. UI model selectors may display Ollama installation status, but they must not use Ollama availability as the source of truth for the selected model when `MODEL_PROVIDER`, `EMBEDDING_PROVIDER`, or `REASONING_PROVIDER` already define the runtime model.
+
+## LangChain v1 For Leaf Agents, LangGraph v1 For Stateful Workflows
+
+For this project, adopt LangChain v1 `createAgent`, middleware, model profiles, and structured output for leaf-level agent tasks such as query analysis, entity extraction, reranking, hallucination checks, prompt guardrails, and model retry policy. Keep custom RAG orchestration, constraint relaxation, MAIC prepare/classroom flows, and MiroFish simulations on explicit LangGraph-style state machines. Do not replace an observable `StateGraph` workflow with one opaque agent loop when the workflow semantics are part of the product.
+
+## Milvus Search Policy Belongs In The Adapter
+
+Milvus tuning should enter the project through `milvus-config` and `milvus-client`, not through new page or route branches. Keep consistency level, filter templating values, grouping, `ignore_growing`, and index search params as adapter-level policy so future dense, sparse, hybrid, and multi-vector retrieval lanes can share the same collection lifecycle and search contract.
+
+## Milvus Query Hot Paths Stay Warm
+
+Milvus search handlers should not call collection stats, schema description, or load checks on every query once the singleton vector store is initialized. Keep query-time work to embedding generation, vector search, and result shaping; use explicit maintenance actions for schema checks, stats refreshes, collection reloads, and index rebuilds.
+
+## Supabase Is The Persistence Plane, Not The Milvus Replacement
+
+When adding Supabase to this project, use it first for Auth/RLS, tenant ownership, Postgres metadata, Storage-backed files, index jobs, traces, feedback, conversations, MiroFish/MAIC product state, and Realtime progress. Keep Milvus/Zilliz as the default production vector hot path. Supabase pgvector can be added as an optional retrieval lane for small corpora, entity/cache embeddings, eval datasets, or metadata-heavy filtering, but it should enter through the RAG Kernel retrieval adapter instead of replacing `milvus-client`.

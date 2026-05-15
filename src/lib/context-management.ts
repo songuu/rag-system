@@ -421,7 +421,7 @@ interface RewriteResult {
 /**
  * 创建查询改写链 (使用 LangChain 原生组件)
  */
-function createRewriteChain(llm: ChatOllama): RunnableSequence<{ history: string; query: string }, string> {
+function createRewriteChain(llm: BaseChatModel): RunnableSequence<{ history: string; query: string }, string> {
   const rewritePrompt = ChatPromptTemplate.fromMessages([
     ['system', `你是一个查询改写助手。将用户问题改写为独立完整的问题。
 
@@ -538,7 +538,7 @@ interface GenerateInput {
 /**
  * 创建响应生成链 (使用 RunnableBranch 实现条件分支)
  */
-function createGenerateChain(llm: ChatOllama): RunnableSequence<GenerateInput, string> {
+function createGenerateChain(llm: BaseChatModel): RunnableSequence<GenerateInput, string> {
   // 问候语提示模板
   const greetingPrompt = ChatPromptTemplate.fromMessages([
     ['system', '你是一个友好的智能助手。请自然地回应用户的问候或问题。保持简洁友好。'],
@@ -615,7 +615,7 @@ function isGreeting(query: string): boolean {
 /**
  * 创建摘要生成链
  */
-function createSummaryChain(llm: ChatOllama): RunnableSequence<{ conversation: string }, string> {
+function createSummaryChain(llm: BaseChatModel): RunnableSequence<{ conversation: string }, string> {
   const summaryPrompt = ChatPromptTemplate.fromMessages([
     ['system', '你是一个摘要助手。请将以下对话压缩为100-200字的摘要，保留关键信息和主要话题。'],
     ['human', '{conversation}'],

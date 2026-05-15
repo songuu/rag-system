@@ -4,6 +4,21 @@
 
 自适应实体路由 RAG 是一个基于 LangGraph 设计理念的智能检索增强生成系统。该系统通过**分层架构设计**，将自然语言理解、逻辑控制、检索执行和数据存储解耦，旨在解决生产环境中查询精准度低和零结果问题。
 
+## LangChain / LangGraph v1+ 融入原则
+
+截至 2026-05-15，LangChain v1+ 更适合承载“叶子 agent + middleware + structured output”，LangGraph v1+ 更适合承载“有状态、可恢复、可中断”的低层工作流。Adaptive Entity RAG 的四层架构正好对应 LangGraph 的状态机模型，但当前实现仍以 TypeScript 类和显式步骤为主。
+
+直接融入方式:
+
+| 层级 | 最新能力 | 项目落点 |
+|------|----------|----------|
+| 认知解析层 | LangChain structured output / provider strategy | `ParsedQuery`、`ExtractedEntity`、`LogicalRelation` 应由 schema 约束，减少 `JSON.parse` 漂移 |
+| 策略控制层 | LangGraph `StateSchema`、`ReducedValue` | 将约束松弛历史、路由决策、失败原因写入可累加状态 |
+| 执行检索层 | LangGraph durable execution | 只有长运行、多轮松弛或人工确认场景才使用 checkpointer |
+| 安全与可靠性 | retry / moderation middleware、官方 security advisories | 模型调用失败重试、用户输入安全检查和 checkpoint store 权限都应放进 runtime policy |
+
+迁移时不要把本模块改成单个黑盒 agent。实体归一化、约束松弛、检索降级是核心业务语义，必须继续显式暴露在 workflow 和 trace 中。
+
 ## 架构设计
 
 ### 四层架构
@@ -335,6 +350,9 @@ interface AdaptiveRAGConfig {
 2. **优先级调整**：根据业务需求调整约束松弛优先级
 3. **重排序优化**：对于高精度要求的场景启用重排序
 4. **监控指标**：关注松弛次数和降级率
+5. **Schema-first 输出**：实体抽取、实体校验、重排序解释都应逐步改成结构化输出，避免模型多输出解释文字导致解析失败。
+6. **状态可追溯**：每次约束松弛都应记录 `relaxedConstraints`、`reason` 和 `retryCount`，为 LangGraph checkpoint / time travel 做准备。
+7. **能力由模型声明驱动**：未来接入 `langchain` 高层 agent 时，优先读取 model profile 或统一模型配置，不根据 provider 名称猜测是否支持 JSON / tool calling / structured output。
 
 ## 故障排除
 

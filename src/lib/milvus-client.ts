@@ -6,14 +6,73 @@
  * 支持本地 Milvus 和 Zilliz Cloud 两种模式
  */
 
-import { MilvusClient, DataType, MetricType, InsertReq, SearchReq } from '@zilliz/milvus2-sdk-node';
+import {
+  MilvusClient,
+  DataType,
+  MetricType,
+  ConsistencyLevelEnum,
+  type InsertReq,
+  type SearchSimpleReq,
+} from '@zilliz/milvus2-sdk-node';
 import {
   getMilvusConnectionConfig,
-  createMilvusClient as createConfiguredClient,
   isZillizCloud,
   getMilvusProvider,
-  type MilvusConnectionConfig
 } from './milvus-config';
+
+export type MilvusIndexType = 'AUTOINDEX' | 'IVF_FLAT' | 'IVF_SQ8' | 'IVF_PQ' | 'HNSW' | 'ANNOY' | 'FLAT';
+export type MilvusMetricType = 'L2' | 'IP' | 'COSINE';
+export type MilvusConsistencyLevel = keyof typeof ConsistencyLevelEnum | ConsistencyLevelEnum;
+export type MilvusSearchOutputField = 'id' | 'content' | 'source' | 'metadata_json' | 'created_at';
+
+export interface MilvusSearchOptions {
+  threshold?: number;
+  filter?: string;
+  exprValues?: Record<string, unknown>;
+  searchParams?: Record<string, unknown>;
+  consistencyLevel?: MilvusConsistencyLevel;
+  ignoreGrowing?: boolean;
+  groupByField?: string;
+  groupSize?: number;
+  strictGroupSize?: boolean;
+  hints?: string;
+  roundDecimal?: number;
+  outputFields?: MilvusSearchOutputField[];
+}
+
+interface NormalizedMilvusSearchOptions {
+  threshold: number;
+  filter?: string;
+  exprValues?: Record<string, unknown>;
+  searchParams: Record<string, unknown>;
+  consistencyLevel?: ConsistencyLevelEnum;
+  ignoreGrowing?: boolean;
+  groupByField?: string;
+  groupSize?: number;
+  strictGroupSize?: boolean;
+  hints?: string;
+  roundDecimal?: number;
+  outputFields: MilvusSearchOutputField[];
+}
+
+type MilvusMetadata = Record<string, unknown>;
+type MilvusField = {
+  name?: string;
+  data_type?: unknown;
+  type_params?: unknown;
+};
+type MilvusTypeParam = {
+  key?: unknown;
+  value?: unknown;
+};
+type MilvusHit = {
+  score?: number;
+  distance?: number;
+  id?: string;
+  content?: string;
+  source?: string;
+  metadata_json?: string;
+};
 
 // Milvus 配置接口（保持向后兼容）
 export interface MilvusConfig {
@@ -24,24 +83,36 @@ export interface MilvusConfig {
   database?: string;         // 数据库名（默认: default）
   collectionName?: string;   // 集合名称（默认: rag_documents）
   embeddingDimension?: number; // 向量维度（默认: 768）
-  indexType?: 'IVF_FLAT' | 'IVF_SQ8' | 'IVF_PQ' | 'HNSW' | 'ANNOY' | 'FLAT'; // 索引类型
-  metricType?: 'L2' | 'IP' | 'COSINE'; // 距离度量类型
+  indexType?: MilvusIndexType; // 索引类型
+  metricType?: MilvusMetricType; // 距离度量类型
   token?: string;            // Zilliz Cloud API Token（新增）
+  consistencyLevel?: MilvusConsistencyLevel; // 搜索一致性级别
+  ignoreGrowing?: boolean;   // 是否跳过 growing segments
+  groupByField?: string;     // 搜索结果按字段分组，提升来源多样性
+  groupSize?: number;        // 每组返回结果数
+  strictGroupSize?: boolean; // 是否严格填满每组
+  flushOnInsert?: boolean;   // 插入后是否立即 flush
+  reloadAfterInsert?: boolean; // 插入后是否 release/load 使结果立即可见
+  searchParams?: Record<string, unknown>; // 全局搜索参数覆盖，如 nprobe/ef/radius
+  searchOutputFields?: MilvusSearchOutputField[]; // 搜索返回字段，减少不必要字段传输可降低延迟
+  debugLogs?: boolean;       // 是否输出 Milvus 热路径调试日志
 }
+
+const DEFAULT_SEARCH_OUTPUT_FIELDS: MilvusSearchOutputField[] = ['id', 'content', 'source', 'metadata_json'];
 
 // 文档接口
 export interface MilvusDocument {
   id: string;
   content: string;
   embedding: number[];
-  metadata: Record<string, any>;
+  metadata: MilvusMetadata;
 }
 
 // 搜索结果接口
 export interface MilvusSearchResult {
   id: string;
   content: string;
-  metadata: Record<string, any>;
+  metadata: MilvusMetadata;
   score: number;
   distance: number;
 }
@@ -54,6 +125,84 @@ export interface CollectionStats {
   indexType: string;
   metricType: string;
   loaded: boolean;
+}
+
+export function normalizeMilvusConsistencyLevel(
+  level?: MilvusConsistencyLevel
+): ConsistencyLevelEnum | undefined {
+  if (level === undefined || level === null) return undefined;
+  if (typeof level === 'number' && Object.values(ConsistencyLevelEnum).includes(level)) {
+    return level;
+  }
+  if (typeof level === 'string') {
+    const normalized = level.trim().toLowerCase();
+    const match = Object.entries(ConsistencyLevelEnum).find(([key]) => key.toLowerCase() === normalized);
+    if (match && typeof match[1] === 'number') return match[1] as ConsistencyLevelEnum;
+  }
+  throw new Error(`Unsupported Milvus consistency level: ${String(level)}`);
+}
+
+export function buildMilvusSearchParams(
+  indexType: MilvusIndexType,
+  ...overrides: Array<Record<string, unknown> | undefined>
+): Record<string, unknown> {
+  let baseParams: Record<string, unknown> = {};
+  switch (indexType) {
+    case 'IVF_FLAT':
+    case 'IVF_SQ8':
+    case 'IVF_PQ':
+      baseParams = { nprobe: 16 };
+      break;
+    case 'HNSW':
+      baseParams = { ef: 64 };
+      break;
+    case 'ANNOY':
+      baseParams = { search_k: -1 };
+      break;
+    case 'AUTOINDEX':
+    case 'FLAT':
+    default:
+      baseParams = {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(Object.assign({}, baseParams, ...overrides))
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
+}
+
+export function resolveMilvusSearchOptions(
+  config: Required<MilvusConfig>,
+  thresholdOrOptions: number | MilvusSearchOptions = 0.0,
+  legacyFilter?: string
+): NormalizedMilvusSearchOptions {
+  const requestedOptions: MilvusSearchOptions =
+    typeof thresholdOrOptions === 'number'
+      ? { threshold: thresholdOrOptions, filter: legacyFilter }
+      : thresholdOrOptions;
+
+  const searchParams = buildMilvusSearchParams(
+    config.indexType,
+    config.searchParams,
+    requestedOptions.searchParams
+  );
+
+  return {
+    threshold: requestedOptions.threshold ?? 0.0,
+    filter: requestedOptions.filter ?? legacyFilter,
+    exprValues: requestedOptions.exprValues,
+    searchParams,
+    consistencyLevel: normalizeMilvusConsistencyLevel(
+      requestedOptions.consistencyLevel ?? config.consistencyLevel
+    ),
+    ignoreGrowing: requestedOptions.ignoreGrowing ?? config.ignoreGrowing,
+    groupByField: (requestedOptions.groupByField ?? config.groupByField) || undefined,
+    groupSize: (requestedOptions.groupSize ?? config.groupSize) || undefined,
+    strictGroupSize: requestedOptions.strictGroupSize ?? config.strictGroupSize,
+    hints: requestedOptions.hints,
+    roundDecimal: requestedOptions.roundDecimal,
+    outputFields: requestedOptions.outputFields ?? config.searchOutputFields,
+  };
 }
 
 /**
@@ -73,6 +222,16 @@ function getDefaultConfig(): Required<MilvusConfig> {
       indexType: connConfig.defaultIndexType,
       metricType: connConfig.defaultMetricType,
       token: connConfig.token || '',
+      consistencyLevel: connConfig.defaultConsistencyLevel,
+      ignoreGrowing: connConfig.ignoreGrowing,
+      groupByField: connConfig.groupByField || '',
+      groupSize: connConfig.groupSize || 0,
+      strictGroupSize: connConfig.strictGroupSize,
+      flushOnInsert: connConfig.flushOnInsert,
+      reloadAfterInsert: connConfig.reloadAfterInsert,
+      searchParams: connConfig.searchParams,
+      searchOutputFields: connConfig.searchOutputFields as MilvusSearchOutputField[],
+      debugLogs: connConfig.debugLogs,
     };
   } catch {
     // 如果配置系统不可用，使用硬编码默认值
@@ -87,6 +246,16 @@ function getDefaultConfig(): Required<MilvusConfig> {
       indexType: 'IVF_FLAT',
       metricType: 'COSINE',
       token: '',
+      consistencyLevel: 'Bounded',
+      ignoreGrowing: false,
+      groupByField: '',
+      groupSize: 0,
+      strictGroupSize: false,
+      flushOnInsert: true,
+      reloadAfterInsert: true,
+      searchParams: {},
+      searchOutputFields: DEFAULT_SEARCH_OUTPUT_FIELDS,
+      debugLogs: false,
     };
   }
 }
@@ -111,6 +280,12 @@ export class MilvusVectorStore {
    */
   getConfig(): Required<MilvusConfig> {
     return { ...this.config };
+  }
+
+  private debugLog(message: string, ...args: unknown[]): void {
+    if (this.config.debugLogs) {
+      console.log(message, ...args);
+    }
   }
 
   /**
@@ -199,7 +374,7 @@ export class MilvusVectorStore {
   /**
    * 检查现有集合的 Schema 是否与我们的期望兼容
    */
-  async checkSchemaCompatibility(): Promise<{ compatible: boolean; reason?: string; existingSchema?: any }> {
+  async checkSchemaCompatibility(): Promise<{ compatible: boolean; reason?: string; existingSchema?: unknown }> {
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
 
@@ -211,11 +386,11 @@ export class MilvusVectorStore {
 
       // 获取集合信息
       const collectionInfo = await client.describeCollection({ collection_name: collectionName });
-      const fields = collectionInfo.schema?.fields || [];
+      const fields = (collectionInfo.schema?.fields || []) as MilvusField[];
 
       // 检查必需字段
       const requiredFields = ['id', 'content', 'embedding', 'source', 'metadata_json', 'created_at'];
-      const existingFieldNames = fields.map((f: any) => f.name);
+      const existingFieldNames = fields.map((field) => field.name);
 
       // 检查字段是否存在
       for (const required of requiredFields) {
@@ -229,7 +404,7 @@ export class MilvusVectorStore {
       }
 
       // 检查主键字段类型 (我们使用 VarChar，如果是 Int64 则不兼容)
-      const idField = fields.find((f: any) => f.name === 'id');
+      const idField = fields.find((field) => field.name === 'id');
       if (idField) {
         // data_type 可能是数字、字符串或枚举值
         // DataType.VarChar = 21, DataType.Int64 = 5
@@ -255,7 +430,7 @@ export class MilvusVectorStore {
       }
 
       // 检查向量维度
-      const embeddingField = fields.find((f: any) => f.name === 'embedding');
+      const embeddingField = fields.find((field) => field.name === 'embedding');
       if (embeddingField?.type_params) {
         const existingDim = this.parseDimensionFromTypeParams(embeddingField.type_params);
         if (existingDim !== null && existingDim !== this.config.embeddingDimension) {
@@ -303,6 +478,11 @@ export class MilvusVectorStore {
    * @param autoRecreate 是否在维度不匹配时自动重建集合
    */
   async initializeCollection(autoRecreate: boolean = false): Promise<void> {
+    if (this.isInitialized && !autoRecreate) {
+      this.debugLog(`[Milvus] Collection '${this.config.collectionName}' already initialized`);
+      return;
+    }
+
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
 
@@ -412,8 +592,11 @@ export class MilvusVectorStore {
     console.log(`[Milvus] Creating index for collection '${collectionName}'...`);
 
     // 根据索引类型设置参数
-    let indexParams: any = {};
+    let indexParams: Record<string, unknown> = {};
     switch (this.config.indexType) {
+      case 'AUTOINDEX':
+        indexParams = {};
+        break;
       case 'IVF_FLAT':
         indexParams = { nlist: 128 };
         break;
@@ -542,18 +725,20 @@ export class MilvusVectorStore {
 
     console.log(`[Milvus] Inserted ${result.insert_cnt} documents`);
 
-    // 刷新数据确保持久化
-    console.log(`[Milvus] Flushing data...`);
-    await client.flushSync({ collection_names: [collectionName] });
+    if (this.config.flushOnInsert) {
+      console.log(`[Milvus] Flushing data...`);
+      await client.flushSync({ collection_names: [collectionName] });
+    }
 
-    // 重新加载集合以确保新数据可被搜索
-    console.log(`[Milvus] Reloading collection to make new data searchable...`);
-    try {
-      await client.releaseCollection({ collection_name: collectionName });
-      await client.loadCollection({ collection_name: collectionName });
-      console.log(`[Milvus] Collection reloaded successfully`);
-    } catch (reloadError) {
-      console.warn(`[Milvus] Reload warning (may be OK):`, reloadError);
+    if (this.config.reloadAfterInsert) {
+      console.log(`[Milvus] Reloading collection to make new data searchable...`);
+      try {
+        await client.releaseCollection({ collection_name: collectionName });
+        await client.loadCollection({ collection_name: collectionName });
+        console.log(`[Milvus] Collection reloaded successfully`);
+      } catch (reloadError) {
+        console.warn(`[Milvus] Reload warning (may be OK):`, reloadError);
+      }
     }
 
     // 返回所有文档的 ID
@@ -566,7 +751,7 @@ export class MilvusVectorStore {
   async search(
     queryEmbedding: number[],
     topK: number = 5,
-    threshold: number = 0.0,
+    threshold: number | MilvusSearchOptions = 0.0,
     filter?: string
   ): Promise<MilvusSearchResult[]> {
     if (!this.isInitialized) {
@@ -575,40 +760,31 @@ export class MilvusVectorStore {
 
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
-
-    // 根据索引类型设置搜索参数
-    let searchParams: any = {};
-    switch (this.config.indexType) {
-      case 'IVF_FLAT':
-      case 'IVF_SQ8':
-      case 'IVF_PQ':
-        searchParams = { nprobe: 16 };
-        break;
-      case 'HNSW':
-        searchParams = { ef: 64 };
-        break;
-      case 'ANNOY':
-        searchParams = { search_k: -1 };
-        break;
-      default:
-        searchParams = {};
-    }
+    const searchOptions = resolveMilvusSearchOptions(this.config, threshold, filter);
 
     const searchReq = {
       collection_name: collectionName,
       data: [queryEmbedding],
       anns_field: 'embedding',
       limit: topK,
-      output_fields: ['id', 'content', 'source', 'metadata_json', 'created_at'],
-      params: searchParams,
-      filter: filter,
-    } as any; // 使用 any 绕过类型检查，因为 SDK 类型定义可能不完整
+      output_fields: searchOptions.outputFields,
+      params: searchOptions.searchParams,
+      filter: searchOptions.filter,
+      exprValues: searchOptions.exprValues,
+      consistency_level: searchOptions.consistencyLevel,
+      ignore_growing: searchOptions.ignoreGrowing,
+      group_by_field: searchOptions.groupByField,
+      group_size: searchOptions.groupSize,
+      strict_group_size: searchOptions.strictGroupSize,
+      hints: searchOptions.hints,
+      round_decimal: searchOptions.roundDecimal,
+    } as SearchSimpleReq;
 
     const results = await client.search(searchReq);
 
-    console.log('[Milvus] Search response status:', results.status);
-    console.log('[Milvus] Search results type:', typeof results.results, Array.isArray(results.results));
-    console.log('[Milvus] Search results length:', results.results?.length);
+    this.debugLog('[Milvus] Search response status:', results.status);
+    this.debugLog('[Milvus] Search results type:', typeof results.results, Array.isArray(results.results));
+    this.debugLog('[Milvus] Search results length:', results.results?.length);
 
     if (results.status.error_code !== 'Success') {
       throw new Error(`Search failed: ${results.status.reason}`);
@@ -619,23 +795,24 @@ export class MilvusVectorStore {
 
     // Milvus SDK 2.x 返回的 results.results 直接是数组
     // 但如果是多向量查询，可能是嵌套数组
-    let hits: any[] = [];
+    let hits: unknown[] = [];
 
-    if (Array.isArray(results.results)) {
-      if (results.results.length > 0) {
+    const rawResults = results.results as unknown;
+    if (Array.isArray(rawResults)) {
+      if (rawResults.length > 0) {
         // 检查是否是嵌套数组（多向量查询）
-        if (Array.isArray(results.results[0])) {
-          hits = results.results[0];
+        if (Array.isArray(rawResults[0])) {
+          hits = rawResults[0];
         } else {
           // 单向量查询，直接使用
-          hits = results.results;
+          hits = rawResults;
         }
       }
     }
 
-    console.log('[Milvus] Parsed hits count:', hits.length);
+    this.debugLog('[Milvus] Parsed hits count:', hits.length);
     if (hits.length > 0) {
-      console.log('[Milvus] First hit sample:', JSON.stringify(hits[0]).substring(0, 200));
+      this.debugLog('[Milvus] First hit sample:', JSON.stringify(hits[0]).substring(0, 200));
     }
 
     if (hits.length === 0) {
@@ -647,8 +824,9 @@ export class MilvusVectorStore {
     for (const hit of hits) {
       // 计算相似度 (根据度量类型转换)
       let similarity: number;
-      const rawScore = (hit as any).score;
-      const rawDistance = (hit as any).distance;
+      const hitData = hit as MilvusHit;
+      const rawScore = hitData.score;
+      const rawDistance = hitData.distance;
       const distance = rawScore ?? rawDistance ?? 0;
 
       switch (this.config.metricType) {
@@ -678,13 +856,12 @@ export class MilvusVectorStore {
       }
 
       // 应用阈值过滤
-      if (similarity < threshold) {
+      if (similarity < searchOptions.threshold) {
         filteredCount++;
         continue;
       }
 
-      const hitData = hit as any;
-      let metadata = {};
+      let metadata: MilvusMetadata = {};
       try {
         metadata = JSON.parse(hitData.metadata_json || '{}');
       } catch {
@@ -701,9 +878,9 @@ export class MilvusVectorStore {
     }
 
     if (filteredCount > 0) {
-      console.log(`[Milvus] 阈值过滤: ${filteredCount} 个结果低于阈值 ${threshold}`);
+      console.log(`[Milvus] 阈值过滤: ${filteredCount} 个结果低于阈值 ${searchOptions.threshold}`);
     }
-    console.log(`[Milvus] 返回 ${searchResults.length} 个结果 (threshold=${threshold})`);
+    console.log(`[Milvus] 返回 ${searchResults.length} 个结果 (threshold=${searchOptions.threshold})`);
 
     return searchResults;
   }
@@ -750,12 +927,12 @@ export class MilvusVectorStore {
    * - 对象格式 (Milvus SDK v2.6+): { dim: "1024" } 或 { dim: 1024 }
    * - 数组格式 (旧版): [{ key: 'dim', value: '1024' }]
    */
-  private parseDimensionFromTypeParams(typeParams: any): number | null {
+  private parseDimensionFromTypeParams(typeParams: unknown): number | null {
     if (!typeParams) return null;
 
     // 格式 1: 对象格式 { dim: "1024" } (Milvus SDK v2.6+)
-    if (typeParams.dim !== undefined) {
-      const dim = parseInt(String(typeParams.dim), 10);
+    if (typeof typeParams === 'object' && !Array.isArray(typeParams) && 'dim' in typeParams) {
+      const dim = parseInt(String((typeParams as { dim?: unknown }).dim), 10);
       if (!isNaN(dim) && dim > 0) {
         return dim;
       }
@@ -763,7 +940,7 @@ export class MilvusVectorStore {
 
     // 格式 2: 数组格式 [{ key: 'dim', value: '1024' }] (旧版)
     if (Array.isArray(typeParams)) {
-      const dimParam = typeParams.find((p: any) => p.key === 'dim');
+      const dimParam = (typeParams as MilvusTypeParam[]).find((param) => param.key === 'dim');
       if (dimParam?.value !== undefined) {
         const dim = parseInt(String(dimParam.value), 10);
         if (!isNaN(dim) && dim > 0) {
@@ -800,14 +977,14 @@ export class MilvusVectorStore {
       try {
         const collectionInfo = await client.describeCollection({ collection_name: collectionName });
         console.log(`[Milvus] describeCollection response fields:`, 
-          JSON.stringify(collectionInfo.schema?.fields?.map((f: any) => ({
-            name: f.name,
-            type_params: f.type_params
+          JSON.stringify((collectionInfo.schema?.fields as MilvusField[] | undefined)?.map((field) => ({
+            name: field.name,
+            type_params: field.type_params
           })), null, 2)
         );
         
-        const embeddingField = collectionInfo.schema?.fields?.find(
-          (f: any) => f.name === 'embedding'
+        const embeddingField = (collectionInfo.schema?.fields as MilvusField[] | undefined)?.find(
+          (field) => field.name === 'embedding'
         );
         
         if (embeddingField) {

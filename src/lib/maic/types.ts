@@ -116,6 +116,7 @@ export type SceneActionType =
   | 'speech'
   | 'spotlight'
   | 'highlight'
+  | 'annotation'
   | 'laser'
   | 'play_video'
   | 'whiteboard'

@@ -1,42 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { unlink, readFile, writeFile } from 'fs/promises';
-import { existsSync } from 'fs';
 import path from 'path';
+import { createUploadPersistence } from '@/lib/persistence/upload-store';
+import type { FileManifestItem } from '@/lib/persistence/ports';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 const MANIFEST_FILE = path.join(UPLOAD_DIR, 'file-manifest.json');
-
-// 文件清单项接口
-interface FileManifestItem {
-  id: string;
-  originalName: string;
-  originalExtension: string;
-  storedFilename: string;
-  parsedFilename: string;
-  size: number;
-  contentLength: number;
-  uploadedAt: string;
-  parseMethod: string;
-  pages?: number;
-}
-
-// 加载文件清单
-async function loadManifest(): Promise<Record<string, FileManifestItem>> {
-  try {
-    if (existsSync(MANIFEST_FILE)) {
-      const content = await readFile(MANIFEST_FILE, 'utf-8');
-      return JSON.parse(content);
-    }
-  } catch (error) {
-    console.error('加载文件清单失败:', error);
-  }
-  return {};
-}
-
-// 保存文件清单
-async function saveManifest(manifest: Record<string, FileManifestItem>): Promise<void> {
-  await writeFile(MANIFEST_FILE, JSON.stringify(manifest, null, 2), 'utf-8');
-}
 
 // DELETE /api/files/[filename] - 删除文件
 export async function DELETE(
@@ -55,8 +23,13 @@ export async function DELETE(
       );
     }
 
+    const { blobStore, manifestStore } = createUploadPersistence({
+      uploadDir: UPLOAD_DIR,
+      manifestFile: MANIFEST_FILE,
+    });
+
     // 加载文件清单
-    const manifest = await loadManifest();
+    const manifest = await manifestStore.loadManifest();
     
     // 查找对应的清单项（通过 ID 或原始文件名）
     let manifestItem: FileManifestItem | undefined;
@@ -82,32 +55,32 @@ export async function DELETE(
       // 使用新版清单：删除原始文件和解析文件
       
       // 删除原始文件
-      const storedPath = path.join(UPLOAD_DIR, manifestItem.storedFilename);
-      if (existsSync(storedPath)) {
+      if (await blobStore.exists(manifestItem.storedFilename)) {
         try {
-          await unlink(storedPath);
+          await blobStore.delete(manifestItem.storedFilename);
           deletedFiles.push(manifestItem.storedFilename);
-          console.log(`[Delete] 已删除原始文件: ${storedPath}`);
-        } catch (e) {
+          console.log(`[Delete] 已删除原始文件: ${manifestItem.storedFilename}`);
+        } catch (error) {
+          console.warn(`[Delete] 删除原始文件失败: ${manifestItem.storedFilename}`, error);
           errors.push(`删除原始文件失败: ${manifestItem.storedFilename}`);
         }
       }
       
       // 删除解析后的文件
-      const parsedPath = path.join(UPLOAD_DIR, manifestItem.parsedFilename);
-      if (existsSync(parsedPath)) {
+      if (await blobStore.exists(manifestItem.parsedFilename)) {
         try {
-          await unlink(parsedPath);
+          await blobStore.delete(manifestItem.parsedFilename);
           deletedFiles.push(manifestItem.parsedFilename);
-          console.log(`[Delete] 已删除解析文件: ${parsedPath}`);
-        } catch (e) {
+          console.log(`[Delete] 已删除解析文件: ${manifestItem.parsedFilename}`);
+        } catch (error) {
+          console.warn(`[Delete] 删除解析文件失败: ${manifestItem.parsedFilename}`, error);
           errors.push(`删除解析文件失败: ${manifestItem.parsedFilename}`);
         }
       }
       
       // 从清单中移除
       delete manifest[manifestKey];
-      await saveManifest(manifest);
+      await manifestStore.saveManifest(manifest);
       console.log(`[Delete] 已从清单中移除: ${manifestItem.originalName}`);
 
       return NextResponse.json({
@@ -119,16 +92,14 @@ export async function DELETE(
     }
 
     // 兼容旧版本：直接删除文件
-    const filePath = path.join(UPLOAD_DIR, decodedFilename);
-
-    if (!existsSync(filePath)) {
+    if (!await blobStore.exists(decodedFilename)) {
       return NextResponse.json(
         { error: '文件不存在' },
         { status: 404 }
       );
     }
 
-    await unlink(filePath);
+    await blobStore.delete(decodedFilename);
     
     // 尝试删除关联的解析文件或原始文件
     const baseName = decodedFilename.replace('_parsed.txt', '').replace(/\.[^.]+$/, '');
@@ -143,13 +114,13 @@ export async function DELETE(
     
     for (const relatedFile of relatedFiles) {
       if (relatedFile !== decodedFilename) {
-        const relatedPath = path.join(UPLOAD_DIR, relatedFile);
-        if (existsSync(relatedPath)) {
+        if (await blobStore.exists(relatedFile)) {
           try {
-            await unlink(relatedPath);
+            await blobStore.delete(relatedFile);
             deletedFiles.push(relatedFile);
-            console.log(`[Delete] 已删除关联文件: ${relatedPath}`);
-          } catch (e) {
+            console.log(`[Delete] 已删除关联文件: ${relatedFile}`);
+          } catch (error) {
+            console.warn(`[Delete] 删除关联文件失败: ${relatedFile}`, error);
             // 忽略关联文件删除错误
           }
         }

@@ -1006,14 +1006,20 @@ export class EntityExtractor {
                   mentions: 1,
                   sourceChunks: [chunk.id],
                 });
-                initialExtraction.entities.push(entity);
+                initialExtraction.entities.push({
+                  name: String(entity.name).trim(),
+                  type: String(entity.type || 'OTHER').toUpperCase(),
+                  description: String(entity.description || '').trim(),
+                });
               }
             }
           }
 
           // 合并新发现的关系
           if (Array.isArray(parsed.relations)) {
-            for (const relation of parsed.relations) {
+            for (const rawRelation of parsed.relations) {
+              const relation = rawRelation as { source?: string; target?: string; type?: string; description?: string };
+              if (!relation?.source || !relation?.target) continue;
               const sourceId = this.findEntityByName(relation.source, entities);
               const targetId = this.findEntityByName(relation.target, entities);
               
@@ -1023,12 +1029,17 @@ export class EntityExtractor {
                   id: relationId,
                   source: sourceId,
                   target: targetId,
-                  type: relation.type,
-                  description: relation.description,
+                  type: relation.type || 'RELATED_TO',
+                  description: relation.description || '',
                   weight: 0.8, // Gleaning 发现的关系权重稍低
                   sourceChunks: [chunk.id],
                 });
-                initialExtraction.relations.push(relation);
+                initialExtraction.relations.push({
+                  source: relation.source,
+                  target: relation.target,
+                  type: relation.type || 'RELATED_TO',
+                  description: relation.description || '',
+                });
               }
             }
           }

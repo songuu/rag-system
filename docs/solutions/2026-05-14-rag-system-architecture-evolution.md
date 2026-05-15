@@ -57,6 +57,24 @@ Existing modes become policy adapters:
 - `maic-course`
 - `mirofish-research`
 
+## LangChain / LangGraph v1+ Alignment
+
+最新 LangChain / LangGraph 能力应通过这套核心层吸收:
+
+- LangChain v1 `createAgent`、middleware、structured output 适合作为叶子 agent 能力,用于 query analysis、entity extraction、rerank、hallucination check、guardrails。
+- LangGraph v1/v1.1 的 `StateGraph`、`StateSchema`、persistence、durable execution、typed interrupts 适合作为复杂 RAG policy 和长流程产品能力,例如 Agentic RAG、Adaptive Entity RAG、MAIC prepare、MiroFish simulation。
+- `contentBlocks`、reasoning trace、citations 不应在模式内部提前压平成字符串,应进入 `RagAnswerEnvelope` 和 shared trace/eval 体系。
+- `@langchain/classic` 与 legacy chains 只能作为兼容层,新能力不要继续围绕旧 chain API 设计。
+
+## Milvus 2.6 Alignment
+
+Milvus 优化应先落在 vector store adapter 和 runtime config 上,而不是给 `/api/ask` 增加更多分支:
+
+- 当前 dense retrieval 继续使用现有 collection schema,但搜索请求支持 consistency level、filter templating `exprValues`、grouping、`ignore_growing` 和 `nprobe`/`ef` 覆盖。
+- `AUTOINDEX`、IVF、HNSW 等索引差异由 `milvus-client` 生成默认搜索参数,API 层只表达策略意图。
+- 后续 sparse/hybrid/multi-vector 检索应作为 retrieval lane 接入 `Retrieval Control Plane`,不要在 Milvus 管理 API 内提前固化多路融合逻辑。
+- Corpus/index manifest 负责记录 collection、embedding dimension、index type、metric type 和 corpus version,避免导入、重建、搜索各自猜测索引状态。
+
 ## Why This Is Best For This Repo
 
 - It preserves existing features and recent MiroFish/OpenMAIC parity work.
@@ -74,6 +92,7 @@ Existing modes become policy adapters:
 5. Add corpus/index manifests.
 6. Promote MiroFish graph data into a shared GraphRAG lane.
 7. Add persistent trace and evaluation harness.
+8. Promote Milvus dense search options into retrieval policies, then add sparse/hybrid lanes behind the same retrieval plan.
 
 ## Guardrails
 
@@ -81,4 +100,3 @@ Existing modes become policy adapters:
 - Do not change response semantics in the first migration.
 - Do not merge MiroFish/OpenMAIC product state into generic RAG state; only share corpus, graph, artifact and retrieval capabilities.
 - Add evaluation before changing retrieval ranking logic.
-

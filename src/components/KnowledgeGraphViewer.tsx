@@ -9,7 +9,7 @@ type EntityType = 'PERSON' | 'ORGANIZATION' | 'LOCATION' | 'EVENT' | 'CONCEPT' |
 interface Entity {
   id: string;
   name: string;
-  type: EntityType;
+  type: string;
   description: string;
   aliases: string[];
   mentions: number;
@@ -52,7 +52,7 @@ interface KnowledgeGraph {
 interface GraphNode {
   id: string;
   name: string;
-  type: EntityType;
+  type: string;
   description: string;
   mentions: number;
   x: number;
@@ -501,7 +501,7 @@ export default function KnowledgeGraphViewer({
       const isDimmed = searchTerm && !matchingNodeIds.has(node.id);
       
       const radius = getNodeRadius(node);
-      const color = ENTITY_COLORS[node.type] || ENTITY_COLORS.OTHER;
+      const color = ENTITY_COLORS[node.type as EntityType] || ENTITY_COLORS.OTHER;
 
       // 选中/悬停光晕
       if (isSelected || isHovered || isSearchMatch) {
@@ -737,9 +737,10 @@ export default function KnowledgeGraphViewer({
 
   // 统计
   const entityTypeStats = graph?.entities.reduce((acc, entity) => {
-    acc[entity.type] = (acc[entity.type] || 0) + 1;
+    const type = entity.type as EntityType;
+    acc[type] = (acc[type] || 0) + 1;
     return acc;
-  }, {} as Record<EntityType, number>) || {};
+  }, {} as Partial<Record<EntityType, number>>) || {};
 
   if (!graph) {
     return (

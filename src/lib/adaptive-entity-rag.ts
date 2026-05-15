@@ -14,14 +14,14 @@
 
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
+import { mkdir, readFile, writeFile } from 'fs/promises';
+import path from 'path';
+import { invokeStructuredJson } from './langchain-structured-output';
 import { getMilvusInstance, MilvusVectorStore, MilvusSearchResult } from './milvus-client';
 import {
   createLLM,
   createEmbedding,
   getModelDimension,
-  selectModelByDimension,
-  getModelFactory,
-  isOllamaProvider,
 } from './model-config';
 import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
 
@@ -76,7 +76,7 @@ export interface ValidatedEntity extends ExtractedEntity {
 export interface SearchConstraint {
   field: string;
   operator: 'eq' | 'contains' | 'in' | 'range' | 'not';
-  value: string | string[] | { min?: any; max?: any };
+  value: string | string[] | { min?: unknown; max?: unknown };
   priority: number;  // 优先级，越高越重要
 }
 
@@ -95,7 +95,7 @@ export interface SearchResult {
   id: string;
   content: string;
   score: number;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   matchType: 'structured' | 'semantic' | 'hybrid';
 }
 
@@ -122,7 +122,7 @@ export interface WorkflowStep {
   step: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   duration?: number;
-  details?: any;
+  details?: unknown;
   error?: string;
 }
 
@@ -258,6 +258,122 @@ const RERANKING_PROMPT = `你是一个文档相关性评估专家。请评估以
 }
 
 只返回JSON。`;
+
+const ENTITY_EXTRACTION_SCHEMA = {
+  name: 'AdaptiveEntityParsedQuery',
+  schema: {
+    type: 'object',
+    properties: {
+      entities: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            type: { type: 'string' },
+            value: { type: 'string' },
+            confidence: { type: 'number', minimum: 0, maximum: 1 },
+          },
+          required: ['name', 'type'],
+          additionalProperties: true,
+        },
+      },
+      logicalRelations: { type: 'array', items: { type: 'object' } },
+      intent: { type: 'string', enum: ['factual', 'conceptual', 'comparison', 'procedural', 'exploratory'] },
+      complexity: { type: 'string', enum: ['simple', 'moderate', 'complex'] },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      keywords: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['entities', 'logicalRelations', 'intent', 'complexity', 'confidence', 'keywords'],
+    additionalProperties: false,
+  },
+};
+
+const ENTITY_RESOLUTION_SCHEMA = {
+  name: 'AdaptiveEntityResolution',
+  schema: {
+    type: 'object',
+    properties: {
+      isMatch: { type: 'boolean' },
+      matchedEntity: { type: 'string' },
+      confidence: { type: 'number', minimum: 0, maximum: 1 },
+      normalizedName: { type: 'string' },
+      suggestions: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['isMatch', 'confidence', 'normalizedName', 'suggestions'],
+    additionalProperties: false,
+  },
+};
+
+const RERANKING_SCHEMA = {
+  name: 'AdaptiveEntityReranking',
+  schema: {
+    type: 'object',
+    properties: {
+      relevanceScore: { type: 'number', minimum: 0, maximum: 1 },
+      explanation: { type: 'string' },
+      matchedEntities: { type: 'array', items: { type: 'string' } },
+      keyInformation: { type: 'string' },
+    },
+    required: ['relevanceScore', 'explanation'],
+    additionalProperties: true,
+  },
+};
+
+type EntityResolutionPayload = {
+  isMatch: boolean;
+  matchedEntity: string;
+  confidence: number;
+  normalizedName: string;
+  suggestions: string[];
+};
+
+type RerankingPayload = {
+  relevanceScore: number;
+  explanation: string;
+};
+
+function normalizeObjectPayload(value: unknown): Record<string, unknown> {
+  return toRecord(value);
+}
+
+function normalizeEntityResolutionPayload(value: unknown, fallbackName: string): EntityResolutionPayload {
+  const record = toRecord(value);
+  return {
+    isMatch: record.isMatch !== false,
+    matchedEntity: readString(record.matchedEntity, ''),
+    confidence: clampNumber(record.confidence, 0.7),
+    normalizedName: readString(record.normalizedName, readString(record.matchedEntity, fallbackName)),
+    suggestions: readStringArray(record.suggestions),
+  };
+}
+
+function normalizeRerankingPayload(value: unknown, fallbackScore: number): RerankingPayload {
+  const record = toRecord(value);
+  return {
+    relevanceScore: clampNumber(record.relevanceScore ?? record.score, fallbackScore),
+    explanation: readString(record.explanation, ''),
+  };
+}
+
+function toRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function readString(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function clampNumber(value: unknown, fallback: number): number {
+  const numberValue = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.min(1, Math.max(0, numberValue));
+}
 
 const RESPONSE_GENERATION_PROMPT = `你是一个专业的问答助手。请基于检索到的上下文回答用户的问题。
 
@@ -621,20 +737,26 @@ export class CognitiveParser {
 
     try {
       const prompt = ENTITY_EXTRACTION_PROMPT.replace('{query}', normalizedQuery);
-      const response = await this.llm.invoke(prompt);
-      const content = typeof response.content === 'string' 
-        ? response.content 
-        : JSON.stringify(response.content);
+      const { data: parsed } = await invokeStructuredJson<Record<string, unknown>>({
+        model: this.llm,
+        input: prompt,
+        schema: ENTITY_EXTRACTION_SCHEMA,
+        normalize: normalizeObjectPayload,
+      });
       
-      const parsed = this.safeParseJson(content);
-      
+      const parsedEntities = Array.isArray(parsed.entities) ? parsed.entities : [];
+
       // 提取 LLM 返回的实体
-      let llmEntities = (parsed.entities || []).map((e: any) => ({
-        name: e.name || '',
-        type: this.normalizeEntityType(e.type),
-        value: e.value || e.name || '',
-        confidence: parseFloat(e.confidence) || 0.8,
-      }));
+      let llmEntities: ExtractedEntity[] = parsedEntities.map((entity) => {
+        const entityRecord = toRecord(entity);
+        const name = readString(entityRecord.name, '');
+        return {
+          name,
+          type: this.normalizeEntityType(readString(entityRecord.type, 'OTHER')),
+          value: readString(entityRecord.value, name),
+          confidence: clampNumber(entityRecord.confidence, 0.8),
+        };
+      });
 
       // 验证实体：确保实体名称确实出现在原始查询中
       llmEntities = this.validateEntitiesAgainstQuery(llmEntities, query, normalizedQuery);
@@ -652,11 +774,11 @@ export class CognitiveParser {
       return {
         originalQuery: query,
         entities,
-        logicalRelations: parsed.logicalRelations || [],
-        intent: this.normalizeIntent(parsed.intent),
+        logicalRelations: Array.isArray(parsed.logicalRelations) ? parsed.logicalRelations as LogicalRelation[] : [],
+        intent: this.normalizeIntent(readString(parsed.intent, 'factual')),
         complexity: entities.length > 2 ? 'complex' : entities.length > 0 ? 'moderate' : 'simple',
-        confidence: parseFloat(parsed.confidence) || 0.8,
-        keywords: parsed.keywords || [],
+        confidence: clampNumber(parsed.confidence, 0.8),
+        keywords: readStringArray(parsed.keywords),
       };
     } catch (error) {
       console.error('[CognitiveParser] LLM 解析失败，使用规则提取:', error);
@@ -845,23 +967,6 @@ export class CognitiveParser {
     };
   }
 
-  private safeParseJson(content: string): any {
-    try {
-      return JSON.parse(content);
-    } catch {
-      // 尝试提取 JSON
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch {
-          return {};
-        }
-      }
-      return {};
-    }
-  }
-
   /**
    * 合并规则提取和 LLM 提取的实体
    * 规则提取的实体优先级更高
@@ -974,17 +1079,18 @@ export class StrategyController {
           .replace('{userType}', entity.type)
           .replace('{candidates}', candidatesList);
 
-        const response = await this.llm.invoke(prompt);
-        const content = typeof response.content === 'string' 
-          ? response.content 
-          : JSON.stringify(response.content);
-        const result = this.safeParseJson(content);
+        const { data: result } = await invokeStructuredJson<EntityResolutionPayload>({
+          model: this.llm,
+          input: prompt,
+          schema: ENTITY_RESOLUTION_SCHEMA,
+          normalize: (value) => normalizeEntityResolutionPayload(value, entity.name),
+        });
 
         validated.push({
           ...entity,
           isValid: result.isMatch !== false,
           normalizedName: result.normalizedName || result.matchedEntity || entity.name,
-          matchScore: parseFloat(result.confidence) || 0.7,
+          matchScore: result.confidence || 0.7,
           suggestions: result.suggestions || [],
         });
       } catch (error) {
@@ -1052,7 +1158,7 @@ export class StrategyController {
     // 构建约束条件
     const constraints: SearchConstraint[] = validatedEntities
       .filter(e => e.isValid && !relaxedConstraints.includes(e.type))
-      .map((entity, index) => ({
+      .map((entity) => ({
         field: this.getFieldNameForType(entity.type),
         operator: 'contains' as const,
         value: entity.normalizedName,
@@ -1129,21 +1235,6 @@ export class StrategyController {
     return mapping[type] || 'content';
   }
 
-  private safeParseJson(content: string): any {
-    try {
-      return JSON.parse(content);
-    } catch {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch {
-          return {};
-        }
-      }
-      return {};
-    }
-  }
 }
 
 /**
@@ -1187,7 +1278,7 @@ export class SearchExecutor {
           console.error(`[SearchExecutor] ⚠️ 维度不匹配: 模型 ${this.config.embeddingModel} (${dimension}D) vs 集合 (${collectionDimension}D)`);
           console.error(`[SearchExecutor] 请在前端选择与知识库兼容的 embedding 模型`);
         }
-      } catch (error) {
+      } catch {
         console.log('[SearchExecutor] 无法验证集合维度，继续使用配置的维度');
       }
     }
@@ -1361,16 +1452,16 @@ export class SearchExecutor {
           .replace('{entities}', query.entities.map(e => e.name).join(', '))
           .replace('{document}', result.content.substring(0, 1500));
 
-        const response = await this.llm.invoke(prompt);
-        const content = typeof response.content === 'string' 
-          ? response.content 
-          : JSON.stringify(response.content);
-        
-        const parsed = this.safeParseJson(content);
+        const { data: parsed } = await invokeStructuredJson<RerankingPayload>({
+          model: this.llm,
+          input: prompt,
+          schema: RERANKING_SCHEMA,
+          normalize: (value) => normalizeRerankingPayload(value, result.score),
+        });
         
         rankedResults.push({
           ...result,
-          rerankedScore: parseFloat(parsed.relevanceScore) || result.score,
+          rerankedScore: parsed.relevanceScore,
           relevanceExplanation: parsed.explanation || '',
         });
       } catch (error) {
@@ -1419,21 +1510,6 @@ export class SearchExecutor {
     return expressions.join(' && ');
   }
 
-  private safeParseJson(content: string): any {
-    try {
-      return JSON.parse(content);
-    } catch {
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch {
-          return {};
-        }
-      }
-      return {};
-    }
-  }
 }
 
 /**
@@ -1472,11 +1548,8 @@ export class EntityMetadataStore {
    */
   private async loadFromFile(): Promise<boolean> {
     try {
-      const fs = await import('fs/promises');
-      const path = await import('path');
-      
-      const fullPath = path.resolve(process.cwd(), this.persistPath);
-      const data = await fs.readFile(fullPath, 'utf-8');
+      const fullPath = this.resolvePersistPath();
+      const data = await readFile(fullPath, 'utf-8');
       const parsed = JSON.parse(data);
       
       if (parsed.entities && Array.isArray(parsed.entities)) {
@@ -1488,7 +1561,7 @@ export class EntityMetadataStore {
         return true;
       }
       return false;
-    } catch (error) {
+    } catch {
       console.log('[EntityMetadataStore] 无持久化文件，将使用默认映射');
       return false;
     }
@@ -1499,14 +1572,11 @@ export class EntityMetadataStore {
    */
   async saveToFile(): Promise<void> {
     try {
-      const fs = await import('fs/promises');
-      const path = await import('path');
-      
-      const fullPath = path.resolve(process.cwd(), this.persistPath);
+      const fullPath = this.resolvePersistPath();
       const dir = path.dirname(fullPath);
       
       // 确保目录存在
-      await fs.mkdir(dir, { recursive: true });
+      await mkdir(dir, { recursive: true });
       
       const data = {
         version: '1.0',
@@ -1514,11 +1584,19 @@ export class EntityMetadataStore {
         entities: Array.from(this.entities.values()),
       };
       
-      await fs.writeFile(fullPath, JSON.stringify(data, null, 2), 'utf-8');
+      await writeFile(fullPath, JSON.stringify(data, null, 2), 'utf-8');
       console.log(`[EntityMetadataStore] 保存了 ${this.entities.size} 个实体到文件`);
     } catch (error) {
       console.error('[EntityMetadataStore] 保存失败:', error);
     }
+  }
+
+  private resolvePersistPath(): string {
+    const normalizedPersistPath = this.persistPath.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (normalizedPersistPath.startsWith('data/')) {
+      return path.join(process.cwd(), 'data', normalizedPersistPath.slice('data/'.length));
+    }
+    return path.resolve(/*turbopackIgnore: true*/ process.cwd(), this.persistPath);
   }
 
   private initializeDefaultMappings() {
@@ -1843,7 +1921,7 @@ export class AdaptiveEntityRAG {
     const steps: WorkflowStep[] = [];
 
     // 初始化时提供有意义的默认值，即使后续出错也能返回
-    let state: WorkflowState = {
+    const state: WorkflowState = {
       query: {
         originalQuery: question,
         entities: [],

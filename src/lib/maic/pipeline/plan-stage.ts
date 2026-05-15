@@ -299,7 +299,7 @@ function buildSlideScene(
     actions.splice(
       1,
       0,
-      sceneAction('spotlight', page.index, focusTarget.label || '聚光重点', focusTarget.text, targetId, {
+      sceneAction('spotlight', page.index, focusTarget.label || '聚光重点', focusTarget.text, semanticFocusTarget(focusTarget), {
         elementId: targetId,
         dimOpacity: focusPlan.dimOpacity ?? 0.55,
         duration: animation?.duration,
@@ -319,7 +319,7 @@ function buildSlideScene(
     actions.splice(
       Math.min(actions.length, 2),
       0,
-      sceneAction('laser', page.index, focusTarget.label || '激光指示', focusTarget.text, targetId, {
+      sceneAction('laser', page.index, focusTarget.label || '激光指示', focusTarget.text, semanticFocusTarget(focusTarget), {
         elementId: targetId,
         color: '#ff3b30',
         duration: animation?.duration,
@@ -331,11 +331,35 @@ function buildSlideScene(
       })
     );
   }
-  if (capabilities.whiteboard) {
+  if (visiblePointCount > 0) {
+    const highlightIndex = Math.min(1, visiblePointCount - 1);
     actions.splice(
       Math.min(actions.length, 3),
       0,
-      sceneAction('whiteboard', page.index, '白板推导', keyPoints.join('\n') || page.description, undefined, {
+      sceneAction('highlight', page.index, '高亮公式卡片', keyPoints[highlightIndex] || keyPoints[0], 'formula-card', {
+        elementId: getSlidePointElementId(page.index, highlightIndex),
+        duration: capabilities.animations ? 650 : undefined,
+        trigger: capabilities.animations ? 'meantime' : undefined,
+      })
+    );
+  }
+  if (visiblePointCount > 1) {
+    const annotationIndex = Math.min(2, visiblePointCount - 1);
+    actions.splice(
+      Math.min(actions.length, 4),
+      0,
+      sceneAction('annotation', page.index, '公式旁批注', keyPoints[annotationIndex] || keyPoints[1], 'formula-note', {
+        elementId: getSlidePointElementId(page.index, annotationIndex),
+        duration: capabilities.animations ? 650 : undefined,
+        trigger: capabilities.animations ? 'meantime' : undefined,
+      })
+    );
+  }
+  if (capabilities.whiteboard) {
+    actions.splice(
+      Math.min(actions.length, 5),
+      0,
+      sceneAction('whiteboard', page.index, '白板推导', keyPoints.join('\n') || page.description, 'summary-card', {
         duration: capabilities.animations ? 800 : undefined,
         trigger: capabilities.animations ? 'auto' : undefined,
       })
@@ -352,6 +376,13 @@ function buildSlideScene(
     key_points: keyPoints,
     actions,
   };
+}
+
+function semanticFocusTarget(target: SlideFocusTarget): string {
+  if (target.kind === 'description') return 'info-card';
+  if (target.index === 0) return 'info-card';
+  if (target.index === 1) return 'formula';
+  return target.elementId;
 }
 
 function buildQuizScene(page: SlidePage, order: number, questions: string[]): CourseScene {

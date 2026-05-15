@@ -195,9 +195,9 @@ export default function AdaptiveEntityWorkflowPanel({
   };
 
   // 计算实体统计
-  const entityStats = useMemo(() => {
+  const entityStats = useMemo<Partial<Record<EntityType, number>>>(() => {
     if (!queryAnalysis?.entities) return {};
-    const stats: Record<EntityType, number> = {} as any;
+    const stats = {} as Record<EntityType, number>;
     queryAnalysis.entities.forEach(e => {
       stats[e.type] = (stats[e.type] || 0) + 1;
     });

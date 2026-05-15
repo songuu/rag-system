@@ -16,9 +16,9 @@ let DEFAULT_EXTRACTION_CONFIG: typeof import('@/lib/entity-extraction').DEFAULT_
 
 async function getEntityExtractor() {
   if (!EntityExtractor) {
-    const module = await import('@/lib/entity-extraction');
-    EntityExtractor = module.EntityExtractor;
-    DEFAULT_EXTRACTION_CONFIG = module.DEFAULT_EXTRACTION_CONFIG;
+    const entityExtractionModule = await import('@/lib/entity-extraction');
+    EntityExtractor = entityExtractionModule.EntityExtractor;
+    DEFAULT_EXTRACTION_CONFIG = entityExtractionModule.DEFAULT_EXTRACTION_CONFIG;
   }
   return { EntityExtractor, DEFAULT_EXTRACTION_CONFIG };
 }
@@ -48,6 +48,31 @@ let currentProgress: {
 // 上传目录
 const UPLOADS_DIR = path.join(process.cwd(), 'uploads');
 const REASONING_UPLOADS_DIR = path.join(process.cwd(), 'reasoning-uploads');
+
+function resolveAllowedExtractionFile(filePath: string): string | null {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const allowedBase =
+    normalizedPath.startsWith('uploads/')
+      ? UPLOADS_DIR
+      : normalizedPath.startsWith('reasoning-uploads/')
+        ? REASONING_UPLOADS_DIR
+        : null;
+
+  if (!allowedBase) {
+    return null;
+  }
+
+  const relativePath = normalizedPath
+    .replace(/^uploads\//, '')
+    .replace(/^reasoning-uploads\//, '');
+  const resolvedBase = path.resolve(allowedBase);
+  const resolvedFile = path.resolve(resolvedBase, relativePath);
+
+  // API 只允许读取上传解析结果，避免路径越界并减少 Next 文件追踪误判。
+  return resolvedFile === resolvedBase || resolvedFile.startsWith(`${resolvedBase}${path.sep}`)
+    ? resolvedFile
+    : null;
+}
 
 /**
  * GET - 获取知识图谱或抽取状态
@@ -168,16 +193,9 @@ export async function POST(request: NextRequest) {
       // 从文件读取
       const contents: string[] = [];
       for (const filePath of files) {
-        let fullPath: string;
-        if (filePath.startsWith('uploads/')) {
-          fullPath = path.join(UPLOADS_DIR, filePath.replace('uploads/', ''));
-        } else if (filePath.startsWith('reasoning-uploads/')) {
-          fullPath = path.join(REASONING_UPLOADS_DIR, filePath.replace('reasoning-uploads/', ''));
-        } else {
-          fullPath = path.join(process.cwd(), filePath);
-        }
+        const fullPath = resolveAllowedExtractionFile(filePath);
 
-        if (existsSync(fullPath)) {
+        if (fullPath && existsSync(fullPath)) {
           const content = await readFile(fullPath, 'utf-8');
           contents.push(`=== ${path.basename(fullPath)} ===\n${content}`);
         }

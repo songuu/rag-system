@@ -432,7 +432,8 @@ export class ModelComparisonAnalyzer {
         const tokenizer = await AutoTokenizer.from_pretrained(modelName);
         
         // 分词
-        const encoded = tokenizer.encode(text, { add_special_tokens: false });
+        const tokenizerAny = tokenizer as any;
+        const encoded = tokenizerAny.encode(text, { add_special_tokens: false }) as number[];
         
         // 获取 id 到 token 的映射
         const idToToken = this.extractVocabulary(tokenizer);

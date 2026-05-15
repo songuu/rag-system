@@ -5,13 +5,12 @@
  * @LastEditor: songyu
  */
 import { LocalRAGSystem } from './rag-system';
+import { mirrorTraceToSupabase } from './persistence/supabase-trace-store';
 
 // 使用 globalThis 来确保在 Next.js 热重载时保持单例
 // 这是 Next.js 推荐的方式来保持服务器端的单例
 declare global {
-  // eslint-disable-next-line no-var
   var ragSystemInstance: LocalRAGSystem | undefined;
-  // eslint-disable-next-line no-var
   var ragSystemInitPromise: Promise<LocalRAGSystem> | undefined;
 }
 
@@ -34,7 +33,9 @@ export async function getRagSystem(): Promise<LocalRAGSystem> {
       // 使用空配置，让 LocalRAGSystem 从环境变量自动获取配置
       // LLM 使用 MODEL_PROVIDER
       // Embedding 使用 EMBEDDING_PROVIDER (独立配置)
-      const instance = new LocalRAGSystem({});
+      const instance = new LocalRAGSystem({
+        onTraceUpdate: mirrorTraceToSupabase,
+      });
 
       // 初始化数据库
       await instance.initializeDatabase();

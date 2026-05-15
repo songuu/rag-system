@@ -8,7 +8,7 @@
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { Embeddings } from '@langchain/core/embeddings';
 import { v4 as uuidv4 } from 'uuid';
-import { MilvusVectorStore, MilvusDocument, getMilvusInstance, MilvusConfig } from './milvus-client';
+import { MilvusVectorStore, MilvusDocument, MilvusSearchResult, getMilvusInstance } from './milvus-client';
 import { 
   createEmbedding, 
   getModelDimension as getModelDimensionFromConfig,
@@ -16,7 +16,7 @@ import {
   selectModelByDimension as selectModelByDimensionFromConfig,
   ModelConfig 
 } from './model-config';
-import { getEmbeddingConfigSummary, getEmbeddingDimension } from './embedding-config';
+import { getEmbeddingConfigSummary } from './embedding-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
 
 // ==================== 配置常量 ====================
@@ -32,20 +32,62 @@ export const DEFAULT_CHUNK_SIZE = 500;
 export const DEFAULT_CHUNK_OVERLAP = 50;
 export const DEFAULT_BATCH_SIZE = 10;
 
+const QUERY_EMBEDDING_CACHE_TTL_MS = parsePositiveInteger(
+  process.env.MILVUS_QUERY_EMBEDDING_CACHE_TTL_MS,
+  10 * 60 * 1000
+);
+const QUERY_EMBEDDING_CACHE_MAX = parsePositiveInteger(
+  process.env.MILVUS_QUERY_EMBEDDING_CACHE_MAX,
+  256
+);
+
+type QueryEmbeddingCacheEntry = {
+  embedding: number[];
+  expiresAt: number;
+};
+
+const queryEmbeddingCache = new Map<string, QueryEmbeddingCacheEntry>();
+
 // 从新配置系统导出维度获取函数
 export { getModelDimensionFromConfig as getModelDimension };
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function getQueryEmbeddingCacheKey(query: string, embeddingModel?: string): string {
+  return `${embeddingModel || DEFAULT_EMBEDDING_MODEL}\u0000${query}`;
+}
+
+function pruneQueryEmbeddingCache(now: number): void {
+  for (const [key, entry] of queryEmbeddingCache) {
+    if (entry.expiresAt <= now || queryEmbeddingCache.size > QUERY_EMBEDDING_CACHE_MAX) {
+      queryEmbeddingCache.delete(key);
+    }
+  }
+}
+
+export function clearQueryEmbeddingCache(): void {
+  queryEmbeddingCache.clear();
+}
+
+export function getQueryEmbeddingCacheSize(): number {
+  return queryEmbeddingCache.size;
+}
 
 // ==================== 类型定义 ====================
 
 export interface DocumentInput {
   content: string;
   filename?: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface ChunkResult {
   text: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface VectorizeOptions {
@@ -185,8 +227,28 @@ export async function generateQueryEmbedding(
   query: string,
   embeddingModel?: string
 ): Promise<number[]> {
+  const cacheKey = getQueryEmbeddingCacheKey(query, embeddingModel);
+  const now = Date.now();
+
+  if (QUERY_EMBEDDING_CACHE_TTL_MS > 0 && QUERY_EMBEDDING_CACHE_MAX > 0) {
+    const cached = queryEmbeddingCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.embedding.slice();
+    }
+  }
+
   const embeddings = getEmbeddingModel(embeddingModel);
-  return await embeddings.embedQuery(query);
+  const embedding = await embeddings.embedQuery(query);
+
+  if (QUERY_EMBEDDING_CACHE_TTL_MS > 0 && QUERY_EMBEDDING_CACHE_MAX > 0) {
+    queryEmbeddingCache.set(cacheKey, {
+      embedding: embedding.slice(),
+      expiresAt: now + QUERY_EMBEDDING_CACHE_TTL_MS,
+    });
+    pruneQueryEmbeddingCache(now);
+  }
+
+  return embedding;
 }
 
 /**
@@ -232,7 +294,8 @@ export async function vectorizeAndInsert(
       // 按 source 文档分组
       const chunksBySource = new Map<string, { indices: number[]; chunks: typeof chunks }>();
       for (let i = 0; i < chunks.length; i++) {
-        const source = chunks[i].metadata.source || 'unknown';
+        const rawSource = chunks[i].metadata.source;
+        const source = typeof rawSource === 'string' ? rawSource : 'unknown';
         if (!chunksBySource.has(source)) {
           chunksBySource.set(source, { indices: [], chunks: [] });
         }
@@ -345,11 +408,10 @@ export async function vectorizeAndInsert(
  */
 export async function insertDocumentsWithEmbeddings(
   milvus: MilvusVectorStore,
-  documents: Array<{ content: string; metadata?: Record<string, any> }>,
+  documents: Array<{ content: string; metadata?: Record<string, unknown> }>,
   options: InsertDocumentsOptions = {}
 ): Promise<InsertResult> {
   const { embeddingModel = DEFAULT_EMBEDDING_MODEL } = options;
-  const collectionName = milvus.getConfig().collectionName;
 
   console.log(`[VectorizationUtils] ========== 开始导入 ==========`);
   console.log(`[VectorizationUtils] Documents count: ${documents.length}`);
@@ -359,9 +421,8 @@ export async function insertDocumentsWithEmbeddings(
     await milvus.connect();
     await milvus.initializeCollection();
 
-    // 获取集合维度
-    const stats = await milvus.getCollectionStats();
-    const collectionDimension = stats?.embeddingDimension || 768;
+    // initializeCollection 已完成 schema 兼容检查，搜索热路径直接使用配置维度，避免每次查询 describe/stat/load。
+    const collectionDimension = milvus.getConfig().embeddingDimension;
     console.log(`[VectorizationUtils] Collection dimension: ${collectionDimension}D`);
 
     // 检查模型维度
@@ -454,7 +515,7 @@ export async function vectorSearch(
   } = {}
 ): Promise<{
   success: boolean;
-  results: any[];
+  results: MilvusSearchResult[];
   query: string;
   embeddingModel: string;
   dimension: number;
@@ -470,9 +531,8 @@ export async function vectorSearch(
     await milvus.connect();
     await milvus.initializeCollection();
 
-    // 获取集合维度
-    const stats = await milvus.getCollectionStats();
-    const collectionDimension = stats?.embeddingDimension || 768;
+    // initializeCollection 已完成 schema 兼容检查，搜索热路径直接使用配置维度，避免每次查询 describe/stat/load。
+    const collectionDimension = milvus.getConfig().embeddingDimension;
     console.log(`[VectorizationUtils] Collection dimension: ${collectionDimension}D`);
 
     // 自动选择匹配的模型
@@ -535,7 +595,7 @@ export function createVectorizeManager(config: {
 }): {
   milvus: MilvusVectorStore;
   vectorize: (documents: DocumentInput[], options?: VectorizeOptions) => Promise<VectorizeResult>;
-  search: (query: string, options?: { topK?: number; filter?: string }) => Promise<any>;
+  search: (query: string, options?: { topK?: number; filter?: string }) => Promise<Awaited<ReturnType<typeof vectorSearch>>>;
   clear: () => Promise<void>;
 } {
   const dimension = config.embeddingDimension || getModelDimensionFromConfig(config.embeddingModel || DEFAULT_EMBEDDING_MODEL);

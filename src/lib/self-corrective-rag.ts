@@ -193,7 +193,7 @@ async function retrieveNode(state: typeof SCRAGStateAnnotation.State): Promise<P
     
     // 获取 collection 统计信息以确定维度
     const stats = await milvus.getCollectionStats();
-    const dimension = stats.dimension || 768;
+    const dimension = stats?.embeddingDimension || 768;
     const embeddingModel = selectModelByDimension(dimension);
     
     console.log(`[RETRIEVE] Embedding 模型: ${embeddingModel}, 维度: ${dimension}`);

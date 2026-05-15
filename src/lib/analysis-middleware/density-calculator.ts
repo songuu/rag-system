@@ -281,24 +281,29 @@ export class DensityCalculator {
     tokenDensities: DensityResult['tokenDensities']
   ): DensityResult['heatmapRegions'] {
     const regions: DensityResult['heatmapRegions'] = [];
-    let currentRegion: {
+    type HeatmapRegionBuilder = {
       start: number;
       end: number;
       heats: number[];
       type: 'hot' | 'warm' | 'neutral' | 'cold';
-    } | null = null;
+    };
+    let currentRegion: HeatmapRegionBuilder | undefined;
+
+    const pushRegion = (region: HeatmapRegionBuilder) => {
+      regions.push({
+        start: region.start,
+        end: region.end,
+        avgHeat: region.heats.reduce((a: number, b: number) => a + b, 0) / region.heats.length,
+        type: region.type
+      });
+    };
 
     tokenDensities.forEach((token, index) => {
       const type = this.getHeatType(token.heatValue);
       
       if (!currentRegion || currentRegion.type !== type) {
         if (currentRegion) {
-          regions.push({
-            start: currentRegion.start,
-            end: currentRegion.end,
-            avgHeat: currentRegion.heats.reduce((a, b) => a + b, 0) / currentRegion.heats.length,
-            type: currentRegion.type
-          });
+          pushRegion(currentRegion);
         }
         currentRegion = {
           start: index,
@@ -313,12 +318,7 @@ export class DensityCalculator {
     });
 
     if (currentRegion) {
-      regions.push({
-        start: currentRegion.start,
-        end: currentRegion.end,
-        avgHeat: currentRegion.heats.reduce((a, b) => a + b, 0) / currentRegion.heats.length,
-        type: currentRegion.type
-      });
+      pushRegion(currentRegion);
     }
 
     return regions;

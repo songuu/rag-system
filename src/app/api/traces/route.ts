@@ -1,19 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getRagSystem, getCurrentRagSystem } from '@/lib/rag-instance';
+import { clearTracePersistence, listTracesFromPersistence } from '@/lib/persistence/trace-store';
 
 // GET /api/traces - 获取所有 Traces
 export async function GET() {
   try {
-    // 首先尝试获取当前已存在的实例（不创建新实例）
-    let ragSystem = getCurrentRagSystem();
-    
-    // 如果没有实例，获取或创建一个
-    if (!ragSystem) {
-      console.log('[API/traces] No existing RAG instance, creating one...');
-      ragSystem = await getRagSystem();
-    }
-    
-    const observabilityData = ragSystem.getObservabilityData();
+    const observabilityData = await listTracesFromPersistence();
     
     console.log(`[API/traces] Returning ${observabilityData.traces.length} traces`);
     
@@ -46,8 +37,7 @@ export async function GET() {
 // DELETE /api/traces - 清除所有 Traces
 export async function DELETE() {
   try {
-    const ragSystem = await getRagSystem();
-    ragSystem.clearObservabilityData();
+    await clearTracePersistence();
     
     return NextResponse.json({
       success: true,

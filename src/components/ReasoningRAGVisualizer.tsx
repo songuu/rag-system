@@ -1,16 +1,16 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 
 // ==================== 类型定义 ====================
 
 interface ThinkingStep {
   id: string;
   timestamp: number;
-  type: 'reasoning' | 'planning' | 'reflection' | 'decision';
+  type: 'reasoning' | 'planning' | 'reflection' | 'decision' | 'tool_call';
   content: string;
   confidence?: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 interface BaseMessage {
@@ -21,9 +21,9 @@ interface BaseMessage {
 interface RetrievedDocument {
   id: string;
   content: string;
-  metadata: Record<string, any>;
+  metadata?: Record<string, unknown>;
   score: number;
-  source: 'dense' | 'sparse' | 'hybrid';
+  source?: 'dense' | 'sparse' | 'hybrid';
   rerankScore?: number;
 }
 
@@ -55,10 +55,12 @@ interface NodeExecution {
   node: string;
   status: 'pending' | 'running' | 'completed' | 'skipped' | 'error';
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
 }
+
+type RetrievalTab = 'dense' | 'sparse' | 'merged' | 'reranked';
 
 interface ReasoningRAGVisualizerProps {
   query?: string;
@@ -94,7 +96,8 @@ const ThinkingProcessPanel: React.FC<{ steps: ThinkingStep[] }> = ({ steps }) =>
     reasoning: { icon: '🧠', label: '推理', color: 'from-purple-500 to-indigo-500' },
     planning: { icon: '📋', label: '规划', color: 'from-blue-500 to-cyan-500' },
     reflection: { icon: '🔍', label: '反思', color: 'from-amber-500 to-orange-500' },
-    decision: { icon: '⚡', label: '决策', color: 'from-emerald-500 to-teal-500' }
+    decision: { icon: '⚡', label: '决策', color: 'from-emerald-500 to-teal-500' },
+    tool_call: { icon: '🛠️', label: '工具调用', color: 'from-slate-500 to-gray-500' }
   };
   
   return (
@@ -169,7 +172,7 @@ const ThinkingProcessPanel: React.FC<{ steps: ThinkingStep[] }> = ({ steps }) =>
 // 混合检索面板
 const HybridRetrievalPanel: React.FC<{ retrieval: HybridRetrievalResult }> = ({ retrieval }) => {
   const [expanded, setExpanded] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dense' | 'sparse' | 'merged' | 'reranked'>('reranked');
+  const [activeTab, setActiveTab] = useState<RetrievalTab>('reranked');
   
   const stats = retrieval.statistics;
   
@@ -259,15 +262,15 @@ const HybridRetrievalPanel: React.FC<{ retrieval: HybridRetrievalResult }> = ({ 
           
           {/* 标签页 */}
           <div className="flex gap-2 border-b border-slate-700 pb-2">
-            {[
+            {([
               { key: 'reranked', label: '重排结果', count: retrieval.rerankedResults.length },
               { key: 'dense', label: 'Dense', count: retrieval.denseResults.length },
               { key: 'sparse', label: 'Sparse', count: retrieval.sparseResults.length },
               { key: 'merged', label: '合并', count: retrieval.mergedResults.length }
-            ].map(tab => (
+            ] satisfies Array<{ key: RetrievalTab; label: string; count: number }>).map(tab => (
               <button
                 key={tab.key}
-                onClick={() => setActiveTab(tab.key as any)}
+                onClick={() => setActiveTab(tab.key)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   activeTab === tab.key
                     ? 'bg-cyan-500/30 text-cyan-300'

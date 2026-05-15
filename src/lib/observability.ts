@@ -281,7 +281,7 @@ class ObservabilityEngine {
     if (!observation) return;
 
     Object.assign(observation, updates);
-    if (updates.endTime) {
+    if (updates.endTime && observation.type !== 'EVENT') {
       observation.endTime = updates.endTime;
     }
 
@@ -292,6 +292,30 @@ class ObservabilityEngine {
     if (trace) {
       this.callbacks.onTraceUpdate?.(trace);
     }
+  }
+
+  startTrace(traceId: string, name: string, input?: any, metadata?: Record<string, any>): void {
+    const trace: Trace = {
+      id: traceId,
+      name,
+      startTime: new Date(),
+      input,
+      metadata,
+      observations: [],
+      scores: [],
+      status: 'PENDING'
+    };
+
+    this.traces.set(traceId, trace);
+    this.callbacks.onTraceUpdate?.(trace);
+  }
+
+  endTrace(traceId: string, output?: any, status: 'SUCCESS' | 'ERROR' = 'SUCCESS'): void {
+    this.updateTrace(traceId, {
+      output,
+      status,
+      endTime: new Date()
+    });
   }
 
   // ============= Score 管理 =============

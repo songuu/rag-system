@@ -5,7 +5,7 @@ import React, { useState, useEffect, useRef } from 'react';
 interface ThinkingStep {
   id: string;
   timestamp: number;
-  type: 'reasoning' | 'planning' | 'reflection' | 'decision';
+  type: 'reasoning' | 'planning' | 'reflection' | 'decision' | 'tool_call';
   content: string;
   confidence?: number;
   metadata?: Record<string, any>;

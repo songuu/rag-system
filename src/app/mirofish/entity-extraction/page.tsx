@@ -235,10 +235,10 @@ export default function EntityExtractionPage() {
 
     // 节点和边数据
     const nodes = graph.entities.map(e => ({
+      ...e,
       id: e.id,
       name: e.name,
       type: e.type,
-      ...e,
     }));
 
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
@@ -246,10 +246,10 @@ export default function EntityExtractionPage() {
     const links = graph.relations
       .filter(r => nodeMap.has(r.source) && nodeMap.has(r.target))
       .map(r => ({
+        ...r,
         source: r.source,
         target: r.target,
         type: r.type,
-        ...r,
       }));
 
     // 力导向图
@@ -278,17 +278,17 @@ export default function EntityExtractionPage() {
       .attr('stroke', '#fff')
       .attr('stroke-width', 2)
       .style('cursor', 'pointer')
-      .call(d3.drag<SVGCircleElement, any>()
-        .on('start', (event, d) => {
+      .call((d3.drag<SVGCircleElement, any>() as any)
+        .on('start', (event: any, d: any) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
           (d as any).fx = d.x;
           (d as any).fy = d.y;
         })
-        .on('drag', (event, d) => {
+        .on('drag', (event: any, d: any) => {
           (d as any).fx = event.x;
           (d as any).fy = event.y;
         })
-        .on('end', (event, d) => {
+        .on('end', (event: any, d: any) => {
           if (!event.active) simulation.alphaTarget(0);
           (d as any).fx = null;
           (d as any).fy = null;
@@ -318,12 +318,12 @@ export default function EntityExtractionPage() {
         .attr('y2', d => (d.target as any).y);
 
       node
-        .attr('cx', d => d.x!)
-        .attr('cy', d => d.y!);
+        .attr('cx', (d: any) => d.x!)
+        .attr('cy', (d: any) => d.y!);
 
       label
-        .attr('x', d => d.x!)
-        .attr('y', d => d.y!);
+        .attr('x', (d: any) => d.x!)
+        .attr('y', (d: any) => d.y!);
     });
   }, [graph]);
 

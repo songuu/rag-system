@@ -3,7 +3,8 @@ import { EnhancedTrie, LogicWaterfallGenerator } from '@/lib/trace-trie';
 import { 
   VectorWeightAnalyzer, 
   TokenDensityAnalyzer, 
-  ModelComparisonAnalyzer 
+  ModelComparisonAnalyzer,
+  type ModelComparison
 } from '@/lib/token-analyzer';
 import { AutoTokenizer } from '@xenova/transformers';
 
@@ -153,7 +154,8 @@ export async function POST(request: NextRequest) {
       
       try {
         // 对输入文本进行分词，直接使用 tokenizer 的结果
-        const encoded = tokenizer.encode(text, { add_special_tokens: false });
+        const tokenizerAny = tokenizer as any;
+        const encoded = tokenizerAny.encode(text, { add_special_tokens: false }) as number[];
         
         // 尝试使用 batch_decode 来获取每个 token 的文本表示
         let decodedTokens: string[] = [];
@@ -170,8 +172,8 @@ export async function POST(request: NextRequest) {
             decodedTokens = encoded.map((id: number) => tokenizer.decode([id]));
           } catch {
             // 方法3: 使用 convert_ids_to_tokens（如果可用）
-            if (typeof tokenizer.convert_ids_to_tokens === 'function') {
-              decodedTokens = tokenizer.convert_ids_to_tokens(encoded);
+            if (typeof tokenizerAny.convert_ids_to_tokens === 'function') {
+              decodedTokens = tokenizerAny.convert_ids_to_tokens(encoded);
             }
           }
         }
@@ -221,7 +223,7 @@ export async function POST(request: NextRequest) {
     const densityInfos = densityAnalyzer.analyzeDensity(finalTokens);
 
     // 5. 多模型对比（如果提供了多个模型）
-    let modelComparisons = [];
+    let modelComparisons: ModelComparison[] = [];
     if (modelNames.length > 1) {
       const comparisonAnalyzer = new ModelComparisonAnalyzer();
       modelComparisons = await comparisonAnalyzer.compareModels(text, modelNames);

@@ -81,8 +81,8 @@ export default function AgenticRAGPage() {
   const [topK, setTopK] = useState(5);
   const [similarityThreshold, setSimilarityThreshold] = useState(0.3);
   const [maxRetries, setMaxRetries] = useState(2);
-  const [llmModel, setLlmModel] = useState(DEFAULT_RUNTIME_MODELS.llm);
-  const [embeddingModel, setEmbeddingModel] = useState(DEFAULT_RUNTIME_MODELS.embedding);
+  const [llmModel, setLlmModel] = useState<string>(DEFAULT_RUNTIME_MODELS.llm);
+  const [embeddingModel, setEmbeddingModel] = useState<string>(DEFAULT_RUNTIME_MODELS.embedding);
   
   const [isLoading, setIsLoading] = useState(false);
   const [result, setResult] = useState<AgentState | null>(null);

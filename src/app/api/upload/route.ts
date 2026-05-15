@@ -1,6 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile, mkdir, readFile } from 'fs/promises';
-import { existsSync } from 'fs';
 import path from 'path';
 import { 
   parseDocument, 
@@ -9,45 +7,19 @@ import {
   SUPPORTED_EXTENSIONS,
   getFileExtension
 } from '@/lib/document-parser';
+import { createUploadPersistence } from '@/lib/persistence/upload-store';
+import type { FileManifestItem } from '@/lib/persistence/ports';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 const METADATA_FILE = path.join(UPLOAD_DIR, 'file-manifest.json');  // 文件清单
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
-// 文件清单项接口
-interface FileManifestItem {
-  id: string;
-  originalName: string;        // 原始文件名（用于展示）
-  originalExtension: string;   // 原始扩展名（用于展示图标）
-  storedFilename: string;      // 存储的原始文件名
-  parsedFilename: string;      // 解析后的文本文件名（用于 RAG）
-  size: number;
-  contentLength: number;
-  uploadedAt: string;
-  parseMethod: string;
-  pages?: number;
-}
-
-// 加载文件清单
-async function loadManifest(): Promise<Record<string, FileManifestItem>> {
-  try {
-    if (existsSync(METADATA_FILE)) {
-      const content = await readFile(METADATA_FILE, 'utf-8');
-      return JSON.parse(content);
-    }
-  } catch (error) {
-    console.error('加载文件清单失败:', error);
-  }
-  return {};
-}
-
-// 保存文件清单
-async function saveManifest(manifest: Record<string, FileManifestItem>): Promise<void> {
-  await writeFile(METADATA_FILE, JSON.stringify(manifest, null, 2), 'utf-8');
-}
-
 export async function POST(request: NextRequest) {
   try {
+    const { blobStore, manifestStore } = createUploadPersistence({
+      uploadDir: UPLOAD_DIR,
+      manifestFile: METADATA_FILE,
+    });
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
 
@@ -58,13 +30,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 确保上传目录存在
-    if (!existsSync(UPLOAD_DIR)) {
-      await mkdir(UPLOAD_DIR, { recursive: true });
-    }
+    await blobStore.ensureRoot();
 
     // 加载现有文件清单
-    const manifest = await loadManifest();
+    const manifest = await manifestStore.loadManifest();
 
     const results = [];
     const errors = [];
@@ -113,16 +82,20 @@ export async function POST(request: NextRequest) {
         // 1. 保存原始文件（保持原始格式，用于下载/预览）
         // 文件名格式: {timestamp}_{originalBaseName}{ext}
         const storedFilename = `${timestamp}_${baseName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5._-]/g, '_')}${ext}`;
-        const storedFilePath = path.join(UPLOAD_DIR, storedFilename);
-        await writeFile(storedFilePath, buffer);
-        console.log(`[Upload] 原始文件已保存: ${storedFilePath}`);
+        await blobStore.write(storedFilename, buffer, {
+          kind: 'raw',
+          contentType: file.type || 'application/octet-stream',
+        });
+        console.log(`[Upload] 原始文件已保存: ${storedFilename}`);
         
         // 2. 保存解析后的文本内容（用于 RAG 向量化处理）
         // 文件名格式: {timestamp}_{originalBaseName}_parsed.txt
         const parsedFilename = `${timestamp}_${baseName.replace(/[^a-zA-Z0-9\u4e00-\u9fa5._-]/g, '_')}_parsed.txt`;
-        const parsedFilePath = path.join(UPLOAD_DIR, parsedFilename);
-        await writeFile(parsedFilePath, parseResult.document.content, 'utf-8');
-        console.log(`[Upload] 解析文本已保存: ${parsedFilePath} (用于 RAG)`);
+        await blobStore.write(parsedFilename, parseResult.document.content, {
+          kind: 'parsed',
+          contentType: 'text/plain; charset=utf-8',
+        });
+        console.log(`[Upload] 解析文本已保存: ${parsedFilename} (用于 RAG)`);
 
         // 3. 保存到文件清单
         const manifestItem: FileManifestItem = {
@@ -161,7 +134,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 保存更新后的文件清单
-    await saveManifest(manifest);
+    await manifestStore.saveManifest(manifest);
 
     return NextResponse.json({
       success: true,

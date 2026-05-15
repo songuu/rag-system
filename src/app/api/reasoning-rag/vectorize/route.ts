@@ -18,8 +18,13 @@ import { loadContextualRetrievalConfig, contextualizeChunks } from '@/lib/contex
 // 获取 Reasoning RAG 配置（从环境变量）
 function getConfig() {
   const ragConfig = getReasoningRAGConfig();
+  const uploadDir =
+    ragConfig.uploadDir === 'reasoning-uploads'
+      ? path.join(process.cwd(), 'reasoning-uploads')
+      : path.resolve(/*turbopackIgnore: true*/ process.cwd(), ragConfig.uploadDir);
+
   return {
-    uploadDir: path.join(process.cwd(), ragConfig.uploadDir),
+    uploadDir,
     collection: ragConfig.collection,
     dimension: ragConfig.dimension,
     chunkSize: ragConfig.chunkSize,
@@ -251,7 +256,7 @@ export async function POST(request: NextRequest) {
 
         // Contextual Retrieval: 为每个 chunk 生成上下文提要
         const crConfig = loadContextualRetrievalConfig();
-        let contextualMetadata: Array<{ originalContent?: string; contextualPreamble?: string }> = [];
+        const contextualMetadata: Array<{ originalContent?: string; contextualPreamble?: string }> = [];
 
         if (crConfig.enabled && chunks.length > 0) {
           console.log(`[Reasoning Vectorize] Contextual Retrieval 已启用, 开始生成上下文提要...`);

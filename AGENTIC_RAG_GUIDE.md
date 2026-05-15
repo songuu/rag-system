@@ -4,6 +4,21 @@
 
 Agentic RAG 是基于 LangGraph 构建的代理化检索增强生成系统。它通过引入多个智能节点，实现了自动化的查询优化、检索质量评估、自省评分和幻觉检查。
 
+## LangChain / LangGraph v1+ 对齐
+
+截至 2026-05-15，LangChain v1 已将高层 agent 入口收敛到 `createAgent`，并通过 middleware、structured output、model profiles、retry / moderation / summarization middleware 强化生产 agent 开发；LangGraph v1/v1.1 则继续把稳定 Graph API、durable execution、persistence、streaming、human-in-the-loop、typed interrupts 和 `StateSchema` 作为低层编排能力。
+
+本项目的 Agentic RAG 属于“可解释的定制 RAG 工作流”，而不是普通 ReAct 工具循环，因此保留 `StateGraph` 是正确边界:
+
+| 最新能力 | 在本模块中的落点 |
+|----------|------------------|
+| `createAgent` | 只适合未来抽出的叶子 agent，例如 query analysis / hallucination checker，不直接替换主工作流 |
+| Structured Output | 后续替换 query analysis、retrieval grade、hallucination check 中的 prompt JSON parsing |
+| Middleware | 将模型重试、内容安全、摘要压缩、人工审批设计为策略层能力，而不是页面层临时逻辑 |
+| StateSchema | 新增 graph 或大改状态定义时优先使用，现有 `Annotation.Root()` 可兼容保留 |
+| Durable execution | 长运行评估、跨请求恢复或人工审批才引入 checkpointer；普通一次查询不强制持久化 |
+| Content blocks | 未来答案、引用、reasoning trace 应进入统一 `RagAnswerEnvelope`，避免提前压成纯文本 |
+
 ## 核心特性
 
 ### 1. 查询分析与优化 (Query Analysis & Optimization)
@@ -242,12 +257,15 @@ interface AgenticRAGConfig {
 3. **选择合适的 Top-K**: 5-10 通常能提供足够的上下文
 4. **监控工作流步骤**: 通过 workflow.steps 了解每个步骤的耗时和状态
 5. **关注幻觉检查结果**: 如果频繁检测到幻觉，可能需要改进知识库质量
+6. **优先结构化叶子节点**: 新增或重构查询分析、评分、幻觉检查时，优先采用 LangChain structured output 思维，以 schema 校验替代脆弱的自由文本 JSON。
+7. **持久化只给长流程**: 引入 LangGraph checkpointer 前，先确认是否真的需要跨请求恢复、time travel 或 human-in-the-loop；一次性问答保持无状态更简单。
 
 ## 性能优化
 
 - 自省评分和幻觉检查会增加 LLM 调用次数，可根据需要禁用
 - 使用更快的 LLM 模型可以减少整体响应时间
 - 合理设置 maxRetries 避免不必要的重试
+- 可把模型重试、摘要压缩和内容安全沉到共享 runtime policy，避免每个 RAG mode 重复实现。
 
 ## 故障排除
 

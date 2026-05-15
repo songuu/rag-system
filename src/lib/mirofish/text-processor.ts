@@ -6,7 +6,6 @@
  */
 
 import fs from 'fs';
-import path from 'path';
 import { parseDocument } from '../document-parser';
 
 /**
@@ -37,24 +36,7 @@ export class TextProcessor {
    * 从单个文件提取文本
    */
   static async extractFromFile(filePath: string): Promise<string> {
-    const ext = path.extname(filePath).toLowerCase();
-
-    switch (ext) {
-      case '.pdf':
-        return extractTextFromPDF(filePath);
-      case '.docx':
-      case '.doc':
-        return extractTextFromDOCX(filePath);
-      case '.md':
-      case '.markdown':
-        return extractTextFromMarkdown(filePath);
-      case '.txt':
-      case '.text':
-        return extractTextFromTXT(filePath);
-      default:
-        // 尝试作为纯文本读取
-        return extractTextFromTXT(filePath);
-    }
+    return DocumentParser.extractFromFile(filePath);
   }
 
   /**
@@ -66,8 +48,6 @@ export class TextProcessor {
     overlap: number = 50
   ): string[] {
     const chunks: string[] = [];
-    const textLength = text.length;
-
     // 按段落分割
     const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
 
@@ -173,7 +153,10 @@ export class DocumentParser {
     try {
       const buffer = fs.readFileSync(filePath);
       const result = await parseDocument(buffer, filePath);
-      return result.content;
+      if (result.success && result.document) {
+        return result.document.content;
+      }
+      return buffer.toString('utf-8');
     } catch (error) {
       console.error(`[DocumentParser] 文件解析失败: ${filePath}`, error);
       return '';

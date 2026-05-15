@@ -54,7 +54,9 @@ export function createArtifactCacheIdentity<ModelSignature extends object>(input
   const cacheKey = createStableHash({ sourceHash, modelSignature }).slice(0, 32);
   const cacheDir = path.isAbsolute(input.cacheDir)
     ? input.cacheDir
-    : path.join(process.cwd(), input.cacheDir);
+    : input.cacheDir.startsWith('uploads/')
+      ? path.join(process.cwd(), 'uploads', input.cacheDir.slice('uploads/'.length))
+      : path.resolve(/*turbopackIgnore: true*/ process.cwd(), input.cacheDir);
 
   return {
     cache_key: cacheKey,

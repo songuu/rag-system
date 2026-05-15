@@ -113,9 +113,9 @@ const CLASSIFICATION_PROMPT = `你是一个智能意图分类器。分析用户�
 
 const RouterAnnotation = Annotation.Root({
   query: Annotation<string>(),
-  classification: Annotation<IntentClassification | null>({ default: () => null }),
-  routerModel: Annotation<string>({ default: () => 'llama3.2' }),
-  startTime: Annotation<number>({ default: () => Date.now() }),
+  classification: Annotation<IntentClassification | null>({ reducer: (_, b) => b, default: () => null }),
+  routerModel: Annotation<string>({ reducer: (_, b) => b, default: () => 'llama3.2' }),
+  startTime: Annotation<number>({ reducer: (_, b) => b, default: () => Date.now() }),
   error: Annotation<string | undefined>()
 });
 

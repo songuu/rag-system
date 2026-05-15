@@ -20,6 +20,17 @@
 - **摘要压缩 (Summary Compression)**: 将长历史压缩为简洁摘要
 - **状态持久化 (State Checkpointing)**: 支持会话恢复和无状态扩展
 
+### 1.3 LangChain / LangGraph v1+ 最新对齐
+
+截至 2026-05-15，LangChain v1+ 已把长对话相关能力拆成两条路径:
+
+| 路径 | 适用场景 | 本项目含义 |
+|------|----------|------------|
+| LangChain agent middleware | 普通 agent loop、动态 system prompt、上下文摘要、模型重试、内容安全 | 轻量上下文管理可以逐步迁移为 middleware policy，复用 model profiles 和 summarization middleware |
+| LangGraph persistence / durable execution | 需要跨请求恢复、人工审批、time travel、故障恢复的长流程 | MAIC prepare、MiroFish simulation、复杂 Agentic RAG 更适合用 checkpointer + `thread_id` |
+
+当前 `src/lib/context-management.ts` 仍是基于 LangChain Core Runnable / LCEL 的运行实现；本文中的 `StateGraph + MemorySaver` 应理解为下一阶段的可恢复架构目标，而不是已经完全落地的代码事实。
+
 ---
 
 ## 二、宏观架构全景图
@@ -82,9 +93,38 @@
 
 ## 三、核心层级架构
 
-### 3.1 状态层 (State Layer) - 使用 LangGraph Annotation
+### 3.1 状态层 (State Layer) - LangGraph v1+ Schema-first
 
-使用 LangGraph 官方的 `Annotation.Root()` 定义状态，这是推荐的状态定义方式：
+旧版示例可继续使用 `Annotation.Root()`；新增工作流优先采用 LangGraph v1.1 的 `StateSchema`、`ReducedValue`、`MessagesValue`。这样可以使用 Zod 4、Valibot、ArkType 等 Standard Schema 生态，并获得更好的状态与更新类型推导。
+
+新增 graph 推荐写法：
+
+```typescript
+import {
+  StateGraph,
+  StateSchema,
+  ReducedValue,
+  MessagesValue,
+  START,
+  END,
+} from '@langchain/langgraph';
+import { z } from 'zod';
+
+const ContextGraphState = new StateSchema({
+  messages: MessagesValue,
+  currentQuery: z.string().default(''),
+  rewrittenQuery: z.string().default(''),
+  retrievedDocIds: new ReducedValue(
+    z.array(z.string()).default(() => []),
+    {
+      inputSchema: z.string(),
+      reducer: (current, next) => [...current, next],
+    }
+  ),
+});
+```
+
+已有 `Annotation.Root()` 写法仍可运行，迁移窗口内可以保留：
 
 ```typescript
 import { Annotation, messagesStateReducer } from '@langchain/langgraph';
@@ -266,6 +306,12 @@ const relevantDocs = docs.filter(doc => {
 ### 3.4 持久层 (Persistence Layer)
 
 #### Checkpointer 机制
+
+LangGraph persistence 的关键不是“把状态存下来”这么简单，而是以 checkpoint 组织每个 `thread_id` 的执行历史。它支持 human-in-the-loop、time travel、故障恢复和长流程续跑。生产环境引入持久 checkpointer 时要满足三个条件:
+
+1. 每次执行都传入稳定的 `thread_id`。
+2. 文件写入、数据库写入、外部 API 调用保持幂等，或拆成可重放节点 / task。
+3. checkpoint store 被视为完整性敏感资产，限制写权限并关注官方安全公告。
 
 ```typescript
 class Checkpointer {
@@ -670,12 +716,20 @@ workflow.addConditionalEdges(
 
 | 版本 | 日期 | 更新内容 |
 |------|------|----------|
+| v1.1.0 | 2026-05-15 | 融入 LangChain v1+ middleware / structured output / model profiles 和 LangGraph v1/v1.1 persistence / StateSchema / durable execution 边界 |
 | v1.0.0 | 2026-01-22 | 初始版本，实现完整的上下文管理架构 |
 
 ---
 
 ## 十二、参考资料
 
-- [LangGraph 官方文档](https://python.langchain.com/docs/langgraph)
+- [LangChain v1 Release Notes](https://docs.langchain.com/oss/javascript/releases/langchain-v1)
+- [LangChain JS Changelog](https://docs.langchain.com/oss/javascript/releases/changelog)
+- [LangChain Agents](https://docs.langchain.com/oss/javascript/langchain/agents)
+- [LangChain Structured Output](https://docs.langchain.com/oss/javascript/langchain/structured-output)
+- [LangGraph v1 Release Notes](https://docs.langchain.com/oss/javascript/releases/langgraph-v1)
+- [LangGraph Persistence](https://docs.langchain.com/oss/javascript/langgraph/persistence)
+- [LangGraph Durable Execution](https://docs.langchain.com/oss/javascript/langgraph/durable-execution)
+- [LangGraph Interrupts](https://docs.langchain.com/oss/javascript/langgraph/interrupts)
 - [Milvus 向量数据库](https://milvus.io/docs)
 - [Ollama 本地 LLM](https://ollama.ai)

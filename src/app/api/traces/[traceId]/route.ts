@@ -1,15 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getRagSystem } from '@/lib/rag-instance';
+import { getTraceFromPersistence } from '@/lib/persistence/trace-store';
 
 // GET /api/traces/[traceId] - 获取特定 Trace
 export async function GET(
   request: NextRequest,
-  { params }: { params: { traceId: string } }
+  { params }: { params: Promise<{ traceId: string }> }
 ) {
   try {
-    const { traceId } = params;
-    const ragSystem = await getRagSystem();
-    const trace = ragSystem.getTrace(traceId);
+    const { traceId } = await params;
+    const trace = await getTraceFromPersistence(traceId);
     
     if (!trace) {
       return NextResponse.json(
