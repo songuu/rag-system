@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import LangSmithReactFlowGraph, { type LangSmithFlowStep } from './LangSmithReactFlowGraph';
 
 // ==================== 类型定义 ====================
 
@@ -8,8 +9,8 @@ interface NodeExecution {
   node: 'retrieve' | 'grade' | 'rewrite' | 'generate';
   status: 'pending' | 'running' | 'completed' | 'skipped' | 'error';
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
 }
 
@@ -99,6 +100,54 @@ const STATUS_CONFIG = {
   error: { color: 'text-red-500', bgColor: 'bg-red-100', icon: '✗', label: '错误' },
 };
 
+function buildSCRAGFlowSteps(
+  decisionPath: string[],
+  nodeExecutions: NodeExecution[]
+): LangSmithFlowStep[] {
+  if (decisionPath.length > 0) {
+    return decisionPath.map((step, index) => {
+      const nodeType = inferSCRAGNodeType(step);
+      const execution = nodeExecutions.find(item => item.node === nodeType);
+      return {
+        id: `scrag-path-${index}-${nodeType}`,
+        label: NODE_CONFIG[nodeType].name,
+        description: step,
+        kind: nodeType,
+        status: execution?.status ?? 'completed',
+        duration: execution?.duration,
+        error: execution?.error,
+        layer: index,
+        metadata: {
+          decision: step,
+          rewrite: nodeType === 'rewrite' ? 'true' : undefined,
+        },
+      };
+    });
+  }
+
+  return nodeExecutions.map((execution, index) => ({
+    id: `scrag-${execution.node}-${index}`,
+    label: NODE_CONFIG[execution.node].name,
+    description: NODE_CONFIG[execution.node].description,
+    kind: execution.node,
+    status: execution.status,
+    duration: execution.duration,
+    error: execution.error,
+    layer: index,
+    metadata: {
+      hasInput: execution.input ? 'true' : undefined,
+      hasOutput: execution.output ? 'true' : undefined,
+    },
+  }));
+}
+
+function inferSCRAGNodeType(step: string): NodeExecution['node'] {
+  if (step.includes('GRADE')) return 'grade';
+  if (step.includes('REWRITE')) return 'rewrite';
+  if (step.includes('GENERATE')) return 'generate';
+  return 'retrieve';
+}
+
 // ==================== 子组件 ====================
 
 /** 时间轴视图 */
@@ -162,42 +211,13 @@ const DecisionTreeView: React.FC<{
   decisionPath: string[];
   nodeExecutions: NodeExecution[];
 }> = ({ decisionPath, nodeExecutions }) => {
+  const flowSteps = buildSCRAGFlowSteps(decisionPath, nodeExecutions);
+
   return (
-    <div className="relative">
-      {/* 连接线 */}
-      <div className="absolute left-6 top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-300 via-purple-300 to-green-300" />
-      
-      <div className="space-y-4">
-        {decisionPath.map((step, idx) => {
-          // 解析步骤类型
-          let nodeType: keyof typeof NODE_CONFIG = 'retrieve';
-          if (step.includes('RETRIEVE')) nodeType = 'retrieve';
-          else if (step.includes('GRADE')) nodeType = 'grade';
-          else if (step.includes('REWRITE')) nodeType = 'rewrite';
-          else if (step.includes('GENERATE')) nodeType = 'generate';
-          
-          const config = NODE_CONFIG[nodeType];
-          
-          return (
-            <div key={idx} className="flex items-start gap-4 relative">
-              {/* 节点圆点 */}
-              <div className={`w-12 h-12 rounded-full bg-gradient-to-br ${config.color} flex items-center justify-center text-white text-xl z-10 shadow-lg`}>
-                {config.icon}
-              </div>
-              
-              {/* 步骤内容 */}
-              <div className={`flex-1 ${config.bgColor} rounded-lg p-3 border ${config.borderColor}`}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-medium text-gray-800">步骤 {idx + 1}</span>
-                  <span className="text-xs text-gray-500">{config.name}</span>
-                </div>
-                <p className="text-sm text-gray-600">{step}</p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+    <LangSmithReactFlowGraph
+      steps={flowSteps}
+      emptyMessage="暂无 Self-Corrective RAG 决策路径"
+    />
   );
 };
 
@@ -405,17 +425,17 @@ export default function SCRAGLangSmithViewer({
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [activeTab, setActiveTab] = useState<'timeline' | 'tree' | 'grader' | 'rewrite'>('timeline');
   
-  // 没有数据时不显示
-  if (!nodeExecutions.length && !isLoading) {
-    return null;
-  }
-  
   // 统计信息
   const stats = useMemo(() => {
     const completed = nodeExecutions.filter(n => n.status === 'completed').length;
     const errors = nodeExecutions.filter(n => n.status === 'error').length;
     return { completed, errors, total: nodeExecutions.length };
   }, [nodeExecutions]);
+
+  // 没有数据时不显示
+  if (!nodeExecutions.length && !isLoading) {
+    return null;
+  }
   
   return (
     <div className={`bg-gradient-to-br from-slate-900 via-indigo-900 to-purple-900 rounded-2xl overflow-hidden ${className}`}>
@@ -485,15 +505,15 @@ export default function SCRAGLangSmithViewer({
         <div className="px-6 pb-6">
           {/* 标签页 */}
           <div className="flex gap-2 mb-4 overflow-x-auto pb-2">
-            {[
+            {([
               { id: 'timeline', label: '时间轴', icon: '📈' },
-              { id: 'tree', label: '决策树', icon: '🌳' },
+              { id: 'tree', label: 'ReactFlow', icon: '▣' },
               { id: 'grader', label: 'Grader', icon: '🔬' },
               { id: 'rewrite', label: '重写历史', icon: '✏️' },
-            ].map((tab) => (
+            ] satisfies Array<{ id: typeof activeTab; label: string; icon: string }>).map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id)}
                 className={`px-4 py-2 rounded-lg font-medium whitespace-nowrap transition-all ${
                   activeTab === tab.id
                     ? 'bg-white text-gray-800 shadow-lg'

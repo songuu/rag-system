@@ -1,22 +1,42 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import LangSmithReactFlowGraph, { type LangSmithFlowStep } from './LangSmithReactFlowGraph';
 
-// 追踪步骤类型
-interface TraceStep {
+type LangSmithViewerTab = 'timeline' | 'tree' | 'metrics' | 'debug';
+
+interface WorkflowStep {
   id: string;
-  name: string;
-  type: 'llm' | 'retrieval' | 'tool' | 'chain' | 'embedding' | 'evaluation';
-  status: 'pending' | 'running' | 'completed' | 'error' | 'skipped';
+  parentId?: string;
+  step?: string;
+  name?: string;
+  type?: string;
+  status?: string;
   startTime?: number;
   endTime?: number;
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
   tokens?: { input: number; output: number; total: number };
   cost?: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
+  model?: string;
+}
+
+interface QueryAnalysis {
+  intent?: string;
+  complexity?: string;
+  needsRetrieval?: boolean;
+  keywords?: string[];
+}
+
+interface RetrievalGrade {
+  score: number;
+  keywordMatchScore: number;
+  semanticScore: number;
+  isRelevant: boolean;
+  reasoning?: string;
 }
 
 // 调试信息类型
@@ -28,9 +48,9 @@ interface DebugInfo {
 }
 
 interface LangSmithTraceViewerProps {
-  workflowSteps?: any[];
-  queryAnalysis?: any;
-  retrievalGrade?: any;
+  workflowSteps?: WorkflowStep[];
+  queryAnalysis?: QueryAnalysis;
+  retrievalGrade?: RetrievalGrade;
   debugInfo?: DebugInfo;
   totalDuration?: number;
   className?: string;
@@ -58,6 +78,28 @@ const STATUS_CONFIG: Record<string, { color: string; icon: string; label: string
   skipped: { color: 'text-yellow-400', icon: 'fa-forward', label: '跳过' },
 };
 
+function normalizeFlowStatus(status: unknown): NonNullable<LangSmithFlowStep['status']> {
+  if (status === 'running' || status === 'completed' || status === 'error' || status === 'skipped') {
+    return status;
+  }
+  return 'pending';
+}
+
+function inferFlowKind(value: unknown): string {
+  const text = String(value ?? '').toLowerCase();
+  if (/retrieval|检索|database|milvus|vector/.test(text)) return 'retriever';
+  if (/llm|generation|答案|生成|rewrite|重写/.test(text)) return 'llm';
+  if (/grade|评估|score|评分|检查/.test(text)) return 'evaluator';
+  if (/embedding|向量/.test(text)) return 'embedding';
+  return 'chain';
+}
+
+function readStringField(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === 'string' ? field : undefined;
+}
+
 export default function LangSmithTraceViewer({
   workflowSteps = [],
   queryAnalysis,
@@ -69,7 +111,7 @@ export default function LangSmithTraceViewer({
 }: LangSmithTraceViewerProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'timeline' | 'tree' | 'metrics' | 'debug'>('timeline');
+  const [activeTab, setActiveTab] = useState<LangSmithViewerTab>('timeline');
 
   // 计算统计数据
   const stats = useMemo(() => {
@@ -81,12 +123,33 @@ export default function LangSmithTraceViewer({
     return { completed, errors, skipped, totalTime, total: workflowSteps.length };
   }, [workflowSteps]);
 
+  const flowSteps = useMemo<LangSmithFlowStep[]>(() => {
+    return workflowSteps.map((step, index) => ({
+      id: step.id ?? `workflow-${index}`,
+      parentId: step.parentId,
+      label: step.step ?? step.name ?? `Step ${index + 1}`,
+      description: step.error ?? readStringField(step.output, 'summary') ?? readStringField(step.metadata, 'description'),
+      kind: inferFlowKind(step.step ?? step.name ?? step.type),
+      status: normalizeFlowStatus(step.status),
+      duration: typeof step.duration === 'number' ? step.duration : undefined,
+      error: step.error,
+      layer: index,
+      metadata: {
+        type: step.type,
+        model: step.model,
+        tokens: step.tokens?.total,
+        cost: step.cost,
+      },
+    }));
+  }, [workflowSteps]);
+
   // 渲染时间线视图
   const renderTimeline = () => (
     <div className="space-y-1">
       {workflowSteps.map((step, index) => {
-        const config = STEP_TYPE_CONFIG[step.step] || { icon: 'fa-cog', color: 'text-gray-400', bgColor: 'bg-gray-500/20' };
-        const statusConfig = STATUS_CONFIG[step.status] || STATUS_CONFIG.pending;
+        const stepName = step.step ?? step.name ?? `Step ${index + 1}`;
+        const config = STEP_TYPE_CONFIG[stepName] || { icon: 'fa-cog', color: 'text-gray-400', bgColor: 'bg-gray-500/20' };
+        const statusConfig = STATUS_CONFIG[step.status ?? 'pending'] || STATUS_CONFIG.pending;
         const isSelected = selectedStep === index;
         const progress = step.duration && stats.totalTime > 0 ? (step.duration / stats.totalTime) * 100 : 0;
 
@@ -113,7 +176,7 @@ export default function LangSmithTraceViewer({
               {/* 内容 */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-white truncate">{step.step}</span>
+                  <span className="text-sm font-medium text-white truncate">{stepName}</span>
                   <span className={`text-xs ${statusConfig.color}`}>
                     <i className={`fas ${statusConfig.icon} mr-1`}></i>
                     {statusConfig.label}
@@ -121,7 +184,7 @@ export default function LangSmithTraceViewer({
                 </div>
                 
                 {/* 进度条 */}
-                {step.duration > 0 && (
+                {typeof step.duration === 'number' && step.duration > 0 && (
                   <div className="mt-1.5 flex items-center gap-2">
                     <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden">
                       <div 
@@ -141,7 +204,7 @@ export default function LangSmithTraceViewer({
             {/* 展开详情 */}
             {isSelected && (
               <div className="ml-13 mt-2 p-4 bg-black/30 rounded-lg border border-white/10 space-y-3">
-                {step.input && (
+                {step.input !== undefined && step.input !== null && (
                   <div>
                     <div className="text-xs text-white/50 mb-1 flex items-center gap-1">
                       <i className="fas fa-sign-in-alt"></i> 输入
@@ -151,7 +214,7 @@ export default function LangSmithTraceViewer({
                     </pre>
                   </div>
                 )}
-                {step.output && (
+                {step.output !== undefined && step.output !== null && (
                   <div>
                     <div className="text-xs text-white/50 mb-1 flex items-center gap-1">
                       <i className="fas fa-sign-out-alt"></i> 输出
@@ -179,52 +242,10 @@ export default function LangSmithTraceViewer({
 
   // 渲染树形视图
   const renderTree = () => (
-    <div className="relative pl-8">
-      {/* 主干线 */}
-      <div className="absolute left-3 top-0 bottom-0 w-0.5 bg-gradient-to-b from-blue-500 via-purple-500 to-green-500 opacity-30" />
-      
-      {workflowSteps.map((step, index) => {
-        const config = STEP_TYPE_CONFIG[step.step] || { icon: 'fa-cog', color: 'text-gray-400', bgColor: 'bg-gray-500/20' };
-        const statusConfig = STATUS_CONFIG[step.status] || STATUS_CONFIG.pending;
-
-        return (
-          <div key={index} className="relative mb-4">
-            {/* 节点 */}
-            <div className="absolute -left-5 top-2 w-4 h-4 rounded-full bg-slate-800 border-2 border-current flex items-center justify-center"
-                 style={{ borderColor: statusConfig.color.replace('text-', '#').replace('-400', '') }}>
-              <div className={`w-2 h-2 rounded-full ${
-                step.status === 'completed' ? 'bg-green-400' :
-                step.status === 'error' ? 'bg-red-400' :
-                step.status === 'running' ? 'bg-blue-400 animate-pulse' :
-                'bg-gray-400'
-              }`} />
-            </div>
-            
-            {/* 分支线 */}
-            <div className="absolute left-0 top-4 w-4 h-0.5 bg-white/20" />
-
-            <div className="bg-white/5 rounded-lg p-3 hover:bg-white/10 transition-colors">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <i className={`fas ${config.icon} ${config.color} text-sm`}></i>
-                  <span className="text-sm text-white font-medium">{step.step}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {step.duration && (
-                    <span className="text-xs text-white/40 bg-white/5 px-2 py-0.5 rounded">
-                      {step.duration}ms
-                    </span>
-                  )}
-                  <span className={`text-xs ${statusConfig.color}`}>
-                    <i className={`fas ${statusConfig.icon}`}></i>
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
+    <LangSmithReactFlowGraph
+      steps={flowSteps}
+      emptyMessage="暂无 LangSmith workflow steps"
+    />
   );
 
   // 渲染指标视图
@@ -332,7 +353,7 @@ export default function LangSmithTraceViewer({
                 {queryAnalysis.needsRetrieval ? '是' : '否'}
               </span>
             </div>
-            {queryAnalysis.keywords?.length > 0 && (
+            {Array.isArray(queryAnalysis.keywords) && queryAnalysis.keywords.length > 0 && (
               <div>
                 <span className="text-xs text-white/50 block mb-1">关键词</span>
                 <div className="flex flex-wrap gap-1">
@@ -471,15 +492,15 @@ export default function LangSmithTraceViewer({
         <div className="p-5">
           {/* 标签页 */}
           <div className="flex gap-1 mb-4 p-1 bg-black/30 rounded-xl">
-            {[
+            {([
               { id: 'timeline', label: '时间线', icon: 'fa-stream' },
-              { id: 'tree', label: '树形图', icon: 'fa-sitemap' },
+              { id: 'tree', label: 'ReactFlow', icon: 'fa-project-diagram' },
               { id: 'metrics', label: '指标', icon: 'fa-chart-bar' },
               { id: 'debug', label: '调试', icon: 'fa-bug' },
-            ].map((tab) => (
+            ] satisfies Array<{ id: LangSmithViewerTab; label: string; icon: string }>).map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id)}
                 className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                   activeTab === tab.id
                     ? 'bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-lg'

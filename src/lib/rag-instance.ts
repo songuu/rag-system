@@ -6,6 +6,8 @@
  */
 import { LocalRAGSystem } from './rag-system';
 import { mirrorTraceToSupabase } from './persistence/supabase-trace-store';
+import { mirrorTraceToLangSmith } from './langsmith/trace-mirror';
+import type { Trace } from './observability';
 
 // 使用 globalThis 来确保在 Next.js 热重载时保持单例
 // 这是 Next.js 推荐的方式来保持服务器端的单例
@@ -34,7 +36,7 @@ export async function getRagSystem(): Promise<LocalRAGSystem> {
       // LLM 使用 MODEL_PROVIDER
       // Embedding 使用 EMBEDDING_PROVIDER (独立配置)
       const instance = new LocalRAGSystem({
-        onTraceUpdate: mirrorTraceToSupabase,
+        onTraceUpdate: mirrorTrace,
       });
 
       // 初始化数据库
@@ -65,4 +67,9 @@ export function resetRagSystem() {
 // 获取当前实例（不创建新实例）
 export function getCurrentRagSystem(): LocalRAGSystem | undefined {
   return globalThis.ragSystemInstance;
+}
+
+function mirrorTrace(trace: Trace): void {
+  mirrorTraceToSupabase(trace);
+  mirrorTraceToLangSmith(trace);
 }

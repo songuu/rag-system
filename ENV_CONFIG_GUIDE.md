@@ -21,6 +21,38 @@ EMBEDDING_PROVIDER=siliconflow  # 可选: ollama | siliconflow | openai | custom
 | LLM 模型 | `MODEL_PROVIDER` | 控制对话/生成模型 |
 | Embedding 模型 | `EMBEDDING_PROVIDER` | 控制向量嵌入模型 |
 
+## LangSmith 观测与评估配置
+
+本项目支持 LangSmith 最新 JS SDK 追踪能力。开启后，`/api/ask` 会写入 LangSmith root run，本地 `ObservabilityEngine` 会 mirror Trace/Observation/Score，并通过 `thread_id` 支持 Threads、Insights Agent 和 Multi-turn Evals。
+
+```bash
+# 推荐新变量
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_xxxxx
+LANGSMITH_PROJECT=rag-system
+
+# 可选
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_WORKSPACE_ID=
+LANGSMITH_TRACING_SAMPLE_RATE=1
+LANGSMITH_HIDE_INPUTS=false
+LANGSMITH_HIDE_OUTPUTS=false
+LANGSMITH_HIDE_METADATA=false
+LANGSMITH_OMIT_RUNTIME_INFO=false
+
+# 兼容旧 LangChain 变量
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=rag-system
+LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
+```
+
+关键约定：
+
+- `sessionId` 会映射为 LangSmith `thread_id`、`session_id`、`conversation_id`。
+- 未传 `sessionId` 时，系统会生成 UUIDv7 thread id。
+- 用户反馈接口 `/api/traces/[traceId]/feedback` 会同步到 LangSmith feedback。
+- 未配置 `LANGSMITH_API_KEY` 时，LangSmith 链路自动 no-op，本地行为不变。
+
 这意味着你可以：
 - LLM 用本地 Ollama，Embedding 用云端 SiliconFlow
 - LLM 用 OpenAI，Embedding 用 SiliconFlow (省钱)

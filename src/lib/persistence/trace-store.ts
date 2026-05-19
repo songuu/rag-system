@@ -1,4 +1,5 @@
 import { getCurrentRagSystem, getRagSystem } from '../rag-instance';
+import { recordLangSmithFeedback } from '../langsmith/tracing';
 import type { JsonValue } from '../supabase/database.types';
 import { getSupabaseRuntimeConfig, shouldUseSupabasePersistence } from '../supabase/env';
 import { SupabaseTraceStore } from './supabase-trace-store';
@@ -104,6 +105,20 @@ export async function addTraceFeedbackToPersistence(
     } catch (error) {
       console.warn('[trace-store] Supabase trace feedback failed:', error);
     }
+  }
+
+  if (typeof score === 'number' || typeof score === 'boolean' || typeof score === 'string') {
+    const langSmithFeedbackId = await recordLangSmithFeedback({
+      runId: traceId,
+      key: 'user_feedback',
+      value: score,
+      comment,
+      sourceInfo: {
+        source: 'api',
+        route: '/api/traces/[traceId]/feedback',
+      },
+    });
+    scoreId = scoreId || langSmithFeedbackId || '';
   }
 
   return scoreId;

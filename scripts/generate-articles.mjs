@@ -69,6 +69,11 @@ const ARTICLE_CONFIG = {
     icon: '🔗',
     description: 'LangChain 与 LangGraph 最新特性在本项目 RAG 架构中的融入指南',
   },
+  'LANGSMITH_LATEST_GUIDE.md': {
+    category: '系统概览',
+    icon: '📈',
+    description: 'LangSmith 最新观测、线程、反馈与评估能力在本项目中的接入指南',
+  },
   'MILVUS_CONFIG_GUIDE.md': {
     category: '配置部署',
     icon: '🗄️',

@@ -17,6 +17,7 @@ import {
   type RagKernelEnvelope,
   type RagQueryRequest,
 } from '@/lib/rag';
+import { runWithLangSmithRootRun } from '@/lib/langsmith/tracing';
 
 type AgenticRetrievedDocument = AgenticRetrievedDocumentBase & {
   factualScore?: number;
@@ -142,10 +143,51 @@ export async function POST(request: NextRequest) {
 
     const kernel = createAskKernel(ragRequest);
     const policyId = resolveRagPolicyId(ragRequest);
-    const result = await kernel.execute(ragRequest, policyId);
+    const output = await runWithLangSmithRootRun<NextResponse>(
+      {
+        name: 'RAG API Ask',
+        runType: 'chain',
+        route: '/api/ask',
+        policyId,
+        userId,
+        sessionId,
+        fallbackRunId: `ask-${Date.now()}`,
+        inputs: {
+          question: ragRequest.question,
+          topK: ragRequest.topK,
+          similarityThreshold: ragRequest.similarityThreshold,
+          storageBackend,
+          useAgenticRAG,
+          useAdaptiveEntityRAG,
+        },
+        metadata: {
+          llm_model: llmModel,
+          embedding_model: embeddingModel,
+          vector_backend: storageBackend,
+          max_retries: maxRetries,
+          enable_reranking: enableReranking,
+        },
+        tags: ['rag', 'api-ask', policyId],
+        output: (response) => ({
+          status: response.status,
+          ok: response.ok,
+          rag_policy: policyId,
+        }),
+      },
+      async (langSmithRun) => {
+        const result = await kernel.execute(ragRequest, policyId);
 
-    attachRagKernelHeaders(result.output, result.envelope);
-    return result.output;
+        attachRagKernelHeaders(result.output, result.envelope);
+        if (langSmithRun.enabled) {
+          result.output.headers.set('x-langsmith-run-id', langSmithRun.runId);
+          result.output.headers.set('x-langsmith-thread-id', langSmithRun.threadId);
+          result.output.headers.set('x-langsmith-project', langSmithRun.projectName);
+        }
+        return result.output;
+      }
+    );
+
+    return output;
 
   } catch (error) {
     console.error("问答处理错误:", error);

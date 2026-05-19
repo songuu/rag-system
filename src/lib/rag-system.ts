@@ -5,6 +5,7 @@ import { Document } from "@langchain/core/documents";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Embeddings } from "@langchain/core/embeddings";
 import { ObservabilityEngine, type Trace } from "./observability";
+import { createLangSmithThreadId } from "./langsmith/config";
 import { AutoTokenizer } from "@xenova/transformers";
 import { readdir, readFile } from "fs/promises";
 import { existsSync } from "fs";
@@ -788,6 +789,7 @@ export class LocalRAGSystem {
     }
 
     const { topK = 3, similarityThreshold = 0.0, userId, sessionId } = options;
+    const langSmithThreadId = createLangSmithThreadId({ sessionId });
 
     // 创建 Trace
     const traceId = this.observabilityEngine.createTrace({
@@ -798,9 +800,13 @@ export class LocalRAGSystem {
       metadata: {
         model: this.config.llmModel,
         embeddingModel: this.config.embeddingModel,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        thread_id: langSmithThreadId,
+        session_id: sessionId ?? langSmithThreadId,
+        conversation_id: sessionId ?? langSmithThreadId,
+        vector_backend: 'memory',
       },
-      tags: ['rag', 'question-answering']
+      tags: ['rag', 'question-answering', 'memory-vector']
     });
 
     try {
