@@ -273,11 +273,16 @@ export default function AdaptiveEntityRAGPage() {
       if (data.success) {
         setAvailableModels(data);
         // 如果当前选中的模型不在列表中，选择第一个可用的
-        if (data.llmModels?.length > 0 && !data.llmModels.some((m: ModelInfo) => m.name === llmModel)) {
-          setLlmModel(data.llmModels[0].name);
+        // 使用函数式更新，避免把 llmModel/embeddingModel 列为依赖造成无限循环刷新
+        if (data.llmModels?.length > 0) {
+          setLlmModel(prev =>
+            data.llmModels.some((m: ModelInfo) => m.name === prev) ? prev : data.llmModels[0].name
+          );
         }
-        if (data.embeddingModels?.length > 0 && !data.embeddingModels.some((m: ModelInfo) => m.name === embeddingModel)) {
-          setEmbeddingModel(data.embeddingModels[0].name);
+        if (data.embeddingModels?.length > 0) {
+          setEmbeddingModel(prev =>
+            data.embeddingModels.some((m: ModelInfo) => m.name === prev) ? prev : data.embeddingModels[0].name
+          );
         }
       }
     } catch (error) {
@@ -286,7 +291,7 @@ export default function AdaptiveEntityRAGPage() {
       window.clearTimeout(loadingFallbackTimer);
       setLoadingModels(false);
     }
-  }, [llmModel, embeddingModel]);
+  }, []);
 
   // 初始化时加载模型
   useEffect(() => {
