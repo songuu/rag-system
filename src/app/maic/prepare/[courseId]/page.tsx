@@ -55,7 +55,12 @@ export default function PreparePage() {
         try {
           const parsed = JSON.parse(ev.data) as PrepareEvent;
           setEvents(prev => [...prev, parsed]);
-          if (parsed.data.progress !== undefined) setProgress(parsed.data.progress);
+          // 阶段并行后, script / focus / questions 的 progress 会交错到达,
+          // 用 max 保证进度条单调递增, 避免视觉回退。
+          if (parsed.data.progress !== undefined) {
+            const next = parsed.data.progress;
+            setProgress(prev => (next > prev ? next : prev));
+          }
           setCurrentStep(STEP_LABELS[parsed.type] ?? parsed.type);
           if (parsed.type === 'prepare:done') {
             setDone(true);

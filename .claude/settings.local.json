@@ -11,7 +11,12 @@
       "Bash(grep *)",
       "Bash(git checkout *)",
       "Bash(git add *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(./node_modules/.bin/eslint src/lib/maic/pipeline/page-order.ts src/lib/maic/pipeline/prepare-runner.ts src/lib/maic/pipeline/read-stage.ts src/lib/maic/pipeline/plan-stage.ts src/lib/maic/pipeline/page-order.test.mjs src/lib/maic/pipeline/prepare-runner.test.mjs)",
+      "Bash(./node_modules/.bin/tsc --noEmit --pretty false --incremental false)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(./node_modules/.bin/eslint src/app/maic/prepare/\\\\[courseId\\\\]/page.tsx)",
+      "Bash(echo \"tsc-exit=$?\")"
     ]
   }
 }

@@ -23,7 +23,7 @@ import type {
   SlideFocusPlan,
   SlideFocusTarget,
 } from '../types';
-import { mapPagesWithOrderedCallbacks } from './page-order';
+import { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } from './page-order';
 import { buildLanguageDirective } from './read-stage';
 import {
   getSlideDescriptionElementId,
@@ -108,7 +108,7 @@ export async function generateLectureScript(
   onPage?: (index: number) => void,
   language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<ScriptEntry[]> {
-  const concurrency = 4;
+  const concurrency = resolveMaicLlmConcurrency();
   return mapPagesWithOrderedCallbacks(
     pages,
     concurrency,
@@ -179,7 +179,7 @@ export async function generateSlideFocusPlans(
   onPage?: (index: number) => void,
   language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<SlideFocusPlan[]> {
-  const concurrency = 4;
+  const concurrency = resolveMaicLlmConcurrency();
   return mapPagesWithOrderedCallbacks(
     pages,
     concurrency,

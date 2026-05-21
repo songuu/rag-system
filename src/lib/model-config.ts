@@ -408,13 +408,17 @@ export class ModelFactory {
 
   private createOllamaLLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOllama {
     const actualModel = modelName || this.envConfig.OLLAMA_LLM_MODEL;
-    console.log(`[ModelFactory] 创建 Ollama LLM: ${actualModel}`);
+    const extra = (options.options || {}) as Record<string, unknown>;
+    // 提供合理的默认 num_ctx，避免上下文不足导致 prompt 截断重算
+    const numCtx = typeof extra.num_ctx === 'number' ? extra.num_ctx : 8192;
+    console.log(`[ModelFactory] 创建 Ollama LLM: ${actualModel} (num_ctx=${numCtx}${extra.format ? `, format=${extra.format}` : ''})`);
 
     return new ChatOllama({
       baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL,
       model: actualModel,
       temperature: options.temperature ?? 0.7,
-      ...options.options,
+      numCtx,
+      ...extra,
     });
   }
 

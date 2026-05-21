@@ -11,3 +11,21 @@ If a workflow has multiple deterministic expensive stages, cache the earliest re
 ## Cache LLM Artifacts With Shared Identity
 
 For MiroFish/OpenMAIC model-derived artifacts, use a shared cache identity: stable source hash + artifact type + model provider/model/base URL + temperature + cache/prompt version. Do not cache by project id or wall-clock time alone; those keys cannot safely distinguish regenerated ontology, profile, PPT focus, or classroom prepared outputs.
+
+## Redraw LLM Pipeline Dependency Graph Before Optimizing
+
+Multi-stage LLM pipelines drift toward "naturally serial" code (write describe, await, write tree, await, write script, await...). The real **data** dependency graph is almost always sparser than the code order. Before tuning concurrency or batch sizes:
+
+1. For each stage, list what upstream artifact it truly needs.
+2. Find sibling stages with the same upstream — they are parallel branches.
+3. Wrap branches in `Promise.all` after the shared gate; only serial-link nodes that pass artifacts down.
+
+OpenMAIC `prepare-runner`: 5-stage serial collapsed to `describe → Promise.all([script, tree → Promise.all([questions, focus])])` and shed ~35% wall time without changing any prompt or LLM call count.
+
+## Sliding Window Beats Batch Barrier For LLM Concurrency
+
+Any worker pool over LLM calls should be a sliding window (maintain `concurrency` in-flight workers, each grabs next task on completion), not a batch barrier (`for (start += concurrency) { Promise.all(batch) }`). LLM latency variance is high; batch barriers always wait for the slowest call in the batch. Implementation: separate `nextSlot` (atomic-ish increment for task claim) from `emitCursor + completed Set` (guards monotonic callback order). See `src/lib/maic/pipeline/page-order.ts`.
+
+## Audit Progress UI When Serializing Stages Into Parallel Branches
+
+Parallelizing previously serial pipeline stages breaks the implicit "progress monotonically increases" assumption that consumer UIs rely on. Whenever a previously serial step becomes one of several parallel branches whose progress events interleave, change every progress consumer to `setProgress(prev => Math.max(prev, next))`. Forgetting this turns a backend speedup into a visible UX regression (progress bar appears to jump backward).

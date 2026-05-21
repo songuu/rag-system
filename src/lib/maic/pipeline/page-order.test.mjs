@@ -17,6 +17,7 @@ registerHooks({
 
 const { describePages } = await import('./read-stage.ts');
 const { generateLectureScript, generateSlideFocusPlans } = await import('./plan-stage.ts');
+const { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } = await import('./page-order.ts');
 
 const pages = Array.from({ length: 4 }, (_, index) => ({
   index,
@@ -82,6 +83,98 @@ test('generateSlideFocusPlans lets the model choose the PPT focus target in slid
     ['slide-0-point-1', 'slide-1-point-1', 'slide-2-point-1', 'slide-3-point-1']
   );
   assert.ok(focusPlans.every(plan => plan.source === 'model'));
+});
+
+test('mapPagesWithOrderedCallbacks slides without batch barrier: starts new work before slow worker finishes', async () => {
+  // 滑动窗口的关键不变量: 当 page0 仍在执行时, 其他 worker 已开始/完成 page >= concurrency 的工作。
+  // 批次屏障实现: 第一批 [0..3] 必须全部完成才会有 page 4 启动。
+  // 滑动窗口实现: page0 慢任务在跑时, worker2/3/4 已轮转处理 page 1..N-1 多次, page 4+ 会被启动。
+  const total = 8;
+  const concurrency = 4;
+  const slowPages = Array.from({ length: total }, (_, index) => ({ index }));
+  const startedIndices = [];
+  let slowPageActive = false;
+  let pagesStartedDuringSlowWindow = 0;
+
+  await mapPagesWithOrderedCallbacks(
+    slowPages,
+    concurrency,
+    async page => {
+      startedIndices.push(page.index);
+      if (page.index === 0) {
+        slowPageActive = true;
+        await delay(80);
+        slowPageActive = false;
+        return page.index;
+      }
+      if (slowPageActive) pagesStartedDuringSlowWindow += 1;
+      await delay(5);
+      return page.index;
+    }
+  );
+
+  // 滑窗下: page0 跑 80ms 期间, 其他 3 worker 已分别启动并完成多次任务,
+  // 所以在 page0 还活着的窗口里, 至少 concurrency-1 = 3 个非 slow page 已被启动,
+  // 而且会有 page >= concurrency (即 page 4+) 被启动 (滑窗的标志)。
+  // 批次屏障下: page 4+ 永远不会在 page0 跑时启动。
+  const startedPagesAfterFirstWindow = startedIndices.filter(i => i >= concurrency);
+  assert.ok(
+    startedPagesAfterFirstWindow.length > 0 &&
+      pagesStartedDuringSlowWindow >= concurrency - 1,
+    `sliding window must start page>=${concurrency} during slow page0 execution. ` +
+      `startedIndices=${JSON.stringify(startedIndices)} ` +
+      `pagesStartedDuringSlowWindow=${pagesStartedDuringSlowWindow}`
+  );
+});
+
+test('mapPagesWithOrderedCallbacks handles empty pages array', async () => {
+  const results = await mapPagesWithOrderedCallbacks([], 4, async () => {
+    throw new Error('worker should not be invoked');
+  });
+  assert.deepEqual(results, []);
+});
+
+test('mapPagesWithOrderedCallbacks clamps concurrency above page count', async () => {
+  const pages2 = Array.from({ length: 2 }, (_, index) => ({ index }));
+  const order = [];
+  const results = await mapPagesWithOrderedCallbacks(
+    pages2,
+    100,
+    async page => {
+      await delay(5);
+      return page.index;
+    },
+    i => order.push(i)
+  );
+  assert.deepEqual(results, [0, 1]);
+  assert.deepEqual(order, [0, 1]);
+});
+
+test('resolveMaicLlmConcurrency: default 4 when env unset', () => {
+  const prev = process.env.MAIC_LLM_CONCURRENCY;
+  delete process.env.MAIC_LLM_CONCURRENCY;
+  try {
+    assert.equal(resolveMaicLlmConcurrency(), 4);
+  } finally {
+    if (prev !== undefined) process.env.MAIC_LLM_CONCURRENCY = prev;
+  }
+});
+
+test('resolveMaicLlmConcurrency: clamps to [1, 16]', () => {
+  const prev = process.env.MAIC_LLM_CONCURRENCY;
+  try {
+    process.env.MAIC_LLM_CONCURRENCY = '0';
+    assert.equal(resolveMaicLlmConcurrency(), 1);
+    process.env.MAIC_LLM_CONCURRENCY = '99';
+    assert.equal(resolveMaicLlmConcurrency(), 16);
+    process.env.MAIC_LLM_CONCURRENCY = '8';
+    assert.equal(resolveMaicLlmConcurrency(), 8);
+    process.env.MAIC_LLM_CONCURRENCY = 'not-a-number';
+    assert.equal(resolveMaicLlmConcurrency(), 4);
+  } finally {
+    if (prev === undefined) delete process.env.MAIC_LLM_CONCURRENCY;
+    else process.env.MAIC_LLM_CONCURRENCY = prev;
+  }
 });
 
 function createOutOfOrderLLM() {

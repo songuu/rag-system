@@ -8,7 +8,7 @@
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { SlidePage, KnowledgeNode, CourseGenerationLanguage } from '../types';
-import { mapPagesWithOrderedCallbacks } from './page-order';
+import { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } from './page-order';
 
 const DESCRIBE_PROMPT = `你是一名课堂内容分析师。下面是课程幻灯片某一页的文本:
 
@@ -61,7 +61,7 @@ export async function describePages(
   onPage?: (index: number) => void,
   language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<SlidePage[]> {
-  const concurrency = 4;
+  const concurrency = resolveMaicLlmConcurrency();
   return mapPagesWithOrderedCallbacks(
     pages,
     concurrency,

@@ -166,7 +166,7 @@ class PrepareRunner {
 
     const llm = createLLM(undefined, { temperature: 0.3 });
 
-    // 2. Describe
+    // 2. Describe (gate: 后续 3 阶段都依赖 described pages)
     const described = await describePages(llm, pagesRaw, idx => {
       emit({
         type: 'prepare:describe',
@@ -178,12 +178,11 @@ class PrepareRunner {
       });
     });
 
-    // 3. Knowledge tree
-    emit({ type: 'prepare:tree', data: { message: '正在构建知识树' } });
-    const tree = await buildKnowledgeTree(llm, described);
-
-    // 4. Lecture script
-    const script = await generateLectureScript(llm, described, idx => {
+    // 3. 阶段图重排:
+    //   - script 仅依赖 described         → 立即开始
+    //   - tree → questions / focus        → tree 完成后, questions 和 focus 也并行
+    //   三条支路同时跑, wall time = max(script, tree+max(questions, focus))。
+    const scriptPromise = generateLectureScript(llm, described, idx => {
       emit({
         type: 'prepare:script',
         data: {
@@ -194,20 +193,31 @@ class PrepareRunner {
       });
     });
 
-    // 5. Active questions
-    emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
-    const questions = await generateActiveQuestions(llm, tree);
-    emit({ type: 'prepare:focus', data: { message: '解析 PPT 重点悬停策略' } });
-    const focusPlans = await generateSlideFocusPlans(llm, described, tree, idx => {
-      emit({
-        type: 'prepare:focus',
-        data: {
-          page_index: idx,
-          total_pages: described.length,
-          progress: (idx + 1) / described.length,
-        },
+    emit({ type: 'prepare:tree', data: { message: '正在构建知识树' } });
+    const treePromise = buildKnowledgeTree(llm, described).then(tree => {
+      emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
+      emit({ type: 'prepare:focus', data: { message: '解析 PPT 重点悬停策略' } });
+      const questionsP = generateActiveQuestions(llm, tree);
+      const focusP = generateSlideFocusPlans(llm, described, tree, idx => {
+        emit({
+          type: 'prepare:focus',
+          data: {
+            page_index: idx,
+            total_pages: described.length,
+            progress: (idx + 1) / described.length,
+          },
+        });
       });
+      return Promise.all([questionsP, focusP]).then(([questions, focusPlans]) => ({
+        tree,
+        questions,
+        focusPlans,
+      }));
     });
+
+    const [script, treeBundle] = await Promise.all([scriptPromise, treePromise]);
+    const { tree, questions, focusPlans } = treeBundle;
+
     emit({ type: 'prepare:scenes', data: { message: '生成 OpenMAIC 场景与动作' } });
     const { stage, scenes } = buildCourseStage(described, tree, questions, { focusPlans });
 
