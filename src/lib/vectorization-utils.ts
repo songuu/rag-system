@@ -18,6 +18,8 @@ import {
 } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
+import { getEmbeddingCache, normalizeQueryText } from './embedding-cache';
+import { applyPostProcess, type PostProcessPipelineOptions } from './rag/retrieval/post-process';
 
 // ==================== 配置常量 ====================
 
@@ -97,6 +99,15 @@ export interface VectorizeOptions {
   batchSize?: number;
 }
 
+export interface VectorizeTimings {
+  splitMs: number;
+  contextualMs: number;
+  initMs: number;
+  embedMs: number;
+  insertMs: number;
+  totalMs: number;
+}
+
 export interface VectorizeResult {
   success: boolean;
   filesProcessed: number;
@@ -106,11 +117,19 @@ export interface VectorizeResult {
   dimension: number;
   collectionName: string;
   error?: string;
+  timings?: VectorizeTimings;
 }
 
 export interface InsertDocumentsOptions {
   embeddingModel?: string;
   generateEmbeddings?: boolean;
+}
+
+export interface InsertTimings {
+  initMs: number;
+  embedMs: number;
+  insertMs: number;
+  totalMs: number;
 }
 
 export interface InsertResult {
@@ -121,6 +140,7 @@ export interface InsertResult {
   dimension: number;
   collectionDimension: number;
   error?: string;
+  timings?: InsertTimings;
 }
 
 // ==================== Embedding 模型管理 ====================
@@ -211,23 +231,41 @@ export async function splitDocuments(
 
 /**
  * 为文本块生成向量
+ * T3: 经过 doc-embedding cache，命中部分跳过 provider 调用
  */
 export async function generateEmbeddings(
   texts: string[],
   embeddingModel?: string
 ): Promise<number[][]> {
+  const model = embeddingModel || DEFAULT_EMBEDDING_MODEL;
+  const cache = getEmbeddingCache();
+  const { cached, missIndices } = cache.getMany('doc', model, texts);
+
+  if (missIndices.length === 0) {
+    return cached as number[][];
+  }
+
+  const missTexts = missIndices.map(i => texts[i]);
   const embeddings = getEmbeddingModel(embeddingModel);
-  return await embeddings.embedDocuments(texts);
+  const missVectors = await embeddings.embedDocuments(missTexts);
+  cache.setMany('doc', model, missTexts, missVectors);
+
+  for (let i = 0; i < missIndices.length; i++) {
+    cached[missIndices[i]] = missVectors[i];
+  }
+  return cached as number[][];
 }
 
 /**
  * 为单个查询生成向量
+ * T3: query 前置 normalize；仍保留原 queryEmbeddingCache 作快路径，二级走 EmbeddingCache namespace
  */
 export async function generateQueryEmbedding(
   query: string,
   embeddingModel?: string
 ): Promise<number[]> {
-  const cacheKey = getQueryEmbeddingCacheKey(query, embeddingModel);
+  const normalizedQuery = normalizeQueryText(query);
+  const cacheKey = getQueryEmbeddingCacheKey(normalizedQuery, embeddingModel);
   const now = Date.now();
 
   if (QUERY_EMBEDDING_CACHE_TTL_MS > 0 && QUERY_EMBEDDING_CACHE_MAX > 0) {
@@ -238,7 +276,7 @@ export async function generateQueryEmbedding(
   }
 
   const embeddings = getEmbeddingModel(embeddingModel);
-  const embedding = await embeddings.embedQuery(query);
+  const embedding = await embeddings.embedQuery(normalizedQuery);
 
   if (QUERY_EMBEDDING_CACHE_TTL_MS > 0 && QUERY_EMBEDDING_CACHE_MAX > 0) {
     queryEmbeddingCache.set(cacheKey, {
@@ -269,9 +307,18 @@ export async function vectorizeAndInsert(
   const collectionName = milvus.getConfig().collectionName;
   console.log(`[VectorizationUtils] 开始向量化, 模型: ${embeddingModel}, 集合: ${collectionName}`);
 
+  const tStart = Date.now();
+  let splitMs = 0;
+  let contextualMs = 0;
+  let initMs = 0;
+  let embedMs = 0;
+  let insertMs = 0;
+
   try {
     // 分块
+    const tSplit = Date.now();
     const chunks = await splitDocuments(documents, { chunkSize, chunkOverlap });
+    splitMs = Date.now() - tSplit;
 
     if (chunks.length === 0) {
       return {
@@ -283,10 +330,12 @@ export async function vectorizeAndInsert(
         dimension: 0,
         collectionName,
         error: '没有生成任何文本块',
+        timings: { splitMs, contextualMs, initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
       };
     }
 
     // Contextual Retrieval: 为每个 chunk 生成上下文提要
+    const tContextual = Date.now();
     const crConfig = loadContextualRetrievalConfig();
     if (crConfig.enabled && chunks.length > 0) {
       console.log(`[VectorizationUtils] Contextual Retrieval 已启用, 开始生成上下文提要...`);
@@ -327,13 +376,16 @@ export async function vectorizeAndInsert(
 
       console.log(`[VectorizationUtils] Contextual Retrieval 处理完成`);
     }
+    contextualMs = Date.now() - tContextual;
 
     // 初始化集合
+    const tInit = Date.now();
     await milvus.initializeCollection();
 
     // 获取实际维度
     const stats = await milvus.getCollectionStats();
     const collectionDimension = stats?.embeddingDimension || 768;
+    initMs = Date.now() - tInit;
 
     // 检查模型维度是否匹配
     const modelDimension = getModelDimensionFromConfig(embeddingModel);
@@ -347,6 +399,7 @@ export async function vectorizeAndInsert(
         dimension: modelDimension,
         collectionName,
         error: `向量维度不匹配！模型: ${modelDimension}D, 集合: ${collectionDimension}D`,
+        timings: { splitMs, contextualMs, initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
       };
     }
 
@@ -359,7 +412,9 @@ export async function vectorizeAndInsert(
       const texts = batch.map(c => c.text);
 
       try {
+        const tEmbed = Date.now();
         const vectors = await embeddings.embedDocuments(texts);
+        embedMs += Date.now() - tEmbed;
 
         const milvusDocs: MilvusDocument[] = batch.map((chunk, idx) => ({
           id: `${Date.now()}_${i + idx}_${uuidv4().slice(0, 8)}`,
@@ -368,7 +423,9 @@ export async function vectorizeAndInsert(
           metadata: chunk.metadata,
         }));
 
+        const tInsert = Date.now();
         await milvus.insertDocuments(milvusDocs);
+        insertMs += Date.now() - tInsert;
         totalInserted += batch.length;
 
         console.log(`[VectorizationUtils] 已处理 ${totalInserted}/${chunks.length} 个文本块`);
@@ -387,6 +444,7 @@ export async function vectorizeAndInsert(
       embeddingModel,
       dimension: modelDimension,
       collectionName,
+      timings: { splitMs, contextualMs, initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
     };
   } catch (error) {
     console.error('[VectorizationUtils] 向量化失败:', error);
@@ -399,6 +457,7 @@ export async function vectorizeAndInsert(
       dimension: 0,
       collectionName,
       error: error instanceof Error ? error.message : '未知错误',
+      timings: { splitMs, contextualMs, initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
     };
   }
 }
@@ -417,7 +476,13 @@ export async function insertDocumentsWithEmbeddings(
   console.log(`[VectorizationUtils] Documents count: ${documents.length}`);
   console.log(`[VectorizationUtils] Embedding model: ${embeddingModel}`);
 
+  const tStart = Date.now();
+  let initMs = 0;
+  let embedMs = 0;
+  let insertMs = 0;
+
   try {
+    const tInit = Date.now();
     await milvus.connect();
     await milvus.initializeCollection();
 
@@ -428,6 +493,7 @@ export async function insertDocumentsWithEmbeddings(
     // 检查模型维度
     const modelDimension = getModelDimensionFromConfig(embeddingModel);
     console.log(`[VectorizationUtils] Model dimension: ${modelDimension}D`);
+    initMs = Date.now() - tInit;
 
     if (modelDimension !== collectionDimension) {
       console.error(`[VectorizationUtils] ❌ 维度不匹配! Model: ${modelDimension}D, Collection: ${collectionDimension}D`);
@@ -439,24 +505,38 @@ export async function insertDocumentsWithEmbeddings(
         dimension: modelDimension,
         collectionDimension,
         error: `向量维度不匹配！模型: ${modelDimension}维, 集合: ${collectionDimension}维`,
+        timings: { initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
       };
     }
 
-    // 生成向量
+    // 生成向量 (T2 修复: 改用 embedDocuments 批量调用，原 Promise.all(embedQuery) 是 N 次 HTTP)
     const embeddings = getEmbeddingModel(embeddingModel);
     console.log(`[VectorizationUtils] Generating embeddings for ${documents.length} documents...`);
 
-    const milvusDocs: MilvusDocument[] = await Promise.all(
-      documents.map(async (doc) => {
-        const embedding = await embeddings.embedQuery(doc.content);
-        return {
-          id: uuidv4(),
-          content: doc.content,
-          embedding,
-          metadata: doc.metadata || {},
-        };
-      })
-    );
+    const tEmbed = Date.now();
+    const texts = documents.map(doc => doc.content);
+    const vectors = await embeddings.embedDocuments(texts);
+    embedMs = Date.now() - tEmbed;
+
+    if (vectors.length !== documents.length) {
+      return {
+        success: false,
+        insertedCount: 0,
+        ids: [],
+        embeddingModel,
+        dimension: 0,
+        collectionDimension,
+        error: `embedDocuments 返回数量不匹配: 期望 ${documents.length}, 实际 ${vectors.length}`,
+        timings: { initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
+      };
+    }
+
+    const milvusDocs: MilvusDocument[] = documents.map((doc, idx) => ({
+      id: uuidv4(),
+      content: doc.content,
+      embedding: vectors[idx],
+      metadata: doc.metadata || {},
+    }));
 
     // 验证维度
     const actualDimension = milvusDocs[0]?.embedding?.length || 0;
@@ -471,12 +551,15 @@ export async function insertDocumentsWithEmbeddings(
         dimension: actualDimension,
         collectionDimension,
         error: `生成的向量维度不匹配！生成: ${actualDimension}维, 集合: ${collectionDimension}维`,
+        timings: { initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
       };
     }
 
     // 插入
     console.log(`[VectorizationUtils] ✅ 维度匹配，开始插入...`);
+    const tInsert = Date.now();
     const ids = await milvus.insertDocuments(milvusDocs);
+    insertMs = Date.now() - tInsert;
     console.log(`[VectorizationUtils] ✅ 成功插入 ${ids.length} 个文档`);
 
     return {
@@ -486,6 +569,7 @@ export async function insertDocumentsWithEmbeddings(
       embeddingModel,
       dimension: actualDimension,
       collectionDimension,
+      timings: { initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
     };
   } catch (error) {
     console.error('[VectorizationUtils] 插入失败:', error);
@@ -497,6 +581,7 @@ export async function insertDocumentsWithEmbeddings(
       dimension: 0,
       collectionDimension: 0,
       error: error instanceof Error ? error.message : '未知错误',
+      timings: { initMs, embedMs, insertMs, totalMs: Date.now() - tStart },
     };
   }
 }
@@ -512,6 +597,8 @@ export async function vectorSearch(
     threshold?: number;
     filter?: string;
     embeddingModel?: string;
+    /** T5: 后处理（MMR / source dedupe）。默认 undefined = 不动行为 */
+    postProcess?: PostProcessPipelineOptions;
   } = {}
 ): Promise<{
   success: boolean;
@@ -521,8 +608,9 @@ export async function vectorSearch(
   dimension: number;
   collectionDimension: number;
   error?: string;
+  postProcessed?: boolean;
 }> {
-  const { topK = 5, threshold = 0.0, filter, embeddingModel } = options;
+  const { topK = 5, threshold = 0.0, filter, embeddingModel, postProcess } = options;
 
   console.log(`[VectorizationUtils] ========== 开始搜索 ==========`);
   console.log(`[VectorizationUtils] Query: "${query.substring(0, 50)}..."`);
@@ -558,8 +646,34 @@ export async function vectorSearch(
 
     // 搜索
     console.log(`[VectorizationUtils] ✅ 维度匹配，开始搜索...`);
-    const results = await milvus.search(queryEmbedding, topK, threshold, filter);
+    let results = await milvus.search(queryEmbedding, topK, threshold, filter);
     console.log(`[VectorizationUtils] ✅ 找到 ${results.length} 个结果`);
+
+    // T5: 可选后处理（MMR / source dedupe）；默认 off，行为不变
+    let postProcessed = false;
+    if (postProcess) {
+      const mappedInput = results.map(r => ({
+        id: r.id,
+        content: r.content,
+        score: r.score,
+        distance: r.distance,
+        source: typeof r.metadata?.source === 'string' ? (r.metadata.source as string) : undefined,
+        metadata: r.metadata,
+      }));
+      const mmrOptions = postProcess.mmr
+        ? { ...postProcess.mmr, queryEmbedding: postProcess.mmr.queryEmbedding ?? queryEmbedding }
+        : undefined;
+      const processed = applyPostProcess(mappedInput, {
+        ...postProcess,
+        ...(mmrOptions ? { mmr: mmrOptions } : {}),
+      });
+      // 回填到 MilvusSearchResult 形状（沿用 id 顺序映射）
+      const byId = new Map(results.map(r => [r.id, r]));
+      results = processed
+        .map(p => byId.get(p.id))
+        .filter((r): r is typeof results[number] => Boolean(r));
+      postProcessed = true;
+    }
 
     return {
       success: true,
@@ -568,6 +682,7 @@ export async function vectorSearch(
       embeddingModel: actualModel,
       dimension: queryDimension,
       collectionDimension,
+      postProcessed,
     };
   } catch (error) {
     console.error('[VectorizationUtils] 搜索失败:', error);

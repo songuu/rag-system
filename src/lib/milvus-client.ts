@@ -100,6 +100,34 @@ export interface MilvusConfig {
 
 const DEFAULT_SEARCH_OUTPUT_FIELDS: MilvusSearchOutputField[] = ['id', 'content', 'source', 'metadata_json'];
 
+/**
+ * T6: 瘦身 output_fields helper
+ *
+ * 用于不需要 metadata_json 的快速 retrieval 场景（如 lane-handlers、agentic-rag 的初筛阶段）。
+ * 返回 ['id', 'content', 'source']，减少网络传输和反序列化开销。
+ *
+ * 不修改 DEFAULT_SEARCH_OUTPUT_FIELDS（visualize route 仍依赖 metadata_json）；
+ * 调用方需要时显式传入：
+ *   await milvus.search(embedding, topK, threshold, filter, { outputFields: getSlimSearchFields() });
+ */
+export function getSlimSearchFields(): MilvusSearchOutputField[] {
+  return ['id', 'content', 'source'];
+}
+
+/**
+ * T6: Milvus hybrid (sparse + dense) feature gate
+ *
+ * Hybrid 实现本身延后到 Sprint 2026-08（参见
+ * docs/plans/2026-05-25-model-vector-cache-optimization.md 的 deferred 字段）；
+ * 此处仅暴露 flag 给 retrieval-plan / lane handler 做条件分支。
+ *
+ * 默认 `false`；在多 Milvus 环境（含 Zilliz Serverless）下避免向上游 SDK 调
+ * 未实现的 hybridSearch 路径。
+ */
+export function isMilvusHybridEnabled(): boolean {
+  return process.env.MILVUS_HYBRID_ENABLED === 'true';
+}
+
 // 文档接口
 export interface MilvusDocument {
   id: string;

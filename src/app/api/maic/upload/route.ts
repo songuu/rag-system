@@ -11,6 +11,10 @@ import {
   saveParsedSlidesToCache,
 } from '@/lib/maic/parsed-slides-cache';
 import { mirrorMaicCourseToRagUploads } from '@/lib/maic/rag-bridge';
+import {
+  MAIC_SUPPORTED_EXTENSIONS,
+  isMaicSupportedFile,
+} from '@/lib/maic/upload-validation';
 
 export const runtime = 'nodejs';
 
@@ -29,6 +33,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json(
         { success: false, error: `文件过大,超过 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB` },
         { status: 413 }
+      );
+    }
+
+    // 早期扩展名校验：避免让 parseSlides 内部抛 "PPTX 中未找到 slide XML" 等模糊错误
+    if (!isMaicSupportedFile(file.name)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `不支持的文件类型，支持的扩展名: ${MAIC_SUPPORTED_EXTENSIONS.join(', ')}`,
+        },
+        { status: 400 }
       );
     }
 

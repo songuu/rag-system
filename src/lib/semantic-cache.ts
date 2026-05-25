@@ -11,6 +11,8 @@ import { createEmbedding } from './model-config';
 export interface CachedEntry {
   query: string;
   queryEmbedding: number[];
+  /** T4: 预归一化的向量副本，供 O(N·D) 查找用 dot product 直接得余弦相似度 */
+  normalizedEmbedding?: number[];
   answer: string;
   context: string;
   timestamp: number;
@@ -25,13 +27,24 @@ export interface SemanticCacheConfig {
   enabled?: boolean;
 }
 
+function envInt(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
+function envFloat(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) ? v : fallback;
+}
+
 const DEFAULT_CONFIG: Required<SemanticCacheConfig> = {
-  maxSize: 100,
-  similarityThreshold: 0.95,
-  enabled: true,
+  // T4: maxSize 默认从 100 升到 256；可经 env 覆盖
+  maxSize: envInt('SEMANTIC_CACHE_MAX_SIZE', 256),
+  similarityThreshold: envFloat('SEMANTIC_CACHE_THRESHOLD', 0.95),
+  enabled: process.env.SEMANTIC_CACHE_ENABLED !== 'false',
 };
 
-/** 余弦相似度 */
+/** 余弦相似度（保留供单元测试与未归一化输入兜底） */
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
   let dot = 0, normA = 0, normB = 0;
@@ -44,11 +57,36 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+/** T4: 向量 L2 归一化（返回新数组，不改原向量） */
+function normalizeVector(v: number[]): number[] {
+  let sum = 0;
+  for (let i = 0; i < v.length; i++) sum += v[i] * v[i];
+  const norm = Math.sqrt(sum);
+  if (norm === 0) return v.slice();
+  const out = new Array(v.length);
+  for (let i = 0; i < v.length; i++) out[i] = v[i] / norm;
+  return out;
+}
+
+/** T4: 两个已归一化向量的余弦相似度 = 点积 */
+function dotProduct(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;
+}
+
 export class SemanticCache {
   private cache: Map<string, CachedEntry> = new Map();
   private keysByOrder: string[] = [];
   private config: Required<SemanticCacheConfig>;
   private embeddings: Embeddings;
+
+  // T1 telemetry
+  private hits = 0;
+  private misses = 0;
+  private lastScanMs = 0;
+  private lastScanEntries = 0;
 
   constructor(embeddings?: Embeddings, config: SemanticCacheConfig = {}) {
     this.embeddings = embeddings ?? createEmbedding();
@@ -61,14 +99,22 @@ export class SemanticCache {
     queryEmbedding?: number[]
   ): Promise<{ hit: true; entry: CachedEntry } | { hit: false }> {
     if (!this.config.enabled || this.cache.size === 0) {
+      this.misses++;
       return { hit: false };
     }
 
     const embedding = queryEmbedding ?? (await this.embeddings.embedQuery(query));
+    const normalizedQuery = normalizeVector(embedding);
     let bestMatch: { key: string; similarity: number; entry: CachedEntry } | null = null;
 
+    const tScan = Date.now();
+    let scanned = 0;
     for (const [key, entry] of this.cache) {
-      const sim = cosineSimilarity(embedding, entry.queryEmbedding);
+      scanned++;
+      // T4: 优先使用预归一化向量做 dot product；旧 entry 无归一化字段时 fallback 到 cosine
+      const sim = entry.normalizedEmbedding
+        ? dotProduct(normalizedQuery, entry.normalizedEmbedding)
+        : cosineSimilarity(embedding, entry.queryEmbedding);
       if (
         sim >= this.config.similarityThreshold &&
         (!bestMatch || sim > bestMatch.similarity)
@@ -76,10 +122,14 @@ export class SemanticCache {
         bestMatch = { key, similarity: sim, entry };
       }
     }
+    this.lastScanMs = Date.now() - tScan;
+    this.lastScanEntries = scanned;
 
     if (bestMatch) {
+      this.hits++;
       return { hit: true, entry: bestMatch.entry };
     }
+    this.misses++;
     return { hit: false };
   }
 
@@ -97,6 +147,8 @@ export class SemanticCache {
     const entry: CachedEntry = {
       query,
       queryEmbedding: embedding,
+      // T4: 入库时预归一化，get() 时只需一次归一化 + dot product
+      normalizedEmbedding: normalizeVector(embedding),
       answer,
       context,
       timestamp: Date.now(),
@@ -116,13 +168,31 @@ export class SemanticCache {
   clear(): void {
     this.cache.clear();
     this.keysByOrder = [];
+    this.hits = 0;
+    this.misses = 0;
+    this.lastScanMs = 0;
+    this.lastScanEntries = 0;
   }
 
-  /** 获取缓存统计 */
-  getStats(): { size: number; maxSize: number } {
+  /** 获取缓存统计（T1 扩展：hits / misses / lastScanMs / lastScanEntries） */
+  getStats(): {
+    size: number;
+    maxSize: number;
+    hits: number;
+    misses: number;
+    hitRate: number;
+    lastScanMs: number;
+    lastScanEntries: number;
+  } {
+    const total = this.hits + this.misses;
     return {
       size: this.cache.size,
       maxSize: this.config.maxSize,
+      hits: this.hits,
+      misses: this.misses,
+      hitRate: total > 0 ? this.hits / total : 0,
+      lastScanMs: this.lastScanMs,
+      lastScanEntries: this.lastScanEntries,
     };
   }
 }
