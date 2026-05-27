@@ -8,20 +8,28 @@
 import { ChatOllama } from '@langchain/ollama';
 import { ChatOpenAI } from '@langchain/openai';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { createLLM } from '../model-config';
+import { createLLM, isOllamaProvider } from '../model-config';
 import type { ModelOverride } from './types';
+
+interface LLMOverrideDefaults {
+  temperature?: number;
+  ollamaOptions?: Record<string, unknown>;
+}
 
 /**
  * 根据 override 创建 LLM；override 为空时走默认工厂。
  */
 export function createLLMFromOverride(
   override?: ModelOverride,
-  defaults: { temperature?: number } = {}
+  defaults: LLMOverrideDefaults = {}
 ): BaseChatModel {
   const temperature = override?.temperature ?? defaults.temperature ?? 0.7;
 
   if (!override) {
-    return createLLM(undefined, { temperature });
+    return createLLM(undefined, {
+      temperature,
+      options: isOllamaProvider() ? defaults.ollamaOptions : undefined,
+    });
   }
 
   switch (override.provider) {
@@ -30,6 +38,7 @@ export function createLLMFromOverride(
         baseUrl: override.baseUrl || 'http://localhost:11434',
         model: override.modelName,
         temperature,
+        ...normalizeOllamaOptions(defaults.ollamaOptions),
       });
 
     case 'openai': {
@@ -61,6 +70,19 @@ export function createLLMFromOverride(
       throw new Error(`不支持的模型提供商: ${exhaustive}`);
     }
   }
+}
+
+function normalizeOllamaOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!options) return {};
+  const normalized = { ...options };
+  const numCtx = normalized.numCtx ?? normalized.num_ctx;
+  delete normalized.num_ctx;
+
+  if (typeof numCtx === 'number') {
+    normalized.numCtx = numCtx;
+  }
+
+  return normalized;
 }
 
 /**

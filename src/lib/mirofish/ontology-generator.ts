@@ -18,6 +18,10 @@ import {
 } from './types';
 
 const RESERVED_ATTRIBUTE_NAMES = new Set<string>(ONTOLOGY_CONSTANTS.RESERVED_ATTRIBUTES);
+const ONTOLOGY_OLLAMA_OPTIONS = {
+  format: 'json',
+  num_ctx: 32768,
+};
 
 // 本体生成的系统提示词
 const ONTOLOGY_SYSTEM_PROMPT = `你是一个专业的知识图谱本体设计专家。你的任务是分析给定的文本内容和模拟需求，设计适合**社交媒体舆论模拟**的实体和关系类型定义。
@@ -173,7 +177,10 @@ export class OntologyGenerator {
   private llm: BaseChatModel;
 
   constructor(modelOverride?: ModelOverride) {
-    this.llm = createLLMFromOverride(modelOverride, { temperature: 0.3 });
+    this.llm = createLLMFromOverride(modelOverride, {
+      temperature: 0.3,
+      ollamaOptions: ONTOLOGY_OLLAMA_OPTIONS,
+    });
   }
 
   /**

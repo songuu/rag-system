@@ -15,6 +15,8 @@ import {
 import { getConfigSummary } from '../model-config';
 import type {
   EntityProfile,
+  GraphBuildRequest,
+  GraphData,
   ModelOverride,
   Ontology,
   OntologyGenerateRequest,
@@ -25,7 +27,7 @@ import type {
 const CACHE_VERSION = 'mirofish-llm-artifact-v1';
 const CACHE_DIR = 'uploads/mirofish-cache';
 
-type MiroFishCacheArtifact = 'ontology' | 'profile' | 'profile_batch';
+type MiroFishCacheArtifact = 'ontology' | 'profile' | 'profile_batch' | 'graph';
 
 interface MiroFishModelSignature {
   artifact: MiroFishCacheArtifact;
@@ -86,6 +88,24 @@ export function getMiroFishProfileBatchCacheIdentity(input: {
   });
 }
 
+export function getMiroFishGraphCacheIdentity(input: {
+  request: GraphBuildRequest;
+  modelOverride?: ModelOverride;
+}): MiroFishCacheIdentity {
+  return createMiroFishCacheIdentity({
+    artifact: 'graph',
+    temperature: input.modelOverride?.temperature ?? 0.1,
+    modelOverride: input.modelOverride,
+    source: {
+      text: normalizeText(input.request.text),
+      ontology: normalizeOntology(input.request.ontology),
+      chunkSize: input.request.chunkSize,
+      chunkOverlap: input.request.chunkOverlap,
+      batchSize: input.request.batchSize,
+    },
+  });
+}
+
 export function loadMiroFishOntologyFromCache(
   identity: MiroFishCacheIdentity
 ): Promise<MiroFishCacheHit<Ontology> | null> {
@@ -132,6 +152,23 @@ export function saveMiroFishProfileBatchToCache(
   return saveArtifactToCache(identity, profiles, {
     artifact: 'profile_batch',
     profile_count: profiles.length,
+  });
+}
+
+export function loadMiroFishGraphFromCache(
+  identity: MiroFishCacheIdentity
+): Promise<MiroFishCacheHit<GraphData> | null> {
+  return loadArtifactFromCache(identity, isGraphData);
+}
+
+export function saveMiroFishGraphToCache(
+  identity: MiroFishCacheIdentity,
+  graph: GraphData
+): Promise<boolean> {
+  return saveArtifactToCache(identity, graph, {
+    artifact: 'graph',
+    node_count: graph.node_count,
+    edge_count: graph.edge_count,
   });
 }
 
@@ -183,6 +220,35 @@ function normalizeEntity(entity: ProfileGenerateRequest['entity']): Record<strin
   };
 }
 
+function normalizeOntology(ontology: Ontology | undefined): Record<string, unknown> | null {
+  if (!ontology) return null;
+  return {
+    entity_types: ontology.entity_types.map(entity => ({
+      name: normalizeText(entity.name),
+      description: normalizeText(entity.description),
+      attributes: entity.attributes.map(attribute => ({
+        name: normalizeText(attribute.name),
+        type: normalizeText(attribute.type),
+        description: normalizeText(attribute.description),
+      })),
+      examples: entity.examples.map(normalizeText),
+    })),
+    edge_types: ontology.edge_types.map(edge => ({
+      name: normalizeText(edge.name),
+      description: normalizeText(edge.description),
+      source_targets: edge.source_targets.map(sourceTarget => ({
+        source: normalizeText(sourceTarget.source),
+        target: normalizeText(sourceTarget.target),
+      })),
+      attributes: edge.attributes.map(attribute => ({
+        name: normalizeText(attribute.name),
+        type: normalizeText(attribute.type),
+        description: normalizeText(attribute.description),
+      })),
+    })),
+  };
+}
+
 function normalizeText(value: string): string {
   return value.replace(/\r\n/g, '\n').trim();
 }
@@ -207,4 +273,16 @@ function isEntityProfile(value: unknown): value is EntityProfile {
 
 function isEntityProfileArray(value: unknown): value is EntityProfile[] {
   return Array.isArray(value) && value.every(isEntityProfile);
+}
+
+function isGraphData(value: unknown): value is GraphData {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<GraphData>;
+  return (
+    typeof candidate.graph_id === 'string' &&
+    Array.isArray(candidate.nodes) &&
+    Array.isArray(candidate.edges) &&
+    typeof candidate.node_count === 'number' &&
+    typeof candidate.edge_count === 'number'
+  );
 }

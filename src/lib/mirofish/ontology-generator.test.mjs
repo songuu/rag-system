@@ -16,6 +16,7 @@ registerHooks({
 });
 
 const {
+  OntologyGenerator,
   normalizeEntityTypeName,
   normalizeEdgeTypeName,
 } = await import('./ontology-generator.ts');
@@ -31,6 +32,16 @@ test('normalizes MiroFish edge type names to screaming snake case', () => {
   assert.equal(normalizeEdgeTypeName('reports on'), 'REPORTS_ON');
   assert.equal(normalizeEdgeTypeName('affiliatedWith'), 'AFFILIATED_WITH');
   assert.equal(normalizeEdgeTypeName('supports'), 'SUPPORTS');
+});
+
+test('configures Ollama ontology generation for JSON output with enough context', () => {
+  const generator = new OntologyGenerator({
+    provider: 'ollama',
+    modelName: 'llama3.1',
+  });
+
+  assert.equal(generator.llm.format, 'json');
+  assert.equal(generator.llm.numCtx, 32768);
 });
 
 function isRelativeImport(specifier) {

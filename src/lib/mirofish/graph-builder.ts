@@ -5,10 +5,16 @@
  * 包装为 MiroFish 风格的接口，支持本体约束
  */
 
-import { EntityExtractor } from '../entity-extraction';
+import { EntityExtractor, type ExtractionConfig } from '../entity-extraction';
 import { TextProcessor } from './text-processor';
 import { getTaskManager } from './task-manager';
 import { createLLMFromOverride } from './model-override';
+import {
+  getMiroFishGraphCacheIdentity,
+  loadMiroFishGraphFromCache,
+  saveMiroFishGraphToCache,
+  type MiroFishCacheIdentity,
+} from './artifact-cache';
 import type {
   Ontology,
   GraphData,
@@ -19,6 +25,28 @@ import type {
   ExtractionProgress,
   ModelOverride,
 } from './types';
+
+const MIROFISH_GRAPH_DEFAULTS = {
+  chunkSize: 5000,
+  chunkOverlap: 300,
+  batchSize: 1,
+};
+
+const MIROFISH_GRAPH_OLLAMA_OPTIONS = {
+  format: 'json',
+  num_ctx: 32768,
+};
+
+const GRAPH_PROGRESS_RANGES: Record<string, [number, number]> = {
+  preprocessing: [0, 5],
+  chunking: [5, 10],
+  extracting: [10, 75],
+  gleaning: [75, 80],
+  resolving: [80, 88],
+  community: [88, 93],
+  summarizing: [93, 98],
+  completed: [100, 100],
+};
 
 /**
  * MiroFish 图谱构建器
@@ -43,9 +71,9 @@ export class MiroFishGraphBuilder {
     modelOverride?: ModelOverride
   ) {
     this.config = {
-      chunkSize: config?.chunkSize || 500,
-      chunkOverlap: config?.chunkOverlap || 100,
-      batchSize: config?.batchSize || 3,
+      chunkSize: config?.chunkSize || MIROFISH_GRAPH_DEFAULTS.chunkSize,
+      chunkOverlap: config?.chunkOverlap || MIROFISH_GRAPH_DEFAULTS.chunkOverlap,
+      batchSize: config?.batchSize || MIROFISH_GRAPH_DEFAULTS.batchSize,
     };
     this.modelOverride = modelOverride;
   }
@@ -80,11 +108,32 @@ export class MiroFishGraphBuilder {
     const taskId = taskManager.createTask('graph_build', {
       graphName: graphName || 'MiroFish Graph',
       chunkSize: this.config.chunkSize,
+      chunkOverlap: this.config.chunkOverlap,
       textLength: text.length,
     });
+    const cacheIdentity = getMiroFishGraphCacheIdentity({
+      request: {
+        text,
+        ontology,
+        graphName,
+        chunkSize: this.config.chunkSize,
+        chunkOverlap: this.config.chunkOverlap,
+        batchSize: this.config.batchSize,
+      },
+      modelOverride: this.modelOverride,
+    });
+    const cached = await loadMiroFishGraphFromCache(cacheIdentity);
+    if (cached) {
+      taskManager.completeTask(taskId, {
+        graphId: cached.artifact.graph_id,
+        graphData: cached.artifact,
+        cache_status: 'hit',
+      });
+      return taskId;
+    }
 
     // 在后台执行构建
-    this.buildGraphWorker(taskId, text, onProgress).catch(error => {
+    this.buildGraphWorker(taskId, text, cacheIdentity, onProgress).catch(error => {
       const tm = getTaskManager();
       tm.failTask(taskId, error instanceof Error ? error.message : String(error));
     });
@@ -98,12 +147,13 @@ export class MiroFishGraphBuilder {
   private async buildGraphWorker(
     taskId: string,
     text: string,
+    cacheIdentity: MiroFishCacheIdentity,
     onProgress?: (progress: ExtractionProgress) => void
   ): Promise<void> {
     const taskManager = getTaskManager();
     const reportProgress = (progress: ExtractionProgress) => {
       taskManager.updateTask(taskId, {
-        progress: progress.current / progress.total * 100,
+        progress: calculateGraphProgress(progress),
         message: progress.message,
       });
       onProgress?.(progress);
@@ -121,21 +171,17 @@ export class MiroFishGraphBuilder {
       const processedText = TextProcessor.preprocessText(text);
 
       // 2. 创建实体提取器（注入运行时模型覆盖）
-      const llmInstance = this.modelOverride
-        ? createLLMFromOverride(this.modelOverride, { temperature: 0.1 })
-        : undefined;
+      const llmInstance = createLLMFromOverride(this.modelOverride, {
+        temperature: 0.1,
+        ollamaOptions: MIROFISH_GRAPH_OLLAMA_OPTIONS,
+      });
       const extractor = new EntityExtractor(
-        {
-          chunkSize: this.config.chunkSize,
-          chunkOverlap: this.config.chunkOverlap,
-        },
-        llmInstance ? { llmInstance } : {}
+        createMiroFishGraphExtractionConfig(this.config),
+        { llmInstance }
       );
 
       // 设置进度回调
-      if (onProgress) {
-        extractor.onProgress(onProgress);
-      }
+      extractor.onProgress(reportProgress);
 
       reportProgress({
         stage: 'extracting',
@@ -153,6 +199,7 @@ export class MiroFishGraphBuilder {
 
       // 5. 应用本体约束（过滤）
       const filteredData = this.applyOntologyFilter(graphData);
+      await saveMiroFishGraphToCache(cacheIdentity, filteredData);
 
       // 完成任务
       taskManager.completeTask(taskId, {
@@ -160,6 +207,7 @@ export class MiroFishGraphBuilder {
         graphData: filteredData,
         originalEntityCount: graphData.node_count,
         filteredEntityCount: filteredData.node_count,
+        cache_status: 'stored',
       });
 
       reportProgress({
@@ -357,4 +405,24 @@ export class MiroFishGraphBuilder {
     }
     return this.ontology.edge_types.map(e => e.name);
   }
+}
+
+export function createMiroFishGraphExtractionConfig(config: {
+  chunkSize: number;
+  chunkOverlap: number;
+}): Partial<ExtractionConfig> {
+  return {
+    chunkSize: config.chunkSize,
+    chunkOverlap: config.chunkOverlap,
+    enableGleaning: false,
+    maxChunkTimeout: 45 * 1000,
+  };
+}
+
+function calculateGraphProgress(progress: ExtractionProgress): number {
+  const [start, end] = GRAPH_PROGRESS_RANGES[progress.stage] ?? [0, 100];
+  if (start === end) return start;
+  const total = Math.max(1, progress.total);
+  const ratio = Math.min(1, Math.max(0, progress.current / total));
+  return start + (end - start) * ratio;
 }
