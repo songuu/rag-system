@@ -15,14 +15,14 @@
  */
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { Embeddings } from '@langchain/core/embeddings';
-import { MilvusVectorStore, MilvusDocument, getMilvusInstance } from './milvus-client';
+import { MilvusDocument, getMilvusInstance } from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
 import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
-import { createEmbedding, getModelFactory } from './model-config';
+import { createEmbedding } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
+import { parsePdfBuffer } from './pdf-parser';
 
 // ============== 类型定义 ==============
 
@@ -42,7 +42,7 @@ export interface DocumentMetadata {
   pageNumber?: number;
   originalContent?: string;
   contextualPreamble?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 // 加载的文档
@@ -132,34 +132,19 @@ export async function loadPdfFile(buffer: Buffer, filename: string): Promise<Loa
   console.log(`[Pipeline PDF] 开始加载: ${filename}, 大小: ${buffer.length} bytes`);
   
   try {
-    // 动态导入 pdf-parse v2.x
-    const { PDFParse } = await import('pdf-parse');
-    console.log('[Pipeline PDF] pdf-parse 模块加载成功');
-    
-    // 使用 v2 API
-    const parser = new PDFParse({ data: buffer });
-    console.log('[Pipeline PDF] PDFParse 实例创建成功');
-    
-    // 获取文本和文档信息
-    const textResult = await parser.getText();
-    console.log(`[Pipeline PDF] 文本提取成功, 长度: ${textResult.text.length}`);
-    
-    const infoResult = await parser.getInfo();
-    console.log(`[Pipeline PDF] 文档信息获取成功, 页数: ${infoResult.total}`);
-    
-    // 释放资源
-    await parser.destroy();
-    console.log('[Pipeline PDF] 资源已释放');
+    const pdf = await parsePdfBuffer(buffer, filename, { includeMetadata: true });
+    console.log(`[Pipeline PDF] 文本提取成功, 长度: ${pdf.text.length}, 页数: ${pdf.pages}, 方法: ${pdf.parseMethod}`);
     
     return {
-      content: textResult.text.trim(),
+      content: pdf.text.trim(),
       metadata: {
         source: filename,
         type: 'pdf',
-        title: infoResult.info?.Title || filename,
-        author: infoResult.info?.Author,
-        createdAt: infoResult.info?.CreationDate || new Date().toISOString(),
-        pageCount: infoResult.total,
+        title: pdf.title || filename,
+        author: pdf.author,
+        createdAt: pdf.createdAt || new Date().toISOString(),
+        pageCount: pdf.pages,
+        parseMethod: pdf.parseMethod,
       }
     };
   } catch (error) {
@@ -186,7 +171,7 @@ export async function loadDocxFile(buffer: Buffer, filename: string): Promise<Lo
         createdAt: new Date().toISOString(),
       }
     };
-  } catch (error) {
+  } catch {
     // 如果 mammoth 不可用，尝试基本的文本提取
     console.warn('[Pipeline] Mammoth 不可用，尝试基本文本提取');
     const text = buffer.toString('utf-8').replace(/<[^>]*>/g, ' ').trim();

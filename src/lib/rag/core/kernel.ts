@@ -1,5 +1,6 @@
 import { createDefaultRetrievalPlan } from '../retrieval/retrieval-plan';
 import type {
+  RagKernelErrorSummary,
   RagKernelEnvelope,
   RagKernelResult,
   RagPolicy,
@@ -28,38 +29,107 @@ export class RagKernel<TOutput> {
     const startedAt = startedAtDate.getTime();
     const traceId = options.traceId ?? createTraceId(policyId, startedAt);
 
-    const result = await policy.execute({
-      request,
-      policyId,
-      traceId,
-      startedAt,
-    });
+    try {
+      const result = await policy.execute({
+        request,
+        policyId,
+        traceId,
+        startedAt,
+      });
 
-    const completedAtDate = new Date();
-    const retrievalPlan =
-      result.retrievalPlan ??
-      createDefaultRetrievalPlan(request, policyId, startedAtDate);
+      const envelope = createEnvelope({
+        request,
+        policy,
+        policyId,
+        traceId,
+        startedAtDate,
+        retrievalPlan:
+          result.retrievalPlan ??
+          createDefaultRetrievalPlan(request, policyId, startedAtDate),
+        metadata: result.metadata,
+        status: 'completed',
+      });
 
-    const envelope: RagKernelEnvelope = {
-      trace_id: traceId,
-      policy_id: policyId,
-      question: request.question,
-      storage_backend: request.storageBackend,
-      retrieval_plan: retrievalPlan,
-      started_at: startedAtDate.toISOString(),
-      completed_at: completedAtDate.toISOString(),
-      duration_ms: Math.max(0, completedAtDate.getTime() - startedAt),
-      metadata: {
-        policy_description: policy.description,
-        ...result.metadata,
-      },
-    };
+      return {
+        output: result.output,
+        envelope,
+      };
+    } catch (error) {
+      const envelope = createEnvelope({
+        request,
+        policy,
+        policyId,
+        traceId,
+        startedAtDate,
+        retrievalPlan: createDefaultRetrievalPlan(request, policyId, startedAtDate),
+        status: 'failed',
+        error: summarizeError(error),
+      });
 
+      throw new RagKernelExecutionError(envelope, error);
+    }
+  }
+}
+
+export class RagKernelExecutionError extends Error {
+  readonly envelope: RagKernelEnvelope;
+  readonly originalError: unknown;
+
+  constructor(envelope: RagKernelEnvelope, originalError: unknown) {
+    const originalMessage =
+      originalError instanceof Error ? originalError.message : String(originalError);
+    super(
+      `RAG policy execution failed (${envelope.policy_id}, ${envelope.trace_id}): ${originalMessage}`
+    );
+    this.name = 'RagKernelExecutionError';
+    this.envelope = envelope;
+    this.originalError = originalError;
+  }
+}
+
+function createEnvelope<TOutput>(input: {
+  request: RagQueryRequest;
+  policy: RagPolicy<TOutput>;
+  policyId: RagPolicyId;
+  traceId: string;
+  startedAtDate: Date;
+  retrievalPlan: RagKernelEnvelope['retrieval_plan'];
+  status: RagKernelEnvelope['status'];
+  metadata?: Record<string, unknown>;
+  error?: RagKernelErrorSummary;
+}): RagKernelEnvelope {
+  const completedAtDate = new Date();
+
+  return {
+    trace_id: input.traceId,
+    policy_id: input.policyId,
+    status: input.status,
+    question: input.request.question,
+    storage_backend: input.request.storageBackend,
+    retrieval_plan: input.retrievalPlan,
+    started_at: input.startedAtDate.toISOString(),
+    completed_at: completedAtDate.toISOString(),
+    duration_ms: Math.max(0, completedAtDate.getTime() - input.startedAtDate.getTime()),
+    error: input.error,
+    metadata: {
+      policy_description: input.policy.description,
+      ...input.metadata,
+    },
+  };
+}
+
+function summarizeError(error: unknown): RagKernelErrorSummary {
+  if (error instanceof Error) {
     return {
-      output: result.output,
-      envelope,
+      name: error.name,
+      message: error.message,
     };
   }
+
+  return {
+    name: 'Error',
+    message: String(error),
+  };
 }
 
 function createTraceId(policyId: RagPolicyId, timestamp: number): string {

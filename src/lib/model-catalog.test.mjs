@@ -48,6 +48,15 @@ test('OpenMAIC latest notes keep provider-only increments documented', () => {
   assert.ok(OPENMAIC_LATEST_MODEL_NOTES.some(item => item.provider === 'happyhorse'));
 });
 
+test('OpenMAIC notes document Azure STT without adding runtime ASR wiring (upstream 07115df)', () => {
+  const entry = OPENMAIC_LATEST_MODEL_NOTES.find(
+    item => item.provider === 'azure' && item.model === 'azure-asr-fast-transcription'
+  );
+  assert.ok(entry, 'Azure STT Fast Transcription should be tracked as an upstream capability');
+  assert.equal(entry.category, 'audio');
+  assert.equal(entry.status, 'documented');
+});
+
 // === Sprint 2026-05-25: latest parity v2 — 上游 6522780/679130a/b29efe1 同步 ===
 
 test('OpenMAIC notes include Gemini 3.5 Flash (upstream 6522780)', () => {

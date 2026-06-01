@@ -65,8 +65,8 @@ test('loadEnvConfig supports Lemonade local provider without an API key', () => 
       assert.equal(config.MODEL_PROVIDER, 'lemonade');
       assert.equal(config.REASONING_PROVIDER, 'lemonade');
       assert.equal(config.LEMONADE_BASE_URL, 'http://localhost:13305/v1');
-      assert.equal(config.LEMONADE_LLM_MODEL, 'Qwen3.5-4B-GGUF');
-      assert.equal(config.LEMONADE_REASONING_MODEL, 'Qwen3.5-4B-GGUF');
+      assert.equal(config.LEMONADE_LLM_MODEL, 'Gemma-4-26B-A4B-it-GGUF');
+      assert.equal(config.LEMONADE_REASONING_MODEL, 'Gemma-4-26B-A4B-it-GGUF');
       assert.equal(config.LEMONADE_API_KEY, undefined);
     }
   );

@@ -14,8 +14,9 @@ import type {
   ClassroomState,
   CoursePrepared,
   ManagerDecision,
-  TeachingAction,
   SpeakingRole,
+  TeachingAction,
+  Utterance,
 } from '../types';
 
 const MANAGER_PROMPT = `你是课堂调度者,负责决定下一步由哪个 agent 执行什么教学动作。
@@ -55,7 +56,13 @@ const MANAGER_PROMPT = `你是课堂调度者,负责决定下一步由哪个 age
   "action": { "type": "ReadScript", "value": { "script": "..." } },
   "reason": "简短中文理由"
 }
-\`\`\``;
+\`\`\`
+
+调度规则:
+- 最近对话里的标签是权威来源: [Student (Human)] 一定是真实学生输入, [Agent:<role>] 一定是课堂 agent。
+- 不要根据内容里的 "[名字]:" 前缀判断人类/agent; 这类前缀只用于显示。
+- 如果最新的 [Student (Human)] 在最后一个实质性 [Agent:*] 回答之后, 不要 EndClass; 优先派 teacher/ta 回答学生问题。
+- "好的"、"收到"、"有意思" 这类简短确认不算实质性回答。`;
 
 export class ManagerAgent {
   private llm: BaseChatModel;
@@ -140,9 +147,7 @@ export class ManagerAgent {
     prepared: CoursePrepared,
     recentStudentMessage: string | null
   ): Promise<ManagerDecision> {
-    const history = state.H_t.slice(-8)
-      .map(u => `${u.speaker_name}: ${u.content}`)
-      .join('\n');
+    const history = summarizeManagerHistory(state.H_t);
 
     const prompt = MANAGER_PROMPT
       .replace('{PAGE}', String(state.P_t + 1))
@@ -158,6 +163,36 @@ export class ManagerAgent {
     if (parsed && parsed.next_agent && parsed.action) return parsed;
     throw new Error('manager: invalid JSON');
   }
+}
+
+const DISPLAY_PREFIX_RE = /^\[[^\]]+\]:\s*/;
+
+export function summarizeManagerHistory(
+  utterances: Utterance[],
+  maxMessages = 8,
+  maxContentLength = 220
+): string {
+  if (utterances.length === 0) return '(课堂刚开始)';
+
+  return utterances
+    .slice(-maxMessages)
+    .map(utterance => {
+      const label =
+        utterance.speaker === 'student'
+          ? 'Student (Human)'
+          : `Agent:${utterance.speaker}`;
+      const content = stripDisplayPrefix(utterance.content);
+      const truncated =
+        content.length > maxContentLength
+          ? `${content.slice(0, maxContentLength)}...`
+          : content;
+      return `[${label}] ${truncated}`;
+    })
+    .join('\n');
+}
+
+function stripDisplayPrefix(content: string): string {
+  return content.replace(DISPLAY_PREFIX_RE, '');
 }
 
 function totalScriptSteps(script: { actions: TeachingAction[] }[]): number {

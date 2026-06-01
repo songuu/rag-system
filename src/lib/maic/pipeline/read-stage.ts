@@ -160,5 +160,8 @@ export function buildLanguageDirective(language: CourseGenerationLanguage): stri
   if (language === 'en-US') {
     return 'Language directive: write all generated classroom content in English. Keep JSON keys unchanged.';
   }
+  if (language === 'pt-BR') {
+    return 'Diretriz de idioma: escreva todo o conteúdo gerado da sala de aula em Português do Brasil. Mantenha as chaves JSON inalteradas.';
+  }
   return '语言指令: 所有生成的课堂内容必须使用中文。JSON key 保持不变。';
 }
