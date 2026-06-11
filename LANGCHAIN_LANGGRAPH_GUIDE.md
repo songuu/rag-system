@@ -1,6 +1,6 @@
 # LangChain / LangGraph 最新特性融入指南
 
-> 更新日期: 2026-05-15  
+> 更新日期: 2026-06-11
 > 适用范围: 本项目的 RAG Kernel、Agentic RAG、Adaptive Entity RAG、Context Management、MiroFish / OpenMAIC 长流程编排。
 
 ## 一、当前项目基线
@@ -9,14 +9,16 @@
 
 | 包 | 锁定版本 | 项目用途 |
 |----|----------|----------|
-| `@langchain/core` | `1.1.39` | 消息、Prompt、Runnable、输出解析、Embedding / ChatModel 基础类型 |
-| `@langchain/langgraph` | `1.2.8` | Agentic RAG 的 `StateGraph` 工作流 |
-| `@langchain/openai` | `1.4.3` | OpenAI-compatible provider |
-| `@langchain/ollama` | `1.2.6` | 本地 Ollama 模型 |
-| `@langchain/community` | `1.1.27` | 社区集成和兼容层 |
+| `@langchain/core` | `^1.1.47` | 消息、Prompt、Runnable、输出解析、Embedding / ChatModel 基础类型 |
+| `@langchain/langgraph` | `^1.3.1` | Agentic RAG 的 `StateGraph` 工作流 |
+| `@langchain/openai` | `^1.4.6` | OpenAI-compatible provider |
+| `@langchain/ollama` | `^1.2.7` | 本地 Ollama 模型 |
+| `@langchain/community` | `^1.1.28` | 社区集成和兼容层 |
 | `@langchain/textsplitters` | `1.0.1` | 文档切分 |
 
 项目暂未直接依赖 `langchain` 包，因此 `createAgent`、agent middleware、`responseFormat` 等 LangChain v1 高层 agent API 不能直接用于运行时代码。当前已通过 `src/lib/langchain-structured-output.ts` 在 `@langchain/core` 模型基础上落地 structured output 优先、prompt JSON fallback 的兼容层；后续若要使用 `createAgent`，再同步更新 `package.json` 与 `pnpm-lock.yaml`。
+
+2026-06-11 起，RAG Kernel 增加 `src/lib/rag/core/workflow.ts`：用 `@langchain/core/runnables` 的 `RunnableSequence` / `RunnableLambda` 包住 policy 执行，把 `/api/ask` 从“直接调用 kernel”改成“LangChain workflow 调用 kernel”。这对应 Claude Code workflow 的可观察执行层思想：先准备 trace/thread/metadata，再执行任务，再返回 envelope；但不把复杂 RAG 策略塞进高层 agent 黑盒。
 
 ## 二、最新特性对项目的直接含义
 
@@ -59,6 +61,7 @@
 `src/lib/rag/core/*` 是后续 LangChain / LangGraph 能力进入项目的唯一中枢:
 
 - `RagPolicy`: 决定用 memory、milvus、agentic、adaptive-entity、reasoning 等策略。
+- `RagWorkflow`: 用 LangChain Runnable 承接执行配置、tags、metadata 和 trace/thread identity。
 - `ContextComposer`: 吸收 content blocks、citation blocks、reasoning traces。
 - `RagAnswerEnvelope`: 保存 `x-rag-policy`、`x-rag-trace-id`、workflow metadata。
 - `RetrievalPlan`: 将 dense / sparse / graph lane、fusion、rerank 和 cache 显式化。
@@ -148,6 +151,7 @@ await graph.invoke(input, {
 | `src/lib/adaptive-entity-rag.ts` | 保留四层架构和约束松弛策略 | 用 structured output 固化 `ParsedQuery`、`ValidatedEntity`、`RankedResult` |
 | `src/lib/context-management.ts` | 当前 LCEL / Runnable 实现可继续运行 | 文档上明确两条路线: 轻量对话用 LangChain middleware，强恢复需求用 LangGraph persistence |
 | `src/lib/rag/core/*` | 保留 policy adapter 和兼容响应 | 承接 content blocks、trace、eval、retrieval plan，而不是扩大 API 分支 |
+| `src/lib/rag/core/workflow.ts` | 保留 `RagKernel.execute` 作为真正执行点 | 用 Runnable workflow 标准化 `runName`、tags、metadata、`thread_id`、fallback trace id |
 | `src/lib/maic/*` | 保留 `Course -> Prepared -> Scene -> Action` | prepare / classroom 长流程未来可接 durable execution 和 typed interrupt |
 | `src/lib/mirofish/*` | 保留 prepare snapshot 和 simulation runner | simulation 可用 thread checkpoint 做恢复；用户确认点可用 typed interrupt |
 

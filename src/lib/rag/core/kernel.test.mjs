@@ -17,6 +17,7 @@ registerHooks({
 
 const { RagKernel } = await import('./kernel.ts');
 const { createRagPolicy, resolveRagPolicyId } = await import('./policies.ts');
+const { invokeRagKernelWorkflow, prepareRagWorkflowRun } = await import('./workflow.ts');
 const { createDefaultRetrievalPlan } = await import('../retrieval/retrieval-plan.ts');
 
 test('RAG policy resolver preserves legacy /api/ask mode selection', () => {
@@ -54,6 +55,61 @@ test('RAG kernel executes a policy and records an envelope without changing outp
   assert.equal(result.envelope.retrieval_plan.lanes[0].type, 'memory');
 });
 
+test('RAG workflow invokes the kernel through a LangChain runnable with trace metadata', async () => {
+  const output = { success: true, answer: 'workflow ok' };
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'memory',
+      description: 'unit memory workflow policy',
+      execute: async () => output,
+    }),
+  ]);
+
+  const result = await invokeRagKernelWorkflow(kernel, {
+    request: createRequest({
+      sessionId: 'session-123',
+      userId: 'user-1',
+      requestId: 'request-abc',
+    }),
+    policyId: 'memory',
+    context: {
+      name: 'Unit RAG Workflow',
+      route: '/api/ask',
+      traceId: 'trace-workflow',
+      now: new Date('2026-06-11T00:00:00.000Z'),
+      tags: ['unit'],
+      metadata: {
+        source: 'kernel-test',
+      },
+    },
+  });
+
+  assert.equal(result.output, output);
+  assert.equal(result.envelope.trace_id, 'trace-workflow');
+  assert.equal(result.workflow.threadId, 'session-123');
+  assert.deepEqual(result.workflow.tags, ['rag', 'rag-kernel', 'memory', 'unit']);
+  assert.equal(result.workflow.metadata.thread_id, 'session-123');
+  assert.equal(result.workflow.metadata.route, '/api/ask');
+  assert.equal(result.workflow.metadata.workflow_name, 'Unit RAG Workflow');
+  assert.equal(result.workflow.metadata.source, 'kernel-test');
+  assert.equal(result.workflow.metadata.rag_policy, 'memory');
+});
+
+test('RAG workflow preparation creates deterministic fallback trace ids', () => {
+  const prepared = prepareRagWorkflowRun({
+    request: createRequest({ requestId: 'request-xyz' }),
+    policyId: 'memory',
+    context: {
+      now: new Date('2026-06-11T00:00:00.000Z'),
+    },
+  });
+
+  assert.equal(prepared.threadId, 'request-xyz');
+  assert.equal(prepared.traceId, 'rag-memory-1781136000000-requestxyz');
+  assert.equal(prepared.runnableConfig.configurable.thread_id, 'request-xyz');
+  assert.equal(prepared.runnableConfig.configurable.rag_policy, 'memory');
+});
+
 test('default retrieval plan models adaptive entity as filter plus fusion plus rerank', () => {
   const plan = createDefaultRetrievalPlan(
     createRequest({ storageBackend: 'milvus', enableReranking: true }),
@@ -83,4 +139,3 @@ function createRequest(overrides) {
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }
-

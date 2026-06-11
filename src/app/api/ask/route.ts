@@ -13,6 +13,7 @@ import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import {
   RagKernel,
   createRagPolicy,
+  invokeRagKernelWorkflow,
   resolveRagPolicyId,
   type RagKernelEnvelope,
   type RagQueryRequest,
@@ -175,7 +176,26 @@ export async function POST(request: NextRequest) {
         }),
       },
       async (langSmithRun) => {
-        const result = await kernel.execute(ragRequest, policyId);
+        const result = await invokeRagKernelWorkflow(kernel, {
+          request: ragRequest,
+          policyId,
+          context: {
+            name: 'RAG API Ask Workflow',
+            route: '/api/ask',
+            userId,
+            sessionId,
+            threadId: langSmithRun.threadId,
+            traceId: langSmithRun.runId,
+            tags: ['api-ask'],
+            metadata: {
+              llm_model: llmModel,
+              embedding_model: embeddingModel,
+              vector_backend: storageBackend,
+              max_retries: maxRetries,
+              enable_reranking: enableReranking,
+            },
+          },
+        });
 
         attachRagKernelHeaders(result.output, result.envelope);
         if (langSmithRun.enabled) {

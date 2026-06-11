@@ -12,6 +12,7 @@
 | Feedback | `/api/traces/[traceId]/feedback` 会同步写入 LangSmith `createFeedback` |
 | Run tree | 本地 `ObservabilityEngine` 的 Trace/Observation/Score 会 mirror 到 LangSmith root/child runs |
 | ReactFlow graph | 前端 LangSmith viewer 直接使用 `@xyflow/react` 展示 RAG run tree / decision path |
+| LangChain workflow metadata | `/api/ask` 通过 `invokeRagKernelWorkflow` 生成 RunnableConfig，统一 `runName`、tags、metadata、`thread_id` |
 | SDK latest | `langsmith@0.7.1` 作为直接依赖，`ws@8.20.1` 满足现代 SDK peer |
 
 ## 环境变量
@@ -53,6 +54,21 @@ LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 - `thread_id`
 - `session_id`
 - `conversation_id`
+
+同时，`src/lib/rag/core/workflow.ts` 会为同一个请求准备 LangChain Runnable metadata：
+
+- `runName=RAG API Ask Workflow`
+- tags: `rag`, `rag-kernel`, `<rag_policy>`, `api-ask`
+- `configurable.thread_id`
+- `workflow_name`
+- `request_id`
+- `top_k`
+- `similarity_threshold`
+- `use_agentic_rag`
+- `use_adaptive_entity_rag`
+- `enable_reranking`
+
+当前权威 root run 仍由 `runWithLangSmithRootRun` 手写 `RunTree` 管理；RunnableConfig 用于 LangChain/LangSmith 自动 tracing 或后续 child-run 接线时保持同一套筛选语义。
 
 响应 header 会额外返回：
 
