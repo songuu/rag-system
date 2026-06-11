@@ -1,0 +1,436 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1720 1800" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',system-ui,sans-serif">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0f1f"/>
+      <stop offset="1" stop-color="#0d1426"/>
+    </linearGradient>
+    <linearGradient id="uiG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#818cf8"/><stop offset="1" stop-color="#6366f1"/></linearGradient>
+    <linearGradient id="apiG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#0ea5e9"/></linearGradient>
+    <linearGradient id="stratG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#34d399"/><stop offset="1" stop-color="#10b981"/></linearGradient>
+    <linearGradient id="coreG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+    <linearGradient id="ingG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2dd4bf"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+    <linearGradient id="storeG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#a78bfa"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
+    <linearGradient id="obsG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fb7185"/><stop offset="1" stop-color="#e11d48"/></linearGradient>
+    <linearGradient id="miroG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fb923c"/><stop offset="1" stop-color="#ef4444"/></linearGradient>
+    <linearGradient id="maicG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#60a5fa"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
+    <linearGradient id="titleG" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#fbbf24"/><stop offset="0.5" stop-color="#38bdf8"/><stop offset="1" stop-color="#a78bfa"/></linearGradient>
+    <pattern id="dots" width="34" height="34" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1" fill="#1e293b" opacity="0.55"/></pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="4" stdDeviation="7" flood-color="#000000" flood-opacity="0.45"/></filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7c8aa5"/></marker>
+    <marker id="arrAmber" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#fbbf24"/></marker>
+    <marker id="arrRose" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#fb7185"/></marker>
+  </defs>
+
+  <rect width="1720" height="1800" fill="url(#bgGrad)"/>
+  <rect width="1720" height="1800" fill="url(#dots)"/>
+
+  <!-- ============ HEADER ============ -->
+  <rect x="40" y="34" width="34" height="76" rx="8" fill="url(#titleG)" filter="url(#glow)"/>
+  <text x="92" y="76" font-size="40" font-weight="800" fill="#f1f5f9">RAG-NextJS<tspan fill="url(#titleG)"> 智能检索增强生成平台</tspan></text>
+  <text x="94" y="106" font-size="17" fill="#94a3b8">多策略 RAG · 知识图谱 GraphRAG · 多智能体社会仿真 · AI 多智能体课堂 · 全链路可观测</text>
+
+  <!-- tech badges -->
+  <g font-size="12" font-weight="600" fill="#cbd5e1">
+    <g><rect x="92" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="138" y="145" text-anchor="middle">Next.js 16</text></g>
+    <g><rect x="192" y="128" width="78" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="231" y="145" text-anchor="middle">React 19</text></g>
+    <g><rect x="278" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="324" y="145" text-anchor="middle">TypeScript</text></g>
+    <g><rect x="378" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="424" y="145" text-anchor="middle">LangChain</text></g>
+    <g><rect x="478" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="524" y="145" text-anchor="middle">LangGraph</text></g>
+    <g><rect x="578" y="128" width="70" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="613" y="145" text-anchor="middle">Milvus</text></g>
+    <g><rect x="656" y="128" width="84" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="698" y="145" text-anchor="middle">Supabase</text></g>
+    <g><rect x="748" y="128" width="70" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="783" y="145" text-anchor="middle">Ollama</text></g>
+    <g><rect x="826" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="872" y="145" text-anchor="middle">LangSmith</text></g>
+    <g><rect x="926" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="972" y="145" text-anchor="middle">ReactFlow</text></g>
+    <g><rect x="1026" y="128" width="76" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="1064" y="145" text-anchor="middle">ECharts</text></g>
+    <g><rect x="1110" y="128" width="62" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="1141" y="145" text-anchor="middle">D3.js</text></g>
+    <g><rect x="1180" y="128" width="90" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="1225" y="145" text-anchor="middle">Socket.IO</text></g>
+  </g>
+
+  <!-- legend top-right -->
+  <g font-size="12.5" fill="#94a3b8">
+    <text x="1662" y="70" text-anchor="end" font-size="13" font-weight="700" fill="#cbd5e1">数据流向 ↓ 请求路径 · ⤚ 异步追踪</text>
+    <text x="1662" y="92" text-anchor="end">每色块为一个架构层 · 右栏为横切可观测层</text>
+    <text x="1662" y="112" text-anchor="end">底部为两大旗舰子系统 MiroFish / MAIC</text>
+  </g>
+
+  <!-- ============ LANE 1: UI ============ -->
+  <g>
+    <rect x="78" y="180" width="1114" height="150" rx="16" fill="#6366f1" fill-opacity="0.06" stroke="#6366f1" stroke-opacity="0.4"/>
+    <rect x="94" y="194" width="220" height="26" rx="13" fill="url(#uiG)"/><text x="106" y="212" font-size="14.5" font-weight="800" fill="#0b1020">① 客户端 &amp; 可视化层</text>
+    <text x="324" y="212" font-size="12" fill="#818cf8">Next.js App Router · React 19 客户端组件</text>
+    <!-- cards -->
+    <g>
+      <rect x="92" y="230" width="200" height="88" rx="11" fill="#141c30" stroke="#6366f1" stroke-opacity="0.45"/><rect x="92" y="230" width="5" height="88" rx="2.5" fill="#818cf8"/>
+      <text x="108" y="254" font-size="14" font-weight="700" fill="#eef2ff">主对话页</text>
+      <text x="108" y="274" font-size="11" fill="#9aa7bd">流式问答 · 后端切换</text>
+      <text x="108" y="290" font-size="11" fill="#9aa7bd">策略开关 · WS 进度</text>
+      <text x="108" y="309" font-size="9.5" fill="#6b7a92" font-family="monospace">app/page.tsx</text>
+    </g>
+    <g>
+      <rect x="312" y="230" width="200" height="88" rx="11" fill="#141c30" stroke="#6366f1" stroke-opacity="0.45"/><rect x="312" y="230" width="5" height="88" rx="2.5" fill="#818cf8"/>
+      <text x="328" y="254" font-size="14" font-weight="700" fill="#eef2ff">策略可视化页</text>
+      <text x="328" y="274" font-size="11" fill="#9aa7bd">self-rag / reasoning</text>
+      <text x="328" y="290" font-size="11" fill="#9aa7bd">agentic / entity 等</text>
+      <text x="328" y="309" font-size="9.5" fill="#6b7a92" font-family="monospace">app/*-rag/page.tsx</text>
+    </g>
+    <g>
+      <rect x="532" y="230" width="200" height="88" rx="11" fill="#141c30" stroke="#6366f1" stroke-opacity="0.45"/><rect x="532" y="230" width="5" height="88" rx="2.5" fill="#818cf8"/>
+      <text x="548" y="254" font-size="14" font-weight="700" fill="#eef2ff">ReactFlow 流程图</text>
+      <text x="548" y="274" font-size="11" fill="#9aa7bd">LangSmith 轨迹图</text>
+      <text x="548" y="290" font-size="11" fill="#9aa7bd">TraceTrie / 工作流</text>
+      <text x="548" y="309" font-size="9.5" fill="#6b7a92" font-family="monospace">@xyflow/react</text>
+    </g>
+    <g>
+      <rect x="752" y="230" width="200" height="88" rx="11" fill="#141c30" stroke="#6366f1" stroke-opacity="0.45"/><rect x="752" y="230" width="5" height="88" rx="2.5" fill="#818cf8"/>
+      <text x="768" y="254" font-size="14" font-weight="700" fill="#eef2ff">ECharts / D3 图表</text>
+      <text x="768" y="274" font-size="11" fill="#9aa7bd">Milvus 查询可视化</text>
+      <text x="768" y="290" font-size="11" fill="#9aa7bd">检索贡献 / 知识图谱</text>
+      <text x="768" y="309" font-size="9.5" fill="#6b7a92" font-family="monospace">components/*.tsx</text>
+    </g>
+    <g>
+      <rect x="972" y="230" width="200" height="88" rx="11" fill="#141c30" stroke="#6366f1" stroke-opacity="0.45"/><rect x="972" y="230" width="5" height="88" rx="2.5" fill="#818cf8"/>
+      <text x="988" y="254" font-size="14" font-weight="700" fill="#eef2ff">IndexedDB 客户端</text>
+      <text x="988" y="274" font-size="11" fill="#9aa7bd">对话历史持久化</text>
+      <text x="988" y="290" font-size="11" fill="#9aa7bd">消息 / 元数据缓存</text>
+      <text x="988" y="309" font-size="9.5" fill="#6b7a92" font-family="monospace">lib/indexeddb.ts</text>
+    </g>
+  </g>
+
+  <!-- arrow L1->L2 -->
+  <line x1="635" y1="330" x2="635" y2="352" stroke="#7c8aa5" stroke-width="2" marker-end="url(#arr)"/>
+  <g><rect x="566" y="332" width="138" height="20" rx="10" fill="#0d1426" stroke="#334155"/><text x="635" y="346" font-size="11" fill="#cbd5e1" text-anchor="middle">HTTP / fetch / WebSocket</text></g>
+
+  <!-- ============ LANE 2: API ============ -->
+  <g>
+    <rect x="78" y="356" width="1114" height="132" rx="16" fill="#0ea5e9" fill-opacity="0.06" stroke="#0ea5e9" stroke-opacity="0.4"/>
+    <rect x="94" y="370" width="180" height="26" rx="13" fill="url(#apiG)"/><text x="106" y="388" font-size="14.5" font-weight="800" fill="#04141f">② API 网关层</text>
+    <text x="284" y="388" font-size="12" fill="#38bdf8">54 个 route.ts · 薄包装层 (验证 + 调用服务) · SSE + WebSocket 流式</text>
+    <g>
+      <rect x="92" y="402" width="258" height="74" rx="11" fill="#101c2a" stroke="#0ea5e9" stroke-opacity="0.45"/><rect x="92" y="402" width="5" height="74" rx="2.5" fill="#38bdf8"/>
+      <text x="108" y="424" font-size="13.5" font-weight="700" fill="#e0f2fe">核心问答路由</text>
+      <text x="108" y="443" font-size="10.5" fill="#9aa7bd">/api/ask · rag-milvus · self-rag</text>
+      <text x="108" y="460" font-size="10.5" fill="#9aa7bd">reasoning / agentic / entity-rag</text>
+    </g>
+    <g>
+      <rect x="370" y="402" width="258" height="74" rx="11" fill="#101c2a" stroke="#0ea5e9" stroke-opacity="0.45"/><rect x="370" y="402" width="5" height="74" rx="2.5" fill="#38bdf8"/>
+      <text x="386" y="424" font-size="13.5" font-weight="700" fill="#e0f2fe">子系统路由</text>
+      <text x="386" y="443" font-size="10.5" fill="#9aa7bd">/api/mirofish · /api/maic</text>
+      <text x="386" y="460" font-size="10.5" fill="#9aa7bd">/api/analysis · intent-distillation</text>
+    </g>
+    <g>
+      <rect x="648" y="402" width="258" height="74" rx="11" fill="#101c2a" stroke="#0ea5e9" stroke-opacity="0.45"/><rect x="648" y="402" width="5" height="74" rx="2.5" fill="#38bdf8"/>
+      <text x="664" y="424" font-size="13.5" font-weight="700" fill="#e0f2fe">文档 &amp; 配置路由</text>
+      <text x="664" y="443" font-size="10.5" fill="#9aa7bd">/api/upload · files · pipeline</text>
+      <text x="664" y="460" font-size="10.5" fill="#9aa7bd">model-config · embedding · ollama</text>
+    </g>
+    <g>
+      <rect x="926" y="402" width="246" height="74" rx="11" fill="#101c2a" stroke="#0ea5e9" stroke-opacity="0.45"/><rect x="926" y="402" width="5" height="74" rx="2.5" fill="#38bdf8"/>
+      <text x="942" y="424" font-size="13.5" font-weight="700" fill="#e0f2fe">可观测路由</text>
+      <text x="942" y="443" font-size="10.5" fill="#9aa7bd">/api/traces · trace-trie</text>
+      <text x="942" y="460" font-size="10.5" fill="#9aa7bd">health · reinitialize</text>
+    </g>
+  </g>
+
+  <!-- arrow L2->L3 -->
+  <line x1="635" y1="488" x2="635" y2="514" stroke="#7c8aa5" stroke-width="2" marker-end="url(#arr)"/>
+  <g><rect x="556" y="490" width="158" height="20" rx="10" fill="#0d1426" stroke="#334155"/><text x="635" y="504" font-size="11" fill="#cbd5e1" text-anchor="middle">RagKernel 策略分发 dispatch</text></g>
+
+  <!-- ============ LANE 3: STRATEGY ============ -->
+  <g>
+    <rect x="78" y="518" width="1114" height="228" rx="16" fill="#10b981" fill-opacity="0.06" stroke="#10b981" stroke-opacity="0.4"/>
+    <rect x="94" y="532" width="230" height="26" rx="13" fill="url(#stratG)"/><text x="106" y="550" font-size="14.5" font-weight="800" fill="#04261b">③ 智能路由 &amp; RAG 策略层</text>
+    <text x="334" y="550" font-size="12" fill="#34d399">意图分类 → 三车道分发 → 7 种 RAG 策略</text>
+
+    <!-- router row -->
+    <g>
+      <rect x="92" y="566" width="236" height="56" rx="11" fill="#0f2620" stroke="#34d399" stroke-opacity="0.5"/>
+      <text x="108" y="590" font-size="13.5" font-weight="700" fill="#d1fae5">Intent Router 意图路由</text>
+      <text x="108" y="610" font-size="10.5" fill="#9aa7bd">规则匹配 + LLM · 置信度评分</text>
+    </g>
+    <line x1="328" y1="594" x2="356" y2="594" stroke="#34d399" stroke-width="2" marker-end="url(#arr)"/>
+    <g>
+      <rect x="356" y="566" width="300" height="56" rx="11" fill="#0f2620" stroke="#34d399" stroke-opacity="0.5"/>
+      <text x="372" y="588" font-size="13.5" font-weight="700" fill="#d1fae5">Lane Handlers 三车道执行器</text>
+      <text x="372" y="610" font-size="10.5" fill="#9aa7bd">fast-track · standard-RAG · reasoning-agent</text>
+    </g>
+    <!-- support chips on right of router row -->
+    <g font-size="11" fill="#a7f3d0">
+      <rect x="688" y="566" width="226" height="26" rx="13" fill="#10b981" fill-opacity="0.14" stroke="#10b981" stroke-opacity="0.5"/><text x="801" y="583" text-anchor="middle">Semantic Analyzer 语义打分</text>
+      <rect x="924" y="566" width="248" height="26" rx="13" fill="#10b981" fill-opacity="0.14" stroke="#10b981" stroke-opacity="0.5"/><text x="1048" y="583" text-anchor="middle">Entity Extraction (GraphRAG 抽取)</text>
+      <rect x="688" y="596" width="226" height="26" rx="13" fill="#10b981" fill-opacity="0.14" stroke="#10b981" stroke-opacity="0.5"/><text x="801" y="613" text-anchor="middle">Conversation Expansion 追问</text>
+      <rect x="924" y="596" width="248" height="26" rx="13" fill="#10b981" fill-opacity="0.14" stroke="#10b981" stroke-opacity="0.5"/><text x="1048" y="613" text-anchor="middle">Token Analyzer 分词密度</text>
+    </g>
+
+    <text x="100" y="652" font-size="11.5" font-weight="700" fill="#6ee7b7">7 种 RAG 策略 (按车道分发):</text>
+    <!-- 7 strategy chips -->
+    <g font-size="12" font-weight="600">
+      <rect x="92"  y="664" width="148" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="166" y="682" text-anchor="middle" fill="#ecfdf5">Memory</text><text x="166" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">内存基线检索</text>
+      <rect x="248" y="664" width="148" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="322" y="682" text-anchor="middle" fill="#ecfdf5">Milvus 2-Step</text><text x="322" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">两阶段向量召回</text>
+      <rect x="404" y="664" width="148" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="478" y="682" text-anchor="middle" fill="#ecfdf5">Agentic</text><text x="478" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">工具调用 + 评级</text>
+      <rect x="560" y="664" width="148" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="634" y="682" text-anchor="middle" fill="#ecfdf5">Adaptive-Entity</text><text x="634" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">实体图谱导航</text>
+      <rect x="716" y="664" width="148" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="790" y="682" text-anchor="middle" fill="#ecfdf5">Self-RAG</text><text x="790" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">反思 token 自评</text>
+      <rect x="872" y="664" width="148" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="946" y="682" text-anchor="middle" fill="#ecfdf5">Self-Corrective</text><text x="946" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">检索→评分→纠错</text>
+      <rect x="1028" y="664" width="144" height="44" rx="10" fill="#0f2a22" stroke="#34d399" stroke-opacity="0.55"/><text x="1100" y="682" text-anchor="middle" fill="#ecfdf5">Reasoning</text><text x="1100" y="699" text-anchor="middle" font-size="9.5" fill="#7fd9b8">多步推理 + 思维链</text>
+    </g>
+  </g>
+
+  <!-- arrow L3->L4 -->
+  <line x1="635" y1="746" x2="635" y2="772" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arrAmber)"/>
+  <g><rect x="556" y="748" width="158" height="20" rx="10" fill="#0d1426" stroke="#a16207"/><text x="635" y="762" font-size="11" fill="#fde68a" text-anchor="middle">策略统一委派核心内核执行</text></g>
+
+  <!-- ============ LANE 4: CORE KERNEL (HERO) ============ -->
+  <g>
+    <rect x="78" y="774" width="1114" height="270" rx="18" fill="#f59e0b" fill-opacity="0.08" stroke="#fbbf24" stroke-opacity="0.7" stroke-width="1.5" filter="url(#glow)"/>
+    <rect x="94" y="788" width="290" height="28" rx="14" fill="url(#coreG)"/><text x="108" y="807" font-size="15" font-weight="800" fill="#3a2406">★ RAG 核心内核 · Policy Kernel</text>
+    <text x="394" y="807" font-size="12" fill="#fbbf24">可插拔策略管线 · 不可变追踪信封 · lib/rag/core</text>
+
+    <!-- spine pills -->
+    <g font-weight="700" font-size="12.5">
+      <rect x="120" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="186" y="846" text-anchor="middle" fill="#fde68a">用户查询</text><text x="186" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">RagQueryRequest</text>
+      <rect x="270" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="336" y="846" text-anchor="middle" fill="#fde68a">RagKernel</text><text x="336" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">.execute()</text>
+      <rect x="420" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="486" y="846" text-anchor="middle" fill="#fde68a">RagPolicy</text><text x="486" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">策略注册表查找</text>
+      <rect x="570" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="636" y="846" text-anchor="middle" fill="#fde68a">RetrievalPlan</text><text x="636" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">多路检索计划</text>
+      <rect x="720" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="786" y="846" text-anchor="middle" fill="#fde68a">PostProcess</text><text x="786" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">MMR λ=0.7 + 去重</text>
+      <rect x="870" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="936" y="846" text-anchor="middle" fill="#fde68a">ContextComposer</text><text x="936" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">12k token 预算</text>
+      <rect x="1020" y="826" width="132" height="48" rx="10" fill="#3a2a06" stroke="#fbbf24" stroke-width="1.5"/><text x="1086" y="846" text-anchor="middle" fill="#fffbeb">答案</text><text x="1086" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">LLM 生成 + 引用</text>
+    </g>
+    <!-- spine arrows -->
+    <g stroke="#fbbf24" stroke-width="2" marker-end="url(#arrAmber)">
+      <line x1="252" y1="850" x2="268" y2="850"/><line x1="402" y1="850" x2="418" y2="850"/>
+      <line x1="552" y1="850" x2="568" y2="850"/><line x1="702" y1="850" x2="718" y2="850"/>
+      <line x1="852" y1="850" x2="868" y2="850"/><line x1="1002" y1="850" x2="1018" y2="850"/>
+    </g>
+
+    <!-- retrieval lanes under RetrievalPlan -->
+    <line x1="636" y1="874" x2="636" y2="900" stroke="#d4a843" stroke-width="1.5" stroke-dasharray="3 3" marker-end="url(#arr)"/>
+    <text x="378" y="900" font-size="11" font-weight="700" fill="#d4a843">多路召回 Hybrid Retrieval:</text>
+    <g font-size="11" font-weight="600" fill="#fde68a">
+      <rect x="378" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="437" y="925" text-anchor="middle">dense-vector</text>
+      <rect x="506" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="565" y="925" text-anchor="middle">sparse-BM25</text>
+      <rect x="634" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="693" y="925" text-anchor="middle">rerank 重排</text>
+      <rect x="762" y="906" width="132" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="828" y="925" text-anchor="middle">fusion (RRF 融合)</text>
+    </g>
+    <text x="916" y="918" font-size="10" fill="#d4a843">上下文管理 context-management.ts</text>
+    <text x="916" y="933" font-size="10" fill="#d4a843">混合检索编排 hybrid-policy.ts</text>
+
+    <!-- info cards -->
+    <g>
+      <rect x="120" y="956" width="560" height="60" rx="10" fill="#1a1304" stroke="#fbbf24" stroke-opacity="0.45"/>
+      <text x="136" y="980" font-size="13" font-weight="700" fill="#fde68a">RagKernelEnvelope · 不可变追踪信封</text>
+      <text x="136" y="1001" font-size="10.5" fill="#c9a86a">request + retrievalPlan + status + timing + traceId → 贯穿可观测层</text>
+    </g>
+    <g>
+      <rect x="700" y="956" width="452" height="60" rx="10" fill="#1a1304" stroke="#fbbf24" stroke-opacity="0.45"/>
+      <text x="716" y="980" font-size="13" font-weight="700" fill="#fde68a">MemoryCorpusStore · 语料仓储</text>
+      <text x="716" y="1001" font-size="10.5" fill="#c9a86a">多源语料元数据 + 版本哈希 + 上下文检索增强</text>
+    </g>
+  </g>
+
+  <!-- read channel (Core -> Storage) on far left -->
+  <path d="M 70 920 L 50 920 L 50 1352 L 90 1352" fill="none" stroke="#fbbf24" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrAmber)"/>
+  <g transform="rotate(-90 40 1130)"><text x="40" y="1130" text-anchor="middle" font-size="11" font-weight="700" fill="#d4a843">向量召回 kNN / 混合检索 (在线读)</text></g>
+
+  <!-- ingestion separator note -->
+  <g><rect x="500" y="1046" width="290" height="20" rx="10" fill="#0d1426" stroke="#0f766e"/><text x="645" y="1060" font-size="11" fill="#5eead4" text-anchor="middle">离线知识库构建管线 (写路径)</text></g>
+
+  <!-- ============ LANE 5: INGESTION ============ -->
+  <g>
+    <rect x="78" y="1068" width="1114" height="178" rx="16" fill="#14b8a6" fill-opacity="0.06" stroke="#14b8a6" stroke-opacity="0.4"/>
+    <rect x="94" y="1082" width="250" height="26" rx="13" fill="url(#ingG)"/><text x="106" y="1100" font-size="14.5" font-weight="800" fill="#04211d">④ 文档摄取 &amp; 向量化层</text>
+    <text x="354" y="1100" font-size="12" fill="#2dd4bf">解析 → 切分 → 嵌入 → 多级缓存 → 入库</text>
+
+    <!-- flow pills -->
+    <g font-weight="700" font-size="12.5">
+      <rect x="100" y="1118" width="166" height="52" rx="10" fill="#0c2624" stroke="#2dd4bf"/><text x="183" y="1140" text-anchor="middle" fill="#ccfbf1">上传文件</text><text x="183" y="1157" text-anchor="middle" font-size="9.5" fill="#5eead4">PDF/DOCX/XLSX/MD</text>
+      <rect x="294" y="1118" width="166" height="52" rx="10" fill="#0c2624" stroke="#2dd4bf"/><text x="377" y="1140" text-anchor="middle" fill="#ccfbf1">DocumentParser</text><text x="377" y="1157" text-anchor="middle" font-size="9.5" fill="#5eead4">pdf-parse / liteparse</text>
+      <rect x="488" y="1118" width="166" height="52" rx="10" fill="#0c2624" stroke="#2dd4bf"/><text x="571" y="1140" text-anchor="middle" fill="#ccfbf1">切分 + 上下文化</text><text x="571" y="1157" text-anchor="middle" font-size="9.5" fill="#5eead4">RecursiveSplitter</text>
+      <rect x="682" y="1118" width="166" height="52" rx="10" fill="#0c2624" stroke="#2dd4bf"/><text x="765" y="1140" text-anchor="middle" fill="#ccfbf1">嵌入生成</text><text x="765" y="1157" text-anchor="middle" font-size="9.5" fill="#5eead4">embedding-config</text>
+      <rect x="876" y="1118" width="166" height="52" rx="10" fill="#0c2624" stroke="#2dd4bf"/><text x="959" y="1140" text-anchor="middle" fill="#ccfbf1">model 工厂</text><text x="959" y="1157" text-anchor="middle" font-size="9.5" fill="#5eead4">Ollama·SiliconFlow·OpenAI</text>
+      <rect x="1050" y="1118" width="128" height="52" rx="10" fill="#0c2624" stroke="#2dd4bf" stroke-dasharray="4 3"/><text x="1114" y="1140" text-anchor="middle" fill="#ccfbf1">域向量</text><text x="1114" y="1157" text-anchor="middle" font-size="9" fill="#5eead4">Domain Vectors 页</text>
+    </g>
+    <g stroke="#2dd4bf" stroke-width="2" marker-end="url(#arr)">
+      <line x1="266" y1="1144" x2="292" y2="1144"/><line x1="460" y1="1144" x2="486" y2="1144"/>
+      <line x1="654" y1="1144" x2="680" y2="1144"/><line x1="848" y1="1144" x2="874" y2="1144"/>
+    </g>
+    <!-- cache chips -->
+    <text x="100" y="1198" font-size="11" font-weight="700" fill="#5eead4">嵌入 ↔ 入库之间的多级缓存:</text>
+    <g font-size="11" font-weight="600" fill="#ccfbf1">
+      <rect x="312" y="1186" width="250" height="30" rx="8" fill="#14b8a6" fill-opacity="0.14" stroke="#2dd4bf" stroke-opacity="0.6"/><text x="437" y="1205" text-anchor="middle">L1 embedding-cache (SHA256)</text>
+      <rect x="574" y="1186" width="270" height="30" rx="8" fill="#14b8a6" fill-opacity="0.14" stroke="#2dd4bf" stroke-opacity="0.6"/><text x="709" y="1205" text-anchor="middle">L2 semantic-cache (cosine 0.95)</text>
+      <rect x="856" y="1186" width="200" height="30" rx="8" fill="#14b8a6" fill-opacity="0.14" stroke="#2dd4bf" stroke-opacity="0.6"/><text x="956" y="1205" text-anchor="middle">artifact-cache (磁盘)</text>
+    </g>
+  </g>
+
+  <!-- arrow L5->L6 -->
+  <line x1="635" y1="1246" x2="635" y2="1270" stroke="#a78bfa" stroke-width="2" marker-end="url(#arr)"/>
+  <g><rect x="566" y="1248" width="138" height="20" rx="10" fill="#0d1426" stroke="#4c1d95"/><text x="635" y="1262" font-size="11" fill="#ddd6fe" text-anchor="middle">写入向量 / 语料元数据</text></g>
+
+  <!-- ============ LANE 6: STORAGE ============ -->
+  <g>
+    <rect x="78" y="1272" width="1114" height="168" rx="16" fill="#8b5cf6" fill-opacity="0.06" stroke="#8b5cf6" stroke-opacity="0.4"/>
+    <rect x="94" y="1286" width="230" height="26" rx="13" fill="url(#storeG)"/><text x="106" y="1304" font-size="14.5" font-weight="800" fill="#1a0a33">⑤ 存储 &amp; 持久化层</text>
+    <text x="334" y="1304" font-size="12" fill="#a78bfa">Ports 端口模式 · Supabase + 本地双写回退</text>
+
+    <g>
+      <rect x="92" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="92" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
+      <text x="108" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">Milvus 向量库</text>
+      <text x="108" y="1366" font-size="10.5" fill="#9aa7bd">本地 / Zilliz Cloud</text>
+      <text x="108" y="1383" font-size="10.5" fill="#9aa7bd">768 维 · 混合检索</text>
+      <text x="108" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">milvus-client.ts</text>
+    </g>
+    <g>
+      <rect x="312" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="312" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
+      <text x="328" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">Persistence Ports</text>
+      <text x="328" y="1366" font-size="10.5" fill="#9aa7bd">抽象接口契约</text>
+      <text x="328" y="1383" font-size="10.5" fill="#9aa7bd">blob / corpus / trace / job</text>
+      <text x="328" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">persistence/ports.ts</text>
+    </g>
+    <g>
+      <rect x="532" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="532" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
+      <text x="548" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">Supabase</text>
+      <text x="548" y="1366" font-size="10.5" fill="#9aa7bd">Postgres + Storage</text>
+      <text x="548" y="1383" font-size="10.5" fill="#9aa7bd">traces / assets / jobs</text>
+      <text x="548" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">supabase-*-store.ts</text>
+    </g>
+    <g>
+      <rect x="752" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="752" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
+      <text x="768" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">Local-Dev Store</text>
+      <text x="768" y="1366" font-size="10.5" fill="#9aa7bd">文件系统回退</text>
+      <text x="768" y="1383" font-size="10.5" fill="#9aa7bd">JSON manifest</text>
+      <text x="768" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">local-dev-store.ts</text>
+    </g>
+    <g>
+      <rect x="972" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="972" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
+      <text x="988" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">IndexedDB</text>
+      <text x="988" y="1366" font-size="10.5" fill="#9aa7bd">浏览器端存储</text>
+      <text x="988" y="1383" font-size="10.5" fill="#9aa7bd">会话 / 消息历史</text>
+      <text x="988" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">indexeddb.ts</text>
+    </g>
+  </g>
+
+  <!-- ============ RIGHT RAIL: OBSERVABILITY ============ -->
+  <g>
+    <rect x="1216" y="518" width="444" height="922" rx="18" fill="#f43f5e" fill-opacity="0.06" stroke="#fb7185" stroke-opacity="0.5"/>
+    <rect x="1232" y="532" width="290" height="28" rx="14" fill="url(#obsG)"/><text x="1246" y="551" font-size="14.5" font-weight="800" fill="#2a0510">⑥ 可观测性 &amp; 分析中间件</text>
+    <text x="1234" y="582" font-size="11.5" fill="#fb7185">横切层 · 贯穿 RAG 执行全链路 · 镜像至 LangSmith</text>
+
+    <!-- dashed connector from core to rail -->
+    <line x1="1192" y1="860" x2="1216" y2="860" stroke="#fb7185" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arrRose)"/>
+    <g transform="translate(0 0)"><rect x="1120" y="828" width="92" height="20" rx="10" fill="#0d1426" stroke="#9f1239"/><text x="1166" y="842" font-size="10.5" fill="#fda4af" text-anchor="middle">trace 事件</text></g>
+
+    <g>
+      <rect x="1234" y="596" width="408" height="92" rx="11" fill="#2a0f16" stroke="#fb7185" stroke-opacity="0.5"/>
+      <text x="1250" y="620" font-size="13.5" font-weight="700" fill="#ffe4e6">ObservabilityEngine</text>
+      <text x="1250" y="641" font-size="10.5" fill="#fda4af">trace / observation / score 聚合与存储</text>
+      <text x="1250" y="660" font-size="10.5" fill="#9aa7bd">onTraceUpdate / onObservationUpdate 回调</text>
+      <text x="1250" y="679" font-size="9.5" fill="#6b7a92" font-family="monospace">lib/observability.ts</text>
+    </g>
+    <line x1="1438" y1="688" x2="1438" y2="708" stroke="#fb7185" stroke-width="2" marker-end="url(#arrRose)"/>
+    <g>
+      <rect x="1234" y="710" width="408" height="86" rx="11" fill="#2a0f16" stroke="#fb7185" stroke-opacity="0.5"/>
+      <text x="1250" y="734" font-size="13.5" font-weight="700" fill="#ffe4e6">Trace-Trie 决策瀑布树</text>
+      <text x="1250" y="755" font-size="10.5" fill="#fda4af">EnhancedTrie · BPE 分词决策路径</text>
+      <text x="1250" y="774" font-size="10.5" fill="#9aa7bd">LogicWaterfallGenerator 层级锚点</text>
+    </g>
+    <line x1="1438" y1="796" x2="1438" y2="816" stroke="#fb7185" stroke-width="2" marker-end="url(#arrRose)"/>
+    <g>
+      <rect x="1234" y="818" width="408" height="86" rx="11" fill="#2a0f16" stroke="#fb7185" stroke-opacity="0.5"/>
+      <text x="1250" y="842" font-size="13.5" font-weight="700" fill="#ffe4e6">LangSmith 镜像</text>
+      <text x="1250" y="863" font-size="10.5" fill="#fda4af">RunTree 根/子运行 · 反馈分数同步</text>
+      <text x="1250" y="882" font-size="10.5" fill="#9aa7bd">trace-mirror · 本地 → 云端双向</text>
+    </g>
+    <line x1="1438" y1="904" x2="1438" y2="924" stroke="#fb7185" stroke-width="2" marker-end="url(#arrRose)"/>
+    <g>
+      <rect x="1234" y="926" width="408" height="190" rx="11" fill="#2a0f16" stroke="#fb7185" stroke-opacity="0.5"/>
+      <text x="1250" y="950" font-size="13.5" font-weight="700" fill="#ffe4e6">Analysis Middleware 分析中间件</text>
+      <g font-size="11" font-weight="600" fill="#ffe4e6">
+        <rect x="1250" y="962" width="180" height="32" rx="8" fill="#f43f5e" fill-opacity="0.14" stroke="#fb7185" stroke-opacity="0.55"/><text x="1340" y="982" text-anchor="middle">DecisionCapture 捕获</text>
+        <rect x="1444" y="962" width="180" height="32" rx="8" fill="#f43f5e" fill-opacity="0.14" stroke="#fb7185" stroke-opacity="0.55"/><text x="1534" y="982" text-anchor="middle">DensityCalculator 密度</text>
+        <rect x="1250" y="1002" width="180" height="32" rx="8" fill="#f43f5e" fill-opacity="0.14" stroke="#fb7185" stroke-opacity="0.55"/><text x="1340" y="1022" text-anchor="middle">ModelCrossValidator</text>
+        <rect x="1444" y="1002" width="180" height="32" rx="8" fill="#f43f5e" fill-opacity="0.14" stroke="#fb7185" stroke-opacity="0.55"/><text x="1534" y="1022" text-anchor="middle">RetrievalMapper 对齐</text>
+      </g>
+      <text x="1250" y="1058" font-size="10.5" fill="#9aa7bd">5 阶段管线: 分词拦截 → 权重注入 → 检索反馈 → 多模型对比 → 数据归一化</text>
+      <text x="1250" y="1078" font-size="10.5" fill="#9aa7bd">输出: 熵 / 压缩密度 / 字符级对齐 / 关键检索路径</text>
+      <text x="1250" y="1100" font-size="9.5" fill="#6b7a92" font-family="monospace">lib/analysis-middleware/*</text>
+    </g>
+    <line x1="1438" y1="1116" x2="1438" y2="1136" stroke="#fb7185" stroke-width="2" marker-end="url(#arrRose)"/>
+    <g>
+      <rect x="1234" y="1138" width="408" height="84" rx="11" fill="#1a0c12" stroke="#fb7185" stroke-opacity="0.5"/>
+      <text x="1250" y="1162" font-size="13.5" font-weight="700" fill="#ffe4e6">可视化输出</text>
+      <text x="1250" y="1183" font-size="10.5" fill="#fda4af">LangSmith Cloud 远程仪表盘</text>
+      <text x="1250" y="1202" font-size="10.5" fill="#fda4af">本地 ReactFlow 轨迹图 / TraceTrie 树</text>
+    </g>
+    <text x="1234" y="1258" font-size="11" fill="#9aa7bd">SupabaseTraceStore 持久化 traces / observations / trace_scores</text>
+    <text x="1234" y="1280" font-size="11" fill="#9aa7bd">@xenova/transformers 提供本地 AutoTokenizer 分词分析</text>
+    <text x="1234" y="1302" font-size="11" fill="#9aa7bd">熵 / Shannon 信息量 · 余弦相似 · Levenshtein 编辑距离</text>
+    <text x="1234" y="1324" font-size="11" fill="#9aa7bd">TraceStore Facade 合并内存轨迹 + 远端 + LangSmith 反馈</text>
+    <text x="1234" y="1346" font-size="11" fill="#9aa7bd">SupabaseIndexJobStore 跟踪 parse / embed / milvus_sync 任务</text>
+    <text x="1234" y="1368" font-size="11" fill="#9aa7bd">RagKernelEnvelope 为追踪起点 · traceId 贯穿全链路</text>
+    <text x="1234" y="1390" font-size="11" fill="#9aa7bd">DecisionCaptureEngine 拦截 BPE merge 循环提取 token 元数据</text>
+    <text x="1234" y="1412" font-size="11" fill="#9aa7bd">golden-questions.ts 评测集 · RAG 质量基线 · 知识覆盖率 + 检索贡献度量</text>
+  </g>
+
+  <!-- ============ FEATURE MODULES ============ -->
+  <text x="78" y="1466" font-size="16" font-weight="800" fill="#cbd5e1">旗舰子系统 · 复用核心 RAG 能力 (EntityExtractor / model-config / rag-bridge)</text>
+
+  <!-- MiroFish panel -->
+  <g>
+    <rect x="78" y="1478" width="782" height="296" rx="18" fill="#ef4444" fill-opacity="0.07" stroke="#fb923c" stroke-opacity="0.55"/>
+    <rect x="94" y="1492" width="330" height="28" rx="14" fill="url(#miroG)"/><text x="108" y="1511" font-size="15" font-weight="800" fill="#2a0a04">🐟 MiroFish · 多智能体社会仿真</text>
+    <text x="94" y="1542" font-size="11.5" fill="#fdba74">领域文本 → 知识图谱 → 智能体人格 → 多轮舆论动态仿真 → 报告 → 访谈</text>
+
+    <!-- 5 step vertical-ish flow as 5 boxes 2 rows -->
+    <g font-weight="700" font-size="12">
+      <rect x="94" y="1556" width="142" height="74" rx="10" fill="#2a1206" stroke="#fb923c"/><text x="165" y="1578" text-anchor="middle" fill="#fed7aa">① 图谱构建</text><text x="165" y="1596" text-anchor="middle" font-size="9.5" fill="#fdba74">Ontology 生成</text><text x="165" y="1611" text-anchor="middle" font-size="9.5" fill="#fdba74">GraphBuilder</text>
+      <rect x="252" y="1556" width="142" height="74" rx="10" fill="#2a1206" stroke="#fb923c"/><text x="323" y="1578" text-anchor="middle" fill="#fed7aa">② 环境设置</text><text x="323" y="1596" text-anchor="middle" font-size="9.5" fill="#fdba74">实体选择</text><text x="323" y="1611" text-anchor="middle" font-size="9.5" fill="#fdba74">Profile 人格生成</text>
+      <rect x="410" y="1556" width="142" height="74" rx="10" fill="#2a1206" stroke="#fb923c"/><text x="481" y="1578" text-anchor="middle" fill="#fed7aa">③ 仿真运行</text><text x="481" y="1596" text-anchor="middle" font-size="9.5" fill="#fdba74">SimulationEngine</text><text x="481" y="1611" text-anchor="middle" font-size="9.5" fill="#fdba74">多轮多平台 SSE</text>
+      <rect x="568" y="1556" width="142" height="74" rx="10" fill="#2a1206" stroke="#fb923c"/><text x="639" y="1578" text-anchor="middle" fill="#fed7aa">④ 报告生成</text><text x="639" y="1596" text-anchor="middle" font-size="9.5" fill="#fdba74">ReportAgent</text><text x="639" y="1611" text-anchor="middle" font-size="9.5" fill="#fdba74">6 段 + 情感曲线</text>
+      <rect x="726" y="1556" width="124" height="74" rx="10" fill="#2a1206" stroke="#fb923c"/><text x="788" y="1578" text-anchor="middle" fill="#fed7aa">⑤ 交互访谈</text><text x="788" y="1596" text-anchor="middle" font-size="9.5" fill="#fdba74">Interaction</text><text x="788" y="1611" text-anchor="middle" font-size="9.5" fill="#fdba74">Agent 角色问答</text>
+    </g>
+    <g stroke="#fb923c" stroke-width="2" marker-end="url(#arr)">
+      <line x1="236" y1="1593" x2="250" y2="1593"/><line x1="394" y1="1593" x2="408" y2="1593"/>
+      <line x1="552" y1="1593" x2="566" y2="1593"/><line x1="710" y1="1593" x2="724" y2="1593"/>
+    </g>
+    <!-- project store -->
+    <rect x="94" y="1644" width="756" height="46" rx="10" fill="#1a0c04" stroke="#fb923c" stroke-opacity="0.5"/>
+    <text x="110" y="1672" font-size="12" font-weight="700" fill="#fed7aa">ProjectStore (单例)</text>
+    <text x="270" y="1672" font-size="10.5" fill="#fdba74">贯穿 5 步状态机: graph_id · agent_profiles · simulation_config · report_id · current_step (0-4)</text>
+    <text x="110" y="1714" font-size="10.5" fill="#9aa7bd">TaskManager 跟踪异步任务进度 (0-100) · SimulationRunner 发射 SSE 事件流 · 复用 EntityExtractor 构图</text>
+    <text x="110" y="1734" font-size="10.5" fill="#9aa7bd">SimulationEngine 基于人格锚点生成动作: post / comment / like / repost / quote / debate</text>
+    <text x="110" y="1754" font-size="9.5" fill="#6b7a92" font-family="monospace">lib/mirofish/* · app/mirofish/{graph-rag,ontology,process,profile,simulation,console} · Step1-5.tsx</text>
+  </g>
+
+  <!-- MAIC panel -->
+  <g>
+    <rect x="880" y="1478" width="782" height="296" rx="18" fill="#8b5cf6" fill-opacity="0.07" stroke="#60a5fa" stroke-opacity="0.55"/>
+    <rect x="896" y="1492" width="360" height="28" rx="14" fill="url(#maicG)"/><text x="910" y="1511" font-size="15" font-weight="800" fill="#0a1228">🎓 MAIC / OpenMAIC · 多智能体 AI 课堂</text>
+    <text x="896" y="1542" font-size="11.5" fill="#bfdbfe">上传 PPTX → 解析幻灯片 → Read/Plan 两阶段管线 → 会话控制器编排 7 智能体 → 直播课堂</text>
+
+    <g font-weight="700" font-size="12">
+      <rect x="896" y="1556" width="138" height="74" rx="10" fill="#0e1530" stroke="#60a5fa"/><text x="965" y="1578" text-anchor="middle" fill="#dbeafe">① 上传解析</text><text x="965" y="1596" text-anchor="middle" font-size="9.5" fill="#93c5fd">PPTX/PDF/MD</text><text x="965" y="1611" text-anchor="middle" font-size="9.5" fill="#93c5fd">SlideParser</text>
+      <rect x="1050" y="1556" width="138" height="74" rx="10" fill="#0e1530" stroke="#60a5fa"/><text x="1119" y="1578" text-anchor="middle" fill="#dbeafe">② Read 阶段</text><text x="1119" y="1596" text-anchor="middle" font-size="9.5" fill="#93c5fd">f2 描述页面</text><text x="1119" y="1611" text-anchor="middle" font-size="9.5" fill="#93c5fd">f3 知识树</text>
+      <rect x="1204" y="1556" width="138" height="74" rx="10" fill="#0e1530" stroke="#60a5fa"/><text x="1273" y="1578" text-anchor="middle" fill="#dbeafe">③ Plan 阶段</text><text x="1273" y="1596" text-anchor="middle" font-size="9.5" fill="#93c5fd">f4 讲稿 f5 提问</text><text x="1273" y="1611" text-anchor="middle" font-size="9.5" fill="#93c5fd">焦点 + 场景</text>
+      <rect x="1358" y="1556" width="142" height="74" rx="10" fill="#0e1530" stroke="#60a5fa"/><text x="1429" y="1578" text-anchor="middle" fill="#dbeafe">④ 会话编排</text><text x="1429" y="1596" text-anchor="middle" font-size="9.5" fill="#93c5fd">SessionController</text><text x="1429" y="1611" text-anchor="middle" font-size="9.5" fill="#93c5fd">manager 决策</text>
+      <rect x="1516" y="1556" width="138" height="74" rx="10" fill="#0e1530" stroke="#60a5fa"/><text x="1585" y="1578" text-anchor="middle" fill="#dbeafe">⑤ 直播课堂</text><text x="1585" y="1596" text-anchor="middle" font-size="9.5" fill="#93c5fd">action-executor</text><text x="1585" y="1611" text-anchor="middle" font-size="9.5" fill="#93c5fd">场景动画 UI</text>
+    </g>
+    <g stroke="#60a5fa" stroke-width="2" marker-end="url(#arr)">
+      <line x1="1034" y1="1593" x2="1048" y2="1593"/><line x1="1188" y1="1593" x2="1202" y2="1593"/>
+      <line x1="1342" y1="1593" x2="1356" y2="1593"/><line x1="1500" y1="1593" x2="1514" y2="1593"/>
+    </g>
+    <!-- agents -->
+    <rect x="896" y="1644" width="758" height="46" rx="10" fill="#0a0f24" stroke="#60a5fa" stroke-opacity="0.5"/>
+    <text x="912" y="1672" font-size="12" font-weight="700" fill="#dbeafe">7 智能体编排:</text>
+    <g font-size="10.5" fill="#bfdbfe">
+      <text x="1010" y="1672">teacher · TA · clown · thinker · notetaker · inquisitive + manager (元决策: 硬规则 → LLM 路由)</text>
+    </g>
+    <text x="912" y="1714" font-size="10.5" fill="#9aa7bd">异步备课 prepare 与直播课堂 classroom 分离 · prepare-runner 发布订阅 + 缓存 · rag-bridge 镜像至 RAG</text>
+    <text x="912" y="1734" font-size="10.5" fill="#9aa7bd">运行循环: manager-decide → agent-respond → action-execute → state-patch → SSE 推送前端</text>
+    <text x="912" y="1754" font-size="9.5" fill="#6b7a92" font-family="monospace">lib/maic/{pipeline,session,agents} · components/maic/OpenMaicClassroom.tsx · app/maic</text>
+  </g>
+
+  <!-- footer -->
+  <line x1="78" y1="1784" x2="1662" y2="1784" stroke="#1e293b"/>
+  <text x="78" y="1799" font-size="11" fill="#475569">架构图基于静态源码分析自动生成 · 2026-06-04 · src/ 下 ~70 模块 · 54 个 API 路由 · 8 大子系统</text>
+  <text x="1662" y="1799" font-size="11" fill="#475569" text-anchor="end">rag-nextjs · docs/architecture/rag-nextjs-architecture.svg</text>
+</svg>

@@ -40,6 +40,10 @@ Do not choose PPT spotlight targets by fixed key-point order except as a fallbac
 
 For this project, future RAG capability should be expressed as a `RAG Kernel` policy, retrieval lane, corpus adapter, evaluator, or cache layer before adding another top-level `/api/ask` branch. The current system already has many modes; the next architecture step is a shared kernel plus retrieval control plane that unifies dense/sparse/graph retrieval, fusion, reranking, context packing, trace, and evaluation while preserving existing MiroFish/OpenMAIC product behavior.
 
+## RAG Kernel Failures Need Envelopes
+
+RAG policy failures should be wrapped at the `RagKernel` boundary with the same observability contract as successful executions: trace id, policy id, status, duration, retrieval plan, policy description, and a small error summary. Route handlers may still preserve legacy JSON error bodies, but they should attach `x-rag-policy` and `x-rag-trace-id` when a kernel failure envelope exists. Do not let raw policy exceptions cross the kernel boundary without execution context.
+
 ## Runtime Configuration Has One Source
 
 Model, embedding, reasoning, Milvus, and retrieval feature choices should be resolved from a shared runtime configuration snapshot before any page-level fallback is used. UI model selectors may display Ollama installation status, but they must not use Ollama availability as the source of truth for the selected model when `MODEL_PROVIDER`, `EMBEDDING_PROVIDER`, or `REASONING_PROVIDER` already define the runtime model.
@@ -59,3 +63,7 @@ Milvus search handlers should not call collection stats, schema description, or 
 ## Supabase Is The Persistence Plane, Not The Milvus Replacement
 
 When adding Supabase to this project, use it first for Auth/RLS, tenant ownership, Postgres metadata, Storage-backed files, index jobs, traces, feedback, conversations, MiroFish/MAIC product state, and Realtime progress. Keep Milvus/Zilliz as the default production vector hot path. Supabase pgvector can be added as an optional retrieval lane for small corpora, entity/cache embeddings, eval datasets, or metadata-heavy filtering, but it should enter through the RAG Kernel retrieval adapter instead of replacing `milvus-client`.
+
+## PDF Parser Changes Go Through A Shared Adapter
+
+When changing PDF parsing providers, first route `document-parser`, `document-pipeline`, product-specific upload routes, and MAIC slide parsing through one shared PDF adapter. Parser swaps affect chunk boundaries, page counts, OCR behavior, resource cleanup, native packaging, and RAG cache semantics, so keep provider choice behind configuration and validate with PDF fixtures before changing the default.

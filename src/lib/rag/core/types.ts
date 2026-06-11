@@ -48,15 +48,24 @@ export interface RagPolicy<TOutput> {
   execute(context: RagPolicyContext): Promise<RagPolicyResult<TOutput>>;
 }
 
+export type RagKernelExecutionStatus = 'completed' | 'failed';
+
+export interface RagKernelErrorSummary {
+  name: string;
+  message: string;
+}
+
 export interface RagKernelEnvelope {
   trace_id: string;
   policy_id: RagPolicyId;
+  status: RagKernelExecutionStatus;
   question: string;
   storage_backend: RagStorageBackend;
   retrieval_plan: RagRetrievalPlan;
   started_at: string;
   completed_at: string;
   duration_ms: number;
+  error?: RagKernelErrorSummary;
   metadata?: Record<string, unknown>;
 }
 

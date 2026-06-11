@@ -12,7 +12,7 @@
 
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Embeddings } from "@langchain/core/embeddings";
-import { BaseMessage, AIMessage } from "@langchain/core/messages";
+import { BaseMessage } from "@langchain/core/messages";
 import { createLLM, createEmbedding, getModelFactory, getConfigSummary } from "./model-config";
 import { getEmbeddingConfigSummary } from "./embedding-config";
 
@@ -505,12 +505,26 @@ export class EntityExtractor {
     timeoutMs: number,
     errorMessage: string
   ): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) => 
-        setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
-      )
-    ]);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  }
+
+  private getOperationTimeout(preferredMs: number): number {
+    const remainingTime = this.getRemainingTime();
+    if (remainingTime < 1000) {
+      this.checkTimeout();
+      throw new Error('抽取超时：剩余时间不足以继续调用模型');
+    }
+    return Math.min(preferredMs, remainingTime);
   }
 
   /**
@@ -668,6 +682,8 @@ export class EntityExtractor {
     const relations = new Map<string, Relation>();
 
     for (let i = 0; i < chunks.length; i++) {
+      this.checkTimeout();
+
       const chunk = chunks[i];
       
       this.reportProgress({
@@ -730,6 +746,8 @@ export class EntityExtractor {
         if (this.config.enableGleaning) {
           await this.performGleaning(chunk, extracted, entities, relations);
         }
+
+        this.checkTimeout();
 
       } catch (error) {
         console.error(`[EntityExtractor] 提取块 ${chunk.id} 失败:`, error);
@@ -899,7 +917,7 @@ export class EntityExtractor {
     }
 
     const prompt = ENTITY_EXTRACTION_PROMPT.replace('{text}', chunk.content);
-    const chunkTimeout = this.calculateChunkTimeout(chunk.content.length);
+    const chunkTimeout = this.getOperationTimeout(this.calculateChunkTimeout(chunk.content.length));
     
     try {
       // 使用超时包装 LLM 调用
@@ -982,7 +1000,12 @@ export class EntityExtractor {
         .replace('{existingRelations}', existingRelations || '无');
 
       try {
-        const response = await this.llm.invoke(prompt);
+        const gleaningTimeout = this.getOperationTimeout(this.calculateChunkTimeout(chunk.content.length));
+        const response = await this.withTimeout(
+          this.llm.invoke(prompt),
+          gleaningTimeout,
+          `Gleaning 超时 (${Math.round(gleaningTimeout / 1000)}秒)`
+        );
         
         // 使用安全的 JSON 解析
         const parsed = this.safeParseJson(response);
@@ -1101,6 +1124,7 @@ export class EntityExtractor {
     // 计算实体嵌入
     const entityTexts = entityArray.map(e => `${e.name}: ${e.description}`);
     const entityEmbeddings = await this.embeddings.embedDocuments(entityTexts);
+    this.checkTimeout();
     
     for (let i = 0; i < entityArray.length; i++) {
       entityArray[i].embedding = entityEmbeddings[i];
@@ -1132,7 +1156,9 @@ export class EntityExtractor {
     }
 
     // 使用 LLM 确认合并
-    for (const [entity1, entity2, similarity] of candidates) {
+    for (const [entity1, entity2] of candidates) {
+      this.checkTimeout();
+
       if (mergeMap.has(entity1.id) || mergeMap.has(entity2.id)) {
         continue; // 已经被合并过
       }
@@ -1215,7 +1241,12 @@ export class EntityExtractor {
         .replace('{desc2}', entity2.description)
         .replace('{context}', '无额外上下文');
 
-      const response = await this.llm.invoke(prompt);
+      const mergeTimeout = this.getOperationTimeout(Math.min(15000, this.config.maxChunkTimeout));
+      const response = await this.withTimeout(
+        this.llm.invoke(prompt),
+        mergeTimeout,
+        `实体消歧超时 (${Math.round(mergeTimeout / 1000)}秒)`
+      );
       const parsed = this.safeParseJsonGeneric(response);
       
       if (parsed && typeof parsed === 'object') {
@@ -1441,6 +1472,8 @@ export class EntityExtractor {
 
     let summarized = 0;
     for (const [id, community] of communities) {
+      this.checkTimeout();
+
       try {
         const summary = await this.generateCommunitySummary(community, entities, relations);
         community.name = summary.name;
@@ -1465,6 +1498,7 @@ export class EntityExtractor {
         total: communities.size,
         message: `正在生成社区摘要 ${summarized}/${communities.size}...`,
       });
+      this.checkTimeout();
     }
 
     return communities;
@@ -1504,7 +1538,12 @@ export class EntityExtractor {
       .replace('{relations}', relationInfos || '无');
 
     try {
-      const response = await this.llm.invoke(prompt);
+      const summaryTimeout = this.getOperationTimeout(Math.min(20000, this.config.maxChunkTimeout));
+      const response = await this.withTimeout(
+        this.llm.invoke(prompt),
+        summaryTimeout,
+        `社区摘要超时 (${Math.round(summaryTimeout / 1000)}秒)`
+      );
       const parsed = this.safeParseJsonGeneric(response);
       
       if (parsed) {

@@ -147,6 +147,13 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'video',
     status: 'documented',
   },
+  {
+    provider: 'azure',
+    model: 'azure-asr-fast-transcription',
+    displayName: 'Azure STT Fast Transcription',
+    category: 'audio',
+    status: 'documented',
+  },
 ];
 
 export const MODEL_CATEGORIES: Record<Exclude<ModelCategory, 'unknown'>, ModelCategoryConfig> = {

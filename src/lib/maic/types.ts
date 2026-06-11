@@ -206,7 +206,7 @@ export interface CoursePrepared {
   scenes?: CourseScene[];
 }
 
-export type CourseGenerationLanguage = 'zh-CN' | 'en-US';
+export type CourseGenerationLanguage = 'zh-CN' | 'en-US' | 'pt-BR';
 
 export interface CourseSceneCapabilities {
   quiz?: boolean;

@@ -12,6 +12,7 @@ import {
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import {
   RagKernel,
+  RagKernelExecutionError,
   createRagPolicy,
   invokeRagKernelWorkflow,
   resolveRagPolicyId,
@@ -211,13 +212,17 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error("问答处理错误:", error);
-    return NextResponse.json(
+    const response = NextResponse.json(
       { 
         error: "处理问题时发生错误",
         details: error instanceof Error ? error.message : String(error)
       },
       { status: 500 }
     );
+    if (error instanceof RagKernelExecutionError) {
+      attachRagKernelHeaders(response, error.envelope);
+    }
+    return response;
   }
 }
 

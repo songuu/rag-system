@@ -15,7 +15,7 @@ registerHooks({
   },
 });
 
-const { RagKernel } = await import('./kernel.ts');
+const { RagKernel, RagKernelExecutionError } = await import('./kernel.ts');
 const { createRagPolicy, resolveRagPolicyId } = await import('./policies.ts');
 const { invokeRagKernelWorkflow, prepareRagWorkflowRun } = await import('./workflow.ts');
 const { createDefaultRetrievalPlan } = await import('../retrieval/retrieval-plan.ts');
@@ -52,6 +52,7 @@ test('RAG kernel executes a policy and records an envelope without changing outp
   assert.equal(result.output, output);
   assert.equal(result.envelope.trace_id, 'trace-test');
   assert.equal(result.envelope.policy_id, 'memory');
+  assert.equal(result.envelope.status, 'completed');
   assert.equal(result.envelope.retrieval_plan.lanes[0].type, 'memory');
 });
 
@@ -108,6 +109,38 @@ test('RAG workflow preparation creates deterministic fallback trace ids', () => 
   assert.equal(prepared.traceId, 'rag-memory-1781136000000-requestxyz');
   assert.equal(prepared.runnableConfig.configurable.thread_id, 'request-xyz');
   assert.equal(prepared.runnableConfig.configurable.rag_policy, 'memory');
+test('RAG kernel wraps policy failures with traceable execution context', async () => {
+  const originalError = new TypeError('policy exploded');
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'memory',
+      description: 'failing memory policy',
+      execute: async () => {
+        throw originalError;
+      },
+    }),
+  ]);
+
+  await assert.rejects(
+    () =>
+      kernel.execute(
+        createRequest({}),
+        'memory',
+        { now: new Date('2026-05-14T00:00:00.000Z'), traceId: 'trace-failed' }
+      ),
+    error => {
+      assert.ok(error instanceof RagKernelExecutionError);
+      assert.equal(error.originalError, originalError);
+      assert.equal(error.envelope.trace_id, 'trace-failed');
+      assert.equal(error.envelope.policy_id, 'memory');
+      assert.equal(error.envelope.status, 'failed');
+      assert.equal(error.envelope.error.name, 'TypeError');
+      assert.equal(error.envelope.error.message, 'policy exploded');
+      assert.equal(error.envelope.metadata.policy_description, 'failing memory policy');
+      assert.equal(error.envelope.retrieval_plan.lanes[0].type, 'memory');
+      return true;
+    }
+  );
 });
 
 test('default retrieval plan models adaptive entity as filter plus fusion plus rerank', () => {

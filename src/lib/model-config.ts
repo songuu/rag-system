@@ -149,8 +149,8 @@ const DEFAULT_OPENROUTER_CONFIG = {
 };
 
 const DEFAULT_LEMONADE_CONFIG = {
-  llm: 'Qwen3.5-4B-GGUF',
-  reasoning: 'Qwen3.5-4B-GGUF',
+  llm: 'Gemma-4-26B-A4B-it-GGUF',
+  reasoning: 'Gemma-4-26B-A4B-it-GGUF',
 };
 
 // ==================== 环境变量解析 ====================

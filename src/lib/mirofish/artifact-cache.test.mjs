@@ -16,6 +16,7 @@ registerHooks({
 });
 
 const {
+  getMiroFishGraphCacheIdentity,
   getMiroFishOntologyCacheIdentity,
   getMiroFishProfileCacheIdentity,
 } = await import('./artifact-cache.ts');
@@ -66,6 +67,54 @@ test('MiroFish profile cache identity changes with model selection', () => {
   });
 
   assert.notEqual(first.cache_key, second.cache_key);
+});
+
+test('MiroFish graph cache identity includes normalized text and extraction settings', () => {
+  const ontology = {
+    entity_types: [
+      {
+        name: 'Person',
+        description: 'Any person',
+        attributes: [{ name: 'full_name', type: 'text', description: 'Full name' }],
+        examples: ['Alice'],
+      },
+    ],
+    edge_types: [],
+    analysis_summary: 'ignored for graph cache identity',
+  };
+  const first = getMiroFishGraphCacheIdentity({
+    request: {
+      text: '第一段\r\n第二段',
+      ontology,
+      chunkSize: 5000,
+      chunkOverlap: 300,
+      batchSize: 1,
+    },
+    modelOverride,
+  });
+  const same = getMiroFishGraphCacheIdentity({
+    request: {
+      text: '第一段\n第二段',
+      ontology,
+      chunkSize: 5000,
+      chunkOverlap: 300,
+      batchSize: 1,
+    },
+    modelOverride,
+  });
+  const changedChunking = getMiroFishGraphCacheIdentity({
+    request: {
+      text: '第一段\n第二段',
+      ontology,
+      chunkSize: 1000,
+      chunkOverlap: 100,
+      batchSize: 1,
+    },
+    modelOverride,
+  });
+
+  assert.equal(first.cache_key, same.cache_key);
+  assert.notEqual(first.cache_key, changedChunking.cache_key);
 });
 
 function isRelativeImport(specifier) {

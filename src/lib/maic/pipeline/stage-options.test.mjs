@@ -46,6 +46,7 @@ const tree = {
 test('language directive keeps classroom content language explicit', () => {
   assert.match(buildLanguageDirective('zh-CN'), /中文/);
   assert.match(buildLanguageDirective('en-US'), /English/);
+  assert.match(buildLanguageDirective('pt-BR'), /Português do Brasil/);
 });
 
 test('stage builder keeps current capabilities enabled by default', () => {

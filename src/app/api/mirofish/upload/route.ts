@@ -8,6 +8,7 @@
 
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
+import { parsePdfBuffer } from '@/lib/pdf-parser';
 
 export const runtime = 'nodejs';
 
@@ -51,15 +52,8 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // pdf-parse v2.x: 使用 PDFParse 类实例 (与 document-parser.ts 一致)
-    const { PDFParse } = await import('pdf-parse');
-    const parser = new PDFParse({ data: buffer });
-
-    const textResult = await parser.getText();
-    const infoResult = await parser.getInfo();
-    await parser.destroy();
-
-    const text = (textResult.text || '').trim();
+    const pdf = await parsePdfBuffer(buffer, file.name);
+    const text = pdf.text.trim();
     if (!text) {
       return NextResponse.json(
         { success: false, error: '无法从 PDF 中抽取文本（可能是扫描件）' },
@@ -76,7 +70,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       text,
-      pages: infoResult.total ?? 0,
+      pages: pdf.pages,
       filename: safeFilename || 'document.pdf',
       size: file.size,
     });
