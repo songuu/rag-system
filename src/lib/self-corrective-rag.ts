@@ -1,7 +1,7 @@
 /**
  * Self-Corrective RAG - 自省式修正检索增强生成系统
  * 
- * 基于 LangGraph + Milvus 的 4 节点质量控制闭环架构
+ * 基于 LangChain Runnable + Milvus 的 4 节点质量控制闭环架构
  * 
  * 核心节点：
  * 1. Retrieve (检索者) - 从 Milvus 检索 Top-K 文档
@@ -18,7 +18,7 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import { StateGraph, Annotation, END, START } from '@langchain/langgraph';
+import type { RunnableConfig } from '@langchain/core/runnables';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { getMilvusInstance, MilvusConfig } from './milvus-client';
@@ -26,8 +26,11 @@ import {
   createLLM, 
   createEmbedding, 
   selectModelByDimension,
-  getModelFactory 
 } from './model-config';
+import {
+  applyStatePatch,
+  createRunnableStateNode,
+} from './rag/core/langchain-state-workflow';
 
 // ==================== 类型定义 ====================
 
@@ -35,7 +38,7 @@ import {
 export interface SCDocument {
   id: string;
   content: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   score: number;
   gradeResult?: DocumentGrade;
 }
@@ -86,8 +89,8 @@ export interface NodeExecution {
   startTime?: number;
   endTime?: number;
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
 }
 
@@ -134,39 +137,54 @@ export interface SCRAGState {
   milvusConfig?: MilvusConfig;
 }
 
-// ==================== 状态图定义 ====================
+// ==================== LangChain Runnable 状态定义 ====================
 
-const SCRAGStateAnnotation = Annotation.Root({
-  originalQuery: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  currentQuery: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  
-  topK: Annotation<number>({ reducer: (_, b) => b, default: () => 5 }),
-  similarityThreshold: Annotation<number>({ reducer: (_, b) => b, default: () => 0.3 }),
-  maxRewriteAttempts: Annotation<number>({ reducer: (_, b) => b, default: () => 3 }),
-  gradePassThreshold: Annotation<number>({ reducer: (_, b) => b, default: () => 0.6 }),
-  
-  retrievedDocuments: Annotation<SCDocument[]>({ reducer: (_, b) => b, default: () => [] }),
-  graderResult: Annotation<GraderResult | undefined>({ reducer: (_, b) => b }),
-  filteredDocuments: Annotation<SCDocument[]>({ reducer: (_, b) => b, default: () => [] }),
-  
-  rewriteHistory: Annotation<RewriteResult[]>({ reducer: (_, b) => b, default: () => [] }),
-  currentRewriteCount: Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
-  
-  generationResult: Annotation<GenerationResult | undefined>({ reducer: (_, b) => b }),
-  finalAnswer: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  
-  currentNode: Annotation<string>({ reducer: (_, b) => b, default: () => 'start' }),
-  shouldContinue: Annotation<boolean>({ reducer: (_, b) => b, default: () => true }),
-  decisionPath: Annotation<string[]>({ reducer: (a, b) => [...a, ...b], default: () => [] }),
-  
-  nodeExecutions: Annotation<NodeExecution[]>({ reducer: (a, b) => [...a, ...b], default: () => [] }),
-  startTime: Annotation<number>({ reducer: (_, b) => b, default: () => Date.now() }),
-  endTime: Annotation<number | undefined>({ reducer: (_, b) => b }),
-  totalDuration: Annotation<number | undefined>({ reducer: (_, b) => b }),
-  
-  error: Annotation<string | undefined>({ reducer: (_, b) => b }),
-  milvusConfig: Annotation<MilvusConfig | undefined>({ reducer: (_, b) => b }),
-});
+type SCRAGWorkflowState = SCRAGState;
+
+export interface SCRAGWorkflow {
+  invoke(
+    input: Partial<SCRAGWorkflowState>,
+    config?: RunnableConfig
+  ): Promise<SCRAGWorkflowState>;
+}
+
+function createSCRAGWorkflowState(input: Partial<SCRAGWorkflowState>): SCRAGWorkflowState {
+  return {
+    originalQuery: input.originalQuery ?? '',
+    currentQuery: input.currentQuery ?? input.originalQuery ?? '',
+    topK: input.topK ?? 5,
+    similarityThreshold: input.similarityThreshold ?? 0.3,
+    maxRewriteAttempts: input.maxRewriteAttempts ?? 3,
+    gradePassThreshold: input.gradePassThreshold ?? 0.6,
+    retrievedDocuments: input.retrievedDocuments ?? [],
+    graderResult: input.graderResult,
+    filteredDocuments: input.filteredDocuments ?? [],
+    rewriteHistory: input.rewriteHistory ?? [],
+    currentRewriteCount: input.currentRewriteCount ?? 0,
+    generationResult: input.generationResult,
+    finalAnswer: input.finalAnswer ?? '',
+    currentNode: input.currentNode ?? 'start',
+    shouldContinue: input.shouldContinue ?? true,
+    decisionPath: input.decisionPath ?? [],
+    nodeExecutions: input.nodeExecutions ?? [],
+    startTime: input.startTime ?? Date.now(),
+    endTime: input.endTime,
+    totalDuration: input.totalDuration,
+    error: input.error,
+    milvusConfig: input.milvusConfig,
+  };
+}
+
+function mergeSCRAGState(
+  state: SCRAGWorkflowState,
+  patch: Partial<SCRAGWorkflowState>
+): SCRAGWorkflowState {
+  return applyStatePatch(state, patch, ['decisionPath', 'nodeExecutions']);
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 // ==================== 节点实现 ====================
 
@@ -177,7 +195,7 @@ const SCRAGStateAnnotation = Annotation.Root({
  * 输入：当前查询词 (原始或重写后的)
  * 输出：检索到的文档列表
  */
-async function retrieveNode(state: typeof SCRAGStateAnnotation.State): Promise<Partial<typeof SCRAGStateAnnotation.State>> {
+async function retrieveNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWorkflowState>> {
   const startTime = Date.now();
   const query = state.currentQuery || state.originalQuery;
   
@@ -240,8 +258,9 @@ async function retrieveNode(state: typeof SCRAGStateAnnotation.State): Promise<P
       decisionPath: [`RETRIEVE: 检索 ${documents.length} 个文档`],
     };
     
-  } catch (error: any) {
-    console.error(`[RETRIEVE] ❌ 检索失败:`, error.message);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error(`[RETRIEVE] ❌ 检索失败:`, message);
     
     const execution: NodeExecution = {
       node: 'retrieve',
@@ -249,15 +268,15 @@ async function retrieveNode(state: typeof SCRAGStateAnnotation.State): Promise<P
       startTime,
       endTime: Date.now(),
       duration: Date.now() - startTime,
-      error: error.message,
+      error: message,
     };
     
     return {
       retrievedDocuments: [],
       currentNode: 'retrieve',
       nodeExecutions: [execution],
-      error: `检索失败: ${error.message}`,
-      decisionPath: [`RETRIEVE: 检索失败 - ${error.message}`],
+      error: `检索失败: ${message}`,
+      decisionPath: [`RETRIEVE: 检索失败 - ${message}`],
     };
   }
 }
@@ -269,7 +288,7 @@ async function retrieveNode(state: typeof SCRAGStateAnnotation.State): Promise<P
  * 特点：不回答问题，只做二分类判断 (相关/不相关)
  * 价值：过滤 Milvus 返回的噪音，防止垃圾输入导致垃圾输出
  */
-async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Partial<typeof SCRAGStateAnnotation.State>> {
+async function graderNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWorkflowState>> {
   const startTime = Date.now();
   const query = state.originalQuery;
   const documents = state.retrievedDocuments;
@@ -369,7 +388,7 @@ async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Par
           } else {
             throw new Error('No JSON found');
           }
-        } catch (parseError) {
+        } catch {
           // 如果解析失败，使用启发式方法
           const isRelevant = response.toLowerCase().includes('"is_relevant": true') || 
                             response.toLowerCase().includes('"is_relevant":true') ||
@@ -403,8 +422,9 @@ async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Par
         console.log(`[GRADER]   ${grade.isRelevant ? '✅' : '❌'} 文档 ${i + 1}: ${grade.isRelevant ? '相关' : '不相关'} (置信度: ${grade.confidence.toFixed(2)})`);
         console.log(`[GRADER]      理由: ${grade.reasoning}`);
         
-      } catch (gradeError: any) {
-        console.error(`[GRADER]   ⚠️ 文档 ${i + 1} 评估失败:`, gradeError.message);
+      } catch (gradeError) {
+        const message = getErrorMessage(gradeError);
+        console.error(`[GRADER]   ⚠️ 文档 ${i + 1} 评估失败:`, message);
         // 评估失败时保守处理，认为文档可能相关
         documentGrades.push({
           docId: doc.id,
@@ -457,8 +477,9 @@ async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Par
       decisionPath: [`GRADE: ${passRate >= state.gradePassThreshold ? '通过' : '未通过'} (${(passRate * 100).toFixed(1)}%)`],
     };
     
-  } catch (error: any) {
-    console.error(`[GRADER] ❌ 质检失败:`, error.message);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error(`[GRADER] ❌ 质检失败:`, message);
     
     const execution: NodeExecution = {
       node: 'grade',
@@ -466,7 +487,7 @@ async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Par
       startTime,
       endTime: Date.now(),
       duration: Date.now() - startTime,
-      error: error.message,
+      error: message,
     };
     
     // 失败时保守处理，使用所有文档
@@ -482,7 +503,7 @@ async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Par
           confidence: 0.5,
           reasoning: '质检失败，默认通过',
         })),
-        overallReasoning: `质检失败: ${error.message}，默认使用所有文档`,
+        overallReasoning: `质检失败: ${message}，默认使用所有文档`,
       },
       filteredDocuments: documents,
       currentNode: 'grade',
@@ -499,7 +520,7 @@ async function graderNode(state: typeof SCRAGStateAnnotation.State): Promise<Par
  * 触发条件：质检通过率低于阈值
  * 价值：模拟人类"换个词搜搜看"的行为，是图中"循环"的动力
  */
-async function rewriteNode(state: typeof SCRAGStateAnnotation.State): Promise<Partial<typeof SCRAGStateAnnotation.State>> {
+async function rewriteNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWorkflowState>> {
   const startTime = Date.now();
   const currentRewriteCount = state.currentRewriteCount + 1;
   
@@ -577,7 +598,7 @@ async function rewriteNode(state: typeof SCRAGStateAnnotation.State): Promise<Pa
       } else {
         throw new Error('No JSON found');
       }
-    } catch (parseError) {
+    } catch {
       // 使用简单的回退策略
       rewriteResult = {
         rewritten_query: `${state.originalQuery} ${currentRewriteCount > 1 ? '详细' : '具体'}`,
@@ -620,8 +641,9 @@ async function rewriteNode(state: typeof SCRAGStateAnnotation.State): Promise<Pa
       decisionPath: [`REWRITE: "${state.currentQuery}" → "${newRewrite.rewrittenQuery}"`],
     };
     
-  } catch (error: any) {
-    console.error(`[REWRITE] ❌ 重写失败:`, error.message);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error(`[REWRITE] ❌ 重写失败:`, message);
     
     const execution: NodeExecution = {
       node: 'rewrite',
@@ -629,7 +651,7 @@ async function rewriteNode(state: typeof SCRAGStateAnnotation.State): Promise<Pa
       startTime,
       endTime: Date.now(),
       duration: Date.now() - startTime,
-      error: error.message,
+      error: message,
     };
     
     return {
@@ -637,8 +659,8 @@ async function rewriteNode(state: typeof SCRAGStateAnnotation.State): Promise<Pa
       currentNode: 'rewrite',
       nodeExecutions: [execution],
       shouldContinue: false,
-      error: `查询重写失败: ${error.message}`,
-      decisionPath: [`REWRITE: 重写失败 - ${error.message}`],
+      error: `查询重写失败: ${message}`,
+      decisionPath: [`REWRITE: 重写失败 - ${message}`],
     };
   }
 }
@@ -650,7 +672,7 @@ async function rewriteNode(state: typeof SCRAGStateAnnotation.State): Promise<Pa
  * 前置条件：只有通过 Grader 质检的文档才能进入
  * 价值：确保 LLM 拿到的 Context 是纯净的，从而生成准确的回答
  */
-async function generateNode(state: typeof SCRAGStateAnnotation.State): Promise<Partial<typeof SCRAGStateAnnotation.State>> {
+async function generateNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWorkflowState>> {
   const startTime = Date.now();
   const documents = state.filteredDocuments;
   
@@ -727,9 +749,10 @@ async function generateNode(state: typeof SCRAGStateAnnotation.State): Promise<P
       context: context.substring(0, 4000), // 限制 context 长度
     });
     
-    const sources = documents.map((doc, i) => 
-      doc.metadata?.filename || doc.metadata?.source || `文档 ${i + 1}`
-    );
+    const sources = documents.map((doc, i) => {
+      const source = doc.metadata?.filename ?? doc.metadata?.source;
+      return typeof source === 'string' ? source : `文档 ${i + 1}`;
+    });
     
     const generationResult: GenerationResult = {
       answer: answer.trim(),
@@ -766,8 +789,9 @@ async function generateNode(state: typeof SCRAGStateAnnotation.State): Promise<P
       decisionPath: [`GENERATE: 基于 ${documents.length} 个文档生成回答`],
     };
     
-  } catch (error: any) {
-    console.error(`[GENERATE] ❌ 生成失败:`, error.message);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    console.error(`[GENERATE] ❌ 生成失败:`, message);
     
     const execution: NodeExecution = {
       node: 'generate',
@@ -775,18 +799,18 @@ async function generateNode(state: typeof SCRAGStateAnnotation.State): Promise<P
       startTime,
       endTime: Date.now(),
       duration: Date.now() - startTime,
-      error: error.message,
+      error: message,
     };
     
     return {
-      finalAnswer: `抱歉，生成回答时遇到错误: ${error.message}`,
+      finalAnswer: `抱歉，生成回答时遇到错误: ${message}`,
       currentNode: 'generate',
       shouldContinue: false,
       nodeExecutions: [execution],
-      error: `生成失败: ${error.message}`,
+      error: `生成失败: ${message}`,
       endTime: Date.now(),
       totalDuration: Date.now() - state.startTime,
-      decisionPath: [`GENERATE: 生成失败 - ${error.message}`],
+      decisionPath: [`GENERATE: 生成失败 - ${message}`],
     };
   }
 }
@@ -799,7 +823,7 @@ async function generateNode(state: typeof SCRAGStateAnnotation.State): Promise<P
  * - 如果质检不通过且未达最大重写次数：进入 Rewrite
  * - 如果质检不通过但已达最大重写次数：强制进入 Generate
  */
-function routeAfterGrade(state: typeof SCRAGStateAnnotation.State): 'rewrite' | 'generate' {
+function routeAfterGrade(state: SCRAGWorkflowState): 'rewrite' | 'generate' {
   const graderResult = state.graderResult;
   
   if (!graderResult) {
@@ -819,27 +843,34 @@ function routeAfterGrade(state: typeof SCRAGStateAnnotation.State): 'rewrite' | 
 // ==================== 构建状态图 ====================
 
 /**
- * 构建 Self-Corrective RAG 状态图
+ * 构建 Self-Corrective RAG Runnable 工作流
  * 
  * 流程：
- * START → retrieve → grade → [rewrite → retrieve] (循环) → generate → END
+ * start → retrieve → grade → [rewrite → retrieve] (循环) → generate → done
  */
-function buildSCRAGGraph() {
-  const workflow = new StateGraph(SCRAGStateAnnotation)
-    // 添加节点
-    .addNode('retrieve', retrieveNode)
-    .addNode('grade', graderNode)
-    .addNode('rewrite', rewriteNode)
-    .addNode('generate', generateNode)
-    
-    // 定义边
-    .addEdge(START, 'retrieve')       // 入口 → 检索
-    .addEdge('retrieve', 'grade')     // 检索 → 质检
-    .addConditionalEdges('grade', routeAfterGrade) // 质检 → 条件路由
-    .addEdge('rewrite', 'retrieve')   // 重写 → 重新检索（循环）
-    .addEdge('generate', END);        // 生成 → 结束
-  
-  return workflow.compile();
+function buildSCRAGGraph(): SCRAGWorkflow {
+  const retrieve = createRunnableStateNode<SCRAGWorkflowState>('self-corrective-rag', 'retrieve', retrieveNode);
+  const grade = createRunnableStateNode<SCRAGWorkflowState>('self-corrective-rag', 'grade', graderNode);
+  const rewrite = createRunnableStateNode<SCRAGWorkflowState>('self-corrective-rag', 'rewrite', rewriteNode);
+  const generate = createRunnableStateNode<SCRAGWorkflowState>('self-corrective-rag', 'generate', generateNode);
+
+  return {
+    async invoke(input, config) {
+      let state = createSCRAGWorkflowState(input);
+
+      while (state.shouldContinue) {
+        state = mergeSCRAGState(state, await retrieve.invoke(state, config));
+        state = mergeSCRAGState(state, await grade.invoke(state, config));
+
+        if (routeAfterGrade(state) !== 'rewrite') break;
+
+        state = mergeSCRAGState(state, await rewrite.invoke(state, config));
+        if (!state.shouldContinue) break;
+      }
+
+      return mergeSCRAGState(state, await generate.invoke(state, config));
+    },
+  };
 }
 
 // ==================== 主入口 ====================
@@ -882,7 +913,7 @@ export async function executeSCRAG(input: SCRAGInput): Promise<SCRAGOutput> {
   const startTime = Date.now();
   
   // 初始状态
-  const initialState: Partial<typeof SCRAGStateAnnotation.State> = {
+  const initialState: Partial<SCRAGWorkflowState> = {
     originalQuery: input.query,
     currentQuery: input.query,
     topK: input.topK || 5,
@@ -927,11 +958,12 @@ export async function executeSCRAG(input: SCRAGInput): Promise<SCRAGOutput> {
     
     return output;
     
-  } catch (error: any) {
+  } catch (error) {
+    const message = getErrorMessage(error);
     console.error(`[SC-RAG] ❌ 执行失败:`, error);
     
     return {
-      answer: `执行失败: ${error.message}`,
+      answer: `执行失败: ${message}`,
       originalQuery: input.query,
       finalQuery: input.query,
       wasRewritten: false,
@@ -940,9 +972,9 @@ export async function executeSCRAG(input: SCRAGInput): Promise<SCRAGOutput> {
       retrievedDocuments: [],
       filteredDocuments: [],
       nodeExecutions: [],
-      decisionPath: [`ERROR: ${error.message}`],
+      decisionPath: [`ERROR: ${message}`],
       totalDuration: Date.now() - startTime,
-      error: error.message,
+      error: message,
     };
   }
 }

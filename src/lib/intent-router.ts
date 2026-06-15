@@ -1,7 +1,7 @@
 /**
  * 意图路由器 (Semantic Router)
  * 
- * 基于 LangGraph 的智能意图分类系统
+ * 基于 LangChain Runnable 的智能意图分类系统
  * 
  * 三条车道:
  * - Lane 1 (Fast Track): 闲聊/通用问题，0 IO，< 1秒
@@ -11,9 +11,12 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import { StateGraph, Annotation, END, START } from '@langchain/langgraph';
-import { BaseMessage } from '@langchain/core/messages';
-import { createLLM, getModelFactory } from './model-config';
+import type { RunnableConfig } from '@langchain/core/runnables';
+import { createLLM } from './model-config';
+import {
+  applyStatePatch,
+  createRunnableStateNode,
+} from './rag/core/langchain-state-workflow';
 
 // ==================== 类型定义 ====================
 
@@ -109,15 +112,26 @@ const CLASSIFICATION_PROMPT = `你是一个智能意图分类器。分析用户�
 
 你的输出:`;
 
-// ==================== LangGraph 状态定义 ====================
+// ==================== LangChain Runnable 状态定义 ====================
 
-const RouterAnnotation = Annotation.Root({
-  query: Annotation<string>(),
-  classification: Annotation<IntentClassification | null>({ reducer: (_, b) => b, default: () => null }),
-  routerModel: Annotation<string>({ reducer: (_, b) => b, default: () => 'llama3.2' }),
-  startTime: Annotation<number>({ reducer: (_, b) => b, default: () => Date.now() }),
-  error: Annotation<string | undefined>()
-});
+type RouterWorkflowState = RouterState;
+
+export interface IntentRouterWorkflow {
+  invoke(
+    input: Partial<RouterWorkflowState>,
+    config?: RunnableConfig
+  ): Promise<RouterWorkflowState>;
+}
+
+function createRouterWorkflowState(input: Partial<RouterWorkflowState>): RouterWorkflowState {
+  return {
+    query: input.query ?? '',
+    classification: input.classification ?? null,
+    routerModel: input.routerModel ?? 'llama3.2',
+    startTime: input.startTime ?? Date.now(),
+    error: input.error,
+  };
+}
 
 // ==================== 路由节点 ====================
 
@@ -126,8 +140,8 @@ const RouterAnnotation = Annotation.Root({
  * 使用轻量级模型快速分类用户意图
  */
 async function classifyIntentNode(
-  state: typeof RouterAnnotation.State
-): Promise<Partial<typeof RouterAnnotation.State>> {
+  state: RouterWorkflowState
+): Promise<Partial<RouterWorkflowState>> {
   const nodeStartTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -357,13 +371,20 @@ function escapeBraces(text: string): string {
 /**
  * 构建意图路由图
  */
-export function buildIntentRouterGraph() {
-  const workflow = new StateGraph(RouterAnnotation)
-    .addNode('classify', classifyIntentNode)
-    .addEdge(START, 'classify')
-    .addEdge('classify', END);
+export function buildIntentRouterGraph(): IntentRouterWorkflow {
+  const classify = createRunnableStateNode<RouterWorkflowState>(
+    'intent-router',
+    'classify',
+    classifyIntentNode
+  );
 
-  return workflow.compile();
+  return {
+    async invoke(input, config) {
+      let state = createRouterWorkflowState(input);
+      state = applyStatePatch(state, await classify.invoke(state, config));
+      return state;
+    },
+  };
 }
 
 // ==================== 主执行函数 ====================
@@ -377,7 +398,7 @@ export async function routeIntent(
 ): Promise<IntentClassification> {
   const startTime = Date.now();
   
-  const initialState: Partial<typeof RouterAnnotation.State> = {
+  const initialState: Partial<RouterWorkflowState> = {
     query,
     routerModel: config?.routerModel || 'qwen2.5:0.5b',
     startTime
@@ -430,14 +451,14 @@ export interface LaneHandler {
   lane: 1 | 2 | 3;
   name: string;
   description: string;
-  execute: (query: string, config: any) => AsyncGenerator<any, void, unknown>;
+  execute: (query: string, config: unknown) => AsyncGenerator<unknown, void, unknown>;
 }
 
 export interface LaneResult {
   lane: 1 | 2 | 3;
   laneName: string;
   answer: string;
-  thinkingProcess?: any[];
-  retrievalStats?: any;
+  thinkingProcess?: unknown[];
+  retrievalStats?: unknown;
   totalDuration: number;
 }

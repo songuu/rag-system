@@ -1,5 +1,5 @@
 /**
- * Agentic RAG - 基于 LangGraph 的代理化检索增强生成系统
+ * Agentic RAG - 基于 LangChain Runnable 的代理化检索增强生成系统
  *
  * 新架构 (按流程图实现):
  * 1. BFF 层语义缓存：命中直接返回
@@ -12,7 +12,7 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import { StateGraph, Annotation, END, START } from '@langchain/langgraph';
+import type { RunnableConfig } from '@langchain/core/runnables';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
@@ -32,6 +32,10 @@ import {
 } from './model-config';
 import { getEmbeddingProvider, getEmbeddingConfigSummary } from './embedding-config';
 import { SemanticCache } from './semantic-cache';
+import {
+  applyStatePatch,
+  createRunnableStateNode,
+} from './rag/core/langchain-state-workflow';
 
 // LangSmith 追踪配置
 const LANGSMITH_ENABLED = process.env.LANGCHAIN_TRACING_V2 === 'true';
@@ -164,46 +168,81 @@ export interface AgentState {
   };
 }
 
-// ==================== 状态图定义 ====================
+// ==================== LangChain Runnable 状态定义 ====================
 
-const AgentStateAnnotation = Annotation.Root({
-  query: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  originalQuery: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  processedQuery: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  topK: Annotation<number>({ reducer: (_, b) => b, default: () => 5 }),
-  similarityThreshold: Annotation<number>({ reducer: (_, b) => b, default: () => 0.1 }),
-  maxRetries: Annotation<number>({ reducer: (_, b) => b, default: () => 1 }),
+type AgenticWorkflowState = AgentState;
 
-  queryAnalysis: Annotation<QueryAnalysis | undefined>({ reducer: (_, b) => b }),
-  retrievedDocuments: Annotation<RetrievedDocument[]>({ reducer: (_, b) => b, default: () => [] }),
-  originalQueryResults: Annotation<RetrievedDocument[]>({ reducer: (_, b) => b, default: () => [] }),
-  processedQueryResults: Annotation<RetrievedDocument[]>({ reducer: (_, b) => b, default: () => [] }),
-  retrievalQuality: Annotation<RetrievalQuality | undefined>({ reducer: (_, b) => b }),
-  selfReflection: Annotation<SelfReflectionScore | undefined>({ reducer: (_, b) => b }),
-  retrievalGrade: Annotation<RetrievalGradeResult | undefined>({ reducer: (_, b) => b }),
+function createAgenticWorkflowState(input: Partial<AgenticWorkflowState>): AgenticWorkflowState {
+  const query = input.query ?? input.originalQuery ?? '';
 
-  context: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  answer: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  hallucinationCheck: Annotation<HallucinationCheck | undefined>({ reducer: (_, b) => b }),
+  return {
+    query,
+    originalQuery: input.originalQuery ?? query,
+    processedQuery: input.processedQuery ?? query,
+    topK: input.topK ?? 5,
+    similarityThreshold: input.similarityThreshold ?? 0.1,
+    maxRetries: input.maxRetries ?? 1,
+    queryAnalysis: input.queryAnalysis,
+    retrievedDocuments: input.retrievedDocuments ?? [],
+    originalQueryResults: input.originalQueryResults ?? [],
+    processedQueryResults: input.processedQueryResults ?? [],
+    retrievalQuality: input.retrievalQuality,
+    selfReflection: input.selfReflection,
+    retrievalGrade: input.retrievalGrade,
+    context: input.context ?? '',
+    answer: input.answer ?? '',
+    hallucinationCheck: input.hallucinationCheck,
+    currentStep: input.currentStep ?? 'start',
+    retryCount: input.retryCount ?? 0,
+    shouldRewrite: input.shouldRewrite ?? false,
+    shouldRetrieve: input.shouldRetrieve ?? true,
+    gradePassThreshold: input.gradePassThreshold ?? 0.5,
+    workflowSteps: input.workflowSteps ?? [],
+    startTime: input.startTime ?? Date.now(),
+    endTime: input.endTime,
+    totalDuration: input.totalDuration,
+    error: input.error,
+    debugInfo: input.debugInfo,
+  };
+}
 
-  currentStep: Annotation<string>({ reducer: (_, b) => b, default: () => 'start' }),
-  retryCount: Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
-  shouldRewrite: Annotation<boolean>({ reducer: (_, b) => b, default: () => false }),
-  shouldRetrieve: Annotation<boolean>({ reducer: (_, b) => b, default: () => true }),
-  gradePassThreshold: Annotation<number>({ reducer: (_, b) => b, default: () => 0.5 }),
+function mergeAgenticState(
+  state: AgenticWorkflowState,
+  patch: Partial<AgenticWorkflowState>
+): AgenticWorkflowState {
+  return applyStatePatch(state, patch, ['workflowSteps']);
+}
 
-  workflowSteps: Annotation<WorkflowStep[]>({
-    reducer: (a, b) => [...a, ...b],
-    default: () => [],
-  }),
-
-  startTime: Annotation<number>({ reducer: (_, b) => b, default: () => Date.now() }),
-  endTime: Annotation<number | undefined>({ reducer: (_, b) => b }),
-  totalDuration: Annotation<number | undefined>({ reducer: (_, b) => b }),
-  error: Annotation<string | undefined>({ reducer: (_, b) => b }),
-
-  debugInfo: Annotation<AgentState['debugInfo'] | undefined>({ reducer: (_, b) => b }),
-});
+function sanitizeAgenticStreamState(state: AgenticWorkflowState): Partial<AgenticWorkflowState> {
+  return {
+    query: state.query,
+    originalQuery: state.originalQuery,
+    processedQuery: state.processedQuery,
+    topK: state.topK,
+    similarityThreshold: state.similarityThreshold,
+    maxRetries: state.maxRetries,
+    queryAnalysis: state.queryAnalysis,
+    retrievedDocuments: state.retrievedDocuments,
+    originalQueryResults: state.originalQueryResults,
+    processedQueryResults: state.processedQueryResults,
+    retrievalQuality: state.retrievalQuality,
+    selfReflection: state.selfReflection,
+    retrievalGrade: state.retrievalGrade,
+    context: state.context,
+    answer: state.answer,
+    hallucinationCheck: state.hallucinationCheck,
+    currentStep: state.currentStep,
+    retryCount: state.retryCount,
+    shouldRewrite: state.shouldRewrite,
+    shouldRetrieve: state.shouldRetrieve,
+    gradePassThreshold: state.gradePassThreshold,
+    workflowSteps: state.workflowSteps,
+    startTime: state.startTime,
+    endTime: state.endTime,
+    totalDuration: state.totalDuration,
+    error: state.error,
+  };
+}
 
 const QUERY_ANALYSIS_SCHEMA = {
   name: 'AgenticQueryAnalysis',
@@ -265,13 +304,13 @@ type HallucinationPayload = {
 
 type AgenticCompiledGraph = {
   invoke(
-    input: Partial<typeof AgentStateAnnotation.State>,
-    options?: { recursionLimit?: number }
-  ): Promise<unknown>;
+    input: Partial<AgenticWorkflowState>,
+    options?: RunnableConfig & { recursionLimit?: number }
+  ): Promise<AgenticWorkflowState>;
   stream(
-    input: Partial<typeof AgentStateAnnotation.State>,
-    options?: { recursionLimit?: number }
-  ): Promise<AsyncIterable<Partial<typeof AgentStateAnnotation.State>>> | AsyncIterable<Partial<typeof AgentStateAnnotation.State>>;
+    input: Partial<AgenticWorkflowState>,
+    options?: RunnableConfig & { recursionLimit?: number }
+  ): AsyncIterable<Partial<AgenticWorkflowState>>;
 };
 
 type MatchingEmbeddings = {
@@ -480,7 +519,7 @@ export class AgenticRAGSystem {
   // ==================== 节点实现 ====================
 
   /** 路 A: analyze_query - 小模型/极速 API (~50ms) */
-  private async analyzeQuery(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async analyzeQuery(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
 
     try {
@@ -549,7 +588,7 @@ export class AgenticRAGSystem {
   }
 
   /** 路 B: retrieve_original - 向量库查询 (~200ms)，仅使用原始查询 */
-  private async retrieveOriginal(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async retrieveOriginal(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const query = state.originalQuery || state.query;
 
@@ -626,7 +665,7 @@ export class AgenticRAGSystem {
   }
 
   /** 并发执行 (Fan-out) + 汇聚 (Join): analyze_query || retrieve_original */
-  private async fanOutAndJoin(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async fanOutAndJoin(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
 
     const [analysisResult, retrievalResult] = await Promise.all([
@@ -634,7 +673,7 @@ export class AgenticRAGSystem {
       this.retrieveOriginal(state),
     ]);
 
-    const merged: Partial<typeof AgentStateAnnotation.State> = {
+    const merged: Partial<AgenticWorkflowState> = {
       ...analysisResult,
       ...retrievalResult,
       currentStep: 'joined',
@@ -657,7 +696,7 @@ export class AgenticRAGSystem {
   }
 
   /** grade_retrieval: 专用 Reranker 模型 (<100ms)，低分触发最大 1 次重试 */
-  private async gradeRetrieval(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async gradeRetrieval(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const MAX_RETRIES = 1;
 
@@ -782,7 +821,7 @@ export class AgenticRAGSystem {
   }
 
   /** 查询重写（用于低分重试，最大 1 次） */
-  private async rewriteQuery(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async rewriteQuery(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
 
     try {
@@ -833,7 +872,7 @@ export class AgenticRAGSystem {
   }
 
   /** 重写后重新检索（使用重写后的查询） */
-  private async retrieveAfterRewrite(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async retrieveAfterRewrite(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const query = state.processedQuery || state.query;
 
@@ -889,7 +928,7 @@ export class AgenticRAGSystem {
   }
 
   /** generate: 大模型生成，支持流式输出 */
-  private async generate(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async generate(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const isGreeting = !state.shouldRetrieve && state.retrievedDocuments.length === 0;
 
@@ -1036,7 +1075,7 @@ export class AgenticRAGSystem {
     }
   }
 
-  private async finalize(state: typeof AgentStateAnnotation.State): Promise<Partial<typeof AgentStateAnnotation.State>> {
+  private async finalize(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const endTime = Date.now();
     return {
       endTime,
@@ -1053,7 +1092,7 @@ export class AgenticRAGSystem {
    *  BFF 语义缓存 ──命中──> 直接返回
    *       │ 未命中
    *       v
-   *  START ──> fan_out_join (analyze_query || retrieve_original)
+   *  start ──> fan_out_join (analyze_query || retrieve_original)
    *       │
    *       v
    *  需要检索? ──No──> generate (纯闲聊)
@@ -1068,35 +1107,68 @@ export class AgenticRAGSystem {
    *       v
    *  异步 check_hallucination ──严重幻觉──> 发送撤回/修正事件
    *       v
-   *  finalize ──> END
+   *  finalize ──> done
    */
   private buildGraph(): AgenticCompiledGraph {
-    const workflow = new StateGraph(AgentStateAnnotation)
-      .addNode('fan_out_join', this.fanOutAndJoin.bind(this))
-      .addNode('grade_retrieval', this.gradeRetrieval.bind(this))
-      .addNode('rewrite_query', this.rewriteQuery.bind(this))
-      .addNode('retrieve_after_rewrite', this.retrieveAfterRewrite.bind(this))
-      .addNode('generate', this.generate.bind(this))
-      .addNode('finalize', this.finalize.bind(this))
+    const fanOutJoin = createRunnableStateNode<AgenticWorkflowState>('agentic-rag', 'fan_out_join', this.fanOutAndJoin.bind(this));
+    const gradeRetrieval = createRunnableStateNode<AgenticWorkflowState>('agentic-rag', 'grade_retrieval', this.gradeRetrieval.bind(this));
+    const rewriteQuery = createRunnableStateNode<AgenticWorkflowState>('agentic-rag', 'rewrite_query', this.rewriteQuery.bind(this));
+    const retrieveAfterRewrite = createRunnableStateNode<AgenticWorkflowState>('agentic-rag', 'retrieve_after_rewrite', this.retrieveAfterRewrite.bind(this));
+    const generate = createRunnableStateNode<AgenticWorkflowState>('agentic-rag', 'generate', this.generate.bind(this));
+    const finalize = createRunnableStateNode<AgenticWorkflowState>('agentic-rag', 'finalize', this.finalize.bind(this));
 
-      .addEdge(START, 'fan_out_join')
+    const invoke = async (
+      input: Partial<AgenticWorkflowState>,
+      config?: RunnableConfig
+    ): Promise<AgenticWorkflowState> => {
+      let state = createAgenticWorkflowState(input);
+      state = mergeAgenticState(state, await fanOutJoin.invoke(state, config));
 
-      .addConditionalEdges('fan_out_join', (state) => {
-        return state.shouldRetrieve ? 'grade_retrieval' : 'generate';
-      })
+      if (state.shouldRetrieve) {
+        state = mergeAgenticState(state, await gradeRetrieval.invoke(state, config));
 
-      .addConditionalEdges('grade_retrieval', (state) => {
-        if (state.shouldRewrite && state.retryCount <= 1) return 'rewrite_query';
-        return 'generate';
-      })
+        while (state.shouldRewrite && state.retryCount <= 1) {
+          state = mergeAgenticState(state, await rewriteQuery.invoke(state, config));
+          state = mergeAgenticState(state, await retrieveAfterRewrite.invoke(state, config));
+          state = mergeAgenticState(state, await gradeRetrieval.invoke(state, config));
+        }
+      }
 
-      .addEdge('rewrite_query', 'retrieve_after_rewrite')
-      .addEdge('retrieve_after_rewrite', 'grade_retrieval')
+      state = mergeAgenticState(state, await generate.invoke(state, config));
+      return mergeAgenticState(state, await finalize.invoke(state, config));
+    };
 
-      .addEdge('generate', 'finalize')
-      .addEdge('finalize', END);
+    return {
+      invoke,
+      stream: async function* (input, config) {
+        let state = createAgenticWorkflowState(input);
 
-    return workflow.compile() as unknown as AgenticCompiledGraph;
+        state = mergeAgenticState(state, await fanOutJoin.invoke(state, config));
+        yield sanitizeAgenticStreamState(state);
+
+        if (state.shouldRetrieve) {
+          state = mergeAgenticState(state, await gradeRetrieval.invoke(state, config));
+          yield sanitizeAgenticStreamState(state);
+
+          while (state.shouldRewrite && state.retryCount <= 1) {
+            state = mergeAgenticState(state, await rewriteQuery.invoke(state, config));
+            yield sanitizeAgenticStreamState(state);
+
+            state = mergeAgenticState(state, await retrieveAfterRewrite.invoke(state, config));
+            yield sanitizeAgenticStreamState(state);
+
+            state = mergeAgenticState(state, await gradeRetrieval.invoke(state, config));
+            yield sanitizeAgenticStreamState(state);
+          }
+        }
+
+        state = mergeAgenticState(state, await generate.invoke(state, config));
+        yield sanitizeAgenticStreamState(state);
+
+        state = mergeAgenticState(state, await finalize.invoke(state, config));
+        yield sanitizeAgenticStreamState(state);
+      },
+    };
   }
 
   // ==================== 公共接口 ====================

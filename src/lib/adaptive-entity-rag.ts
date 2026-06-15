@@ -3,7 +3,7 @@
 /**
  * 自适应实体路由 RAG (Adaptive Entity-Routing RAG)
  * 
- * 基于 LangGraph 的四层架构设计：
+ * 基于 LangChain Runnable-inspired 的四层架构设计：
  * 1. 认知解析层 (Cognitive Parsing Layer) - 实体提取与意图分类
  * 2. 策略控制层 (Strategic Control Layer) - 实体校验、自适应路由、约束松弛
  * 3. 执行检索层 (Execution Layer) - 结构化/语义检索、混合重排序

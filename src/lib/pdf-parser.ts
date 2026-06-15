@@ -27,6 +27,16 @@ export interface PdfTextItemLike {
   height: number;
 }
 
+interface LiteParsePageLike {
+  text?: string;
+  textItems?: PdfTextItemLike[];
+}
+
+interface LiteParseResultLike {
+  text?: string;
+  pages: LiteParsePageLike[];
+}
+
 const DEFAULT_LITEPARSE_MAX_PAGES = 1000;
 
 export async function parsePdfBuffer(
@@ -109,12 +119,12 @@ async function parseWithLiteParse(
     quiet: true,
   });
 
-  const result = await parser.parse(buffer);
-  const pageTexts = result.pages.map((page) => {
-    const readableText = buildReadableTextFromPdfTextItems(page.textItems);
+  const result: LiteParseResultLike = await parser.parse(buffer);
+  const pageTexts = result.pages.map((page: LiteParsePageLike) => {
+    const readableText = buildReadableTextFromPdfTextItems(page.textItems ?? []);
     return readableText || normalizeParsedPdfText(page.text || '');
   });
-  const text = normalizeParsedPdfText(pageTexts.join('\n\f\n') || result.text);
+  const text = normalizeParsedPdfText(pageTexts.join('\n\f\n') || result.text || '');
 
   return {
     text,

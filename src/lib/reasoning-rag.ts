@@ -1,5 +1,5 @@
 /**
- * Reasoning RAG - 基于推理模型的检索增强生成系统
+ * Reasoning RAG - 基于 LangChain Runnable 和推理模型的检索增强生成系统
  * 
  * 支持 DeepSeek-R1、Qwen3 等推理模型的高级 RAG 系统
  * 
@@ -22,24 +22,22 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import { StateGraph, Annotation, END, START } from '@langchain/langgraph';
+import type { RunnableConfig } from '@langchain/core/runnables';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
-import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { Embeddings } from '@langchain/core/embeddings';
 import { getMilvusInstance, MilvusConfig } from './milvus-client';
 import {
-  createLLM,
   createEmbedding,
   createReasoningModel,
-  getModelDimension,
   selectModelByDimension,
-  getModelFactory,
-  isOllamaProvider,
   getConfigSummary,
 } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
 import { getReasoningRAGConfig } from './milvus-config';
+import {
+  applyStatePatch,
+  createRunnableStateNode,
+} from './rag/core/langchain-state-workflow';
 
 // ==================== 类型定义 ====================
 
@@ -69,14 +67,14 @@ export interface ThinkingStep {
   type: 'reasoning' | 'planning' | 'reflection' | 'decision';
   content: string;
   confidence?: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 /** 检索文档 */
 export interface RetrievedDocument {
   id: string;
   content: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   score: number;
   source: 'dense' | 'sparse' | 'hybrid';
   rerankScore?: number;
@@ -117,8 +115,8 @@ export interface NodeExecution {
   startTime?: number;
   endTime?: number;
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
 }
 
@@ -204,16 +202,23 @@ export interface ReasoningRAGOutput {
   error?: string;
 }
 
-// ==================== 状态图定义 ====================
+// ==================== LangChain Runnable 状态定义 ====================
 
-const ReasoningRAGAnnotation = Annotation.Root({
-  messages: Annotation<BaseMessage[]>({ reducer: (_, b) => b, default: () => [] }),
-  scratchpad: Annotation<ThinkingStep[]>({ reducer: (a, b) => [...a, ...b], default: () => [] }),
-  originalQuery: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  
-  config: Annotation<ReasoningRAGState['config']>({
-    reducer: (_, b) => b,
-    default: () => ({
+type ReasoningWorkflowState = ReasoningRAGState;
+
+export interface ReasoningRAGWorkflow {
+  invoke(
+    input: Partial<ReasoningWorkflowState>,
+    config?: RunnableConfig
+  ): Promise<ReasoningWorkflowState>;
+}
+
+function createReasoningWorkflowState(input: Partial<ReasoningWorkflowState>): ReasoningWorkflowState {
+  return {
+    messages: input.messages ?? [],
+    scratchpad: input.scratchpad ?? [],
+    originalQuery: input.originalQuery ?? '',
+    config: input.config ?? {
       reasoningModel: 'deepseek-r1:7b',
       embeddingModel: 'nomic-embed-text',
       topK: 50,
@@ -223,69 +228,37 @@ const ReasoningRAGAnnotation = Annotation.Root({
       enableRerank: true,
       maxIterations: 3,
       temperature: 0.7,
-    })
-  }),
-  
-  orchestratorDecision: Annotation<OrchestratorDecision | undefined>({ reducer: (_, b) => b }),
-  currentIteration: Annotation<number>({ reducer: (_, b) => b, default: () => 0 }),
-  
-  retrievalResult: Annotation<HybridRetrievalResult | undefined>({ reducer: (_, b) => b }),
-  formattedContext: Annotation<string | undefined>({ reducer: (_, b) => b }),
-  
-  finalAnswer: Annotation<string>({ reducer: (_, b) => b, default: () => '' }),
-  
-  currentNode: Annotation<string>({ reducer: (_, b) => b, default: () => 'start' }),
-  shouldContinue: Annotation<boolean>({ reducer: (_, b) => b, default: () => true }),
-  decisionPath: Annotation<string[]>({ reducer: (a, b) => [...a, ...b], default: () => [] }),
-  
-  nodeExecutions: Annotation<NodeExecution[]>({ reducer: (a, b) => [...a, ...b], default: () => [] }),
-  startTime: Annotation<number>({ reducer: (_, b) => b, default: () => Date.now() }),
-  endTime: Annotation<number | undefined>({ reducer: (_, b) => b }),
-  totalDuration: Annotation<number | undefined>({ reducer: (_, b) => b }),
-  
-  error: Annotation<string | undefined>({ reducer: (_, b) => b }),
-});
+    },
+    orchestratorDecision: input.orchestratorDecision,
+    currentIteration: input.currentIteration ?? 0,
+    retrievalResult: input.retrievalResult,
+    formattedContext: input.formattedContext,
+    finalAnswer: input.finalAnswer ?? '',
+    currentNode: input.currentNode ?? 'start',
+    shouldContinue: input.shouldContinue ?? true,
+    decisionPath: input.decisionPath ?? [],
+    nodeExecutions: input.nodeExecutions ?? [],
+    startTime: input.startTime ?? Date.now(),
+    endTime: input.endTime,
+    totalDuration: input.totalDuration,
+    error: input.error,
+  };
+}
 
-// ==================== 工具定义 ====================
+function mergeReasoningState(
+  state: ReasoningWorkflowState,
+  patch: Partial<ReasoningWorkflowState>
+): ReasoningWorkflowState {
+  return applyStatePatch(state, patch, ['scratchpad', 'decisionPath', 'nodeExecutions']);
+}
 
-const AVAILABLE_TOOLS = [
-  {
-    name: 'search_knowledge_base',
-    description: '搜索知识库获取相关信息。当用户询问需要检索知识库的问题时使用。',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: '搜索查询词'
-        },
-        filters: {
-          type: 'object',
-          description: '可选的过滤条件',
-          properties: {
-            source: { type: 'string' },
-            date_range: { type: 'string' }
-          }
-        }
-      },
-      required: ['query']
-    }
-  },
-  {
-    name: 'clarify_question',
-    description: '当问题不明确需要澄清时使用',
-    parameters: {
-      type: 'object',
-      properties: {
-        question: {
-          type: 'string',
-          description: '需要向用户确认的问题'
-        }
-      },
-      required: ['question']
-    }
-  }
-];
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 // ==================== BM25 简单实现 ====================
 
@@ -380,8 +353,8 @@ class SimpleBM25 {
  * 3. 生成思维链
  */
 async function orchestratorNode(
-  state: typeof ReasoningRAGAnnotation.State
-): Promise<Partial<typeof ReasoningRAGAnnotation.State>> {
+  state: ReasoningWorkflowState
+): Promise<Partial<ReasoningWorkflowState>> {
   const startTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -614,8 +587,8 @@ async function orchestratorNode(
  * 3. 路由到对应的工具执行
  */
 async function toolGatewayNode(
-  state: typeof ReasoningRAGAnnotation.State
-): Promise<Partial<typeof ReasoningRAGAnnotation.State>> {
+  state: ReasoningWorkflowState
+): Promise<Partial<ReasoningWorkflowState>> {
   const startTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -660,13 +633,17 @@ async function toolGatewayNode(
   }
   
   // 参数安全检查
-  let args: any;
+  let args: Record<string, unknown>;
   try {
-    args = JSON.parse(toolCall.function.arguments);
+    const parsedArgs = JSON.parse(toolCall.function.arguments);
+    if (!isRecord(parsedArgs)) {
+      throw new Error('工具参数必须是 JSON object');
+    }
+    args = parsedArgs;
     
     // 检查 SQL 注入风险
     const dangerousPatterns = [/drop\s+table/i, /delete\s+from/i, /insert\s+into/i, /update\s+.*set/i];
-    const query = args.query || '';
+    const query = typeof args.query === 'string' ? args.query : '';
     for (const pattern of dangerousPatterns) {
       if (pattern.test(query)) {
         throw new Error('检测到潜在的安全风险');
@@ -674,8 +651,9 @@ async function toolGatewayNode(
     }
     
   } catch (error) {
+    const message = getErrorMessage(error);
     return {
-      error: `参数解析错误: ${error instanceof Error ? error.message : '未知错误'}`,
+      error: `参数解析错误: ${message}`,
       currentNode: 'tool_gateway',
       shouldContinue: false,
       nodeExecutions: [{
@@ -684,7 +662,7 @@ async function toolGatewayNode(
         startTime,
         endTime: Date.now(),
         duration: Date.now() - startTime,
-        error: error instanceof Error ? error.message : '未知错误'
+        error: message
       }]
     };
   }
@@ -724,8 +702,8 @@ async function toolGatewayNode(
  * 3. 结果合并
  */
 async function hybridRetrievalNode(
-  state: typeof ReasoningRAGAnnotation.State
-): Promise<Partial<typeof ReasoningRAGAnnotation.State>> {
+  state: ReasoningWorkflowState
+): Promise<Partial<ReasoningWorkflowState>> {
   const startTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -776,8 +754,8 @@ async function hybridRetrievalNode(
     // 1. Dense 检索 (Milvus)
     const denseStartTime = Date.now();
     const milvus = await getMilvusInstance(state.config.milvusConfig);
-    const stats = await milvus.getCollectionStats();
-    const dimension = (stats as any)?.dimension || 768;
+    const stats = await milvus.getCollectionStats() as { dimension?: number; embeddingDimension?: number } | null | undefined;
+    const dimension = stats?.dimension ?? stats?.embeddingDimension ?? 768;
     const embeddingModelName = selectModelByDimension(dimension);
     
     console.log(`[HYBRID_RETRIEVAL] Embedding 模型: ${embeddingModelName}, 维度: ${dimension}`);
@@ -914,8 +892,8 @@ async function hybridRetrievalNode(
  * 3. 保留 Top-K 最相关结果
  */
 async function rerankerNode(
-  state: typeof ReasoningRAGAnnotation.State
-): Promise<Partial<typeof ReasoningRAGAnnotation.State>> {
+  state: ReasoningWorkflowState
+): Promise<Partial<ReasoningWorkflowState>> {
   const startTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -1067,8 +1045,8 @@ async function rerankerNode(
  * 2. 格式化为 XML/Markdown 便于 LLM 阅读
  */
 async function formatterNode(
-  state: typeof ReasoningRAGAnnotation.State
-): Promise<Partial<typeof ReasoningRAGAnnotation.State>> {
+  state: ReasoningWorkflowState
+): Promise<Partial<ReasoningWorkflowState>> {
   const startTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -1095,7 +1073,7 @@ async function formatterNode(
   }
   
   // 清洗和格式化
-  const cleanedDocs = docs.map((doc, idx) => {
+  const cleanedDocs = docs.map((doc) => {
     // 清洗内容
     let cleanContent = doc.content
       .replace(/<[^>]*>/g, '') // 移除 HTML 标签
@@ -1154,8 +1132,8 @@ ${cleanedDocs.map((doc, idx) => {
  * 2. 使用推理模型进行深度思考
  */
 async function generatorNode(
-  state: typeof ReasoningRAGAnnotation.State
-): Promise<Partial<typeof ReasoningRAGAnnotation.State>> {
+  state: ReasoningWorkflowState
+): Promise<Partial<ReasoningWorkflowState>> {
   const startTime = Date.now();
   
   console.log(`\n${'='.repeat(60)}`);
@@ -1287,58 +1265,35 @@ ${state.formattedContext}
 // ==================== 图构建 ====================
 
 /**
- * 构建 Reasoning RAG 工作流图
+ * 构建 Reasoning RAG Runnable 工作流
  */
-function buildReasoningRAGGraph() {
-  const workflow = new StateGraph(ReasoningRAGAnnotation)
-    .addNode('orchestrator', orchestratorNode)
-    .addNode('tool_gateway', toolGatewayNode)
-    .addNode('hybrid_retrieval', hybridRetrievalNode)
-    .addNode('reranker', rerankerNode)
-    .addNode('formatter', formatterNode)
-    .addNode('generator', generatorNode)
-    
-    // 起始边
-    .addEdge(START, 'orchestrator')
-    
-    // Orchestrator 决策分支
-    .addConditionalEdges('orchestrator', (state) => {
+function buildReasoningRAGGraph(): ReasoningRAGWorkflow {
+  const orchestrator = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'orchestrator', orchestratorNode);
+  const toolGateway = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'tool_gateway', toolGatewayNode);
+  const hybridRetrieval = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'hybrid_retrieval', hybridRetrievalNode);
+  const reranker = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'reranker', rerankerNode);
+  const formatter = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'formatter', formatterNode);
+  const generator = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'generator', generatorNode);
+
+  return {
+    async invoke(input, config) {
+      let state = createReasoningWorkflowState(input);
+      state = mergeReasoningState(state, await orchestrator.invoke(state, config));
+
       if (!state.shouldContinue) {
-        return END;
+        return state;
       }
+
       if (state.orchestratorDecision?.action === 'tool_call') {
-        return 'tool_gateway';
+        state = mergeReasoningState(state, await toolGateway.invoke(state, config));
+        state = mergeReasoningState(state, await hybridRetrieval.invoke(state, config));
+        state = mergeReasoningState(state, await reranker.invoke(state, config));
+        state = mergeReasoningState(state, await formatter.invoke(state, config));
       }
-      return 'generator';
-    })
-    
-    // 工具网关到检索
-    .addEdge('tool_gateway', 'hybrid_retrieval')
-    
-    // 检索到重排序
-    .addEdge('hybrid_retrieval', 'reranker')
-    
-    // 重排序到格式化
-    .addEdge('reranker', 'formatter')
-    
-    // 格式化后决策
-    .addConditionalEdges('formatter', (state) => {
-      // 如果有足够的文档，生成回答
-      const docCount = state.retrievalResult?.rerankedResults?.length || 
-                       state.retrievalResult?.mergedResults?.length || 0;
-      
-      if (docCount > 0 || state.currentIteration >= state.config.maxIterations) {
-        return 'generator';
-      }
-      
-      // 否则可以重新尝试（增加迭代计数）
-      return 'generator';
-    })
-    
-    // 生成器完成
-    .addEdge('generator', END);
-  
-  return workflow.compile();
+
+      return mergeReasoningState(state, await generator.invoke(state, config));
+    },
+  };
 }
 
 // ==================== 主执行函数 ====================
@@ -1406,7 +1361,7 @@ export async function executeReasoningRAG(
   });
   
   // 初始状态
-  const initialState: Partial<typeof ReasoningRAGAnnotation.State> = {
+  const initialState: Partial<ReasoningWorkflowState> = {
     originalQuery: query,
     messages: [{ role: 'system', content: '你是一个专业的知识助手，支持深度推理。' }],
     scratchpad: [],

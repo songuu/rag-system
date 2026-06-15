@@ -109,6 +109,8 @@ test('RAG workflow preparation creates deterministic fallback trace ids', () => 
   assert.equal(prepared.traceId, 'rag-memory-1781136000000-requestxyz');
   assert.equal(prepared.runnableConfig.configurable.thread_id, 'request-xyz');
   assert.equal(prepared.runnableConfig.configurable.rag_policy, 'memory');
+});
+
 test('RAG kernel wraps policy failures with traceable execution context', async () => {
   const originalError = new TypeError('policy exploded');
   const kernel = new RagKernel([
