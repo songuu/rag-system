@@ -6,6 +6,7 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMaicJsonResponse } from '../json-response';
 import type {
   SlidePage,
   KnowledgeNode,
@@ -22,6 +23,7 @@ import type {
   PPTAnimation,
   SlideFocusPlan,
   SlideFocusTarget,
+  PblV2Task,
 } from '../types';
 import { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } from './page-order';
 import { buildLanguageDirective } from './read-stage';
@@ -122,7 +124,7 @@ export async function generateLectureScript(
       let actions: TeachingAction[] = [];
       try {
         const resp = await llm.invoke([{ role: 'user', content: prompt }]);
-        const parsed = parseJson<TeachingAction[]>(String(resp.content));
+        const parsed = parseMaicJsonResponse<TeachingAction[]>(String(resp.content));
         if (Array.isArray(parsed)) actions = parsed.filter(isValidAction);
       } catch {
         /* fallthrough */
@@ -157,7 +159,7 @@ export async function generateActiveQuestions(
     .replace('{TREE}', truncate(treeText, 3000));
   try {
     const resp = await llm.invoke([{ role: 'user', content: prompt }]);
-    const parsed = parseJson<string[]>(String(resp.content));
+    const parsed = parseMaicJsonResponse<string[]>(String(resp.content));
     if (Array.isArray(parsed)) return parsed.slice(0, 10).map(String);
   } catch {
     /* fallthrough */
@@ -197,7 +199,7 @@ export async function generateSlideFocusPlans(
 
       try {
         const resp = await llm.invoke([{ role: 'user', content: prompt }]);
-        const parsed = parseJson<Record<string, unknown>>(String(resp.content));
+        const parsed = parseMaicJsonResponse<Record<string, unknown>>(String(resp.content));
         const plan = normalizeModelFocusPlan(page, candidates, parsed);
         if (plan) return plan;
       } catch {
@@ -250,7 +252,7 @@ export function buildCourseStage(
 
   return {
     stage: {
-      title: tree.title || 'OpenMAIC 课堂',
+      title: inferConciseCourseTitle(tree, pages),
       summary: tree.summary || pages[0]?.description || '多智能体交互课堂',
       objectives,
       scene_count: scenes.length,
@@ -260,6 +262,30 @@ export function buildCourseStage(
   };
 }
 
+export function inferConciseCourseTitle(tree: KnowledgeNode, pages: SlidePage[]): string {
+  const candidates = [
+    tree.title,
+    ...tree.children.map(child => child.title),
+    pages[0]?.key_points[0],
+    pages[0]?.description,
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizeCourseTitle(candidate);
+    if (normalized) return normalized;
+  }
+  return 'OpenMAIC 课堂';
+}
+
+function normalizeCourseTitle(value: string | undefined): string | null {
+  const title = value?.replace(/\s+/g, ' ').trim();
+  if (!title) return null;
+  if (/^(课程主题|课程大纲|未命名|OpenMAIC\s*课堂)$/i.test(title)) return null;
+  if (title.length <= 36) return title;
+  const sentence = title.split(/[。.!?！？；;：:]/).map(part => part.trim()).find(Boolean);
+  if (sentence && sentence.length <= 36) return sentence;
+  return `${title.slice(0, 34)}…`;
+}
 function buildSlideScene(
   page: SlidePage,
   order: number,
@@ -451,7 +477,12 @@ function buildInteractiveScene(page: SlidePage, order: number): CourseScene {
 }
 
 function buildPblScene(pages: SlidePage[], order: number, tree: KnowledgeNode): CourseScene {
-  const focus = collectObjectives(tree, pages).slice(0, 3);
+  const focus = collectObjectives(tree, pages).slice(0, 4);
+  const title = inferConciseCourseTitle(tree, pages);
+  const tasks = buildPblV2Tasks(focus, pages);
+  const scenario = `面向「${title}」设计一个小型真实任务,要求学生先拆解概念,再产出可展示方案。`;
+  const challenge = `围绕「${title}」设计一个可演示的小方案。`;
+
   return {
     id: 'scene_pbl_final',
     order,
@@ -461,19 +492,52 @@ function buildPblScene(pages: SlidePage[], order: number, tree: KnowledgeNode): 
     page_refs: pages.map(page => page.index),
     key_points: focus,
     actions: [
-      sceneAction('speech', order, '任务说明', '请用本节课的知识完成一个小型项目。'),
-      sceneAction('discussion', order, '角色协作', '每位同学选择一个角色,共同推进交付物。'),
-      sceneAction('whiteboard', order, '里程碑拆解', focus.join('\n')),
+      sceneAction('speech', order, '导师开场', `今天的项目任务是: ${challenge}`),
+      sceneAction('discussion', order, '任务开放', tasks.map(task => task.title).join(' / ')),
+      sceneAction('whiteboard', order, '里程碑拆解', tasks.map(task => task.description).join('\n')),
+      sceneAction('discussion', order, '评估回合', '提交后从证据完整度、概念迁移和表达清晰度三个维度反馈。'),
     ],
     pbl: {
-      challenge: `围绕「${tree.title || '课程主题'}」设计一个可演示的小方案。`,
+      version: 'v2',
+      challenge,
+      scenario,
       roles: ['概念解释者', '案例设计者', '质疑审查者', '总结汇报者'],
-      milestones: ['明确问题', '拆解关键概念', '设计示例或实验', '汇报结论'],
+      milestones: tasks.map(task => task.title),
       deliverable: '一页结构化方案 + 3 分钟口头说明',
+      tasks,
+      instructor: {
+        opening: `先选择角色,再完成「${title}」项目挑战。`,
+        check_in_prompts: [
+          '你现在最不确定的假设是什么?',
+          '哪条证据能支撑你的方案?',
+          '如果同学反驳,你会怎样调整?',
+        ],
+        completion_prompt: '用证据说明你的方案如何迁移了本节课核心概念。',
+      },
+      simulator: {
+        scenario,
+        dynamic_signals: ['学生是否引用关键概念', '方案是否有可演示步骤', '质疑是否触发修正'],
+      },
+      evaluation: {
+        rubric: ['概念准确', '迁移合理', '证据完整', '表达清晰'],
+        completion_threshold: 0.75,
+      },
     },
   };
 }
 
+function buildPblV2Tasks(focus: string[], pages: SlidePage[]): PblV2Task[] {
+  const seeds = focus.length > 0 ? focus : pages.slice(0, 3).map(page => page.description || page.raw_text.slice(0, 80));
+  const base = seeds.filter(Boolean).slice(0, 3);
+  const tiers: PblV2Task['tier'][] = ['intro', 'practice', 'challenge'];
+  return base.map((seed, index) => ({
+    id: `pbl_v2_task_${index + 1}`,
+    title: index === 0 ? '界定问题' : index === 1 ? '设计方案' : '展示验证',
+    description: `${seed}: ${index === 0 ? '说明它在真实任务中的问题边界。' : index === 1 ? '把概念转成可执行步骤。' : '准备证据并回应质疑。'}`,
+    tier: tiers[index] ?? 'challenge',
+    evidence: ['引用课程要点', '给出例子或数据', '说明限制条件'],
+  }));
+}
 function sceneAction(
   type: SceneAction['type'],
   seed: number,
@@ -682,21 +746,6 @@ function isValidAction(a: unknown): a is TeachingAction {
 
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…';
-}
-
-function parseJson<T>(raw: string): T | null {
-  const clean = raw
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  const match = clean.match(/[\{\[][\s\S]*[\}\]]/);
-  const candidate = match ? match[0] : clean;
-  try {
-    return JSON.parse(candidate) as T;
-  } catch {
-    return null;
-  }
 }
 
 function normalizeCapabilities(

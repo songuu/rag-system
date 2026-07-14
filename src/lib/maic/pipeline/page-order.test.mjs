@@ -15,8 +15,12 @@ registerHooks({
   },
 });
 
-const { describePages } = await import('./read-stage.ts');
-const { generateLectureScript, generateSlideFocusPlans } = await import('./plan-stage.ts');
+const { buildKnowledgeTree, describePages } = await import('./read-stage.ts');
+const {
+  generateActiveQuestions,
+  generateLectureScript,
+  generateSlideFocusPlans,
+} = await import('./plan-stage.ts');
 const { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } = await import('./page-order.ts');
 
 const pages = Array.from({ length: 4 }, (_, index) => ({
@@ -83,6 +87,53 @@ test('generateSlideFocusPlans lets the model choose the PPT focus target in slid
     ['slide-0-point-1', 'slide-1-point-1', 'slide-2-point-1', 'slide-3-point-1']
   );
   assert.ok(focusPlans.every(plan => plan.source === 'model'));
+});
+
+test('read and plan stages prefer final JSON after reasoning blocks', async () => {
+  const sourcePage = {
+    index: 0,
+    raw_text: '课程原文',
+    description: '',
+    key_points: [],
+  };
+  const llm = createReasoningAwareLLM();
+
+  const [describedPage] = await describePages(llm, [sourcePage]);
+  const tree = await buildKnowledgeTree(llm, [describedPage]);
+  const [scriptEntry] = await generateLectureScript(llm, [describedPage]);
+  const questions = await generateActiveQuestions(llm, tree);
+  const [focusPlan] = await generateSlideFocusPlans(llm, [describedPage], tree);
+
+  assert.equal(describedPage.description, '最终描述');
+  assert.deepEqual(describedPage.key_points, ['普通背景', '最终重点']);
+  assert.equal(tree.title, '最终知识树');
+  assert.equal(scriptEntry.actions[1].value.script, '最终讲稿');
+  assert.deepEqual(questions, ['最终问题']);
+  assert.equal(focusPlan.primary.elementId, 'slide-0-point-1');
+  assert.equal(focusPlan.source, 'model');
+});
+
+test('read and plan stages preserve fallbacks for malformed model output', async () => {
+  const sourcePage = {
+    index: 0,
+    raw_text: '课程原文',
+    description: '',
+    key_points: [],
+  };
+  const invalidLLM = { async invoke() { return { content: 'not valid JSON' }; } };
+
+  const [describedPage] = await describePages(invalidLLM, [sourcePage]);
+  const tree = await buildKnowledgeTree(invalidLLM, [describedPage]);
+  const [scriptEntry] = await generateLectureScript(invalidLLM, [describedPage]);
+  const questions = await generateActiveQuestions(invalidLLM, tree);
+  const [focusPlan] = await generateSlideFocusPlans(invalidLLM, [describedPage], tree);
+
+  assert.equal(describedPage.description, sourcePage.raw_text);
+  assert.deepEqual(describedPage.key_points, []);
+  assert.equal(tree.title, '课程大纲');
+  assert.deepEqual(scriptEntry.actions.map(action => action.type), ['ShowFile', 'ReadScript']);
+  assert.equal(questions.length, 6);
+  assert.equal(focusPlan.source, 'fallback');
 });
 
 test('mapPagesWithOrderedCallbacks slides without batch barrier: starts new work before slow worker finishes', async () => {
@@ -213,6 +264,55 @@ function createOutOfOrderLLM() {
         }),
       };
     },
+  };
+}
+
+function createReasoningAwareLLM() {
+  return {
+    async invoke(messages) {
+      const prompt = String(messages[0]?.content ?? '');
+
+      if (prompt.includes('课程知识工程师')) {
+        return reasoningResponse({
+          id: 'root',
+          title: '最终知识树',
+          summary: '最终摘要',
+          page_refs: [],
+          children: [],
+        });
+      }
+      if (prompt.includes('课堂主动提问')) return reasoningResponse(['最终问题']);
+      if (prompt.includes('教学动作格式')) {
+        return reasoningResponse([
+          { type: 'ShowFile', value: { slide_index: 0 } },
+          { type: 'ReadScript', value: { script: '最终讲稿' } },
+        ]);
+      }
+      if (prompt.includes('重点策略格式')) {
+        return reasoningResponse({
+          primary_candidate_id: 'point_1',
+          focus_label: '最终重点',
+          rationale: '最终理由',
+          confidence: 0.9,
+          hold_mode: 'until_next_focus',
+        });
+      }
+      return reasoningResponse({
+        description: '最终描述',
+        key_points: ['普通背景', '最终重点'],
+      });
+    },
+  };
+}
+
+function reasoningResponse(finalPayload) {
+  return {
+    content: [
+      '<think>{"draft":true}</think>',
+      '```json',
+      JSON.stringify(finalPayload),
+      '```',
+    ].join('\n'),
   };
 }
 

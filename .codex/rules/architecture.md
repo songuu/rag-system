@@ -67,3 +67,11 @@ When adding Supabase to this project, use it first for Auth/RLS, tenant ownershi
 ## PDF Parser Changes Go Through A Shared Adapter
 
 When changing PDF parsing providers, first route `document-parser`, `document-pipeline`, product-specific upload routes, and MAIC slide parsing through one shared PDF adapter. Parser swaps affect chunk boundaries, page counts, OCR behavior, resource cleanup, native packaging, and RAG cache semantics, so keep provider choice behind configuration and validate with PDF fixtures before changing the default.
+
+## Container Deployment Separates Liveness, Readiness, And Runtime Secrets
+
+For this project, container support should keep Next server startup, local Milvus dependencies, and cloud provider credentials as separate layers. Use Next standalone output for non-static container deployments and make `pnpm start` run the same standalone server contract. Keep liveness routes dependency-free, reserve external checks for readiness, and inject all LLM, Zilliz, Supabase, and LangSmith secrets through runtime environment variables rather than image layers.
+
+## MAIC Structured Output Has One Reasoning-Aware Parser
+
+Route MAIC read, plan, and manager structured model responses through one shared parser. Attempt exact JSON first, treat reasoning closing tags as delimiters only outside valid JSON ranges, and preserve each stage's existing malformed-output fallback. Never log the raw model response from this parsing boundary; it can contain course content or provider-adjacent context.

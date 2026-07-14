@@ -10,6 +10,7 @@
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createLLM } from '../../model-config';
+import { parseMaicJsonResponse } from '../json-response';
 import type {
   ClassroomState,
   CoursePrepared,
@@ -159,10 +160,16 @@ export class ManagerAgent {
       .replace('{STUDENT_INPUT}', recentStudentMessage ?? '(无)');
 
     const resp = await this.llm.invoke([{ role: 'user', content: prompt }]);
-    const parsed = parseJson<ManagerDecision>(String(resp.content));
-    if (parsed && parsed.next_agent && parsed.action) return parsed;
+    const parsed = parseManagerDecision(String(resp.content));
+    if (parsed) return parsed;
     throw new Error('manager: invalid JSON');
   }
+}
+
+export function parseManagerDecision(rawResponse: string): ManagerDecision | null {
+  const parsed = parseMaicJsonResponse<ManagerDecision>(rawResponse);
+  if (!parsed || !parsed.next_agent || !parsed.action) return null;
+  return parsed;
 }
 
 const DISPLAY_PREFIX_RE = /^\[[^\]]+\]:\s*/;
@@ -225,21 +232,6 @@ function maybeInjectClassmate(state: ClassroomState, cursor: number): SpeakingRo
   if (cursor % 5 !== 0) return null;
   const idx = Math.floor(cursor / 5) % classmates.length;
   return classmates[idx];
-}
-
-function parseJson<T>(raw: string): T | null {
-  const clean = raw
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  const match = clean.match(/\{[\s\S]*\}/);
-  const candidate = match ? match[0] : clean;
-  try {
-    return JSON.parse(candidate) as T;
-  } catch {
-    return null;
-  }
 }
 
 let instance: ManagerAgent | null = null;

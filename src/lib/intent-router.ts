@@ -11,7 +11,10 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import type { RunnableConfig } from '@langchain/core/runnables';
+import {
+  RunnableLambda,
+  type RunnableConfig,
+} from '@langchain/core/runnables';
 import { createLLM } from './model-config';
 import {
   applyStatePatch,
@@ -116,7 +119,7 @@ const CLASSIFICATION_PROMPT = `你是一个智能意图分类器。分析用户�
 
 type RouterWorkflowState = RouterState;
 
-export interface IntentRouterWorkflow {
+interface IntentRouterWorkflow {
   invoke(
     input: Partial<RouterWorkflowState>,
     config?: RunnableConfig
@@ -378,13 +381,13 @@ export function buildIntentRouterGraph(): IntentRouterWorkflow {
     classifyIntentNode
   );
 
-  return {
-    async invoke(input, config) {
+  return RunnableLambda.from<Partial<RouterWorkflowState>, RouterWorkflowState>(
+    async (input, config) => {
       let state = createRouterWorkflowState(input);
       state = applyStatePatch(state, await classify.invoke(state, config));
       return state;
-    },
-  };
+    }
+  );
 }
 
 // ==================== 主执行函数 ====================

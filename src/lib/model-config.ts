@@ -366,10 +366,10 @@ export class ModelFactory {
   /**
    * 创建 LLM 模型实例
    * @param modelName 可选的模型名称，不提供则使用环境变量配置
-   * @param options 额外配置选项
+   * @param options 额外配置选项。options.provider 可用于 OpenMAIC per-stage 路由。
    */
   createLLM(modelName?: string, options: Partial<ModelConfig> = {}): BaseChatModel {
-    const provider = this.envConfig.MODEL_PROVIDER;
+    const provider = options.provider || this.envConfig.MODEL_PROVIDER;
     const cacheKey = `${provider}:${modelName || 'default'}:${JSON.stringify(options)}`;
 
     // 检查缓存

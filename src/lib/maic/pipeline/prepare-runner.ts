@@ -6,6 +6,7 @@
  */
 
 import { createLLM } from '../../model-config';
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { getMaicStore } from '../course-store';
 import type { Course, PrepareEvent, CoursePrepared, SlidePage } from '../types';
 import {
@@ -13,6 +14,7 @@ import {
   loadPreparedFromCache,
   savePreparedToCache,
 } from '../prepare-cache';
+import { getMaicStageRoute, type MaicPrepareStage } from '../model-routes';
 import { describePages, buildKnowledgeTree } from './read-stage';
 import {
   generateLectureScript,
@@ -164,10 +166,14 @@ class PrepareRunner {
       data: { total_pages: pagesRaw.length, message: `共 ${pagesRaw.length} 页` },
     });
 
-    const llm = createLLM(undefined, { temperature: 0.3 });
+    const describeLlm = createPrepareLlm('describe');
+    const scriptLlm = createPrepareLlm('script');
+    const treeLlm = createPrepareLlm('tree');
+    const questionsLlm = createPrepareLlm('questions');
+    const focusLlm = createPrepareLlm('focus');
 
     // 2. Describe (gate: 后续 3 阶段都依赖 described pages)
-    const described = await describePages(llm, pagesRaw, idx => {
+    const described = await describePages(describeLlm, pagesRaw, idx => {
       emit({
         type: 'prepare:describe',
         data: {
@@ -182,7 +188,7 @@ class PrepareRunner {
     //   - script 仅依赖 described         → 立即开始
     //   - tree → questions / focus        → tree 完成后, questions 和 focus 也并行
     //   三条支路同时跑, wall time = max(script, tree+max(questions, focus))。
-    const scriptPromise = generateLectureScript(llm, described, idx => {
+    const scriptPromise = generateLectureScript(scriptLlm, described, idx => {
       emit({
         type: 'prepare:script',
         data: {
@@ -194,11 +200,11 @@ class PrepareRunner {
     });
 
     emit({ type: 'prepare:tree', data: { message: '正在构建知识树' } });
-    const treePromise = buildKnowledgeTree(llm, described).then(tree => {
+    const treePromise = buildKnowledgeTree(treeLlm, described).then(tree => {
       emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
       emit({ type: 'prepare:focus', data: { message: '解析 PPT 重点悬停策略' } });
-      const questionsP = generateActiveQuestions(llm, tree);
-      const focusP = generateSlideFocusPlans(llm, described, tree, idx => {
+      const questionsP = generateActiveQuestions(questionsLlm, tree);
+      const focusP = generateSlideFocusPlans(focusLlm, described, tree, idx => {
         emit({
           type: 'prepare:focus',
           data: {
@@ -244,6 +250,15 @@ class PrepareRunner {
       data: { course_id: courseId, message: '课程准备完成', progress: 1 },
     });
   }
+}
+
+
+function createPrepareLlm(stage: MaicPrepareStage): BaseChatModel {
+  const route = getMaicStageRoute(stage);
+  return createLLM(route?.modelName, {
+    provider: route?.provider,
+    temperature: 0.3,
+  });
 }
 
 let instance: PrepareRunner | null = null;

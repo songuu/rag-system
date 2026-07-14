@@ -71,10 +71,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       typeof titleField === 'string' && titleField.trim()
         ? titleField.trim()
         : file.name.replace(/\.[^.]+$/, '');
+    const titleSource = typeof titleField === 'string' && titleField.trim() ? 'user' : 'filename';
 
     const course = getMaicStore().createCourse({
       course_id,
       title,
+      title_source: titleSource,
       source_filename: file.name,
       source_text: parsed.raw_text,
       source_pages: parsed.pages,

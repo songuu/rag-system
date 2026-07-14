@@ -6,7 +6,7 @@
     "dev": "next dev",
     "prebuild": "node scripts/generate-articles.mjs",
     "build": "node scripts/generate-articles.mjs && next build",
-    "start": "next start",
+    "start": "node .next/standalone/server.js",
     "lint": "eslint",
     "sync:notion": "node scripts/sync-to-notion.mjs"
   },

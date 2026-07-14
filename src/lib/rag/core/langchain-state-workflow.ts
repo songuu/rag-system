@@ -45,8 +45,9 @@ export function applyStatePatch<TState>(
   for (const key of appendKeys) {
     const currentValue = state[key];
     const patchValue = patch[key];
-    if (Array.isArray(currentValue) && Array.isArray(patchValue)) {
-      next[key] = [...currentValue, ...patchValue] as TState[keyof TState];
+    if (Array.isArray(patchValue)) {
+      const currentItems = Array.isArray(currentValue) ? currentValue : [];
+      next[key] = [...currentItems, ...patchValue] as TState[keyof TState];
     }
   }
 

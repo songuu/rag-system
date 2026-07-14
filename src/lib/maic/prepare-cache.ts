@@ -13,6 +13,7 @@ import {
   type ArtifactCacheIdentity,
 } from '../artifact-cache';
 import { getConfigSummary } from '../model-config';
+import { getMaicModelRoutesSnapshot } from './model-routes';
 import type { CoursePrepared, SlidePage } from './types';
 
 const CACHE_VERSION = 'maic-prepared-v2';
@@ -38,6 +39,7 @@ type MaicPrepareModelSignature = {
   llm_model: string;
   base_url: string;
   temperature: number;
+  stage_routes?: Record<string, string>;
 };
 
 export function createMaicSourceHash(input: {
@@ -75,6 +77,10 @@ export function getMaicPrepareCacheIdentity(input: {
     base_url: summary.baseUrl,
     temperature: PREPARE_TEMPERATURE,
   };
+  const stageRoutes = getMaicModelRoutesSnapshot();
+  if (Object.keys(stageRoutes).length > 0) {
+    modelSignature.stage_routes = stageRoutes;
+  }
   const identity = createArtifactCacheIdentity({
     cacheDir: CACHE_DIR,
     version: CACHE_VERSION,

@@ -22,10 +22,13 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import type { RunnableConfig } from '@langchain/core/runnables';
+import {
+  RunnableLambda,
+  type RunnableConfig,
+} from '@langchain/core/runnables';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
-import { getMilvusInstance, MilvusConfig } from './milvus-client';
+import { getMilvusInstance, type MilvusConfig } from './milvus-client';
 import {
   createEmbedding,
   createReasoningModel,
@@ -206,7 +209,7 @@ export interface ReasoningRAGOutput {
 
 type ReasoningWorkflowState = ReasoningRAGState;
 
-export interface ReasoningRAGWorkflow {
+interface ReasoningRAGWorkflow {
   invoke(
     input: Partial<ReasoningWorkflowState>,
     config?: RunnableConfig
@@ -726,8 +729,34 @@ async function hybridRetrievalNode(
     };
   }
   
-  const args = JSON.parse(decision.toolCalls[0].function.arguments);
-  const searchQuery = args.query || state.originalQuery;
+  let args: Record<string, unknown>;
+  try {
+    const parsedArgs = JSON.parse(decision.toolCalls[0].function.arguments);
+    if (!isRecord(parsedArgs)) {
+      throw new Error('工具参数必须是 JSON object');
+    }
+    args = parsedArgs;
+  } catch (error) {
+    const message = getErrorMessage(error);
+    return {
+      error: `工具参数解析失败: ${message}`,
+      currentNode: 'hybrid_retrieval',
+      shouldContinue: false,
+      decisionPath: ['hybrid_retrieval:invalid_args'],
+      nodeExecutions: [{
+        node: 'hybrid_retrieval',
+        status: 'error',
+        startTime,
+        endTime: Date.now(),
+        duration: Date.now() - startTime,
+        error: message,
+      }],
+    };
+  }
+
+  const searchQuery = typeof args.query === 'string' && args.query.trim()
+    ? args.query
+    : state.originalQuery;
   
   console.log(`[HYBRID_RETRIEVAL] 搜索查询: "${searchQuery}"`);
   console.log(`[HYBRID_RETRIEVAL] Top-K: ${state.config.topK}`);
@@ -1275,8 +1304,8 @@ function buildReasoningRAGGraph(): ReasoningRAGWorkflow {
   const formatter = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'formatter', formatterNode);
   const generator = createRunnableStateNode<ReasoningWorkflowState>('reasoning-rag', 'generator', generatorNode);
 
-  return {
-    async invoke(input, config) {
+  return RunnableLambda.from<Partial<ReasoningWorkflowState>, ReasoningWorkflowState>(
+    async (input, config) => {
       let state = createReasoningWorkflowState(input);
       state = mergeReasoningState(state, await orchestrator.invoke(state, config));
 
@@ -1286,14 +1315,26 @@ function buildReasoningRAGGraph(): ReasoningRAGWorkflow {
 
       if (state.orchestratorDecision?.action === 'tool_call') {
         state = mergeReasoningState(state, await toolGateway.invoke(state, config));
+        if (!state.shouldContinue) {
+          return mergeReasoningState(state, await generator.invoke(state, config));
+        }
+
         state = mergeReasoningState(state, await hybridRetrieval.invoke(state, config));
+        if (!state.shouldContinue) {
+          return mergeReasoningState(state, await generator.invoke(state, config));
+        }
+
         state = mergeReasoningState(state, await reranker.invoke(state, config));
+        if (!state.shouldContinue) {
+          return mergeReasoningState(state, await generator.invoke(state, config));
+        }
+
         state = mergeReasoningState(state, await formatter.invoke(state, config));
       }
 
       return mergeReasoningState(state, await generator.invoke(state, config));
-    },
-  };
+    }
+  );
 }
 
 // ==================== 主执行函数 ====================

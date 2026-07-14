@@ -18,7 +18,7 @@ import { StringOutputParser } from '@langchain/core/output_parsers';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
 import { invokeStructuredJson } from './langchain-structured-output';
-import { getMilvusInstance, MilvusConfig } from './milvus-client';
+import { getMilvusInstance, type MilvusConfig } from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
 import {
   createLLM,
@@ -301,6 +301,38 @@ type HallucinationPayload = {
   severity: 'none' | 'mild' | 'severe';
   correctedAnswer: string;
 };
+
+const DEFAULT_AGENTIC_RECURSION_LIMIT = 30;
+
+function resolveAgenticRecursionLimit(
+  config?: RunnableConfig & { recursionLimit?: number }
+): number {
+  const configuredLimit = config?.recursionLimit;
+  if (typeof configuredLimit === 'number' && Number.isFinite(configuredLimit) && configuredLimit > 0) {
+    return Math.floor(configuredLimit);
+  }
+
+  return DEFAULT_AGENTIC_RECURSION_LIMIT;
+}
+
+function createAgenticRecursionLimitPatch(limit: number): Partial<AgenticWorkflowState> {
+  const now = Date.now();
+  const message = `Agentic RAG recursion limit exceeded (${limit})`;
+
+  return {
+    error: message,
+    shouldRewrite: false,
+    currentStep: 'recursion_limit_exceeded',
+    workflowSteps: [{
+      step: 'recursion_limit',
+      status: 'error',
+      startTime: now,
+      endTime: now,
+      duration: 0,
+      error: message,
+    }],
+  };
+}
 
 type AgenticCompiledGraph = {
   invoke(
@@ -1119,15 +1151,24 @@ export class AgenticRAGSystem {
 
     const invoke = async (
       input: Partial<AgenticWorkflowState>,
-      config?: RunnableConfig
+      config?: RunnableConfig & { recursionLimit?: number }
     ): Promise<AgenticWorkflowState> => {
       let state = createAgenticWorkflowState(input);
+      const recursionLimit = resolveAgenticRecursionLimit(config);
+      let rewriteIterations = 0;
+
       state = mergeAgenticState(state, await fanOutJoin.invoke(state, config));
 
       if (state.shouldRetrieve) {
         state = mergeAgenticState(state, await gradeRetrieval.invoke(state, config));
 
         while (state.shouldRewrite && state.retryCount <= 1) {
+          rewriteIterations += 1;
+          if (rewriteIterations > recursionLimit) {
+            state = mergeAgenticState(state, createAgenticRecursionLimitPatch(recursionLimit));
+            break;
+          }
+
           state = mergeAgenticState(state, await rewriteQuery.invoke(state, config));
           state = mergeAgenticState(state, await retrieveAfterRewrite.invoke(state, config));
           state = mergeAgenticState(state, await gradeRetrieval.invoke(state, config));
@@ -1142,6 +1183,8 @@ export class AgenticRAGSystem {
       invoke,
       stream: async function* (input, config) {
         let state = createAgenticWorkflowState(input);
+        const recursionLimit = resolveAgenticRecursionLimit(config);
+        let rewriteIterations = 0;
 
         state = mergeAgenticState(state, await fanOutJoin.invoke(state, config));
         yield sanitizeAgenticStreamState(state);
@@ -1151,6 +1194,13 @@ export class AgenticRAGSystem {
           yield sanitizeAgenticStreamState(state);
 
           while (state.shouldRewrite && state.retryCount <= 1) {
+            rewriteIterations += 1;
+            if (rewriteIterations > recursionLimit) {
+              state = mergeAgenticState(state, createAgenticRecursionLimitPatch(recursionLimit));
+              yield sanitizeAgenticStreamState(state);
+              break;
+            }
+
             state = mergeAgenticState(state, await rewriteQuery.invoke(state, config));
             yield sanitizeAgenticStreamState(state);
 

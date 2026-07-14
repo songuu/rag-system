@@ -15,7 +15,26 @@ registerHooks({
   },
 });
 
-const { summarizeManagerHistory } = await import('./manager-agent.ts');
+const { parseManagerDecision, summarizeManagerHistory } = await import('./manager-agent.ts');
+
+test('parseManagerDecision uses the final payload after reasoning and rejects invalid output', () => {
+  const decision = parseManagerDecision(
+    [
+      '<think>{"next_agent":"clown","action":{"type":"Idle","value":{}},"reason":"draft"}</think>',
+      '```json',
+      '{"next_agent":"teacher","action":{"type":"Idle","value":{}},"reason":"final"}',
+      '```',
+    ].join('\n')
+  );
+
+  assert.deepEqual(decision, {
+    next_agent: 'teacher',
+    action: { type: 'Idle', value: {} },
+    reason: 'final',
+  });
+  assert.equal(parseManagerDecision('not valid JSON'), null);
+  assert.equal(parseManagerDecision('{"next_agent":"teacher"}'), null);
+});
 
 test('summarizeManagerHistory labels human students and agents separately (OpenMAIC e5148be)', () => {
   const history = summarizeManagerHistory([

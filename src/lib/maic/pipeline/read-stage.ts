@@ -7,6 +7,7 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMaicJsonResponse } from '../json-response';
 import type { SlidePage, KnowledgeNode, CourseGenerationLanguage } from '../types';
 import { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } from './page-order';
 
@@ -72,7 +73,7 @@ export async function describePages(
         .replace('{TEXT}', truncate(page.raw_text, 2000));
       try {
         const resp = await llm.invoke([{ role: 'user', content: prompt }]);
-        const parsed = parseJson<{ description: string; key_points: string[] }>(
+        const parsed = parseMaicJsonResponse<{ description: string; key_points: string[] }>(
           String(resp.content)
         );
         return {
@@ -106,7 +107,7 @@ export async function buildKnowledgeTree(
 
   try {
     const resp = await llm.invoke([{ role: 'user', content: prompt }]);
-    const tree = parseJson<KnowledgeNode>(String(resp.content));
+    const tree = parseMaicJsonResponse<KnowledgeNode>(String(resp.content));
     if (tree && tree.title) return normalizeTree(tree);
   } catch {
     // fallthrough
@@ -141,27 +142,15 @@ function truncate(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '…';
 }
 
-function parseJson<T>(raw: string): T | null {
-  const clean = raw
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-  const match = clean.match(/[\{\[][\s\S]*[\}\]]/);
-  const candidate = match ? match[0] : clean;
-  try {
-    return JSON.parse(candidate) as T;
-  } catch {
-    return null;
-  }
-}
-
 export function buildLanguageDirective(language: CourseGenerationLanguage): string {
   if (language === 'en-US') {
     return 'Language directive: write all generated classroom content in English. Keep JSON keys unchanged.';
   }
   if (language === 'pt-BR') {
     return 'Diretriz de idioma: escreva todo o conteúdo gerado da sala de aula em Português do Brasil. Mantenha as chaves JSON inalteradas.';
+  }
+  if (language === 'ko-KR') {
+    return 'Language directive: write all generated classroom content in Korean. Keep JSON keys unchanged.';
   }
   return '语言指令: 所有生成的课堂内容必须使用中文。JSON key 保持不变。';
 }

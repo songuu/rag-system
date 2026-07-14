@@ -11,3 +11,7 @@ Batching LLM calls with `Promise.all` makes completion order nondeterministic. F
 ## Browser TTS Must Not Cancel On Every Event
 
 `speechSynthesis.cancel()` is a hard stop, not a smooth handoff. In an SSE-driven classroom, do not call it whenever the latest utterance changes. Queue non-student utterances, speak them sequentially, and only cancel on explicit user takeover such as disabling TTS, pausing, navigating, or restarting.
+
+## Next Standalone Builds Expose Startup Drift
+
+When enabling `output: 'standalone'`, `next start` may still boot but Next warns that it is no longer the right production entrypoint. Align Docker `CMD`, `package.json` start scripts, and docs on `node .next/standalone/server.js`. Also watch for `next/font/google`: it can fail builds in restricted networks because it fetches fonts at build time.

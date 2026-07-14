@@ -4,5 +4,6 @@ export * from './core/policies';
 export * from './core/workflow';
 export * from './core/context-composer';
 export * from './retrieval/retrieval-plan';
+export * from './retrieval/rerank';
 export * from './corpus/corpus-store';
 export * from './eval/golden-questions';

@@ -16,7 +16,7 @@ registerHooks({
 });
 
 const { buildLanguageDirective } = await import('./read-stage.ts');
-const { buildCourseStage } = await import('./plan-stage.ts');
+const { buildCourseStage, inferConciseCourseTitle } = await import('./plan-stage.ts');
 
 const pages = [
   {
@@ -47,8 +47,31 @@ test('language directive keeps classroom content language explicit', () => {
   assert.match(buildLanguageDirective('zh-CN'), /中文/);
   assert.match(buildLanguageDirective('en-US'), /English/);
   assert.match(buildLanguageDirective('pt-BR'), /Português do Brasil/);
+  assert.match(buildLanguageDirective('ko-KR'), /Korean/);
 });
 
+test('stage builder infers concise generated course titles from non-generic outlines', () => {
+  assert.equal(inferConciseCourseTitle(tree, pages), '核心概念');
+
+  const { stage } = buildCourseStage(pages, tree, ['问题一']);
+  assert.equal(stage.title, '核心概念');
+});
+
+test('stage builder emits portable PBL v2 metadata without dropping v1 fields', () => {
+  const { scenes } = buildCourseStage(pages, tree, ['问题一']);
+  const pbl = scenes.find(scene => scene.type === 'pbl');
+
+  assert.equal(pbl?.pbl?.version, 'v2');
+  assert.ok(pbl?.pbl?.challenge);
+  assert.ok(pbl?.pbl?.roles.length);
+  assert.ok(pbl?.pbl?.milestones.length);
+  assert.ok(pbl?.pbl?.deliverable);
+  assert.ok(pbl?.pbl?.tasks?.length);
+  assert.equal(pbl?.pbl?.tasks?.[0].tier, 'intro');
+  assert.ok(pbl?.pbl?.instructor?.check_in_prompts.length);
+  assert.ok(pbl?.pbl?.simulator?.dynamic_signals.length);
+  assert.ok(pbl?.pbl?.evaluation?.rubric.includes('概念准确'));
+});
 test('stage builder keeps current capabilities enabled by default', () => {
   const { scenes } = buildCourseStage(pages, tree, ['问题一', '问题二']);
   assert.ok(scenes.some(scene => scene.type === 'quiz'));

@@ -16,7 +16,10 @@
       "Bash(./node_modules/.bin/tsc --noEmit --pretty false --incremental false)",
       "Bash(echo \"exit=$?\")",
       "Bash(./node_modules/.bin/eslint src/app/maic/prepare/\\\\[courseId\\\\]/page.tsx)",
-      "Bash(echo \"tsc-exit=$?\")"
+      "Bash(echo \"tsc-exit=$?\")",
+      "Bash(echo \"TSC_EXIT=$?\")",
+      "Bash(git show *)",
+      "Read(//tmp/**)"
     ]
   }
 }

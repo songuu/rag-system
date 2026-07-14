@@ -165,6 +165,30 @@ export interface QuizQuestion {
   explanation: string;
 }
 
+export interface PblV2Task {
+  id: string;
+  title: string;
+  description: string;
+  tier: 'intro' | 'practice' | 'challenge';
+  evidence: string[];
+}
+
+export interface PblV2InstructorPlan {
+  opening: string;
+  check_in_prompts: string[];
+  completion_prompt: string;
+}
+
+export interface PblV2SimulatorPlan {
+  scenario: string;
+  dynamic_signals: string[];
+}
+
+export interface PblV2EvaluationPlan {
+  rubric: string[];
+  completion_threshold: number;
+}
+
 export interface CourseScene {
   id: string;
   order: number;
@@ -181,10 +205,16 @@ export interface CourseScene {
     controls: string[];
   };
   pbl?: {
+    version?: 'v1' | 'v2';
     challenge: string;
+    scenario?: string;
     roles: string[];
     milestones: string[];
     deliverable: string;
+    tasks?: PblV2Task[];
+    instructor?: PblV2InstructorPlan;
+    simulator?: PblV2SimulatorPlan;
+    evaluation?: PblV2EvaluationPlan;
   };
 }
 
@@ -206,7 +236,7 @@ export interface CoursePrepared {
   scenes?: CourseScene[];
 }
 
-export type CourseGenerationLanguage = 'zh-CN' | 'en-US' | 'pt-BR';
+export type CourseGenerationLanguage = 'zh-CN' | 'en-US' | 'pt-BR' | 'ko-KR';
 
 export interface CourseSceneCapabilities {
   quiz?: boolean;
@@ -235,10 +265,12 @@ export interface MaicRagAsset {
 // ==================== 课程 ====================
 
 export type CourseStatus = 'uploaded' | 'preparing' | 'ready' | 'failed';
+export type CourseTitleSource = 'user' | 'filename' | 'generated';
 
 export interface Course {
   course_id: string;
   title: string;
+  title_source?: CourseTitleSource;
   source_filename: string;
   source_text: string;
   source_pages?: SlidePage[];

@@ -1,3 +1,5 @@
+import type { ParseResult, ParsedPage, TextItem } from '@llamaindex/liteparse';
+
 export type PdfParserProvider = 'pdf-parse' | 'liteparse';
 
 export interface PdfParseOptions {
@@ -19,23 +21,7 @@ export interface PdfParseOutput {
   pageTexts?: string[];
 }
 
-export interface PdfTextItemLike {
-  text: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface LiteParsePageLike {
-  text?: string;
-  textItems?: PdfTextItemLike[];
-}
-
-interface LiteParseResultLike {
-  text?: string;
-  pages: LiteParsePageLike[];
-}
+export type PdfTextItemLike = TextItem;
 
 const DEFAULT_LITEPARSE_MAX_PAGES = 1000;
 
@@ -119,8 +105,12 @@ async function parseWithLiteParse(
     quiet: true,
   });
 
-  const result: LiteParseResultLike = await parser.parse(buffer);
-  const pageTexts = result.pages.map((page: LiteParsePageLike) => {
+  if (options.includeMetadata) {
+    console.warn('[PDF Parser] liteparse provider does not expose PDF metadata; title/author/createdAt omitted');
+  }
+
+  const result: ParseResult = await parser.parse(buffer);
+  const pageTexts = result.pages.map((page: ParsedPage) => {
     const readableText = buildReadableTextFromPdfTextItems(page.textItems ?? []);
     return readableText || normalizeParsedPdfText(page.text || '');
   });

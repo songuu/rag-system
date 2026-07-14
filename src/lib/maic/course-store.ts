@@ -7,6 +7,7 @@
 import type {
   Course,
   CourseStatus,
+  CourseTitleSource,
   CoursePrepared,
   ClassroomSession,
   ClassroomState,
@@ -36,6 +37,7 @@ class MaicStore {
   createCourse(input: {
     course_id: string;
     title: string;
+    title_source?: CourseTitleSource;
     source_filename: string;
     source_text: string;
     source_pages?: SlidePage[];
@@ -69,9 +71,12 @@ class MaicStore {
   setCoursePrepared(courseId: string, prepared: CoursePrepared): Course | undefined {
     const existing = this.courses.get(courseId);
     if (!existing) return undefined;
+    const generatedTitle = resolveGeneratedCourseTitle(existing, prepared);
     const updated: Course = {
       ...existing,
       prepared,
+      title: generatedTitle ?? existing.title,
+      title_source: generatedTitle ? 'generated' : existing.title_source,
       status: 'ready',
       updated_at: new Date().toISOString(),
     };
@@ -154,6 +159,15 @@ class MaicStore {
   setSessionMode(sessionId: string, mode: ClassroomMode): ClassroomSession | undefined {
     return this.updateSessionState(sessionId, { mode });
   }
+}
+
+
+function resolveGeneratedCourseTitle(course: Course, prepared: CoursePrepared): string | null {
+  if (course.title_source === 'user') return null;
+  const title = prepared.stage?.title?.replace(/\s+/g, ' ')?.trim();
+  if (!title || title.length < 2) return null;
+  if (/^(课程主题|课程大纲|未命名|OpenMAIC\s*课堂)$/i.test(title)) return null;
+  return title.length > 36 ? `${title.slice(0, 34)}…` : title;
 }
 
 let instance: MaicStore | null = null;

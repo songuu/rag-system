@@ -1,0 +1,29 @@
+name: rag-system
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-system:local
+    env_file:
+      - path: .env.container
+        required: false
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    volumes:
+      - rag_uploads:/app/uploads
+      - rag_reasoning_uploads:/app/reasoning-uploads
+      - rag_adaptive_uploads:/app/adaptive-rag-uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  rag_uploads:
+  rag_reasoning_uploads:
+  rag_adaptive_uploads:

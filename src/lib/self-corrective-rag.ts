@@ -18,10 +18,13 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import type { RunnableConfig } from '@langchain/core/runnables';
+import {
+  RunnableLambda,
+  type RunnableConfig,
+} from '@langchain/core/runnables';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
-import { getMilvusInstance, MilvusConfig } from './milvus-client';
+import { getMilvusInstance, type MilvusConfig } from './milvus-client';
 import { 
   createLLM, 
   createEmbedding, 
@@ -141,7 +144,7 @@ export interface SCRAGState {
 
 type SCRAGWorkflowState = SCRAGState;
 
-export interface SCRAGWorkflow {
+interface SCRAGWorkflow {
   invoke(
     input: Partial<SCRAGWorkflowState>,
     config?: RunnableConfig
@@ -854,8 +857,8 @@ function buildSCRAGGraph(): SCRAGWorkflow {
   const rewrite = createRunnableStateNode<SCRAGWorkflowState>('self-corrective-rag', 'rewrite', rewriteNode);
   const generate = createRunnableStateNode<SCRAGWorkflowState>('self-corrective-rag', 'generate', generateNode);
 
-  return {
-    async invoke(input, config) {
+  return RunnableLambda.from<Partial<SCRAGWorkflowState>, SCRAGWorkflowState>(
+    async (input, config) => {
       let state = createSCRAGWorkflowState(input);
 
       while (state.shouldContinue) {
@@ -865,12 +868,15 @@ function buildSCRAGGraph(): SCRAGWorkflow {
         if (routeAfterGrade(state) !== 'rewrite') break;
 
         state = mergeSCRAGState(state, await rewrite.invoke(state, config));
-        if (!state.shouldContinue) break;
+        if (!state.shouldContinue) {
+          // LangGraph had an unconditional rewrite -> retrieve edge; keep that retry path bounded by maxRewriteAttempts.
+          state = { ...state, shouldContinue: true };
+        }
       }
 
       return mergeSCRAGState(state, await generate.invoke(state, config));
-    },
-  };
+    }
+  );
 }
 
 // ==================== 主入口 ====================

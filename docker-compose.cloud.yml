@@ -1,0 +1,8 @@
+services:
+  app:
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-openai}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-siliconflow}
+      MILVUS_PROVIDER: ${MILVUS_PROVIDER:-zilliz}
+      RAG_PERSISTENCE_BACKEND: ${RAG_PERSISTENCE_BACKEND:-supabase}
+      RAG_VECTOR_BACKEND: ${RAG_VECTOR_BACKEND:-zilliz}

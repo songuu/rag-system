@@ -19,7 +19,8 @@ const nextConfig: NextConfig = {
     },
     basePath: '/rag-system',
   } : {
-  images: {
+    output: 'standalone',  // 容器部署使用 Next.js standalone server 产物
+    images: {
       unoptimized: true,
     },
   }),

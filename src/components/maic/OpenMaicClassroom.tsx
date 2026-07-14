@@ -1498,6 +1498,29 @@ function PblScene({
           </button>
         ))}
       </div>
+      {scene.pbl?.tasks?.length ? (
+        <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5">
+          <div className="mb-4 text-xs uppercase tracking-[0.25em] text-fuchsia-200/70">
+            PBL v2 Task Chain
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {scene.pbl.tasks.map(task => (
+              <div key={task.id} className="rounded-2xl bg-black/30 p-4">
+                <div className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">{task.tier}</div>
+                <div className="font-semibold text-white">{task.title}</div>
+                <p className="mt-2 text-sm text-slate-400">{task.description}</p>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {task.evidence.map(item => (
+                    <span key={item} className="rounded-full border border-fuchsia-300/25 px-2 py-0.5 text-[11px] text-fuchsia-100">
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <div className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5">
         <h3 className="mb-4 font-semibold">里程碑</h3>
         <div className="grid gap-3 md:grid-cols-4">
@@ -1511,6 +1534,13 @@ function PblScene({
         <div className="mt-4 rounded-2xl border border-fuchsia-300/30 bg-fuchsia-300/10 p-4 text-sm">
           交付物: {scene.pbl?.deliverable}
         </div>
+        {scene.pbl?.evaluation?.rubric?.length ? (
+          <div className="mt-4 flex flex-wrap gap-2 text-xs text-slate-300">
+            {scene.pbl.evaluation.rubric.map(item => (
+              <span key={item} className="rounded-full bg-black/30 px-2.5 py-1">{item}</span>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );
