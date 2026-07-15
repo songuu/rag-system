@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { 
   createAdaptiveEntityRAG, 
   AdaptiveEntityRAG,
@@ -60,6 +61,8 @@ async function getRAGInstance(config?: {
  * GET: 获取系统状态和实体元数据
  */
 export async function GET(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   const searchParams = request.nextUrl.searchParams;
   const action = searchParams.get('action') || 'status';
 
@@ -93,7 +96,7 @@ export async function GET(request: NextRequest) {
             collectionName: ADAPTIVE_RAG_COLLECTION,
             embeddingDimension: stats?.embeddingDimension || null,  // 返回集合的实际维度
           };
-        } catch (e) {
+        } catch {
           console.log('[AdaptiveEntityRAG] Milvus 未连接或集合不存在');
         }
 
@@ -103,7 +106,7 @@ export async function GET(request: NextRequest) {
           await fs.mkdir(UPLOAD_DIR, { recursive: true });
           const files = await fs.readdir(UPLOAD_DIR);
           uploadedFiles = files.filter(f => f.endsWith('.txt'));
-        } catch (e) {
+        } catch {
           // 目录可能不存在
         }
 
@@ -162,7 +165,7 @@ export async function GET(request: NextRequest) {
             })
           );
           return NextResponse.json({ success: true, files: fileList });
-        } catch (e) {
+        } catch {
           return NextResponse.json({ success: true, files: [] });
         }
       }
@@ -216,6 +219,8 @@ export async function GET(request: NextRequest) {
  * POST: 执行查询或添加实体
  */
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const body = await request.json();
     const { action = 'query', ...params } = body;
@@ -526,7 +531,7 @@ export async function POST(request: NextRequest) {
             success: true,
             message: `文件已删除: ${filename}`,
           });
-        } catch (e) {
+        } catch {
           return NextResponse.json(
             { success: false, error: '文件不存在或无法删除' },
             { status: 404 }
@@ -574,6 +579,8 @@ export async function POST(request: NextRequest) {
  * DELETE: 清除缓存或删除实体
  */
 export async function DELETE(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const searchParams = request.nextUrl.searchParams;
     const action = searchParams.get('action') || 'clear-cache';

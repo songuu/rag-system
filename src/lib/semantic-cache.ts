@@ -7,6 +7,12 @@
 
 import { Embeddings } from '@langchain/core/embeddings';
 import { createEmbedding } from './model-config';
+import {
+  createRagCacheIdentity,
+  RAG_CACHE_IDENTITY_VERSION,
+  type RagCacheIdentity,
+} from './rag/core/cache-identity';
+import { isTenantIsolationRequired } from './security/retrieval-scope';
 
 export interface CachedEntry {
   query: string;
@@ -16,6 +22,7 @@ export interface CachedEntry {
   answer: string;
   context: string;
   timestamp: number;
+  cacheIdentityKey: string;
 }
 
 export interface SemanticCacheConfig {
@@ -96,8 +103,10 @@ export class SemanticCache {
   /** 检查缓存是否命中 */
   async get(
     query: string,
-    queryEmbedding?: number[]
+    queryEmbedding?: number[],
+    cacheIdentity?: RagCacheIdentity
   ): Promise<{ hit: true; entry: CachedEntry } | { hit: false }> {
+    const cacheIdentityKey = resolveCacheIdentityKey(cacheIdentity);
     if (!this.config.enabled || this.cache.size === 0) {
       this.misses++;
       return { hit: false };
@@ -110,6 +119,7 @@ export class SemanticCache {
     const tScan = Date.now();
     let scanned = 0;
     for (const [key, entry] of this.cache) {
+      if (entry.cacheIdentityKey !== cacheIdentityKey) continue;
       scanned++;
       // T4: 优先使用预归一化向量做 dot product；旧 entry 无归一化字段时 fallback 到 cosine
       const sim = entry.normalizedEmbedding
@@ -138,8 +148,10 @@ export class SemanticCache {
     query: string,
     answer: string,
     context: string = '',
-    queryEmbedding?: number[]
+    queryEmbedding?: number[],
+    cacheIdentity?: RagCacheIdentity
   ): Promise<void> {
+    const cacheIdentityKey = resolveCacheIdentityKey(cacheIdentity);
     if (!this.config.enabled) return;
 
     const embedding = queryEmbedding ?? (await this.embeddings.embedQuery(query));
@@ -152,6 +164,7 @@ export class SemanticCache {
       answer,
       context,
       timestamp: Date.now(),
+      cacheIdentityKey,
     };
 
     // LRU 淘汰
@@ -195,6 +208,31 @@ export class SemanticCache {
       lastScanEntries: this.lastScanEntries,
     };
   }
+}
+
+function resolveCacheIdentityKey(identity?: RagCacheIdentity): string {
+  if (!identity) {
+    if (isTenantIsolationRequired()) {
+      throw new Error(
+        'SemanticCache requires a versioned cache identity in authenticated modes.'
+      );
+    }
+    return 'legacy-local-v1';
+  }
+  if (
+    identity.version !== RAG_CACHE_IDENTITY_VERSION ||
+    typeof identity.key !== 'string' ||
+    !identity.key.startsWith('rag:')
+  ) {
+    throw new Error('SemanticCache received an invalid versioned cache identity.');
+  }
+  const verifiedIdentity = createRagCacheIdentity(identity.components);
+  if (verifiedIdentity.key !== identity.key) {
+    throw new Error(
+      'SemanticCache received a cache identity whose key does not match its components.'
+    );
+  }
+  return identity.key;
 }
 
 let defaultCache: SemanticCache | null = null;

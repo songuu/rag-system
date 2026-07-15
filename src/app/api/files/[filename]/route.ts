@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import path from 'path';
 import { createUploadPersistence } from '@/lib/persistence/upload-store';
 import type { FileManifestItem } from '@/lib/persistence/ports';
@@ -11,6 +12,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ filename: string }> }
 ) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const { filename } = await params;
     const decodedFilename = decodeURIComponent(filename);

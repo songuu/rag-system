@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getMilvusInstance, MilvusConfig } from '@/lib/milvus-client';
 import { getRagSystem } from '@/lib/rag-instance';
-import { createEmbedding, getModelFactory } from '@/lib/model-config';
+import { createEmbedding } from '@/lib/model-config';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import { getEmbeddingConfigSummary, getEmbeddingDimension, ALL_EMBEDDING_DIMENSIONS } from '@/lib/embedding-config';
 import fs from 'fs';
 import path from 'path';
+import { getLegacyRagRouteBlock } from '@/lib/security/legacy-route-policy';
 
 // 使用独立的 Embedding 配置
 const embeddingConfig = getEmbeddingConfigSummary();
@@ -40,6 +41,13 @@ function getModelDimension(model: string): number {
 
 // POST: 同步文档到 Milvus
 export async function POST(request: NextRequest) {
+  const legacyBlock = getLegacyRagRouteBlock();
+  if (legacyBlock) {
+    return NextResponse.json(
+      { success: false, error: legacyBlock.message, code: legacyBlock.code },
+      { status: legacyBlock.status }
+    );
+  }
   try {
     const body = await request.json();
     const { action = 'sync-from-uploads', embeddingModel = EMBEDDING_MODEL } = body;
@@ -306,6 +314,13 @@ function splitTextIntoChunks(text: string, chunkSize: number, overlap: number): 
 
 // GET: 获取同步状态
 export async function GET() {
+  const legacyBlock = getLegacyRagRouteBlock();
+  if (legacyBlock) {
+    return NextResponse.json(
+      { success: false, error: legacyBlock.message, code: legacyBlock.code },
+      { status: legacyBlock.status }
+    );
+  }
   try {
     // 检查 uploads 目录
     const uploadsExist = fs.existsSync(UPLOADS_DIR);

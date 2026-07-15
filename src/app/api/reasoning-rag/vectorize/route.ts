@@ -6,12 +6,13 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { readdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { MilvusVectorStore } from '@/lib/milvus-client';
-import { createEmbedding, getModelFactory } from '@/lib/model-config';
-import { getEmbeddingConfigSummary, getEmbeddingDimension, ALL_EMBEDDING_DIMENSIONS, SILICONFLOW_MODELS } from '@/lib/embedding-config';
+import { createEmbedding } from '@/lib/model-config';
+import { getEmbeddingConfigSummary, ALL_EMBEDDING_DIMENSIONS, SILICONFLOW_MODELS } from '@/lib/embedding-config';
 import { getReasoningRAGConfig, getReasoningRAGConfigSummary } from '@/lib/milvus-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from '@/lib/contextual-retrieval';
 
@@ -144,6 +145,8 @@ function splitTextIntoChunks(
  * POST: 向量化 Reasoning RAG 专用目录中的文件
  */
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     // 获取 Reasoning RAG 配置
     const ragConfig = getConfig();
@@ -290,7 +293,7 @@ export async function POST(request: NextRequest) {
           try {
             const batchVectors = await embeddings.embedDocuments(batch);
             vectors.push(...batchVectors);
-          } catch (batchError) {
+          } catch {
             // 如果批量失败，尝试逐个处理
             console.warn(`[Reasoning Vectorize] 批量嵌入失败，尝试逐个处理...`);
             for (const text of batch) {
@@ -378,6 +381,8 @@ export async function POST(request: NextRequest) {
  * GET: 获取 Reasoning RAG 集合状态
  */
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     // 获取 Reasoning RAG 配置
     const ragConfig = getConfig();
@@ -433,6 +438,8 @@ export async function GET() {
  * DELETE: 清空 Reasoning RAG 集合
  */
 export async function DELETE() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     // 获取 Reasoning RAG 配置
     const ragConfig = getConfig();

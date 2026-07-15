@@ -1,5 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MilvusConfig, getMilvusInstance, resetMilvusInstance, getModelDimension } from '@/lib/milvus-client';
+import {
+  type MilvusConfig,
+  type MilvusIndexType,
+  type MilvusMetricType,
+  type MilvusSearchOptions,
+  getMilvusInstance,
+  resetMilvusInstance,
+  getModelDimension,
+} from '@/lib/milvus-client';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getEmbeddingModel,
@@ -15,10 +23,63 @@ import {
   isZillizCloud,
 } from '@/lib/milvus-config';
 import { getEmbeddingConfigSummary } from '@/lib/embedding-config';
+import {
+  REQUEST_LIMITS,
+  RequestValidationError,
+  publicErrorPayload,
+  readJsonObjectWithLimit,
+  validateEmbeddingModelSelection,
+  validateQueryText,
+} from '@/lib/security/request-validation';
+import {
+  RagSecurityError,
+  resolveRagSecurityContext,
+  type RagCapability,
+} from '@/lib/security/request-context';
+import {
+  buildScopedMilvusSearchOptions,
+  createRetrievalScope,
+  stampDocumentScope,
+} from '@/lib/security/retrieval-scope';
+import { redactErrorForLog } from '@/lib/security/error-redaction';
+import {
+  toPublicMilvusConfig,
+  toPublicServiceHealth,
+} from '@/lib/security/public-config';
+
+export const runtime = 'nodejs';
 
 // 使用独立的 Embedding 配置系统
 const embeddingConfig = getEmbeddingConfigSummary();
 const EMBEDDING_MODEL = embeddingConfig.model;
+
+const MILVUS_ACTION_CAPABILITIES = {
+  connect: 'manage-runtime',
+  recreate: 'manage-runtime',
+  'check-schema': 'query',
+  disconnect: 'manage-runtime',
+  health: 'query',
+  stats: 'query',
+  insert: 'ingest',
+  search: 'query',
+  delete: 'delete-document',
+  clear: 'manage-runtime',
+  'import-files': 'ingest',
+  'rebuild-index': 'reindex',
+  'update-config': 'manage-runtime',
+} as const satisfies Record<string, RagCapability>;
+
+type MilvusAction = keyof typeof MILVUS_ACTION_CAPABILITIES;
+
+const GLOBAL_MILVUS_ACTIONS = new Set<MilvusAction>([
+  'connect',
+  'recreate',
+  'disconnect',
+  'delete',
+  'clear',
+  'rebuild-index',
+  'update-config',
+]);
 
 type RawMilvusDocument = {
   id?: string;
@@ -69,20 +130,57 @@ function getDefaultMilvusConfig(): MilvusConfig {
   };
 }
 
+function getPublicMilvusRuntimeConfig(config: MilvusConfig = getDefaultMilvusConfig()) {
+  return toPublicMilvusConfig(
+    config as unknown as Record<string, unknown>,
+    {
+      provider: getMilvusProvider(),
+      isZillizCloud: isZillizCloud(),
+    }
+  );
+}
+
 // POST: 执行 Milvus 操作
 export async function POST(request: NextRequest) {
+  const requestId = resolvePublicRequestId(request);
   try {
-    const body = await request.json();
+    const body = await readJsonObjectWithLimit(request, REQUEST_LIMITS.milvusJsonBytes);
     const { action, ...params } = body;
+    const milvusAction = parseMilvusAction(action);
+    const securityContext = await resolveRagSecurityContext(request, {
+      capability: MILVUS_ACTION_CAPABILITIES[milvusAction],
+      requestedCorpusId: typeof params.corpusId === 'string' ? params.corpusId : undefined,
+      requestIdFactory: () => requestId,
+    });
+    const retrievalScope = createRetrievalScope({
+      tenantId: securityContext.tenantId,
+      corpusId: securityContext.corpusId,
+      enforceIsolation: securityContext.enforceIsolation,
+    });
 
-    switch (action) {
+    if (securityContext.enforceIsolation && GLOBAL_MILVUS_ACTIONS.has(milvusAction)) {
+      throw new RequestValidationError(
+        'GLOBAL_MILVUS_ACTION_FORBIDDEN',
+        'This global Milvus operation is unavailable in multi-tenant mode.',
+        409
+      );
+    }
+    if (securityContext.enforceIsolation && milvusAction === 'stats') {
+      throw new RequestValidationError(
+        'GLOBAL_STATS_FORBIDDEN',
+        'Global collection statistics are unavailable in multi-tenant mode.',
+        409
+      );
+    }
+
+    switch (milvusAction) {
       // 连接到 Milvus
       case 'connect': {
         const defaultConfig = getDefaultMilvusConfig();
-        const config: MilvusConfig = {
-          ...defaultConfig,
-          ...params.config,
-        };
+        // Runtime endpoints cannot redirect the server to a client-selected address.
+        const config: MilvusConfig = securityContext.accessMode === 'local-dev'
+          ? { ...defaultConfig, ...(isRecord(params.config) ? params.config : {}) }
+          : defaultConfig;
         const autoRecreate = params.autoRecreate === true;
         
         const milvus = getMilvusInstance(config);
@@ -140,7 +238,7 @@ export async function POST(request: NextRequest) {
         const health = await milvus.checkHealth();
         return NextResponse.json({
           success: true,
-          ...health,
+          ...toPublicServiceHealth(health),
         });
       }
 
@@ -159,7 +257,7 @@ export async function POST(request: NextRequest) {
         const { documents, embeddingModel } = params;
         
         console.log(`[Milvus Insert] ========== 开始导入 ==========`);
-        console.log(`[Milvus Insert] Documents count: ${documents?.length || 0}`);
+        console.log(`[Milvus Insert] Documents count: ${Array.isArray(documents) ? documents.length : 0}`);
         console.log(`[Milvus Insert] Requested embedding model: "${embeddingModel || 'default'}"`);
         
         if (!documents || !Array.isArray(documents) || documents.length === 0) {
@@ -179,7 +277,7 @@ export async function POST(request: NextRequest) {
         console.log(`[Milvus Insert] Collection dimension: ${collectionDimension}D`);
 
         // 获取模型维度信息
-        const actualModelName = embeddingModel || EMBEDDING_MODEL;
+        const actualModelName = validateEmbeddingModelSelection(embeddingModel);
         const modelDimension = getModelDimension(actualModelName);
         
         console.log(`[Milvus Insert] Using model: "${actualModelName}" (${modelDimension}D)`);
@@ -201,6 +299,7 @@ export async function POST(request: NextRequest) {
             error: '文档格式无效：每个文档都必须包含 string 类型的 content',
           }, { status: 400 });
         }
+        validateDocumentBatch(documents);
 
         const milvusDocs = await Promise.all(normalizedDocuments.map(async (doc) => {
           const embedding = await embeddings.embedQuery(doc.content);
@@ -208,7 +307,11 @@ export async function POST(request: NextRequest) {
             id: doc.id || uuidv4(),
             content: doc.content,
             embedding,
-            metadata: doc.metadata || {},
+            metadata: stampDocumentScope(
+              doc.metadata,
+              retrievalScope,
+              'external'
+            ),
           };
         }));
 
@@ -247,8 +350,8 @@ export async function POST(request: NextRequest) {
         const requestStartedAt = Date.now();
         const {
           query,
-          topK = 5,
-          threshold = 0.0,
+          topK: rawTopK,
+          threshold: rawThreshold,
           filter,
           filterParams,
           exprValues,
@@ -262,13 +365,10 @@ export async function POST(request: NextRequest) {
           roundDecimal,
           embeddingModel,
         } = params;
+        const topK = boundedInteger(rawTopK, 'topK', 1, 50, 5);
+        const threshold = boundedNumber(rawThreshold, 'threshold', 0, 1, 0);
 
-        if (!query || typeof query !== 'string') {
-          return NextResponse.json({
-            success: false,
-            error: '请提供有效的查询文本',
-          }, { status: 400 });
-        }
+        const queryText = validateQueryText(query);
 
         const defaultConfig = getDefaultMilvusConfig();
         const debugLogs = defaultConfig.debugLogs === true;
@@ -277,7 +377,7 @@ export async function POST(request: NextRequest) {
         };
 
         debugSearch(`[Milvus Search] ========== 开始搜索 ==========`);
-        debugSearch(`[Milvus Search] Query: "${query}"`);
+        debugSearch(`[Milvus Search] Query: "${queryText}"`);
         debugSearch(`[Milvus Search] Requested embedding model: "${embeddingModel || 'default'}"`);
 
         const milvus = getMilvusInstance(defaultConfig);
@@ -291,11 +391,12 @@ export async function POST(request: NextRequest) {
         debugSearch(`[Milvus Search] Collection dimension: ${collectionDimension}D`);
 
         // 自动选择与集合维度匹配的模型
-        const actualModel = selectModelForCollection(collectionDimension, embeddingModel);
+        const requestedEmbeddingModel = validateEmbeddingModelSelection(embeddingModel);
+        const actualModel = selectModelForCollection(collectionDimension, requestedEmbeddingModel);
         debugSearch(`[Milvus Search] Auto-selected model: "${actualModel}"`);
 
         const embeddingStartedAt = Date.now();
-        const queryEmbedding = await generateQueryEmbedding(query, actualModel);
+        const queryEmbedding = await generateQueryEmbedding(queryText, actualModel);
         const embeddingMs = Date.now() - embeddingStartedAt;
         const queryDimension = queryEmbedding.length;
         debugSearch(`[Milvus Search] Generated query embedding dimension: ${queryDimension}D`);
@@ -320,19 +421,38 @@ export async function POST(request: NextRequest) {
         
         debugSearch(`[Milvus Search] ✅ 维度匹配，开始搜索...`);
         const searchStartedAt = Date.now();
-        const results = await milvus.search(queryEmbedding, topK, {
-          threshold,
-          filter,
-          exprValues: exprValues || filterParams,
-          consistencyLevel,
-          ignoreGrowing,
-          groupByField,
-          groupSize,
-          strictGroupSize,
-          searchParams,
-          hints,
-          roundDecimal,
-        });
+        const baseSearchOptions: MilvusSearchOptions = { threshold };
+        if (!retrievalScope.enforceIsolation) {
+          if (typeof consistencyLevel === 'string' || typeof consistencyLevel === 'number') {
+            baseSearchOptions.consistencyLevel = validateConsistencyLevel(consistencyLevel);
+          }
+          if (typeof ignoreGrowing === 'boolean') baseSearchOptions.ignoreGrowing = ignoreGrowing;
+          if (typeof groupByField === 'string') baseSearchOptions.groupByField = groupByField;
+          if (typeof groupSize === 'number') {
+            baseSearchOptions.groupSize = boundedInteger(groupSize, 'groupSize', 1, 100, 1);
+          }
+          if (typeof strictGroupSize === 'boolean') baseSearchOptions.strictGroupSize = strictGroupSize;
+          if (isRecord(searchParams)) baseSearchOptions.searchParams = searchParams;
+          if (typeof hints === 'string') baseSearchOptions.hints = hints;
+          if (typeof roundDecimal === 'number') {
+            baseSearchOptions.roundDecimal = boundedInteger(roundDecimal, 'roundDecimal', -1, 12, -1);
+          }
+        }
+        const results = await milvus.search(
+          queryEmbedding,
+          topK,
+          retrievalScope.enforceIsolation
+            ? buildScopedMilvusSearchOptions(retrievalScope, baseSearchOptions)
+            : {
+                ...baseSearchOptions,
+                filter: typeof filter === 'string' ? filter : undefined,
+                exprValues: isRecord(exprValues)
+                  ? exprValues
+                  : isRecord(filterParams)
+                    ? filterParams
+                    : undefined,
+              }
+        );
         const searchMs = Date.now() - searchStartedAt;
         const totalMs = Date.now() - requestStartedAt;
         debugSearch(`[Milvus Search] ✅ 找到 ${results.length} 个结果`);
@@ -340,7 +460,7 @@ export async function POST(request: NextRequest) {
         
         return NextResponse.json({
           success: true,
-          query,
+          query: queryText,
           results,
           count: results.length,
           embeddingModel: actualModel,
@@ -357,15 +477,23 @@ export async function POST(request: NextRequest) {
 
       // 删除文档
       case 'delete': {
-        const { ids } = params;
+        if (retrievalScope.enforceIsolation) {
+          throw new RequestValidationError(
+            'SCOPED_DELETE_UNAVAILABLE',
+            'Scoped deletion must be performed through the corpus document API.',
+            409
+          );
+        }
+        const { ids: rawIds } = params;
         
-        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        if (!rawIds || !Array.isArray(rawIds) || rawIds.length === 0) {
           return NextResponse.json({
             success: false,
             error: '请提供有效的文档 ID 列表',
           }, { status: 400 });
         }
 
+        const ids = validateDocumentIds(rawIds);
         const milvus = getMilvusInstance(getDefaultMilvusConfig());
         await milvus.deleteDocuments(ids);
         
@@ -388,7 +516,14 @@ export async function POST(request: NextRequest) {
 
       // 从文件导入文档
       case 'import-files': {
-        const { files, embeddingModel: fileEmbeddingModel, chunkSize = 500, chunkOverlap = 50 } = params;
+        const {
+          files,
+          embeddingModel: fileEmbeddingModel,
+          chunkSize: rawChunkSize,
+          chunkOverlap: rawChunkOverlap,
+        } = params;
+        const chunkSize = boundedInteger(rawChunkSize, 'chunkSize', 100, 4_000, 500);
+        const chunkOverlap = boundedInteger(rawChunkOverlap, 'chunkOverlap', 0, chunkSize - 1, 50);
         
         if (!files || !Array.isArray(files) || files.length === 0) {
           return NextResponse.json({
@@ -407,15 +542,17 @@ export async function POST(request: NextRequest) {
             error: '文件格式无效：每个文件都必须包含 content 和 filename',
           }, { status: 400 });
         }
+        validateImportFiles(files);
 
         const documents: DocumentInput[] = normalizedFiles.map((file) => ({
           content: file.content,
           filename: file.filename,
+          metadata: stampDocumentScope({}, retrievalScope, 'external'),
         }));
         
         // 使用公共向量化工具
         const result = await vectorizeAndInsert(milvus, documents, {
-          embeddingModel: fileEmbeddingModel || EMBEDDING_MODEL,
+          embeddingModel: validateEmbeddingModelSelection(fileEmbeddingModel),
           chunkSize,
           chunkOverlap,
         });
@@ -423,7 +560,8 @@ export async function POST(request: NextRequest) {
         if (!result.success) {
           return NextResponse.json({
             success: false,
-            error: result.error,
+            error: 'Vectorization failed.',
+            code: 'VECTORIZATION_FAILED',
           }, { status: 400 });
         }
         
@@ -439,7 +577,8 @@ export async function POST(request: NextRequest) {
 
       // 重建索引
       case 'rebuild-index': {
-        const { indexType = 'IVF_FLAT', metricType = 'COSINE' } = params;
+        const indexType = validateIndexType(params.indexType);
+        const metricType = validateMetricType(params.metricType);
         
         const milvus = getMilvusInstance(getDefaultMilvusConfig());
         await milvus.updateConfig({ indexType, metricType });
@@ -455,76 +594,76 @@ export async function POST(request: NextRequest) {
       case 'update-config': {
         const { config } = params;
         
-        if (!config) {
+        if (!isRecord(config)) {
           return NextResponse.json({
             success: false,
             error: '请提供配置参数',
           }, { status: 400 });
         }
+        if (securityContext.accessMode !== 'local-dev') {
+          throw new RequestValidationError(
+            'RUNTIME_CONFIG_UPDATE_FORBIDDEN',
+            'Client-selected runtime configuration is only available in local development.',
+            409
+          );
+        }
 
         const milvus = getMilvusInstance(getDefaultMilvusConfig());
-        await milvus.updateConfig(config);
+        await milvus.updateConfig(config as Partial<MilvusConfig>);
         
         return NextResponse.json({
           success: true,
           message: 'Configuration updated',
-          config: milvus.getConfig(),
+          config: getPublicMilvusRuntimeConfig(milvus.getConfig()),
         });
       }
 
       default:
         return NextResponse.json({
           success: false,
-          error: `Unknown action: ${action}`,
+          error: 'Unknown action',
+          code: 'UNKNOWN_ACTION',
         }, { status: 400 });
     }
   } catch (error) {
-    console.error('[Milvus API] Error:', error);
+    console.error(`[Milvus API] requestId=${requestId}`, redactErrorForLog(error));
+    const mapped = mapMilvusError(error, 'MILVUS_INTERNAL_ERROR', 'Milvus operation failed.', requestId);
     return NextResponse.json({
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    }, { status: 500 });
+      error: mapped.body.error.message,
+      code: mapped.body.error.code,
+      requestId: mapped.body.requestId,
+    }, { status: mapped.status });
   }
 }
 
 // GET: 获取 Milvus 状态和信息
 export async function GET(request: NextRequest) {
+  const requestId = resolvePublicRequestId(request);
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action') || 'status';
 
   try {
+    const securityContext = await resolveRagSecurityContext(request, {
+      capability: 'query',
+      requestedCorpusId: searchParams.get('corpusId') || undefined,
+      requestIdFactory: () => requestId,
+    });
     switch (action) {
       case 'status': {
         const defaultConfig = getDefaultMilvusConfig();
         const milvus = getMilvusInstance(defaultConfig);
         const health = await milvus.checkHealth();
-        const stats = health.healthy ? await milvus.getCollectionStats() : null;
+        const stats = !securityContext.enforceIsolation && health.healthy
+          ? await milvus.getCollectionStats()
+          : null;
         
         return NextResponse.json({
           success: true,
           connected: health.healthy,
-          health,
+          health: toPublicServiceHealth(health),
           stats,
-          config: {
-            provider: getMilvusProvider(),
-            isZillizCloud: isZillizCloud(),
-            address: defaultConfig.address,
-            database: defaultConfig.database,
-            collectionName: defaultConfig.collectionName,
-            embeddingDimension: defaultConfig.embeddingDimension,
-            indexType: defaultConfig.indexType,
-            metricType: defaultConfig.metricType,
-            consistencyLevel: defaultConfig.consistencyLevel,
-            ignoreGrowing: defaultConfig.ignoreGrowing,
-            groupByField: defaultConfig.groupByField,
-            groupSize: defaultConfig.groupSize,
-            strictGroupSize: defaultConfig.strictGroupSize,
-            flushOnInsert: defaultConfig.flushOnInsert,
-            reloadAfterInsert: defaultConfig.reloadAfterInsert,
-            searchParams: defaultConfig.searchParams,
-            searchOutputFields: defaultConfig.searchOutputFields,
-            debugLogs: defaultConfig.debugLogs,
-          },
+          config: getPublicMilvusRuntimeConfig(defaultConfig),
         });
       }
 
@@ -533,7 +672,20 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({
           success: true,
           config: {
-            ...configSummary,
+            provider: configSummary.provider,
+            configured: Boolean(configSummary.endpoint),
+            hasCredentials: configSummary.hasCredentials,
+            ssl: configSummary.ssl,
+            defaultCollection: configSummary.defaultCollection,
+            defaultDimension: configSummary.defaultDimension,
+            defaultConsistencyLevel: configSummary.defaultConsistencyLevel,
+            ignoreGrowing: configSummary.ignoreGrowing,
+            groupByField: configSummary.groupByField,
+            groupSize: configSummary.groupSize,
+            strictGroupSize: configSummary.strictGroupSize,
+            flushOnInsert: configSummary.flushOnInsert,
+            reloadAfterInsert: configSummary.reloadAfterInsert,
+            debugLogs: configSummary.debugLogs,
             embeddingModel: EMBEDDING_MODEL,
             supportedIndexTypes: ['AUTOINDEX', 'FLAT', 'IVF_FLAT', 'IVF_SQ8', 'IVF_PQ', 'HNSW', 'ANNOY'],
             supportedMetricTypes: ['L2', 'IP', 'COSINE'],
@@ -549,10 +701,197 @@ export async function GET(request: NextRequest) {
         }, { status: 400 });
     }
   } catch (error) {
-    console.error('[Milvus API] Error:', error);
+    console.error(`[Milvus API] status requestId=${requestId}`, redactErrorForLog(error));
+    const mapped = mapMilvusError(error, 'MILVUS_STATUS_FAILED', 'Milvus status is unavailable.', requestId);
     return NextResponse.json({
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    }, { status: 500 });
+      error: mapped.body.error.message,
+      code: mapped.body.error.code,
+      requestId: mapped.body.requestId,
+    }, { status: mapped.status });
   }
+}
+
+function parseMilvusAction(value: unknown): MilvusAction {
+  if (typeof value === 'string' && value in MILVUS_ACTION_CAPABILITIES) {
+    return value as MilvusAction;
+  }
+  throw new RequestValidationError('UNKNOWN_ACTION', 'Unknown Milvus action.', 400);
+}
+
+function boundedInteger(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+  fallback: number
+): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new RequestValidationError(
+      'INVALID_INTEGER',
+      `${field} must be an integer between ${min} and ${max}.`,
+      400
+    );
+  }
+  return value;
+}
+
+function boundedNumber(
+  value: unknown,
+  field: string,
+  min: number,
+  max: number,
+  fallback: number
+): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+    throw new RequestValidationError(
+      'INVALID_NUMBER',
+      `${field} must be a finite number between ${min} and ${max}.`,
+      400
+    );
+  }
+  return value;
+}
+
+function validateIndexType(value: unknown): MilvusIndexType {
+  const candidate = value === undefined ? 'IVF_FLAT' : value;
+  const supported: MilvusIndexType[] = [
+    'AUTOINDEX', 'IVF_FLAT', 'IVF_SQ8', 'IVF_PQ', 'HNSW', 'ANNOY', 'FLAT',
+  ];
+  if (typeof candidate !== 'string' || !supported.includes(candidate as MilvusIndexType)) {
+    throw new RequestValidationError('INVALID_INDEX_TYPE', 'Unsupported Milvus index type.', 400);
+  }
+  return candidate as MilvusIndexType;
+}
+
+function validateMetricType(value: unknown): MilvusMetricType {
+  const candidate = value === undefined ? 'COSINE' : value;
+  const supported: MilvusMetricType[] = ['L2', 'IP', 'COSINE'];
+  if (typeof candidate !== 'string' || !supported.includes(candidate as MilvusMetricType)) {
+    throw new RequestValidationError('INVALID_METRIC_TYPE', 'Unsupported Milvus metric type.', 400);
+  }
+  return candidate as MilvusMetricType;
+}
+
+function validateConsistencyLevel(
+  value: string | number
+): NonNullable<MilvusSearchOptions['consistencyLevel']> {
+  const supported = ['Strong', 'Bounded', 'Session', 'Eventually'];
+  if (typeof value === 'string' && supported.includes(value)) {
+    return value as NonNullable<MilvusSearchOptions['consistencyLevel']>;
+  }
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 4) {
+    return value as NonNullable<MilvusSearchOptions['consistencyLevel']>;
+  }
+  throw new RequestValidationError(
+    'INVALID_CONSISTENCY_LEVEL',
+    'Unsupported Milvus consistency level.',
+    400
+  );
+}
+
+function validateDocumentBatch(documents: unknown[]): void {
+  if (documents.length > 100) {
+    throw new RequestValidationError(
+      'DOCUMENT_BATCH_TOO_LARGE',
+      'No more than 100 documents are allowed.',
+      413
+    );
+  }
+  let totalCharacters = 0;
+  for (const document of documents) {
+    if (!isRawMilvusDocument(document) || document.content.length > 200_000) {
+      throw new RequestValidationError(
+        'INVALID_DOCUMENT',
+        'Each document must contain bounded text content.',
+        400
+      );
+    }
+    totalCharacters += document.content.length;
+  }
+  if (totalCharacters > 2_000_000) {
+    throw new RequestValidationError(
+      'DOCUMENT_BATCH_TOO_LARGE',
+      'Document content is too large.',
+      413
+    );
+  }
+}
+
+function validateImportFiles(files: unknown[]): void {
+  if (files.length > 20) {
+    throw new RequestValidationError(
+      'FILE_BATCH_TOO_LARGE',
+      'No more than 20 files are allowed.',
+      413
+    );
+  }
+  let totalCharacters = 0;
+  for (const file of files) {
+    if (!isRawImportFile(file) || file.content.length > 500_000 || file.filename.length > 512) {
+      throw new RequestValidationError(
+        'INVALID_IMPORT_FILE',
+        'Each import file must contain bounded text and a filename.',
+        400
+      );
+    }
+    totalCharacters += file.content.length;
+  }
+  if (totalCharacters > 4_000_000) {
+    throw new RequestValidationError(
+      'FILE_BATCH_TOO_LARGE',
+      'Import file content is too large.',
+      413
+    );
+  }
+}
+
+function validateDocumentIds(values: unknown[]): string[] {
+  if (values.length > 100) {
+    throw new RequestValidationError(
+      'TOO_MANY_DOCUMENT_IDS',
+      'No more than 100 document IDs are allowed.',
+      413
+    );
+  }
+  return values.map((value) => {
+    if (
+      typeof value !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value)
+    ) {
+      throw new RequestValidationError('INVALID_DOCUMENT_ID', 'Invalid document ID.', 400);
+    }
+    return value;
+  });
+}
+
+function mapMilvusError(
+  error: unknown,
+  fallbackCode: string,
+  fallbackMessage: string,
+  requestId: string
+) {
+  if (error instanceof RagSecurityError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId: error.requestId,
+      },
+    };
+  }
+  return publicErrorPayload(error, fallbackCode, fallbackMessage, requestId);
+}
+
+function resolvePublicRequestId(request: NextRequest): string {
+  const supplied = request.headers.get('x-request-id')?.trim();
+  return supplied && supplied.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(supplied)
+    ? supplied
+    : crypto.randomUUID();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }

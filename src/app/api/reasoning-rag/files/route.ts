@@ -4,6 +4,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { writeFile, mkdir, readdir, unlink, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -53,6 +54,8 @@ function formatFileSize(bytes: number): string {
  * POST: 上传文件到 Reasoning RAG 专用目录
  */
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const formData = await request.formData();
     const files = formData.getAll('files') as File[];
@@ -167,6 +170,8 @@ export async function POST(request: NextRequest) {
  * GET: 获取 Reasoning RAG 专用目录中的文件列表
  */
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     // 确保目录存在
     if (!existsSync(REASONING_UPLOAD_DIR)) {
@@ -203,7 +208,6 @@ export async function GET() {
         const originalName = parts.slice(1).join('_');
         
         // 查找对应的解析后文本文件
-        const baseName = path.basename(filename, path.extname(filename));
         const textFileName = textFiles.find(tf => {
           const tfParts = tf.split('_');
           return tfParts[0] === parts[0]; // 匹配时间戳
@@ -257,6 +261,8 @@ export async function GET() {
  * DELETE: 删除 Reasoning RAG 专用目录中的文件
  */
 export async function DELETE(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const { searchParams } = new URL(request.url);
     const filename = searchParams.get('filename');
@@ -284,7 +290,6 @@ export async function DELETE(request: NextRequest) {
     // 尝试删除对应的解析后文本文件
     const parts = filename.split('_');
     const timestamp = parts[0];
-    const baseName = path.basename(filename, path.extname(filename));
     
     // 查找并删除 _parsed.txt 文件
     const allFiles = await readdir(REASONING_UPLOAD_DIR);
@@ -296,7 +301,7 @@ export async function DELETE(request: NextRequest) {
       const textFilePath = path.join(REASONING_UPLOAD_DIR, textFile);
       try {
         await unlink(textFilePath);
-      } catch (e) {
+      } catch {
         console.warn(`[Reasoning Files] 删除文本文件失败: ${textFile}`);
       }
     }

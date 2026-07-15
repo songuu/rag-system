@@ -15,7 +15,7 @@
  */
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { MilvusDocument, getMilvusInstance } from './milvus-client';
+import { type MilvusDocument, getMilvusInstance } from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
 import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
@@ -23,6 +23,9 @@ import { createEmbedding } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
 import { parsePdfBuffer } from './pdf-parser';
+import { safeFetchExternalUrl } from './security/safe-external-url';
+import { isTenantIsolationRequired } from './security/retrieval-scope';
+import { assertSafeZipArchive } from './security/zip-safety';
 
 // ============== 类型定义 ==============
 
@@ -108,6 +111,12 @@ const DEFAULT_CONFIG: Required<PipelineConfig> = {
   }
 };
 
+export const PIPELINE_WORK_LIMITS = {
+  maxChunksPerDocument: 1_000,
+  maxChunksPerBatch: 2_000,
+  embeddingBatchSize: 32,
+} as const;
+
 // ============== 文档加载器 ==============
 
 /**
@@ -157,6 +166,7 @@ export async function loadPdfFile(buffer: Buffer, filename: string): Promise<Loa
  * Word 文件加载器 (DOCX)
  */
 export async function loadDocxFile(buffer: Buffer, filename: string): Promise<LoadedDocument> {
+  assertSafeZipArchive(buffer);
   try {
     // 动态导入 mammoth
     const mammoth = await import('mammoth');
@@ -171,19 +181,8 @@ export async function loadDocxFile(buffer: Buffer, filename: string): Promise<Lo
         createdAt: new Date().toISOString(),
       }
     };
-  } catch {
-    // 如果 mammoth 不可用，尝试基本的文本提取
-    console.warn('[Pipeline] Mammoth 不可用，尝试基本文本提取');
-    const text = buffer.toString('utf-8').replace(/<[^>]*>/g, ' ').trim();
-    return {
-      content: text,
-      metadata: {
-        source: filename,
-        type: 'docx',
-        title: filename,
-        createdAt: new Date().toISOString(),
-      }
-    };
+  } catch (error) {
+    throw new Error('DOCX parsing failed.', { cause: error });
   }
 }
 
@@ -192,11 +191,19 @@ export async function loadDocxFile(buffer: Buffer, filename: string): Promise<Lo
  */
 export async function loadExcelFile(buffer: Buffer, filename: string): Promise<LoadedDocument> {
   try {
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    if (/\.(?:xlsx|xlsm|xltx)$/i.test(filename)) {
+      assertSafeZipArchive(buffer);
+    }
+    const workbook = XLSX.read(buffer, { type: 'buffer', sheetRows: 10_000 });
     const sheets: string[] = workbook.SheetNames;
+    if (sheets.length > 50) {
+      throw new Error('Spreadsheet contains too many sheets.');
+    }
     
     // 将所有工作表内容合并
     const contents: string[] = [];
+    let totalCells = 0;
+    let totalCharacters = 0;
     
     for (const sheetName of sheets) {
       const worksheet = workbook.Sheets[sheetName];
@@ -214,6 +221,10 @@ export async function loadExcelFile(buffer: Buffer, filename: string): Promise<L
         for (let i = 0; i < jsonData.length; i++) {
           const row = jsonData[i] as unknown[];
           if (row.length === 0) continue;
+          totalCells += row.length;
+          if (totalCells > 250_000) {
+            throw new Error('Spreadsheet contains too many cells.');
+          }
           
           if (i === 0) {
             // 表头行
@@ -226,6 +237,10 @@ export async function loadExcelFile(buffer: Buffer, filename: string): Promise<L
               return cell !== undefined && cell !== null ? String(cell) : '';
             });
             contents.push(`| ${cells.join(' | ')} |`);
+          }
+          totalCharacters += contents[contents.length - 1]?.length ?? 0;
+          if (totalCharacters > 2_000_000) {
+            throw new Error('Spreadsheet extracted text is too large.');
           }
         }
         contents.push('\n');
@@ -302,17 +317,18 @@ export async function loadMarkdownFile(buffer: Buffer, filename: string): Promis
  */
 export async function loadUrl(url: string): Promise<LoadedDocument> {
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+    const response = await safeFetchExternalUrl(url, {
+      allowHttp: process.env.RAG_EXTERNAL_URL_ALLOW_HTTP === 'true',
+      allowedContentTypes: ['text/html', 'text/plain', 'application/xhtml+xml'],
+      maxResponseBytes: 5 * 1024 * 1024,
+      timeoutMs: 10_000,
     });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP 错误: ${response.status}`);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`HTTP 错误: ${response.statusCode}`);
     }
-    
-    const html = await response.text();
+
+    const html = new TextDecoder('utf-8').decode(response.body);
     
     // 使用 cheerio 解析 HTML
     const cheerio = await import('cheerio');
@@ -322,7 +338,7 @@ export async function loadUrl(url: string): Promise<LoadedDocument> {
     $('script, style, nav, footer, header, aside, .sidebar, .advertisement').remove();
     
     // 获取标题
-    const title = $('title').text() || $('h1').first().text() || new URL(url).hostname;
+    const title = $('title').text() || $('h1').first().text() || new URL(response.finalUrl).hostname;
     
     // 提取主要内容
     let content = '';
@@ -348,10 +364,12 @@ export async function loadUrl(url: string): Promise<LoadedDocument> {
     return {
       content,
       metadata: {
-        source: url,
+        source: response.finalUrl,
         type: 'url',
         title: title.trim(),
-        url,
+        url: response.finalUrl,
+        trustLevel: 'external',
+        trust_level: 'external',
         createdAt: new Date().toISOString(),
       }
     };
@@ -393,18 +411,27 @@ export async function loadYouTube(videoUrl: string): Promise<LoadedDocument> {
 /**
  * 提取 YouTube 视频 ID
  */
-function extractYouTubeId(url: string): string | null {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
-    /^([a-zA-Z0-9_-]{11})$/
-  ];
-  
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
+export function extractYouTubeId(value: string): string | null {
+  if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value;
+
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
+    let videoId: string | null = null;
+    if (hostname === 'youtu.be') {
+      videoId = url.pathname.split('/').filter(Boolean)[0] ?? null;
+    } else if (['youtube.com', 'www.youtube.com', 'm.youtube.com'].includes(hostname)) {
+      if (url.pathname === '/watch') {
+        videoId = url.searchParams.get('v');
+      } else {
+        const match = url.pathname.match(/^\/(?:embed|shorts)\/([A-Za-z0-9_-]{11})(?:\/|$)/);
+        videoId = match?.[1] ?? null;
+      }
+    }
+    return videoId && /^[A-Za-z0-9_-]{11}$/.test(videoId) ? videoId : null;
+  } catch {
+    return null;
   }
-  
-  return null;
 }
 
 /**
@@ -413,13 +440,13 @@ function extractYouTubeId(url: string): string | null {
 async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; title?: string }> {
   try {
     // 获取视频页面
-    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+    const response = await safeFetchExternalUrl(`https://www.youtube.com/watch?v=${videoId}`, {
+      isHostnameAllowed: isYouTubeFetchHostname,
+      allowedContentTypes: ['text/html'],
+      maxResponseBytes: 2 * 1024 * 1024,
+      timeoutMs: 10_000,
     });
-    
-    const html = await response.text();
+    const html = new TextDecoder('utf-8').decode(response.body);
     
     // 提取标题
     const titleMatch = html.match(/<title>([^<]+)<\/title>/);
@@ -434,8 +461,13 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
       
       if (urlMatch) {
         const captionUrl = urlMatch[1].replace(/\\u0026/g, '&');
-        const captionResponse = await fetch(captionUrl);
-        const captionXml = await captionResponse.text();
+        const captionResponse = await safeFetchExternalUrl(captionUrl, {
+          isHostnameAllowed: isYouTubeFetchHostname,
+          allowedContentTypes: ['text/xml', 'application/xml', 'text/plain'],
+          maxResponseBytes: 2 * 1024 * 1024,
+          timeoutMs: 10_000,
+        });
+        const captionXml = new TextDecoder('utf-8').decode(captionResponse.body);
         
         // 解析字幕 XML
         const textMatches = captionXml.matchAll(/<text[^>]*>([^<]*)<\/text>/g);
@@ -469,6 +501,15 @@ async function fetchYouTubeTranscript(videoId: string): Promise<{ text: string; 
   } catch (error) {
     throw new Error(`字幕获取失败: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function isYouTubeFetchHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, '');
+  return normalized === 'youtube.com'
+    || normalized.endsWith('.youtube.com')
+    || normalized === 'youtu.be'
+    || normalized === 'googlevideo.com'
+    || normalized.endsWith('.googlevideo.com');
 }
 
 /**
@@ -556,9 +597,27 @@ export async function loadDocument(
  */
 export async function splitDocument(
   document: LoadedDocument,
-  config: { chunkSize?: number; chunkOverlap?: number } = {}
+  config: { chunkSize?: number; chunkOverlap?: number; maxChunks?: number } = {}
 ): Promise<DocumentChunk[]> {
   const { chunkSize = 500, chunkOverlap = 50 } = config;
+  if (
+    !Number.isInteger(chunkSize)
+    || chunkSize < 100
+    || chunkSize > 4_000
+    || !Number.isInteger(chunkOverlap)
+    || chunkOverlap < 0
+    || chunkOverlap > Math.floor(chunkSize / 2)
+  ) {
+    throw new Error('Chunking configuration is outside the safe processing bounds.');
+  }
+  const maxChunks = config.maxChunks ?? PIPELINE_WORK_LIMITS.maxChunksPerDocument;
+  if (
+    !Number.isInteger(maxChunks)
+    || maxChunks < 1
+    || maxChunks > PIPELINE_WORK_LIMITS.maxChunksPerDocument
+  ) {
+    throw new Error('Document chunk budget is outside the safe processing bounds.');
+  }
   
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize,
@@ -567,6 +626,11 @@ export async function splitDocument(
   });
   
   const chunks = await splitter.splitText(document.content);
+  if (chunks.length > maxChunks) {
+    throw new Error(
+      `Document expands to ${chunks.length} chunks, exceeding the limit of ${maxChunks}.`
+    );
+  }
   
   return chunks.map((content, index) => ({
     id: `${document.metadata.source}-chunk-${index}-${uuidv4().slice(0, 8)}`,
@@ -600,22 +664,32 @@ export async function generateEmbeddings(
   const embeddings = createEmbedding(embeddingModel);
   
   const results: ProcessedDocument[] = [];
-  
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    
+  if (chunks.length > PIPELINE_WORK_LIMITS.maxChunksPerDocument) {
+    throw new Error('Embedding request exceeds the document chunk budget.');
+  }
+
+  for (
+    let offset = 0;
+    offset < chunks.length;
+    offset += PIPELINE_WORK_LIMITS.embeddingBatchSize
+  ) {
+    const batch = chunks.slice(offset, offset + PIPELINE_WORK_LIMITS.embeddingBatchSize);
+    const vectors = await embeddings.embedDocuments(batch.map(chunk => chunk.content));
+    if (vectors.length !== batch.length) {
+      throw new Error('Embedding provider returned an unexpected vector count.');
+    }
+    for (let index = 0; index < batch.length; index += 1) {
+      results.push({
+        ...batch[index],
+        embedding: vectors[index],
+      });
+    }
+    const current = offset + batch.length;
     onProgress?.({
       stage: 'embedding',
-      current: i + 1,
+      current,
       total: chunks.length,
-      message: `正在生成向量 (${i + 1}/${chunks.length})...`
-    });
-    
-    const embedding = await embeddings.embedQuery(chunk.content);
-    
-    results.push({
-      ...chunk,
-      embedding,
+      message: `正在生成向量 (${current}/${chunks.length})...`
     });
   }
   
@@ -659,7 +733,7 @@ export async function storeToMilvus(
   
   await milvus.connect();
   // 使用 autoRecreate=true 以便在维度不匹配时自动重建集合
-  await milvus.initializeCollection(true);
+  await milvus.initializeCollection(!isTenantIsolationRequired());
   
   onProgress?.({
     stage: 'storing',
@@ -733,6 +807,10 @@ export class DocumentPipeline {
     options: {
       type?: DataSourceType;
       filename?: string;
+      /** Server-derived metadata such as tenant/corpus scope. */
+      metadata?: Record<string, unknown>;
+      /** Internal batch budget; callers cannot raise the global ceiling. */
+      maxChunks?: number;
     } = {},
     onProgress?: (progress: ProcessingProgress) => void
   ): Promise<{
@@ -750,6 +828,10 @@ export class DocumentPipeline {
     });
     
     const document = await loadDocument(input, options);
+    document.metadata = {
+      ...document.metadata,
+      ...(options.metadata ?? {}),
+    };
     
     onProgress?.({
       stage: 'loading',
@@ -769,6 +851,7 @@ export class DocumentPipeline {
     const chunks = await splitDocument(document, {
       chunkSize: this.config.chunkSize,
       chunkOverlap: this.config.chunkOverlap,
+      maxChunks: options.maxChunks ?? PIPELINE_WORK_LIMITS.maxChunksPerDocument,
     });
     
     onProgress?.({
@@ -848,6 +931,7 @@ export class DocumentPipeline {
       input: string | Buffer;
       type?: DataSourceType;
       filename?: string;
+      metadata?: Record<string, unknown>;
     }>,
     onProgress?: (progress: ProcessingProgress & { documentIndex: number }) => void
   ): Promise<Array<{
@@ -859,14 +943,27 @@ export class DocumentPipeline {
     error?: string;
   }>> {
     const results = [];
+    let processedChunks = 0;
     
     for (let i = 0; i < inputs.length; i++) {
-      const { input, type, filename } = inputs[i];
+      const { input, type, filename, metadata } = inputs[i];
       
       try {
+        const remainingChunks = PIPELINE_WORK_LIMITS.maxChunksPerBatch - processedChunks;
+        if (remainingChunks <= 0) {
+          throw new Error('Batch chunk budget exhausted.');
+        }
         const result = await this.processDocument(
           input,
-          { type, filename },
+          {
+            type,
+            filename,
+            metadata,
+            maxChunks: Math.min(
+              PIPELINE_WORK_LIMITS.maxChunksPerDocument,
+              remainingChunks
+            ),
+          },
           (progress) => {
             onProgress?.({
               ...progress,
@@ -875,7 +972,7 @@ export class DocumentPipeline {
             });
           }
         );
-        
+        processedChunks += result.chunks;
         results.push({ ...result, success: true });
       } catch (error) {
         results.push({

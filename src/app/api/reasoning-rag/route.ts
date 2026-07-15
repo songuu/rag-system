@@ -6,6 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { executeReasoningRAG, ReasoningRAGOutput } from '@/lib/reasoning-rag';
 import { MilvusConfig } from '@/lib/milvus-client';
 import { getReasoningRAGConfig, getReasoningRAGConfigSummary } from '@/lib/milvus-config';
@@ -75,6 +76,8 @@ export interface ReasoningRAGRequest {
 }
 
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   const startTime = Date.now();
   
   try {
@@ -165,6 +168,8 @@ export async function POST(request: NextRequest) {
 
 // GET: 获取推理模型列表和配置
 export async function GET(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   const searchParams = request.nextUrl.searchParams;
   const action = searchParams.get('action');
   
@@ -178,12 +183,19 @@ export async function GET(request: NextRequest) {
     // 从 Ollama 获取本地已安装的模型
     try {
       const response = await fetch('http://localhost:11434/api/tags');
-      const data = await response.json();
-      const allModels = data.models || [];
+      const data = await response.json() as { models?: unknown };
+      const allModels = Array.isArray(data.models)
+        ? data.models.filter((model): model is { name: string; size: number; modified_at?: string } => (
+            typeof model === 'object'
+            && model !== null
+            && typeof (model as { name?: unknown }).name === 'string'
+            && typeof (model as { size?: unknown }).size === 'number'
+          ))
+        : [];
       
       // 只筛选出本地已安装的推理模型
       const installedReasoningModels = allModels
-        .map((model: any) => {
+        .map((model) => {
           const modelInfo = isReasoningModel(model.name);
           if (modelInfo.isReasoning) {
             return {
@@ -219,7 +231,7 @@ export async function GET(request: NextRequest) {
         count: installedReasoningModels.length,
         config: configSummary
       });
-    } catch (error) {
+    } catch {
       return NextResponse.json({
         success: false,
         error: '无法连接到 Ollama 服务',

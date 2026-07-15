@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getMilvusInstance, MilvusConfig } from '@/lib/milvus-client';
+import {
+  getMilvusInstance,
+  type MilvusConfig,
+  type MilvusSearchResult,
+} from '@/lib/milvus-client';
 import { createEmbedding } from '@/lib/model-config';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
+import { getLegacyRagRouteBlock } from '@/lib/security/legacy-route-policy';
 
 // 环境变量配置
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
-const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 
 // 获取默认 Milvus 配置（使用统一配置系统）
 function getDefaultMilvusConfig(): MilvusConfig {
@@ -21,126 +25,15 @@ function getDefaultMilvusConfig(): MilvusConfig {
   };
 }
 
-// t-SNE 简化实现（用于降维可视化）
-function simpleTSNE(vectors: number[][], targetDim: number = 2, iterations: number = 100): number[][] {
-  const n = vectors.length;
-  if (n === 0) return [];
-  
-  // 初始化随机位置
-  const result: number[][] = vectors.map(() => 
-    Array(targetDim).fill(0).map(() => (Math.random() - 0.5) * 10)
-  );
-  
-  // 计算高维空间中的距离
-  const distances: number[][] = [];
-  for (let i = 0; i < n; i++) {
-    distances[i] = [];
-    for (let j = 0; j < n; j++) {
-      if (i === j) {
-        distances[i][j] = 0;
-      } else {
-        let sum = 0;
-        for (let k = 0; k < Math.min(vectors[i].length, 100); k++) {
-          sum += Math.pow(vectors[i][k] - vectors[j][k], 2);
-        }
-        distances[i][j] = Math.sqrt(sum);
-      }
-    }
-  }
-  
-  // 迭代优化
-  const learningRate = 0.5;
-  for (let iter = 0; iter < iterations; iter++) {
-    for (let i = 0; i < n; i++) {
-      for (let d = 0; d < targetDim; d++) {
-        let gradient = 0;
-        for (let j = 0; j < n; j++) {
-          if (i !== j) {
-            const lowDimDist = Math.sqrt(
-              result[i].reduce((sum, val, idx) => sum + Math.pow(val - result[j][idx], 2), 0)
-            ) + 0.001;
-            
-            const highDimDist = distances[i][j] + 0.001;
-            const diff = (lowDimDist - highDimDist) / highDimDist;
-            
-            gradient += diff * (result[i][d] - result[j][d]) / lowDimDist;
-          }
-        }
-        result[i][d] -= learningRate * gradient / n;
-      }
-    }
-  }
-  
-  // 归一化到 [-1, 1]
-  for (let d = 0; d < targetDim; d++) {
-    let min = Infinity, max = -Infinity;
-    for (let i = 0; i < n; i++) {
-      min = Math.min(min, result[i][d]);
-      max = Math.max(max, result[i][d]);
-    }
-    const range = max - min || 1;
-    for (let i = 0; i < n; i++) {
-      result[i][d] = ((result[i][d] - min) / range) * 2 - 1;
-    }
-  }
-  
-  return result;
-}
-
-// 计算向量聚类（简化版 K-Means）
-function simpleClustering(vectors: number[][], k: number = 5): number[] {
-  const n = vectors.length;
-  if (n === 0) return [];
-  if (n <= k) return vectors.map((_, i) => i);
-  
-  // 随机初始化聚类中心
-  const centroids: number[][] = [];
-  const usedIndices = new Set<number>();
-  for (let i = 0; i < k; i++) {
-    let idx;
-    do {
-      idx = Math.floor(Math.random() * n);
-    } while (usedIndices.has(idx));
-    usedIndices.add(idx);
-    centroids.push([...vectors[idx]]);
-  }
-  
-  // 分配点到最近的聚类
-  const assignments: number[] = new Array(n).fill(0);
-  for (let iter = 0; iter < 10; iter++) {
-    // 分配
-    for (let i = 0; i < n; i++) {
-      let minDist = Infinity;
-      let minCluster = 0;
-      for (let c = 0; c < k; c++) {
-        let dist = 0;
-        for (let d = 0; d < Math.min(vectors[i].length, 100); d++) {
-          dist += Math.pow(vectors[i][d] - centroids[c][d], 2);
-        }
-        if (dist < minDist) {
-          minDist = dist;
-          minCluster = c;
-        }
-      }
-      assignments[i] = minCluster;
-    }
-    
-    // 更新中心
-    for (let c = 0; c < k; c++) {
-      const members = vectors.filter((_, i) => assignments[i] === c);
-      if (members.length > 0) {
-        for (let d = 0; d < centroids[c].length; d++) {
-          centroids[c][d] = members.reduce((sum, v) => sum + v[d], 0) / members.length;
-        }
-      }
-    }
-  }
-  
-  return assignments;
-}
-
 // POST: 可视化操作
 export async function POST(request: NextRequest) {
+  const legacyBlock = getLegacyRagRouteBlock();
+  if (legacyBlock) {
+    return NextResponse.json(
+      { success: false, error: legacyBlock.message, code: legacyBlock.code },
+      { status: legacyBlock.status }
+    );
+  }
   try {
     const body = await request.json();
     const { action, ...params } = body;
@@ -177,7 +70,7 @@ export async function POST(request: NextRequest) {
           
           // 使用多个查询获取数据点
           const queries = ['技术', '商业', '日常', '科学', '文化'];
-          const allResults: any[] = [];
+          const allResults: Array<MilvusSearchResult & { queryTopic: string }> = [];
           
           for (const q of queries) {
             try {
@@ -212,7 +105,9 @@ export async function POST(request: NextRequest) {
               y: Math.sin(angle + clusterOffset) * radius + (Math.random() - 0.5) * 0.3,
               z: dimensions === 3 ? (Math.random() - 0.5) * 2 : undefined,
               content: result.content.substring(0, 100) + '...',
-              source: result.metadata?.source || 'unknown',
+              source: typeof result.metadata?.source === 'string'
+                ? result.metadata.source
+                : 'unknown',
               cluster,
             });
           });
@@ -436,6 +331,13 @@ export async function POST(request: NextRequest) {
 
 // GET: 获取可视化数据
 export async function GET(request: NextRequest) {
+  const legacyBlock = getLegacyRagRouteBlock();
+  if (legacyBlock) {
+    return NextResponse.json(
+      { success: false, error: legacyBlock.message, code: legacyBlock.code },
+      { status: legacyBlock.status }
+    );
+  }
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action') || 'summary';
 
@@ -462,7 +364,7 @@ export async function GET(request: NextRequest) {
               loaded: stats?.loaded || false,
             },
           });
-        } catch (e) {
+        } catch {
           return NextResponse.json({
             success: true,
             summary: {

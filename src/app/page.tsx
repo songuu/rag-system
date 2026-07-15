@@ -29,6 +29,7 @@ interface Message {
   content: string;
   timestamp: Date;
   traceId?: string;
+  storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
 }
@@ -535,6 +536,7 @@ export default function HomePage() {
               content: msg.content,
               timestamp,
               traceId: msg.traceId,
+              storageBackend: msg.storageBackend,
               retrievalDetails: msg.retrievalDetails || null,
               queryAnalysis: msg.queryAnalysis || null
             };
@@ -1073,6 +1075,7 @@ export default function HomePage() {
           content: answerContent,
           timestamp: new Date(),
           traceId: data.traceId,
+          storageBackend: data.storageBackend,
           retrievalDetails: data.retrievalDetails
         };
 
@@ -1090,6 +1093,7 @@ export default function HomePage() {
           content: answerContent,
           timestamp: new Date(),
           traceId: data.traceId,
+          storageBackend: data.storageBackend,
           retrievalDetails: data.retrievalDetails
         });
 

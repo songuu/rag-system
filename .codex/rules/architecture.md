@@ -44,6 +44,48 @@ For this project, future RAG capability should be expressed as a `RAG Kernel` po
 
 RAG policy failures should be wrapped at the `RagKernel` boundary with the same observability contract as successful executions: trace id, policy id, status, duration, retrieval plan, policy description, and a small error summary. Route handlers may still preserve legacy JSON error bodies, but they should attach `x-rag-policy` and `x-rag-trace-id` when a kernel failure envelope exists. Do not let raw policy exceptions cross the kernel boundary without execution context.
 
+## RAG Plans Exist Before Policy Execution
+
+Build the retrieval plan before invoking a policy and pass that exact plan through the policy context.
+The lane executor, evidence, transitions, budget, stop reason, response body, and Kernel envelope must
+all describe the same execution. A resolved non-2xx response or `execution.state=failed` is a failed
+Kernel execution; required-lane throws must retain their partial execution snapshot.
+
+## Canonical Evidence Uses Authoritative Scalar Provenance
+
+Tenant, corpus, document, version, and trust fields from vector-store scalar columns outrank JSON
+metadata aliases. Normalize conflicting camel/snake aliases at the adapter boundary, then validate
+canonical evidence against the server-owned retrieval scope before fusion, context, generation,
+citation, eval, or cache identity. Never calculate security metrics from target-reported provenance
+without comparing it to the fixed corpus record.
+
+## RAG Cache Identity Binds The Final Context
+
+Answer and context cache identity must include scope, corpus/schema/index versions, models, prompt,
+policy/fusion, ordered evidence/span identity, and a digest of the final prompt-visible composed
+context. Recompute the key from components at the cache consumer; a caller-supplied `rag:` prefix is
+not integrity proof.
+
+## RAG Capability Changes Are Evaluation-Gated
+
+Do not make a new retrieval lane, index schema, embedding, rerank/fusion policy, context prompt, router, GraphRAG path, or visual retrieval path the default because a public benchmark or dependency release looks better. First run a versioned corpus-native evaluation that separates retrieval, answer, citation, abstention, tenant/security, latency, and cost gates. Roll out through shadow, opt-in, and limited stages while retaining the dense 2-step control with the same tenant/corpus/ACL filters. Auth, tenant, corpus, ACL, and trust failures must fail closed; quarantined evidence may enter audit/eval only and must never enter fusion, context composition, or generation. Version answer/context cache identity with every behavior-changing corpus, index, model, prompt, policy, rerank, or fusion input.
+
+## Request Identity And Retrieval Scope Are Server-Owned
+
+Never authorize RAG work from body-supplied user, tenant, role, corpus ownership, or raw Milvus filters. Resolve one request-scoped security context on the server, validate the selected corpus through fixed scope or RLS, and pass one immutable retrieval scope through ingestion and query adapters. Production modes must fail closed when the active vector schema cannot enforce tenant/corpus/trust scalar filters. Service-role clients remain background-only; user request clients use a publishable project key plus the real user JWT and may not fall back to admin credentials.
+
+## External Ingestion Uses A Pinned Egress Boundary
+
+Every user-supplied or remotely derived URL must pass through the shared Node safe-fetch boundary: protocol/host/port validation, all-address A/AAAA checks, pinned socket lookup, manual per-hop redirect validation, timeout, MIME policy, identity encoding, and both declared and streamed byte caps. A route-level hostname check followed by ordinary fetch is not an SSRF defense because it leaves redirect and DNS-rebinding gaps.
+
+## Legacy RAG Routes Fail Closed In Authenticated Modes
+
+Routes that have not adopted the canonical request security context and server-derived retrieval scope are local development surfaces, not production APIs. They must return a stable unavailable response in production or whenever an authenticated access mode is selected. A reverse-proxy allowlist is defense in depth, not the only control. Shared bearer credentials must never be shipped to the browser; production browser access requires a same-origin session/BFF boundary.
+
+## Archive Ingestion Is Bounded Before Parsing
+
+Treat OOXML and other archive-backed uploads as compressed adversarial input. Inspect the ZIP central directory before parser allocation, reject encrypted, ZIP64, multi-disk, unsupported-compression, ambiguous, high-ratio, high-entry-count, or oversized archives, and keep spreadsheet and extracted-text budgets after decompression. Compressed upload size alone is not a resource-safety boundary.
+
 ## Runtime Configuration Has One Source
 
 Model, embedding, reasoning, Milvus, and retrieval feature choices should be resolved from a shared runtime configuration snapshot before any page-level fallback is used. UI model selectors may display Ollama installation status, but they must not use Ollama availability as the source of truth for the selected model when `MODEL_PROVIDER`, `EMBEDDING_PROVIDER`, or `REASONING_PROVIDER` already define the runtime model.

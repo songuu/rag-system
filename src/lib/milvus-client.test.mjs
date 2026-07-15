@@ -17,7 +17,9 @@ registerHooks({
 });
 
 const {
+  MilvusVectorStore,
   buildMilvusSearchParams,
+  getScopedSearchFields,
   normalizeMilvusConsistencyLevel,
   resolveMilvusSearchOptions,
 } = await import('./milvus-client.ts');
@@ -76,6 +78,43 @@ test('resolveMilvusSearchOptions keeps slim output fields configurable', () => {
   );
 
   assert.deepEqual(resolved.outputFields, ['id']);
+});
+
+test('tenant-scoped searches always request evidence provenance fields', () => {
+  assert.deepEqual(
+    getScopedSearchFields(['id', 'content', 'metadata_json']),
+    [
+      'id',
+      'content',
+      'metadata_json',
+      'tenant_id',
+      'corpus_id',
+      'document_id',
+      'trust_level',
+    ]
+  );
+});
+
+test('tenant isolation rejects unscoped search, insertion, and global mutations before I/O', async () => {
+  const previousMode = process.env.RAG_ACCESS_MODE;
+  process.env.RAG_ACCESS_MODE = 'supabase';
+  try {
+    const store = new MilvusVectorStore({ collectionName: 'security-test' });
+    await assert.rejects(() => store.search([1], 1), /server-derived scope/);
+    await assert.rejects(
+      () => store.insertDocuments([
+        { id: 'doc-1', content: 'x', embedding: [1], metadata: {} },
+      ]),
+      /server-derived document scope/
+    );
+    await assert.rejects(() => store.initializeCollection(true), /Automatic collection recreation/);
+    await assert.rejects(() => store.recreateCollection(), /Global collection recreation/);
+    await assert.rejects(() => store.deleteDocuments(['doc-1']), /Global document deletion/);
+    await assert.rejects(() => store.clearCollection(), /Global collection clearing/);
+  } finally {
+    if (previousMode === undefined) delete process.env.RAG_ACCESS_MODE;
+    else process.env.RAG_ACCESS_MODE = previousMode;
+  }
 });
 
 function createConfig() {

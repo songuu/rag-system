@@ -7,7 +7,10 @@ import {
   buildLangSmithMetadata,
   createLangSmithThreadId,
 } from '../../langsmith/config';
-import type { RagKernel } from './kernel';
+import {
+  RagKernelExecutionError,
+  type RagKernel,
+} from './kernel';
 import type {
   RagKernelResult,
   RagPolicyId,
@@ -92,6 +95,9 @@ export function createRagKernelWorkflow<TOutput>(
           },
         };
       } catch (error) {
+        if (error instanceof RagKernelExecutionError) {
+          throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(
           `RAG workflow failed for policy "${state.policyId}" and trace "${state.prepared.traceId}": ${message}`

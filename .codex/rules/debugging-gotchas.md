@@ -15,3 +15,21 @@ Batching LLM calls with `Promise.all` makes completion order nondeterministic. F
 ## Next Standalone Builds Expose Startup Drift
 
 When enabling `output: 'standalone'`, `next start` may still boot but Next warns that it is no longer the right production entrypoint. Align Docker `CMD`, `package.json` start scripts, and docs on `node .next/standalone/server.js`. Also watch for `next/font/google`: it can fail builds in restricted networks because it fetches fonts at build time.
+
+## Metadata Alias Order Can Become Trust Escalation
+
+If a vector result merges authoritative scalar fields into only snake_case keys while a downstream
+adapter reads camelCase first, attacker-controlled metadata can override trust or document identity.
+Write both aliases from the scalar value or read authoritative keys first, then add a conflict regression.
+
+## First-Fit Context Must Handle An Oversized First Block
+
+A context composer that simply breaks when the next block exceeds the budget returns an empty context
+when the first evidence is oversized. Truncate the selected block within the remaining budget, preserve
+UTF-16 boundaries, and make the no-evidence path abstain without calling the LLM.
+
+## Low-Dimensional Hash Baselines Can Fake Relevance
+
+A hermetic hashing embedding can map an isolation-canary token onto an unrelated corpus token and make an
+unanswerable probe look answerable. Keep the dimension high enough for the fixture, inspect unexpected
+non-zero similarities, and make unanswerable TPR part of the default CLI gate.

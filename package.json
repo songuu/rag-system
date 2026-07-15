@@ -8,7 +8,17 @@
     "build": "node scripts/generate-articles.mjs && next build",
     "start": "node .next/standalone/server.js",
     "lint": "eslint",
-    "sync:notion": "node scripts/sync-to-notion.mjs"
+    "sync:notion": "node scripts/sync-to-notion.mjs",
+    "rag:eval": "node scripts/run-rag-eval.mjs",
+    "rag:eval:validate": "node scripts/run-rag-eval.mjs --validate-only",
+    "rag:eval:e1b": "node scripts/run-rag-eval.mjs --fixture src/lib/rag/eval/fixtures/e1b-canonical-v2.json --target fixture-hash-dense-v2 --gate e1b",
+    "rag:eval:matrix": "node scripts/run-rag-eval.mjs --fixture src/lib/rag/eval/fixtures/e1b-canonical-v2.json --target fixture-hash-dense-v2 --target fixture-hash-dense-v2-strict --baseline fixture-hash-dense-v2 --gate e1b",
+    "test:rag-security": "node src/lib/security/request-context.test.mjs && node src/lib/security/request-validation.test.mjs && node src/lib/security/retrieval-scope.test.mjs && node src/lib/security/safe-external-url.test.mjs && node src/lib/security/error-redaction.test.mjs && node src/lib/security/public-config.test.mjs && node src/lib/security/legacy-route-policy.test.mjs && node src/lib/security/zip-safety.test.mjs && node src/lib/supabase/rest-client.test.mjs && node src/lib/document-pipeline.security.test.mjs && node src/lib/document-parser.security.test.mjs && node src/lib/maic/pptx-parser.test.mjs && node src/lib/milvus-client.test.mjs",
+    "test:rag-eval": "node src/lib/rag/eval/dataset.test.mjs && node src/lib/rag/eval/metrics.test.mjs && node src/lib/rag/eval/dense-baseline.test.mjs && node src/lib/rag/eval/runner.test.mjs && node src/lib/rag/eval/gate.test.mjs && node src/lib/rag/eval/matrix.test.mjs",
+    "test:rag-kernel": "node src/lib/rag/core/kernel.test.mjs && node src/lib/rag/core/http-contract.test.mjs && node src/lib/rag/core/context-composer.test.mjs && node src/lib/rag/core/cache-identity.test.mjs && node src/lib/rag/retrieval/legacy-evidence-adapter.test.mjs && node src/lib/rag/retrieval/lane-executor.test.mjs && node src/lib/semantic-cache.test.mjs",
+    "test:rag-wave0": "pnpm test:rag-security && pnpm test:rag-eval",
+    "test:rag-wave1": "pnpm test:rag-kernel && pnpm rag:eval:e1b && pnpm rag:eval:matrix",
+    "test": "pnpm test:rag-wave0 && pnpm test:rag-wave1"
   },
   "packageManager": "pnpm@11.1.3",
   "dependencies": {

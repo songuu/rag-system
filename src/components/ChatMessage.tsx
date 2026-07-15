@@ -8,6 +8,7 @@ interface Message {
   content: string;
   timestamp: Date;
   traceId?: string;
+  storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
 }
@@ -414,6 +415,9 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
   
   const searchResults = message.retrievalDetails?.searchResults || [];
   const hasRetrievalDetails = message.type === 'assistant' && searchResults.length > 0;
+  const isMilvusMessage =
+    message.storageBackend === 'milvus' ||
+    (message.storageBackend === undefined && message.traceId?.startsWith('milvus'));
   
   return (
     <>
@@ -434,7 +438,7 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
               <span>{message.timestamp.toLocaleTimeString()}</span>
               {message.traceId && (
                 <span className="flex items-center gap-1.5 font-mono">
-                  {message.traceId.startsWith('milvus') && (
+                  {isMilvusMessage && (
                     <span className="px-1.5 py-0.5 bg-purple-100 text-purple-600 rounded text-[10px] font-medium">
                       Milvus
                     </span>

@@ -5,6 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { executeSCRAG, SCRAGInput, SCRAGOutput } from '@/lib/self-corrective-rag';
 import { MilvusConfig } from '@/lib/milvus-client';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
@@ -25,6 +26,8 @@ interface RequestBody {
 }
 
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   const startTime = Date.now();
   
   try {
@@ -150,13 +153,13 @@ export async function POST(request: NextRequest) {
     
     return NextResponse.json(response);
     
-  } catch (error: any) {
+  } catch (error) {
     console.error(`[API] Self-Corrective RAG 错误:`, error);
     
     return NextResponse.json(
       {
         success: false,
-        error: error.message || '未知错误',
+        error: error instanceof Error ? error.message : '未知错误',
         answer: '',
         meta: {
           apiDuration: Date.now() - startTime,
@@ -170,6 +173,8 @@ export async function POST(request: NextRequest) {
 
 // GET 请求返回 API 信息
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   return NextResponse.json({
     name: 'Self-Corrective RAG API',
     version: '1.0.0',

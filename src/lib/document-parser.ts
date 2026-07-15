@@ -5,6 +5,7 @@
 
 import * as XLSX from 'xlsx';
 import { parsePdfBuffer } from './pdf-parser';
+import { assertSafeZipArchive } from './security/zip-safety';
 
 // 支持的文件类型
 export const SUPPORTED_EXTENSIONS = [
@@ -286,6 +287,17 @@ export async function parseDocument(buffer: Buffer, filename: string): Promise<P
       success: false,
       error: `不支持的文件类型: ${ext}。${getSupportedTypesDescription()}`,
     };
+  }
+
+  if (ext === '.docx' || ext === '.xlsx') {
+    try {
+      assertSafeZipArchive(buffer);
+    } catch (error) {
+      return {
+        success: false,
+        error: `压缩文档安全校验失败: ${error instanceof Error ? error.message : 'invalid archive'}`,
+      };
+    }
   }
   
   switch (ext) {

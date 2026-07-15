@@ -1,4 +1,5 @@
 import { inflateRawSync } from 'node:zlib';
+import { assertSafeZipArchive } from '../security/zip-safety';
 import type { PPTAnimation, SlidePage } from './types';
 import { buildDefaultSlideAnimations } from './slide-animation';
 
@@ -12,6 +13,7 @@ interface ZipEntry {
   name: string;
   compressionMethod: number;
   compressedSize: number;
+  uncompressedSize: number;
   localHeaderOffset: number;
 }
 
@@ -23,6 +25,7 @@ const EOCD_SEARCH_WINDOW = 0xffff + EOCD_MIN_SIZE;
 const DEFAULT_PPTX_ANIMATION_DURATION = 650;
 
 export function parsePptxSlides(buffer: Buffer, filename: string): ParsedPptxSlides {
+  assertSafeZipArchive(buffer);
   const entries = readZipEntries(buffer);
   const slideFiles = Array.from(entries.keys())
     .filter(name => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
@@ -102,6 +105,7 @@ function readZipEntries(buffer: Buffer): Map<string, Buffer> {
     const entry: ZipEntry = {
       compressionMethod: buffer.readUInt16LE(cursor + 10),
       compressedSize: buffer.readUInt32LE(cursor + 20),
+      uncompressedSize: buffer.readUInt32LE(cursor + 24),
       localHeaderOffset: buffer.readUInt32LE(cursor + 42),
       name: '',
     };
@@ -135,10 +139,32 @@ function readZipEntryData(buffer: Buffer, entry: ZipEntry): Buffer {
   const fileNameLength = buffer.readUInt16LE(localOffset + 26);
   const extraLength = buffer.readUInt16LE(localOffset + 28);
   const dataStart = localOffset + 30 + fileNameLength + extraLength;
-  const compressed = buffer.subarray(dataStart, dataStart + entry.compressedSize);
+  const dataEnd = dataStart + entry.compressedSize;
+  if (!Number.isSafeInteger(dataEnd) || dataEnd > buffer.length) {
+    throw new Error(`无效 PPTX: 压缩数据越界 ${entry.name}`);
+  }
+  const compressed = buffer.subarray(dataStart, dataEnd);
 
-  if (entry.compressionMethod === 0) return compressed;
-  if (entry.compressionMethod === 8) return inflateRawSync(compressed);
+  if (entry.compressionMethod === 0) {
+    if (compressed.length !== entry.uncompressedSize) {
+      throw new Error(`无效 PPTX: 文件大小声明不一致 ${entry.name}`);
+    }
+    return compressed;
+  }
+  if (entry.compressionMethod === 8) {
+    let inflated: Buffer;
+    try {
+      inflated = inflateRawSync(compressed, {
+        maxOutputLength: Math.max(1, entry.uncompressedSize + 1),
+      });
+    } catch {
+      throw new Error(`无效 PPTX: 解压输出超过声明大小 ${entry.name}`);
+    }
+    if (inflated.length !== entry.uncompressedSize) {
+      throw new Error(`无效 PPTX: 解压大小声明不一致 ${entry.name}`);
+    }
+    return inflated;
+  }
   throw new Error(`不支持的 PPTX 压缩方式: ${entry.compressionMethod}`);
 }
 

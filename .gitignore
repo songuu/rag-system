@@ -56,4 +56,5 @@ public/articles-data.json
 # Windows reserved device names (bash/git on Windows surfaces these as phantom untracked files)
 nul
 .tmp-openmaic/
+.codex-tmp/
 .handoff

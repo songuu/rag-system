@@ -1,10 +1,12 @@
 import { createDefaultRetrievalPlan } from '../retrieval/retrieval-plan';
+import { RagLaneExecutionError } from '../retrieval/lane-executor';
 import type {
   RagKernelErrorSummary,
   RagKernelEnvelope,
   RagKernelResult,
   RagPolicy,
   RagPolicyId,
+  RagPolicyResult,
   RagQueryRequest,
 } from './types';
 
@@ -28,6 +30,7 @@ export class RagKernel<TOutput> {
     const startedAtDate = options.now ?? new Date();
     const startedAt = startedAtDate.getTime();
     const traceId = options.traceId ?? createTraceId(policyId, startedAt);
+    const retrievalPlan = createDefaultRetrievalPlan(request, policyId, startedAtDate);
 
     try {
       const result = await policy.execute({
@@ -35,7 +38,11 @@ export class RagKernel<TOutput> {
         policyId,
         traceId,
         startedAt,
+        retrievalPlan,
       });
+      const outputError = summarizeFailedPolicyOutput(result.output);
+      const executionError = summarizeFailedPolicyExecution(result);
+      const policyError = outputError ?? executionError;
 
       const envelope = createEnvelope({
         request,
@@ -43,11 +50,13 @@ export class RagKernel<TOutput> {
         policyId,
         traceId,
         startedAtDate,
-        retrievalPlan:
-          result.retrievalPlan ??
-          createDefaultRetrievalPlan(request, policyId, startedAtDate),
+        retrievalPlan: result.retrievalPlan ?? retrievalPlan,
+        evidence: result.evidence,
+        laneExecutions: result.laneExecutions,
+        execution: result.execution,
         metadata: result.metadata,
-        status: 'completed',
+        status: policyError ? 'failed' : 'completed',
+        error: policyError,
       });
 
       return {
@@ -55,13 +64,28 @@ export class RagKernel<TOutput> {
         envelope,
       };
     } catch (error) {
+      const partialResult =
+        error instanceof RagLaneExecutionError
+          ? error.partialResult
+          : undefined;
       const envelope = createEnvelope({
         request,
         policy,
         policyId,
         traceId,
         startedAtDate,
-        retrievalPlan: createDefaultRetrievalPlan(request, policyId, startedAtDate),
+        retrievalPlan,
+        evidence: partialResult?.evidence,
+        laneExecutions: partialResult?.laneExecutions,
+        execution:
+          partialResult === undefined
+            ? undefined
+            : {
+                state: 'failed',
+                transitions: partialResult.transitions,
+                budget: partialResult.budget,
+                stopReason: partialResult.stopReason,
+              },
         status: 'failed',
         error: summarizeError(error),
       });
@@ -94,11 +118,22 @@ function createEnvelope<TOutput>(input: {
   traceId: string;
   startedAtDate: Date;
   retrievalPlan: RagKernelEnvelope['retrieval_plan'];
+  evidence?: RagKernelEnvelope['evidence'];
+  laneExecutions?: RagKernelEnvelope['lane_executions'];
+  execution?: RagPolicyResult<TOutput>['execution'];
   status: RagKernelEnvelope['status'];
   metadata?: Record<string, unknown>;
   error?: RagKernelErrorSummary;
 }): RagKernelEnvelope {
   const completedAtDate = new Date();
+  const defaultTransitions: RagKernelEnvelope['execution']['transitions'] = [
+    {
+      from: 'planned',
+      to: input.status === 'completed' ? 'completed' : 'failed',
+      at: completedAtDate.toISOString(),
+      reason: input.status === 'completed' ? 'legacy_policy_completed' : 'policy_failed',
+    },
+  ];
 
   return {
     trace_id: input.traceId,
@@ -110,6 +145,16 @@ function createEnvelope<TOutput>(input: {
     started_at: input.startedAtDate.toISOString(),
     completed_at: completedAtDate.toISOString(),
     duration_ms: Math.max(0, completedAtDate.getTime() - input.startedAtDate.getTime()),
+    evidence: input.evidence ?? [],
+    lane_executions: input.laneExecutions ?? [],
+    execution: {
+      state: input.status,
+      transitions: input.execution?.transitions ?? defaultTransitions,
+      budget: input.execution?.budget,
+      stop_reason:
+        input.execution?.stopReason ??
+        (input.status === 'failed' ? 'failed' : undefined),
+    },
     error: input.error,
     metadata: {
       policy_description: input.policy.description,
@@ -123,12 +168,46 @@ function summarizeError(error: unknown): RagKernelErrorSummary {
     return {
       name: error.name,
       message: error.message,
+      ...(
+        'code' in error && typeof error.code === 'string'
+          ? { code: error.code }
+          : {}
+      ),
     };
   }
 
   return {
     name: 'Error',
     message: String(error),
+  };
+}
+
+function summarizeFailedPolicyExecution<TOutput>(
+  result: RagPolicyResult<TOutput>
+): RagKernelErrorSummary | undefined {
+  if (
+    result.execution?.state !== 'failed' &&
+    result.execution?.stopReason !== 'failed'
+  ) {
+    return undefined;
+  }
+  return {
+    name: 'RagPolicyStateError',
+    message: 'RAG policy reported a failed execution state.',
+    code: 'RAG_POLICY_STATE_FAILED',
+  };
+}
+
+function summarizeFailedPolicyOutput(output: unknown): RagKernelErrorSummary | undefined {
+  if (typeof Response === 'undefined' || !(output instanceof Response) || output.ok) {
+    return undefined;
+  }
+
+  return {
+    name: 'RagPolicyHttpError',
+    message: 'RAG policy returned HTTP ' + output.status + '.',
+    code: 'RAG_POLICY_HTTP_ERROR',
+    http_status: output.status,
   };
 }
 

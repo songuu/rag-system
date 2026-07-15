@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getMilvusRAGSystem, resetMilvusRAGSystem } from '@/lib/rag-milvus';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
+import { getLegacyRagRouteBlock } from '@/lib/security/legacy-route-policy';
+import { toPublicMilvusConfig } from '@/lib/security/public-config';
 
 // 环境变量配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
@@ -20,6 +22,13 @@ function getMilvusConfig() {
 
 // POST: RAG 操作
 export async function POST(request: NextRequest) {
+  const legacyBlock = getLegacyRagRouteBlock();
+  if (legacyBlock) {
+    return NextResponse.json(
+      { success: false, error: legacyBlock.message, code: legacyBlock.code },
+      { status: legacyBlock.status }
+    );
+  }
   try {
     const body = await request.json();
     const { action, ...params } = body;
@@ -179,6 +188,13 @@ export async function POST(request: NextRequest) {
 
 // GET: 获取状态
 export async function GET(request: NextRequest) {
+  const legacyBlock = getLegacyRagRouteBlock();
+  if (legacyBlock) {
+    return NextResponse.json(
+      { success: false, error: legacyBlock.message, code: legacyBlock.code },
+      { status: legacyBlock.status }
+    );
+  }
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action') || 'status';
 
@@ -195,10 +211,18 @@ export async function GET(request: NextRequest) {
 
         const status = await ragSystem.getStatus();
 
+        const config = ragSystem.getConfig();
         return NextResponse.json({
           success: true,
           ...status,
-          config: ragSystem.getConfig(),
+          config: {
+            llmModel: config.llmModel,
+            embeddingModel: config.embeddingModel,
+            storageBackend: config.storageBackend,
+            milvus: toPublicMilvusConfig(
+              config.milvusConfig as unknown as Record<string, unknown>
+            ),
+          },
         });
       }
 

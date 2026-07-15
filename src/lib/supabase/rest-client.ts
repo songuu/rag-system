@@ -1,6 +1,22 @@
 export interface SupabaseRestClientConfig {
   url: string;
-  key: string;
+  /**
+   * Legacy credential used by the admin client. When provided on its own it is
+   * sent as both the apikey and bearer credential, preserving existing service-role behavior.
+   */
+  key?: string;
+  /** Public/anon project key used for Supabase gateway authentication. */
+  apiKey?: string;
+  /** Request-scoped user JWT used for PostgREST RLS and Auth user lookup. */
+  accessToken?: string;
+  /** Injectable transport keeps security/auth tests hermetic. */
+  fetchImpl?: typeof fetch;
+}
+
+export interface SupabaseAuthUser {
+  id: string;
+  email?: string;
+  [key: string]: unknown;
 }
 
 export interface SelectRowsOptions {
@@ -18,33 +34,60 @@ function toPostgrestValue(value: string | number | boolean): string {
   return typeof value === 'string' ? value : String(value);
 }
 
+export class SupabaseRestError extends Error {
+  readonly status: number;
+  readonly context: string;
+
+  constructor(context: string, response: Response, body: string) {
+    super(
+      `${context} failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`
+    );
+    this.name = 'SupabaseRestError';
+    this.status = response.status;
+    this.context = context;
+  }
+}
+
 function ensureOk(response: Response, context: string): Promise<Response> {
   if (response.ok) return Promise.resolve(response);
 
   return response.text().then((body) => {
-    throw new Error(`${context} failed: ${response.status} ${response.statusText}${body ? ` - ${body}` : ''}`);
+    throw new SupabaseRestError(context, response, body);
   });
 }
 
 export class SupabaseRestClient {
   private readonly baseUrl: string;
-  private readonly key: string;
+  private readonly apiKey: string;
+  private readonly accessToken: string;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(config: SupabaseRestClientConfig) {
     this.baseUrl = trimTrailingSlash(config.url);
-    this.key = config.key;
+    this.apiKey = config.apiKey || config.key || '';
+    this.accessToken = config.accessToken || config.key || this.apiKey;
+    this.fetchImpl = config.fetchImpl ?? globalThis.fetch;
   }
 
   isConfigured(): boolean {
-    return Boolean(this.baseUrl && this.key);
+    return Boolean(this.baseUrl && this.apiKey && this.accessToken && this.fetchImpl);
   }
 
   private headers(extra?: HeadersInit): HeadersInit {
     return {
-      apikey: this.key,
-      Authorization: `Bearer ${this.key}`,
+      apikey: this.apiKey,
+      Authorization: `Bearer ${this.accessToken}`,
       ...extra,
     };
+  }
+
+  async getAuthUser<T extends SupabaseAuthUser = SupabaseAuthUser>(): Promise<T> {
+    const response = await this.fetchImpl(`${this.baseUrl}/auth/v1/user`, {
+      method: 'GET',
+      headers: this.headers({ Accept: 'application/json' }),
+    });
+    await ensureOk(response, 'get auth user');
+    return await response.json() as T;
   }
 
   private restUrl(table: string, options: SelectRowsOptions = {}): URL {
@@ -68,7 +111,7 @@ export class SupabaseRestClient {
   }
 
   async selectRows<T>(table: string, options: SelectRowsOptions = {}): Promise<T[]> {
-    const response = await fetch(this.restUrl(table, options), {
+    const response = await this.fetchImpl(this.restUrl(table, options), {
       method: 'GET',
       headers: this.headers({ Accept: 'application/json' }),
     });
@@ -85,7 +128,7 @@ export class SupabaseRestClient {
     table: string,
     rows: Record<string, unknown> | Array<Record<string, unknown>>
   ): Promise<unknown[]> {
-    const response = await fetch(`${this.baseUrl}/rest/v1/${table}`, {
+    const response = await this.fetchImpl(`${this.baseUrl}/rest/v1/${table}`, {
       method: 'POST',
       headers: this.headers({
         'Content-Type': 'application/json',
@@ -108,7 +151,7 @@ export class SupabaseRestClient {
       url.searchParams.set('on_conflict', options.onConflict);
     }
 
-    const response = await fetch(url, {
+    const response = await this.fetchImpl(url, {
       method: 'POST',
       headers: this.headers({
         'Content-Type': 'application/json',
@@ -131,7 +174,7 @@ export class SupabaseRestClient {
       url.searchParams.set(column, `eq.${toPostgrestValue(value)}`);
     }
 
-    const response = await fetch(url, {
+    const response = await this.fetchImpl(url, {
       method: 'PATCH',
       headers: this.headers({
         'Content-Type': 'application/json',
@@ -148,7 +191,7 @@ export class SupabaseRestClient {
       url.searchParams.set(column, `eq.${toPostgrestValue(value)}`);
     }
 
-    const response = await fetch(url, {
+    const response = await this.fetchImpl(url, {
       method: 'DELETE',
       headers: this.headers({ Prefer: 'return=minimal' }),
     });
@@ -165,7 +208,7 @@ export class SupabaseRestClient {
     const body: BodyInit = typeof input.body === 'string'
       ? input.body
       : input.body as unknown as BodyInit;
-    const response = await fetch(
+    const response = await this.fetchImpl(
       `${this.baseUrl}/storage/v1/object/${encodeURIComponent(input.bucket)}/${input.path}`,
       {
         method: 'POST',
@@ -180,7 +223,7 @@ export class SupabaseRestClient {
   }
 
   async objectExists(bucket: string, path: string): Promise<boolean> {
-    const response = await fetch(`${this.baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${path}`, {
+    const response = await this.fetchImpl(`${this.baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${path}`, {
       method: 'HEAD',
       headers: this.headers(),
     });
@@ -190,7 +233,7 @@ export class SupabaseRestClient {
   }
 
   async downloadText(bucket: string, path: string): Promise<string> {
-    const response = await fetch(`${this.baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${path}`, {
+    const response = await this.fetchImpl(`${this.baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${path}`, {
       method: 'GET',
       headers: this.headers(),
     });
@@ -200,7 +243,7 @@ export class SupabaseRestClient {
 
   async removeObjects(bucket: string, paths: string[]): Promise<void> {
     if (paths.length === 0) return;
-    const response = await fetch(`${this.baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}`, {
+    const response = await this.fetchImpl(`${this.baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}`, {
       method: 'DELETE',
       headers: this.headers({
         'Content-Type': 'application/json',

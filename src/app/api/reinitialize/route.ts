@@ -5,7 +5,8 @@
  * @LastEditor: songyu
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { getRagSystem, resetRagSystem } from '@/lib/rag-instance';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { resetRagSystem } from '@/lib/rag-instance';
 import { readdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -21,6 +22,8 @@ const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 
 // POST /api/reinitialize - 重新初始化 RAG 系统
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const summary = getConfigSummary();
     const embeddingConfig = getEmbeddingConfigSummary();
@@ -76,7 +79,8 @@ export async function POST(request: NextRequest) {
     }
     
     // 将新实例设置为全局实例
-    (global as any).ragSystemInstance = instance;
+    const ragGlobal = globalThis as typeof globalThis & { ragSystemInstance?: LocalRAGSystem };
+    ragGlobal.ragSystemInstance = instance;
 
     return NextResponse.json({
       success: true,

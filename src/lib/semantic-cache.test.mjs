@@ -16,6 +16,7 @@ registerHooks({
 });
 
 const { SemanticCache } = await import('./semantic-cache.ts');
+const { createRagCacheIdentity } = await import('./rag/core/cache-identity.ts');
 
 // Mock embeddings: returns deterministic small vectors per query token count
 class StubEmbeddings {
@@ -104,6 +105,72 @@ test('SemanticCache LRU eviction respects maxSize', async () => {
   const stats = cache.getStats();
   assert.equal(stats.size, 2);
 });
+
+test('SemanticCache never reuses an answer across cache identities', async () => {
+  const emb = new StubEmbeddings();
+  const cache = new SemanticCache(emb, { similarityThreshold: 0.99, maxSize: 10 });
+  const tenantA = createIdentity({ tenantId: 'tenant-a' });
+  const tenantB = createIdentity({ tenantId: 'tenant-b' });
+
+  await cache.set('same query', 'tenant A answer', '', undefined, tenantA);
+  assert.equal((await cache.get('same query', undefined, tenantB)).hit, false);
+  const hit = await cache.get('same query', undefined, tenantA);
+  assert.equal(hit.hit, true);
+  if (hit.hit) assert.equal(hit.entry.answer, 'tenant A answer');
+});
+
+test('SemanticCache requires a versioned identity in authenticated modes', async () => {
+  const previousMode = process.env.RAG_ACCESS_MODE;
+  process.env.RAG_ACCESS_MODE = 'supabase';
+  try {
+    const cache = new SemanticCache(new StubEmbeddings());
+    await assert.rejects(
+      () => cache.set('query', 'answer'),
+      /versioned cache identity/
+    );
+    await assert.rejects(
+      () => cache.get('query'),
+      /versioned cache identity/
+    );
+  } finally {
+    if (previousMode === undefined) delete process.env.RAG_ACCESS_MODE;
+    else process.env.RAG_ACCESS_MODE = previousMode;
+  }
+});
+
+test('SemanticCache rejects a forged key paired with different identity components', async () => {
+  const cache = new SemanticCache(new StubEmbeddings());
+  const tenantA = createIdentity({ tenantId: 'tenant-a' });
+  const tenantB = createIdentity({ tenantId: 'tenant-b' });
+  const forged = {
+    ...tenantB,
+    key: tenantA.key,
+  };
+  await cache.set('same query', 'tenant A answer', '', undefined, tenantA);
+  await assert.rejects(
+    () => cache.get('same query', undefined, forged),
+    /key does not match its components/
+  );
+});
+
+function createIdentity(overrides = {}) {
+  return createRagCacheIdentity({
+    kind: 'answer',
+    tenantId: 'tenant-a',
+    corpusId: 'corpus-a',
+    corpusVersion: 'v1',
+    contextDigest: 'sha256:' + 'a'.repeat(64),
+    documentVersions: ['doc:v1'],
+    schemaVersion: 'schema-v1',
+    indexVersion: 'index-v1',
+    llmModel: 'llm-v1',
+    embeddingModel: 'embed-v1',
+    promptVersion: 'prompt-v1',
+    policyId: 'agentic',
+    fusionVersion: 'dense-v1',
+    ...overrides,
+  });
+}
 
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import path from 'path';
 import { createUploadPersistence } from '@/lib/persistence/upload-store';
 
@@ -7,6 +8,8 @@ const MANIFEST_FILE = path.join(UPLOAD_DIR, 'file-manifest.json');
 
 // GET /api/files - 获取文件列表
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const { blobStore, manifestStore } = createUploadPersistence({
       uploadDir: UPLOAD_DIR,

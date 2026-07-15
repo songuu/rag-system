@@ -4,7 +4,8 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { AgenticRAGSystem, AgentState, WorkflowStep } from '@/lib/agentic-rag';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { AgenticRAGSystem } from '@/lib/agentic-rag';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
@@ -43,6 +44,8 @@ function getAgenticRAG(config?: {
 }
 
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const body = await request.json();
     const {
@@ -188,6 +191,8 @@ export async function POST(request: NextRequest) {
 
 // GET 请求返回系统信息
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   const milvusConfig = getMilvusConfig();
   return NextResponse.json({
     name: 'Agentic RAG System',

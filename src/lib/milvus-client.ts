@@ -19,11 +19,25 @@ import {
   isZillizCloud,
   getMilvusProvider,
 } from './milvus-config';
+import {
+  getDocumentSecurityFields,
+  isServerDerivedScope,
+  isTenantIsolationRequired,
+} from './security/retrieval-scope';
 
 export type MilvusIndexType = 'AUTOINDEX' | 'IVF_FLAT' | 'IVF_SQ8' | 'IVF_PQ' | 'HNSW' | 'ANNOY' | 'FLAT';
 export type MilvusMetricType = 'L2' | 'IP' | 'COSINE';
 export type MilvusConsistencyLevel = keyof typeof ConsistencyLevelEnum | ConsistencyLevelEnum;
-export type MilvusSearchOutputField = 'id' | 'content' | 'source' | 'metadata_json' | 'created_at';
+export type MilvusSearchOutputField =
+  | 'id'
+  | 'content'
+  | 'source'
+  | 'metadata_json'
+  | 'created_at'
+  | 'tenant_id'
+  | 'corpus_id'
+  | 'document_id'
+  | 'trust_level';
 
 export interface MilvusSearchOptions {
   threshold?: number;
@@ -72,6 +86,10 @@ type MilvusHit = {
   content?: string;
   source?: string;
   metadata_json?: string;
+  tenant_id?: string;
+  corpus_id?: string;
+  document_id?: string;
+  trust_level?: string;
 };
 
 // Milvus 配置接口（保持向后兼容）
@@ -112,6 +130,20 @@ const DEFAULT_SEARCH_OUTPUT_FIELDS: MilvusSearchOutputField[] = ['id', 'content'
  */
 export function getSlimSearchFields(): MilvusSearchOutputField[] {
   return ['id', 'content', 'source'];
+}
+
+export function getScopedSearchFields(
+  outputFields: readonly MilvusSearchOutputField[]
+): MilvusSearchOutputField[] {
+  return [
+    ...new Set([
+      ...outputFields,
+      'tenant_id',
+      'corpus_id',
+      'document_id',
+      'trust_level',
+    ] as MilvusSearchOutputField[]),
+  ];
 }
 
 /**
@@ -297,6 +329,7 @@ export class MilvusVectorStore {
   private config: Required<MilvusConfig>;
   private isConnected: boolean = false;
   private isInitialized: boolean = false;
+  private supportsTenantIsolation: boolean = false;
 
   constructor(config: MilvusConfig = {}) {
     const defaultConfig = getDefaultConfig();
@@ -308,6 +341,11 @@ export class MilvusVectorStore {
    */
   getConfig(): Required<MilvusConfig> {
     return { ...this.config };
+  }
+
+  /** Whether the active collection has scalar tenant/corpus/trust fields. */
+  hasTenantIsolationSchema(): boolean {
+    return this.supportsTenantIsolation;
   }
 
   private debugLog(message: string, ...args: unknown[]): void {
@@ -402,14 +440,20 @@ export class MilvusVectorStore {
   /**
    * 检查现有集合的 Schema 是否与我们的期望兼容
    */
-  async checkSchemaCompatibility(): Promise<{ compatible: boolean; reason?: string; existingSchema?: unknown }> {
+  async checkSchemaCompatibility(): Promise<{
+    compatible: boolean;
+    supportsTenantIsolation?: boolean;
+    reason?: string;
+    existingSchema?: unknown;
+  }> {
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
 
     try {
       const hasCollection = await client.hasCollection({ collection_name: collectionName });
       if (!hasCollection.value) {
-        return { compatible: true }; // 集合不存在，可以创建
+        this.supportsTenantIsolation = true;
+        return { compatible: true, supportsTenantIsolation: true }; // 集合不存在，可以创建
       }
 
       // 获取集合信息
@@ -418,7 +462,19 @@ export class MilvusVectorStore {
 
       // 检查必需字段
       const requiredFields = ['id', 'content', 'embedding', 'source', 'metadata_json', 'created_at'];
+      const isolationFields = ['tenant_id', 'corpus_id', 'document_id', 'trust_level'];
       const existingFieldNames = fields.map((field) => field.name);
+      const supportsTenantIsolation = isolationFields.every((field) => existingFieldNames.includes(field));
+      this.supportsTenantIsolation = supportsTenantIsolation;
+
+      if (isTenantIsolationRequired() && !supportsTenantIsolation) {
+        return {
+          compatible: false,
+          supportsTenantIsolation: false,
+          reason: `缺少租户隔离字段: ${isolationFields.filter((field) => !existingFieldNames.includes(field)).join(', ')}`,
+          existingSchema: fields,
+        };
+      }
 
       // 检查字段是否存在
       for (const required of requiredFields) {
@@ -470,10 +526,18 @@ export class MilvusVectorStore {
         }
       }
 
-      return { compatible: true };
+      return { compatible: true, supportsTenantIsolation };
     } catch (error) {
       console.warn('[Milvus] Schema compatibility check failed:', error);
-      return { compatible: true }; // 无法检查时默认兼容
+      this.supportsTenantIsolation = false;
+      if (isTenantIsolationRequired()) {
+        return {
+          compatible: false,
+          supportsTenantIsolation: false,
+          reason: '无法验证集合的租户隔离 Schema，已按 fail-closed 策略拒绝访问',
+        };
+      }
+      return { compatible: true, supportsTenantIsolation: false };
     }
   }
 
@@ -481,6 +545,9 @@ export class MilvusVectorStore {
    * 强制重建集合（删除现有集合并创建新的）
    */
   async recreateCollection(): Promise<void> {
+    if (isTenantIsolationRequired()) {
+      throw new Error('Global collection recreation is disabled while tenant isolation is required.');
+    }
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
 
@@ -495,6 +562,7 @@ export class MilvusVectorStore {
 
     // 重置状态
     this.isInitialized = false;
+    this.supportsTenantIsolation = false;
 
     // 创建新集合
     await this.initializeCollection();
@@ -506,6 +574,9 @@ export class MilvusVectorStore {
    * @param autoRecreate 是否在维度不匹配时自动重建集合
    */
   async initializeCollection(autoRecreate: boolean = false): Promise<void> {
+    if (autoRecreate && isTenantIsolationRequired()) {
+      throw new Error('Automatic collection recreation is disabled while tenant isolation is required.');
+    }
     if (this.isInitialized && !autoRecreate) {
       this.debugLog(`[Milvus] Collection '${this.config.collectionName}' already initialized`);
       return;
@@ -591,6 +662,30 @@ export class MilvusVectorStore {
             name: 'created_at',
             description: 'Creation timestamp',
             data_type: DataType.Int64,
+          },
+          {
+            name: 'tenant_id',
+            description: 'Server-derived tenant isolation key',
+            data_type: DataType.VarChar,
+            max_length: 128,
+          },
+          {
+            name: 'corpus_id',
+            description: 'Server-derived corpus isolation key',
+            data_type: DataType.VarChar,
+            max_length: 128,
+          },
+          {
+            name: 'document_id',
+            description: 'Stable source document identifier',
+            data_type: DataType.VarChar,
+            max_length: 256,
+          },
+          {
+            name: 'trust_level',
+            description: 'Content trust boundary',
+            data_type: DataType.VarChar,
+            max_length: 32,
           }
         ],
       });
@@ -603,6 +698,7 @@ export class MilvusVectorStore {
       // 加载集合
       await this.loadCollection();
 
+      this.supportsTenantIsolation = true;
       this.isInitialized = true;
       console.log(`[Milvus] Collection '${collectionName}' initialized successfully`);
     } catch (error) {
@@ -689,6 +785,12 @@ export class MilvusVectorStore {
    * 插入文档
    */
   async insertDocuments(documents: MilvusDocument[]): Promise<string[]> {
+    if (
+      isTenantIsolationRequired()
+      && documents.some(document => !isServerDerivedScope(document.metadata))
+    ) {
+      throw new Error('Milvus insertion requires authenticated server-derived document scope.');
+    }
     if (!this.isInitialized) {
       await this.initializeCollection();
     }
@@ -723,14 +825,30 @@ export class MilvusVectorStore {
     console.log(`[Milvus] ✅ All ${documents.length} documents have consistent embedding dimension: ${firstDimension}D`);
 
     // 使用简单的对象数组格式 (推荐格式)
-    const data = documents.map((doc) => ({
-      id: doc.id,
-      content: doc.content.substring(0, 65000), // 限制长度
-      embedding: doc.embedding,
-      source: doc.metadata?.source || 'unknown',
-      metadata_json: JSON.stringify(doc.metadata || {}).substring(0, 65000),
-      created_at: Date.now(),
-    }));
+    if (isTenantIsolationRequired() && !this.supportsTenantIsolation) {
+      throw new Error('Active Milvus collection does not support required tenant isolation fields.');
+    }
+
+    const data = documents.map((doc) => {
+      const base = {
+        id: doc.id,
+        content: doc.content.substring(0, 65000), // 限制长度
+        embedding: doc.embedding,
+        source: String(doc.metadata?.source || 'unknown').substring(0, 1024),
+        metadata_json: JSON.stringify(doc.metadata || {}).substring(0, 65000),
+        created_at: Date.now(),
+      };
+      if (!this.supportsTenantIsolation) return base;
+
+      return {
+        ...base,
+        ...getDocumentSecurityFields(doc.metadata, {
+          tenantId: process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
+          corpusId: process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
+          trustLevel: 'external',
+        }),
+      };
+    });
 
     console.log(`[Milvus] Inserting ${documents.length} documents...`);
     console.log(`[Milvus] Sample document structure:`, {
@@ -782,6 +900,16 @@ export class MilvusVectorStore {
     threshold: number | MilvusSearchOptions = 0.0,
     filter?: string
   ): Promise<MilvusSearchResult[]> {
+    if (
+      isTenantIsolationRequired()
+      && (
+        typeof threshold !== 'object'
+        || threshold === null
+        || !isServerDerivedScope(threshold)
+      )
+    ) {
+      throw new Error('Milvus search requires an authenticated server-derived scope.');
+    }
     if (!this.isInitialized) {
       await this.initializeCollection();
     }
@@ -789,6 +917,9 @@ export class MilvusVectorStore {
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
     const searchOptions = resolveMilvusSearchOptions(this.config, threshold, filter);
+    if (isTenantIsolationRequired()) {
+      searchOptions.outputFields = getScopedSearchFields(searchOptions.outputFields);
+    }
 
     const searchReq = {
       collection_name: collectionName,
@@ -899,7 +1030,22 @@ export class MilvusVectorStore {
       searchResults.push({
         id: hitData.id || '',
         content: hitData.content || '',
-        metadata: { ...metadata, source: hitData.source },
+        metadata: {
+          ...metadata,
+          source: hitData.source,
+          ...(hitData.tenant_id
+            ? { tenant_id: hitData.tenant_id, tenantId: hitData.tenant_id }
+            : {}),
+          ...(hitData.corpus_id
+            ? { corpus_id: hitData.corpus_id, corpusId: hitData.corpus_id }
+            : {}),
+          ...(hitData.document_id
+            ? { document_id: hitData.document_id, documentId: hitData.document_id }
+            : {}),
+          ...(hitData.trust_level
+            ? { trust_level: hitData.trust_level, trustLevel: hitData.trust_level }
+            : {}),
+        },
         score: similarity,
         distance: distance,
       });
@@ -917,6 +1063,9 @@ export class MilvusVectorStore {
    * 删除文档
    */
   async deleteDocuments(ids: string[]): Promise<void> {
+    if (isTenantIsolationRequired()) {
+      throw new Error('Global document deletion is disabled while tenant isolation is required.');
+    }
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
 
@@ -934,6 +1083,9 @@ export class MilvusVectorStore {
    * 清空集合
    */
   async clearCollection(): Promise<void> {
+    if (isTenantIsolationRequired()) {
+      throw new Error('Global collection clearing is disabled while tenant isolation is required.');
+    }
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
 

@@ -8,6 +8,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { routeIntent, IntentClassification } from '@/lib/intent-router';
 import { executeLaneByIntent, LaneConfig, StreamEvent } from '@/lib/lane-handlers';
 
@@ -18,6 +19,8 @@ function sendEvent(controller: ReadableStreamDefaultController, event: StreamEve
 }
 
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const body = await request.json();
     const { query, config = {} } = body;
@@ -81,6 +84,8 @@ export async function POST(request: NextRequest) {
         });
 
         try {
+          await Promise.race([
+            (async () => {
           // ==================== Phase 1: 意图路由 ====================
           
           let classification: IntentClassification;
@@ -199,6 +204,10 @@ export async function POST(request: NextRequest) {
           const totalDuration = Date.now() - startTime;
           console.log(`[STREAM API] 总耗时: ${totalDuration}ms`);
 
+            })(),
+            timeoutPromise,
+          ]);
+
         } catch (error) {
           console.error('[STREAM API] 处理错误:', error);
           sendEvent(controller, {
@@ -242,6 +251,8 @@ export async function POST(request: NextRequest) {
  * GET: 获取路由器状态和车道信息
  */
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   return new Response(
     JSON.stringify({
       success: true,

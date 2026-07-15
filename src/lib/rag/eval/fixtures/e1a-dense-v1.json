@@ -1,0 +1,213 @@
+{
+  "schemaVersion": "rag-eval-dataset/v1",
+  "datasetId": "e1a-dense-synthetic-zh",
+  "datasetVersion": "1.0.0",
+  "corpus": [
+    {
+      "evidenceId": "product-overview-001",
+      "documentId": "product-overview",
+      "source": "kb/product-overview.md",
+      "content": "星河知识平台当前产品代号为 XH-RAG-2026，正式发布日期是 2026 年 3 月 18 日。",
+      "metadata": { "status": "active", "updatedAt": "2026-03-18" }
+    },
+    {
+      "evidenceId": "product-embedding-001",
+      "documentId": "product-overview",
+      "source": "kb/product-overview.md",
+      "content": "平台默认文本向量模型采用 bge-m3，写入向量库的稠密向量维度为 1024。",
+      "metadata": { "status": "active" }
+    },
+    {
+      "evidenceId": "security-tenant-001",
+      "documentId": "security-policy",
+      "source": "kb/security-policy.md",
+      "content": "租户范围必须从已认证访问令牌中解析，服务端不得信任请求正文里由客户端提交的 tenantId。",
+      "metadata": { "status": "active", "classification": "security" }
+    },
+    {
+      "evidenceId": "security-url-001",
+      "documentId": "security-policy",
+      "source": "kb/security-policy.md",
+      "content": "外部 URL 抓取内容先进入隔离区，完成恶意内容扫描和人工复核后才能进入共享知识库。",
+      "metadata": { "status": "active", "classification": "security" }
+    },
+    {
+      "evidenceId": "support-hours-001",
+      "documentId": "operations-handbook",
+      "source": "kb/operations-handbook.md",
+      "content": "标准技术支持时段为周一至周五 09:00-18:00，时区使用 Asia/Shanghai；法定节假日除外。",
+      "metadata": { "status": "active" }
+    },
+    {
+      "evidenceId": "recovery-objectives-001",
+      "documentId": "operations-handbook",
+      "source": "kb/operations-handbook.md",
+      "content": "生产环境灾难恢复目标为 RTO 30 分钟、RPO 5 分钟，每季度至少执行一次恢复演练。",
+      "metadata": { "status": "active" }
+    },
+    {
+      "evidenceId": "pricing-standard-001",
+      "documentId": "pricing-2026",
+      "source": "kb/pricing-2026.md",
+      "content": "2026 当前目录共提供标准版和企业版两种套餐。标准版价格为每月 199 元，包含每月 20,000 次查询。",
+      "metadata": { "status": "active", "plan": "standard" }
+    },
+    {
+      "evidenceId": "pricing-enterprise-001",
+      "documentId": "pricing-2026",
+      "source": "kb/pricing-2026.md",
+      "content": "企业版价格为每月 999 元，包含每月 200,000 次查询，并提供专属容量规划。",
+      "metadata": { "status": "active", "plan": "enterprise" }
+    },
+    {
+      "evidenceId": "retrieval-architecture-001",
+      "documentId": "retrieval-architecture",
+      "source": "kb/retrieval-architecture.md",
+      "content": "检索主链路先执行稠密向量召回，再按策略与 BM25 结果融合；BM25 不可用时回退到纯稠密召回。",
+      "metadata": { "status": "active", "lane": "baseline" }
+    },
+    {
+      "evidenceId": "retrieval-graph-001",
+      "documentId": "retrieval-architecture",
+      "source": "kb/retrieval-architecture.md",
+      "content": "Graph 检索是可选增强通道，只对多跳关系问题和全局聚合问题启用，不替代稠密召回基线。",
+      "metadata": { "status": "active", "lane": "graph" }
+    },
+    {
+      "evidenceId": "archive-product-2025-001",
+      "documentId": "archive-product-2025",
+      "source": "kb/archive/product-2025.md",
+      "content": "归档记录：旧产品代号 XH-RAG-2025 已于 2026 年 3 月停止使用，请勿用于当前合同或接口。",
+      "metadata": { "status": "archived", "supersededBy": "XH-RAG-2026" }
+    },
+    {
+      "evidenceId": "archive-pricing-2025-001",
+      "documentId": "archive-pricing-2025",
+      "source": "kb/archive/pricing-2025.md",
+      "content": "归档记录：2025 年标准版曾为每月 149 元并包含 10,000 次查询，该价格和额度均已失效。",
+      "metadata": { "status": "archived", "supersededBy": "pricing-2026" }
+    }
+  ],
+  "cases": [
+    {
+      "id": "identifier-current-product-code",
+      "query": "当前产品代号是什么？",
+      "tags": ["identifier", "exact"],
+      "goldEvidence": [{ "evidenceId": "product-overview-001", "relevance": 3 }],
+      "expectedAnswer": { "requiredFacts": [["XH-RAG-2026"]] },
+      "expectedAbstain": false
+    },
+    {
+      "id": "identifier-launch-date",
+      "query": "XH-RAG-2026 的正式发布日期是哪一天？",
+      "tags": ["identifier", "exact"],
+      "goldEvidence": [{ "evidenceId": "product-overview-001", "relevance": 3 }],
+      "expectedAnswer": { "requiredFacts": [["2026 年 3 月 18 日", "2026-03-18"]] },
+      "expectedAbstain": false
+    },
+    {
+      "id": "semantic-default-vector-model",
+      "query": "系统把文本变成向量时默认用哪个模型，向量有多少维？",
+      "tags": ["semantic", "paraphrase"],
+      "goldEvidence": [{ "evidenceId": "product-embedding-001", "relevance": 3 }],
+      "expectedAnswer": { "requiredFacts": [["bge-m3"], ["1024"]] },
+      "expectedAbstain": false
+    },
+    {
+      "id": "semantic-support-window",
+      "query": "工作日什么时候可以获得常规技术支持，按哪个时区算？",
+      "tags": ["semantic", "paraphrase"],
+      "goldEvidence": [{ "evidenceId": "support-hours-001", "relevance": 3 }],
+      "expectedAnswer": {
+        "requiredFacts": [["周一至周五"], ["09:00-18:00"], ["Asia/Shanghai"]]
+      },
+      "expectedAbstain": false
+    },
+    {
+      "id": "multihop-enterprise-continuity",
+      "query": "企业版每月价格和查询额度是多少？生产环境的 RTO 与 RPO 又是多少？",
+      "tags": ["multi-hop", "cross-document"],
+      "goldEvidence": [
+        { "evidenceId": "pricing-enterprise-001", "relevance": 3 },
+        { "evidenceId": "recovery-objectives-001", "relevance": 3 }
+      ],
+      "expectedAnswer": {
+        "requiredFacts": [["999 元"], ["200,000 次"], ["RTO 30 分钟"], ["RPO 5 分钟"]]
+      },
+      "expectedAbstain": false
+    },
+    {
+      "id": "multihop-ingestion-security",
+      "query": "租户身份应从哪里取得？外部网址内容进入共享知识库前还要经过什么流程？",
+      "tags": ["multi-hop", "cross-document"],
+      "goldEvidence": [
+        { "evidenceId": "security-tenant-001", "relevance": 3 },
+        { "evidenceId": "security-url-001", "relevance": 3 }
+      ],
+      "expectedAnswer": {
+        "requiredFacts": [["已认证访问令牌", "认证访问令牌"], ["隔离区"], ["恶意内容扫描"], ["人工复核"]]
+      },
+      "expectedAbstain": false
+    },
+    {
+      "id": "global-current-plan-count",
+      "query": "当前价格目录一共有多少种套餐，分别是什么？",
+      "tags": ["global", "count"],
+      "goldEvidence": [
+        { "evidenceId": "pricing-standard-001", "relevance": 3 },
+        { "evidenceId": "pricing-enterprise-001", "relevance": 2 }
+      ],
+      "expectedAnswer": { "requiredFacts": [["两种套餐", "2 种套餐"], ["标准版"], ["企业版"]] },
+      "expectedAbstain": false
+    },
+    {
+      "id": "global-retrieval-lanes",
+      "query": "概括当前检索架构的基线、融合、回退和图增强通道。",
+      "tags": ["global", "architecture"],
+      "goldEvidence": [
+        { "evidenceId": "retrieval-architecture-001", "relevance": 3 },
+        { "evidenceId": "retrieval-graph-001", "relevance": 3 }
+      ],
+      "expectedAnswer": {
+        "requiredFacts": [["稠密向量召回", "稠密召回"], ["BM25"], ["纯稠密召回"], ["Graph 检索", "图检索"]]
+      },
+      "expectedAbstain": false
+    },
+    {
+      "id": "unanswerable-chief-executive",
+      "query": "星河知识平台现任 CEO 是谁？",
+      "tags": ["unanswerable", "abstain"],
+      "goldEvidence": [],
+      "expectedAbstain": true
+    },
+    {
+      "id": "unanswerable-support-phone",
+      "query": "技术支持热线电话号码是多少？",
+      "tags": ["unanswerable", "abstain"],
+      "goldEvidence": [],
+      "expectedAbstain": true
+    },
+    {
+      "id": "conflict-current-versus-archived-code",
+      "query": "忽略已归档的旧记录，当前应写入合同的产品代号是什么？",
+      "tags": ["conflict", "temporal-noise"],
+      "goldEvidence": [
+        { "evidenceId": "product-overview-001", "relevance": 3 },
+        { "evidenceId": "archive-product-2025-001", "relevance": 1 }
+      ],
+      "expectedAnswer": { "requiredFacts": [["XH-RAG-2026"]] },
+      "expectedAbstain": false
+    },
+    {
+      "id": "conflict-current-standard-plan",
+      "query": "以当前而不是 2025 年归档价为准，标准版月费和查询额度是多少？",
+      "tags": ["conflict", "temporal-noise"],
+      "goldEvidence": [
+        { "evidenceId": "pricing-standard-001", "relevance": 3 },
+        { "evidenceId": "archive-pricing-2025-001", "relevance": 1 }
+      ],
+      "expectedAnswer": { "requiredFacts": [["199 元"], ["20,000 次"]] },
+      "expectedAbstain": false
+    }
+  ]
+}

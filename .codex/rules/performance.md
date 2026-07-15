@@ -29,3 +29,11 @@ Any worker pool over LLM calls should be a sliding window (maintain `concurrency
 ## Audit Progress UI When Serializing Stages Into Parallel Branches
 
 Parallelizing previously serial pipeline stages breaks the implicit "progress monotonically increases" assumption that consumer UIs rely on. Whenever a previously serial step becomes one of several parallel branches whose progress events interleave, change every progress consumer to `setProgress(prev => Math.max(prev, next))`. Forgetting this turns a backend speedup into a visible UX regression (progress bar appears to jump backward).
+
+## Retrieval Budgets Must Wrap Each Lane
+
+Checking elapsed time only before a retrieval lane starts does not enforce a deadline on embedding or
+provider calls. Race each lane against its remaining budget, abort cooperatively, classify abort-aware
+rejections as timeout/budget, and check the signal after every non-cancellable provider stage. Record
+that SDK calls without signal support are soft cancellation: the request stops, but the in-flight call
+may finish in the background and needs provider timeout/concurrency limits.

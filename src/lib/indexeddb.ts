@@ -6,6 +6,7 @@ export interface ConversationMessage {
   content: string;
   timestamp: Date;
   traceId?: string;
+  storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
 }

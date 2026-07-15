@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { getRagSystem } from '@/lib/rag-instance';
+import type { SimilaritySearchResult } from '@/lib/rag-system';
 
 // Ollama 配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
@@ -18,8 +20,8 @@ interface ReflectionToken {
 interface SelfRAGStep {
   stepId: number;
   stepName: string;
-  input: any;
-  output: any;
+  input: unknown;
+  output: unknown;
   reflection: ReflectionToken | null;
   duration: number;
   status: 'pending' | 'running' | 'completed' | 'failed';
@@ -40,25 +42,6 @@ interface GenerationSegment {
   supportScore: number;
   supportingDocs: string[];
   reasoning: string;
-}
-
-// 获取向量嵌入
-async function getEmbedding(text: string): Promise<number[]> {
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/embeddings`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      prompt: text
-    })
-  });
-  
-  if (!response.ok) {
-    throw new Error(`Embedding failed: ${response.statusText}`);
-  }
-  
-  const data = await response.json();
-  return data.embedding || [];
 }
 
 // 调用 LLM
@@ -127,7 +110,7 @@ async function evaluateRetrieveNeed(query: string): Promise<ReflectionToken> {
       reasoning: '无法确定，默认进行检索',
       timestamp: Date.now() - startTime
     };
-  } catch (error) {
+  } catch {
     return {
       type: 'retrieve',
       value: 'YES',
@@ -180,7 +163,7 @@ async function evaluateRelevance(query: string, document: string, source: string
     }
     
     return { isRelevant: true, score: 0.5, reasoning: '无法解析评估结果' };
-  } catch (error) {
+  } catch {
     return { isRelevant: true, score: 0.5, reasoning: '评估失败' };
   }
 }
@@ -245,7 +228,7 @@ ${combinedDocs}
       }],
       overallSupport: 0.5
     };
-  } catch (error) {
+  } catch {
     return {
       segments: [{
         text: response,
@@ -311,7 +294,7 @@ async function evaluateUsefulness(query: string, response: string): Promise<Refl
       reasoning: '无法解析评估结果',
       timestamp: Date.now() - startTime
     };
-  } catch (error) {
+  } catch {
     return {
       type: 'isuse',
       value: 'USEFUL',
@@ -439,8 +422,7 @@ async function processSelfRAG(query: string, options: {
       const ragSystem = await getRagSystem();
       
       // 直接调用底层方法获取检索结果
-      // @ts-ignore - 方法存在但 TypeScript 可能未识别
-      let searchResults: any[] = [];
+      let searchResults: SimilaritySearchResult[] = [];
       
       if (typeof ragSystem.similaritySearch === 'function') {
         const retrievalDetails = await ragSystem.similaritySearch(query, topK, similarityThreshold);
@@ -693,6 +675,8 @@ async function processSelfRAG(query: string, options: {
 
 // POST: 执行 Self-RAG
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const body = await request.json();
     const { query, options = {} } = body;
@@ -727,6 +711,8 @@ export async function POST(request: NextRequest) {
 
 // GET: 获取 Self-RAG 系统信息
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const ragSystem = await getRagSystem();
     const stats = ragSystem.getStats();

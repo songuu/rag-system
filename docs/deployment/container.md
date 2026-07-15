@@ -68,11 +68,44 @@ docker compose --env-file .env.container -f docker-compose.yml -f docker-compose
 | LLM | `MODEL_PROVIDER`, `OPENAI_API_KEY`, `CUSTOM_API_KEY`, `CUSTOM_BASE_URL`, `OLLAMA_BASE_URL` |
 | Embedding | `EMBEDDING_PROVIDER`, `SILICONFLOW_API_KEY`, `OPENAI_EMBEDDING_MODEL`, `CUSTOM_EMBEDDING_DIMENSION` |
 | Milvus/Zilliz | `MILVUS_PROVIDER`, `MILVUS_LOCAL_ADDRESS`, `MILVUS_ZILLIZ_ENDPOINT`, `MILVUS_ZILLIZ_TOKEN`, `MILVUS_DEFAULT_DIMENSION` |
-| Supabase | `RAG_PERSISTENCE_BACKEND`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DEFAULT_TENANT_ID` |
+| API 安全边界 | `RAG_ACCESS_MODE`, `RAG_SINGLE_TENANT_TOKEN`, `RAG_TENANT_ISOLATION_REQUIRED`, `RAG_ALLOWED_LLM_MODELS`, `RAG_ALLOWED_EMBEDDING_MODELS` |
+| Supabase | `RAG_PERSISTENCE_BACKEND`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DEFAULT_TENANT_ID`, `SUPABASE_DEFAULT_CORPUS_ID` |
 | LangSmith | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` |
 | Uploads | `REASONING_RAG_UPLOAD_DIR`, app volume `/app/uploads`, `/app/reasoning-uploads`, `/app/adaptive-rag-uploads` |
 
 完整变量含义见 `ENV_CONFIG_GUIDE.md`。
+
+## API 身份、租户与语料库边界
+
+`/api/ask`、`/api/pipeline` 和 `/api/milvus` 统一使用服务端派生的安全上下文，客户端
+`userId` / `tenantId` 不作为授权依据。
+
+- `RAG_ACCESS_MODE=local-dev`：只允许非 production，保留本地无登录开发体验。
+- `RAG_ACCESS_MODE=single-tenant-token`：生产过渡模式；必须设置长随机
+  `RAG_SINGLE_TENANT_TOKEN` 与固定 tenant/corpus，请求使用
+  `Authorization: Bearer <token>`。
+- `RAG_ACCESS_MODE=supabase`：使用 Supabase 用户 JWT；服务端通过 publishable key +
+  用户 JWT 验证 Auth user、RLS 可见 corpus 和 tenant membership，不回退 service role。
+
+`single-tenant-token` 面向受信服务端调用或会注入 Authorization 的反向代理，不能把共享
+token 下发到浏览器。当前第一方演示 UI 不发送生产 bearer/session，且首页默认 memory
+policy；它只适用于 `local-dev`。认证模式的浏览器体验必须先接入同源 BFF/session，或由受信
+反向代理在服务端注入身份，并把默认策略限制为 scoped Milvus。
+
+应用层硬边界覆盖 canonical API：`/api/ask`、`/api/pipeline`、`/api/milvus`。旧的
+`rag-milvus`、Milvus sync/visualize、agentic/adaptive/reasoning/self-RAG、upload/files 与
+reinitialize 路由在 production 或显式认证模式统一返回 410，只在非 production 的
+`local-dev` 保留。生产网关仍应使用 route allowlist 作为纵深防御；当前 compose 不包含
+身份代理，不能仅复制示例环境变量后直接把演示 UI 作为生产入口。
+
+生产环境应设置 `RAG_ALLOWED_LLM_MODELS` 和 `RAG_ALLOWED_EMBEDDING_MODELS`（逗号分隔）。
+外部 URL ingestion 默认只允许 HTTPS；仅在明确接受风险时设置
+`RAG_EXTERNAL_URL_ALLOW_HTTP=true`。
+
+新建 Milvus collection 会包含 `tenant_id`、`corpus_id`、`document_id`、
+`trust_level` 标量字段。旧 collection 不具备这些字段；启用
+`RAG_TENANT_ISOLATION_REQUIRED=true` 前，必须通过受控重建或 shadow collection 回填迁移，
+否则服务会按 fail-closed 策略拒绝读写，避免静默跨租户检索。
 
 ## 持久化边界
 

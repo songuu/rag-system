@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import path from 'path';
 import { 
   parseDocument, 
@@ -15,6 +16,8 @@ const METADATA_FILE = path.join(UPLOAD_DIR, 'file-manifest.json');  // 文件清
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 export async function POST(request: NextRequest) {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   try {
     const { blobStore, manifestStore } = createUploadPersistence({
       uploadDir: UPLOAD_DIR,
@@ -158,6 +161,8 @@ export async function POST(request: NextRequest) {
 
 // GET 端点返回支持的文件类型
 export async function GET() {
+  const unavailable = createLegacyRagRouteResponse();
+  if (unavailable) return unavailable;
   return NextResponse.json({
     supportedExtensions: SUPPORTED_EXTENSIONS,
     description: getSupportedTypesDescription(),

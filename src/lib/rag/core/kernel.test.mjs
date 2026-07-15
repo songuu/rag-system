@@ -19,6 +19,7 @@ const { RagKernel, RagKernelExecutionError } = await import('./kernel.ts');
 const { createRagPolicy, resolveRagPolicyId } = await import('./policies.ts');
 const { invokeRagKernelWorkflow, prepareRagWorkflowRun } = await import('./workflow.ts');
 const { createDefaultRetrievalPlan } = await import('../retrieval/retrieval-plan.ts');
+const { RagLaneExecutor } = await import('../retrieval/lane-executor.ts');
 
 test('RAG policy resolver preserves legacy /api/ask mode selection', () => {
   assert.equal(resolveRagPolicyId(createRequest({})), 'memory');
@@ -54,6 +55,63 @@ test('RAG kernel executes a policy and records an envelope without changing outp
   assert.equal(result.envelope.policy_id, 'memory');
   assert.equal(result.envelope.status, 'completed');
   assert.equal(result.envelope.retrieval_plan.lanes[0].type, 'memory');
+});
+
+test('RAG kernel creates the retrieval plan before policy execution', async () => {
+  let receivedPlan;
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'milvus-2step',
+      description: 'plan-aware policy',
+      execute: async context => {
+        receivedPlan = context.retrievalPlan;
+        return {
+          output: { success: true },
+          retrievalPlan: context.retrievalPlan,
+          evidence: [
+            {
+              id: 'evidence-1',
+              tenantId: 'local',
+              corpusId: 'default',
+              documentId: 'doc-1',
+              documentVersion: 'v1',
+              content: 'canonical evidence',
+              trustLevel: 'reviewed',
+              laneId: 'dense-vector-required',
+            },
+          ],
+          laneExecutions: [
+            {
+              laneId: 'dense-vector-required',
+              retriever: 'unit-dense',
+              status: 'completed',
+              retrievedEvidenceIds: ['evidence-1'],
+              latencyMs: 3,
+              stopReason: 'sufficient',
+            },
+          ],
+          execution: {
+            state: 'completed',
+            transitions: [],
+            budget: { maxLanes: 1, maxEvidence: 3, maxDurationMs: 1000 },
+            stopReason: 'sufficient',
+          },
+        };
+      },
+    }),
+  ]);
+
+  const result = await kernel.execute(
+    createRequest({ storageBackend: 'milvus' }),
+    'milvus-2step',
+    { now: new Date('2026-05-14T00:00:00.000Z'), traceId: 'trace-plan' }
+  );
+
+  assert.equal(receivedPlan.lanes[0].type, 'dense-vector');
+  assert.equal(result.envelope.retrieval_plan, receivedPlan);
+  assert.equal(result.envelope.evidence[0].id, 'evidence-1');
+  assert.equal(result.envelope.lane_executions[0].retriever, 'unit-dense');
+  assert.equal(result.envelope.execution.stop_reason, 'sufficient');
 });
 
 test('RAG workflow invokes the kernel through a LangChain runnable with trace metadata', async () => {
@@ -140,6 +198,144 @@ test('RAG kernel wraps policy failures with traceable execution context', async 
       assert.equal(error.envelope.error.message, 'policy exploded');
       assert.equal(error.envelope.metadata.policy_description, 'failing memory policy');
       assert.equal(error.envelope.retrieval_plan.lanes[0].type, 'memory');
+      return true;
+    }
+  );
+});
+
+test('RAG kernel maps non-2xx Response output to a failed envelope without losing the response', async () => {
+  const failedResponse = new Response(
+    JSON.stringify({ success: false, code: 'UPSTREAM_FAILED' }),
+    {
+      status: 503,
+      headers: { 'content-type': 'application/json' },
+    }
+  );
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'memory',
+      description: 'response failure policy',
+      execute: async () => failedResponse,
+    }),
+  ]);
+
+  const result = await kernel.execute(
+    createRequest({}),
+    'memory',
+    { now: new Date('2026-05-14T00:00:00.000Z'), traceId: 'trace-response-failed' }
+  );
+
+  assert.equal(result.output, failedResponse);
+  assert.equal(result.envelope.status, 'failed');
+  assert.equal(result.envelope.error.name, 'RagPolicyHttpError');
+  assert.equal(result.envelope.error.code, 'RAG_POLICY_HTTP_ERROR');
+  assert.equal(result.envelope.error.http_status, 503);
+  assert.match(result.envelope.error.message, /HTTP 503/);
+});
+
+test('RAG kernel respects an explicit failed policy execution even when output resolves', async () => {
+  const output = { success: false, error: 'agent failed' };
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'agentic',
+      description: 'explicit failed-state policy',
+      execute: async () => ({
+        output,
+        execution: {
+          state: 'failed',
+          transitions: [],
+          stopReason: 'failed',
+        },
+      }),
+    }),
+  ]);
+
+  const result = await kernel.execute(
+    createRequest({ storageBackend: 'milvus', useAgenticRAG: true }),
+    'agentic',
+    { traceId: 'trace-explicit-failure' }
+  );
+  assert.equal(result.output, output);
+  assert.equal(result.envelope.status, 'failed');
+  assert.equal(result.envelope.execution.state, 'failed');
+  assert.equal(result.envelope.execution.stop_reason, 'failed');
+  assert.equal(result.envelope.error.code, 'RAG_POLICY_STATE_FAILED');
+});
+
+test('RAG kernel preserves a required-lane partial failure snapshot', async () => {
+  const budget = { maxLanes: 1, maxEvidence: 3, maxDurationMs: 1000 };
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'milvus-2step',
+      description: 'lane failure policy',
+      execute: async context => {
+        const executor = new RagLaneExecutor([
+          {
+            type: 'dense-vector',
+            retriever: 'broken-dense',
+            async execute() {
+              throw new Error('milvus unavailable');
+            },
+          },
+        ]);
+        await executor.execute({
+          request: context.request,
+          plan: context.retrievalPlan,
+          budget,
+        });
+        return { success: true };
+      },
+    }),
+  ]);
+
+  await assert.rejects(
+    () =>
+      kernel.execute(
+        createRequest({ storageBackend: 'milvus' }),
+        'milvus-2step',
+        { traceId: 'trace-lane-failure' }
+      ),
+    error => {
+      assert.ok(error instanceof RagKernelExecutionError);
+      assert.equal(error.envelope.status, 'failed');
+      assert.equal(error.envelope.lane_executions[0].status, 'failed');
+      assert.equal(error.envelope.lane_executions[0].errorCode, 'RAG_LANE_FAILED');
+      assert.equal(error.envelope.execution.transitions.at(-1).to, 'failed');
+      assert.deepEqual(error.envelope.execution.budget, budget);
+      assert.equal(error.envelope.execution.stop_reason, 'failed');
+      assert.equal(error.envelope.error.code, 'RAG_LANE_FAILED');
+      return true;
+    }
+  );
+});
+
+test('RAG workflow preserves RagKernelExecutionError for thrown policy failures', async () => {
+  const originalError = new TypeError('workflow policy exploded');
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'memory',
+      description: 'workflow response failure policy',
+      execute: async () => {
+        throw originalError;
+      },
+    }),
+  ]);
+
+  await assert.rejects(
+    () =>
+      invokeRagKernelWorkflow(kernel, {
+        request: createRequest({ requestId: 'request-failed' }),
+        policyId: 'memory',
+        context: {
+          traceId: 'trace-workflow-failed',
+          now: new Date('2026-06-11T00:00:00.000Z'),
+        },
+      }),
+    error => {
+      assert.ok(error instanceof RagKernelExecutionError);
+      assert.equal(error.envelope.trace_id, 'trace-workflow-failed');
+      assert.equal(error.envelope.status, 'failed');
+      assert.equal(error.originalError, originalError);
       return true;
     }
   );
