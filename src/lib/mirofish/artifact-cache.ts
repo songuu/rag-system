@@ -249,8 +249,8 @@ function normalizeOntology(ontology: Ontology | undefined): Record<string, unkno
   };
 }
 
-function normalizeText(value: string): string {
-  return value.replace(/\r\n/g, '\n').trim();
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\r\n/g, '\n').trim() : '';
 }
 
 function isOntology(value: unknown): value is Ontology {

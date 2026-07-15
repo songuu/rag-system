@@ -509,16 +509,27 @@ function normalizeAttributeName(name: string): string {
   return normalized;
 }
 
-function normalizeAttributes(attributes: OntologyAttribute[] | undefined): OntologyAttribute[] {
+function normalizeAttributes(attributes: unknown): OntologyAttribute[] {
   if (!Array.isArray(attributes)) return [];
   const usedAttributeNames = new Set<string>();
-  return attributes.map((attribute, index) => ({
-    ...attribute,
-    name: makeUniqueName(
-      normalizeAttributeName(attribute.name || `field_${index + 1}`),
-      usedAttributeNames
-    ),
-  }));
+  return attributes
+    .filter((attribute): attribute is Partial<OntologyAttribute> => (
+      !!attribute && typeof attribute === 'object'
+    ))
+    .map((attribute, index) => ({
+      name: makeUniqueName(
+        normalizeAttributeName(
+          typeof attribute.name === 'string' ? attribute.name : `field_${index + 1}`
+        ),
+        usedAttributeNames
+      ),
+      type: typeof attribute.type === 'string' && attribute.type.trim()
+        ? attribute.type.trim()
+        : 'text',
+      description: typeof attribute.description === 'string'
+        ? attribute.description.trim()
+        : '',
+    }));
 }
 
 function resolveEntityTypeName(name: string, entityNameMap: Map<string, string>): string {
