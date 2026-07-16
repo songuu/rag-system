@@ -117,6 +117,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   const ttsRunIdRef = useRef(0);
   const classroomStatusRef = useRef<ClassroomState['status']>('idle');
   const manualPauseRequestedRef = useRef(false);
+  const stageHoverPauseRef = useRef(false);
 
   const pages = course?.prepared?.pages ?? [];
   const scenes = useMemo(() => deriveScenes(course), [course]);
@@ -495,6 +496,21 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
     await sendControl('resume');
   }, [sendControl]);
 
+  const pauseClassroomForStageHover = useCallback(() => {
+    if (classroomStatusRef.current !== 'running' || stageHoverPauseRef.current) return;
+    stageHoverPauseRef.current = true;
+    void sendControl('pause').catch(() => {
+      stageHoverPauseRef.current = false;
+    });
+  }, [sendControl]);
+
+  const resumeClassroomAfterStageHover = useCallback(() => {
+    if (!stageHoverPauseRef.current) return;
+    stageHoverPauseRef.current = false;
+    if (manualPauseRequestedRef.current || classroomStatusRef.current === 'ended') return;
+    void sendControl('resume');
+  }, [sendControl]);
+
   const restartClassroom = useCallback(async () => {
     manualPauseRequestedRef.current = false;
     stopTtsPlayback({ resumeClassroom: false });
@@ -598,9 +614,9 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   }
 
   return (
-    <div className="relative min-h-[calc(100vh-5.5rem)] overflow-hidden rounded-[2rem] border border-white/10 bg-[#090d14] text-slate-100 shadow-2xl">
+    <div className="relative h-[calc(100dvh-8rem)] min-h-0 overflow-hidden rounded-[2rem] border border-white/10 bg-[#090d14] text-slate-100 shadow-2xl">
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(20,184,166,0.22),transparent_34%),radial-gradient(circle_at_80%_10%,rgba(59,130,246,0.18),transparent_30%),linear-gradient(135deg,rgba(15,23,42,0.95),rgba(2,6,23,0.98))]" />
-      <div className="relative z-10 flex min-h-[calc(100vh-5.5rem)]">
+      <div className="relative z-10 flex h-full min-h-0">
         <SceneSidebar
           collapsed={sidebarCollapsed}
           scenes={scenes}
@@ -610,7 +626,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
           onSelectScene={selectScene}
         />
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <StageHeader
             title={course.title}
             status={classroomState?.status ?? 'idle'}
@@ -643,8 +659,13 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
             />
           )}
 
-          <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_22rem]">
-            <section ref={sceneViewportRef} className="min-h-0 overflow-hidden rounded-[1.75rem] border border-white/10 bg-white/[0.04] shadow-inner">
+          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(14rem,0.6fr)] gap-4 overflow-hidden p-4 xl:grid-cols-[minmax(0,1fr)_22rem] xl:grid-rows-1">
+            <section
+              ref={sceneViewportRef}
+              onMouseEnter={pauseClassroomForStageHover}
+              onMouseLeave={resumeClassroomAfterStageHover}
+              className="h-full min-h-0 overflow-hidden rounded-[1.75rem] border border-white/10 bg-white/[0.04] shadow-inner"
+            >
               <SceneViewport
                 scene={selectedScene}
                 page={currentPage}
@@ -710,7 +731,7 @@ function SceneSidebar({
       }`}
     >
       <div className="flex h-full flex-col">
-        <div className="border-b border-white/10 p-4">
+        <div className="shrink-0 border-b border-white/10 p-4">
           <button
             type="button"
             onClick={onCollapse}
@@ -1774,8 +1795,8 @@ const ClassroomChat = React.forwardRef<HTMLDivElement, ClassroomChatProps>(funct
   ref
 ) {
   return (
-    <aside className="flex min-h-0 flex-col rounded-[1.75rem] border border-white/10 bg-black/25">
-      <div className="border-b border-white/10 p-4">
+    <aside className="flex h-full min-h-0 flex-col overflow-hidden rounded-[1.75rem] border border-white/10 bg-black/25">
+      <div className="shrink-0 border-b border-white/10 p-4">
         <div className="mb-3 flex items-center justify-between">
           <div>
             <div className="text-xs uppercase tracking-[0.25em] text-slate-500">Roundtable</div>
@@ -1816,7 +1837,7 @@ const ClassroomChat = React.forwardRef<HTMLDivElement, ClassroomChatProps>(funct
         )}
       </div>
 
-      <div className="border-t border-white/10 p-4">
+      <div className="shrink-0 border-t border-white/10 p-4">
         <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
           {activeQuestions.slice(0, 3).map(question => (
             <button

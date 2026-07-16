@@ -173,6 +173,27 @@ function legacyCacheRecord(artifact, value) {
   }, null, 2);
 }
 
+test('MiroFish graph cache identity tolerates incomplete LLM-generated ontology fields', () => {
+  assert.doesNotThrow(() => getMiroFishGraphCacheIdentity({
+    request: {
+      text: 'University incident',
+      ontology: {
+        entity_types: [
+          {
+            name: 'Student',
+            description: 'Current student',
+            attributes: [{ name: 'full_name' }],
+            examples: ['Alice'],
+          },
+        ],
+        edge_types: [],
+        analysis_summary: '',
+      },
+    },
+    modelOverride,
+  }));
+});
+
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }

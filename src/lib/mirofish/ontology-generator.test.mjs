@@ -44,6 +44,29 @@ test('configures Ollama ontology generation for JSON output with enough context'
   assert.equal(generator.llm.numCtx, 32768);
 });
 
+test('fills missing attribute metadata from LLM-generated ontology output', () => {
+  const generator = new OntologyGenerator({
+    provider: 'ollama',
+    modelName: 'llama3.1',
+  });
+
+  const ontology = generator.validateAndProcess({
+    entity_types: [
+      {
+        name: 'Student',
+        description: 'Current student',
+        attributes: [{ name: 'full_name' }],
+        examples: [],
+      },
+    ],
+    edge_types: [],
+  });
+
+  assert.deepEqual(ontology.entity_types[0].attributes, [
+    { name: 'full_name', type: 'text', description: '' },
+  ]);
+});
+
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }
