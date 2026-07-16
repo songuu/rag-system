@@ -4,7 +4,17 @@
  * 管理 MiroFish 模块中的异步任务状态
  */
 
-import type { TaskInfo, TaskStatus } from './types';
+import type { TaskInfo } from './types';
+
+export interface TaskAdmissionConstraint {
+  id: string;
+  limit: number;
+  predicate: (task: TaskInfo) => boolean;
+}
+
+export type TaskAdmissionResult =
+  | { accepted: true; taskId: string }
+  | { accepted: false; constraintId: string };
 
 /**
  * 任务管理器
@@ -33,6 +43,37 @@ export class TaskManager {
 
     this.tasks.set(taskId, task);
     return taskId;
+  }
+
+  /**
+   * Atomically checks all in-memory admission constraints and reserves a task.
+   * This method intentionally stays synchronous: no other request can observe
+   * the checked state before the reservation is inserted into the task map.
+   */
+  tryCreateTask(
+    taskType: string,
+    metadata: Record<string, unknown> | undefined,
+    constraints: readonly TaskAdmissionConstraint[]
+  ): TaskAdmissionResult {
+    for (const constraint of constraints) {
+      if (!Number.isInteger(constraint.limit) || constraint.limit < 1) {
+        throw new Error(`Invalid task admission limit for constraint: ${constraint.id}`);
+      }
+      let matchingTaskCount = 0;
+      for (const task of this.tasks.values()) {
+        if (constraint.predicate(task)) {
+          matchingTaskCount += 1;
+          if (matchingTaskCount >= constraint.limit) {
+            return { accepted: false, constraintId: constraint.id };
+          }
+        }
+      }
+    }
+
+    return {
+      accepted: true,
+      taskId: this.createTask(taskType, metadata),
+    };
   }
 
   /**
@@ -126,15 +167,21 @@ export class TaskManager {
   /**
    * 清理已完成/失败的任务（保留最近 N 个）
    */
-  cleanOldTasks(keepCount: number = 100): void {
+  cleanOldTasks(
+    keepCount: number = 100,
+    predicate: (task: TaskInfo) => boolean = () => true
+  ): void {
     const tasks = Array.from(this.tasks.values())
+      .filter(task =>
+        (task.status === 'completed' || task.status === 'failed')
+        && predicate(task)
+      )
       .sort((a, b) => b.updated_at - a.updated_at);
 
-    // 保留最近的任务
+    // 只淘汰匹配范围内的 terminal 任务，避免跨租户删除仍在运行的工作。
     const tasksToKeep = new Set(tasks.slice(0, keepCount).map(t => t.task_id));
 
-    // 删除旧任务
-    for (const taskId of this.tasks.keys()) {
+    for (const taskId of tasks.map(task => task.task_id)) {
       if (!tasksToKeep.has(taskId)) {
         this.tasks.delete(taskId);
       }

@@ -33,6 +33,10 @@ export function resolveRagPolicyId(request: RagQueryRequest): RagPolicyId {
     return 'agentic';
   }
 
+  if (request.storageBackend === 'milvus' && request.serverPolicyId) {
+    return request.serverPolicyId;
+  }
+
   if (request.storageBackend === 'milvus') {
     return 'milvus-2step';
   }
@@ -47,4 +51,3 @@ function isPolicyResult<TOutput>(value: unknown): value is RagPolicyResult<TOutp
       'output' in value
   );
 }
-

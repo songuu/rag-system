@@ -3,6 +3,11 @@ export interface RedactedErrorLog {
   message: string;
 }
 
+export interface StableErrorLog {
+  name: string;
+  code?: string;
+}
+
 const SECRET_ASSIGNMENT =
   /\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\b\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+/gi;
 const QUOTED_SECRET_ASSIGNMENT =
@@ -19,6 +24,31 @@ export function redactErrorForLog(error: unknown): RedactedErrorLog {
     name: sanitize(rawMessage === '[object Object]' ? 'Unknown error' : name).slice(0, 120),
     message: sanitize(rawMessage).slice(0, 1_000),
   };
+}
+
+/**
+ * Use at content-processing boundaries where even a redacted message may
+ * contain private source text or model output. Only stable identifiers pass.
+ */
+export function createStableErrorLog(error: unknown): StableErrorLog {
+  const candidateName = error instanceof Error ? error.name : undefined;
+  const name =
+    typeof candidateName === 'string'
+    && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(candidateName)
+      ? candidateName
+      : 'Error';
+  const candidateCode =
+    typeof error === 'object'
+    && error !== null
+    && Object.prototype.hasOwnProperty.call(error, 'code')
+      ? (error as { code?: unknown }).code
+      : undefined;
+  const code =
+    typeof candidateCode === 'string'
+    && /^[A-Z][A-Z0-9_]{0,63}$/.test(candidateCode)
+      ? candidateCode
+      : undefined;
+  return code === undefined ? { name } : { name, code };
 }
 
 function sanitize(value: string): string {

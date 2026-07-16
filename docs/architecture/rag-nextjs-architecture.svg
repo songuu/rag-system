@@ -29,6 +29,7 @@
   <rect x="40" y="34" width="34" height="76" rx="8" fill="url(#titleG)" filter="url(#glow)"/>
   <text x="92" y="76" font-size="40" font-weight="800" fill="#f1f5f9">RAG-NextJS<tspan fill="url(#titleG)"> 智能检索增强生成平台</tspan></text>
   <text x="94" y="106" font-size="17" fill="#94a3b8">多策略 RAG · 知识图谱 GraphRAG · 多智能体社会仿真 · AI 多智能体课堂 · 全链路可观测</text>
+  <text x="1662" y="42" text-anchor="end" font-size="14" font-weight="800" fill="#fb923c">TARGET ARCHITECTURE · 非全部为在线能力</text>
 
   <!-- tech badges -->
   <g font-size="12" font-weight="600" fill="#cbd5e1">
@@ -36,7 +37,7 @@
     <g><rect x="192" y="128" width="78" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="231" y="145" text-anchor="middle">React 19</text></g>
     <g><rect x="278" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="324" y="145" text-anchor="middle">TypeScript</text></g>
     <g><rect x="378" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="424" y="145" text-anchor="middle">LangChain</text></g>
-    <g><rect x="478" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="524" y="145" text-anchor="middle">LangGraph</text></g>
+    <g><rect x="478" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="524" y="145" text-anchor="middle">LangGraph*</text></g>
     <g><rect x="578" y="128" width="70" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="613" y="145" text-anchor="middle">Milvus</text></g>
     <g><rect x="656" y="128" width="84" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="698" y="145" text-anchor="middle">Supabase</text></g>
     <g><rect x="748" y="128" width="70" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="783" y="145" text-anchor="middle">Ollama</text></g>
@@ -52,6 +53,7 @@
     <text x="1662" y="70" text-anchor="end" font-size="13" font-weight="700" fill="#cbd5e1">数据流向 ↓ 请求路径 · ⤚ 异步追踪</text>
     <text x="1662" y="92" text-anchor="end">每色块为一个架构层 · 右栏为横切可观测层</text>
     <text x="1662" y="112" text-anchor="end">底部为两大旗舰子系统 MiroFish / MAIC</text>
+    <text x="1662" y="134" text-anchor="end" fill="#fb923c">* planned/target；运行时事实以 2026-07-15 sprint 文档为准</text>
   </g>
 
   <!-- ============ LANE 1: UI ============ -->
@@ -192,7 +194,7 @@
       <rect x="420" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="486" y="846" text-anchor="middle" fill="#fde68a">RagPolicy</text><text x="486" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">策略注册表查找</text>
       <rect x="570" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="636" y="846" text-anchor="middle" fill="#fde68a">RetrievalPlan</text><text x="636" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">多路检索计划</text>
       <rect x="720" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="786" y="846" text-anchor="middle" fill="#fde68a">PostProcess</text><text x="786" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">MMR λ=0.7 + 去重</text>
-      <rect x="870" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="936" y="846" text-anchor="middle" fill="#fde68a">ContextComposer</text><text x="936" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">12k token 预算</text>
+      <rect x="870" y="826" width="132" height="48" rx="10" fill="#2a1f08" stroke="#fbbf24"/><text x="936" y="846" text-anchor="middle" fill="#fde68a">ContextComposer</text><text x="936" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">target ≤12k*</text>
       <rect x="1020" y="826" width="132" height="48" rx="10" fill="#3a2a06" stroke="#fbbf24" stroke-width="1.5"/><text x="1086" y="846" text-anchor="middle" fill="#fffbeb">答案</text><text x="1086" y="863" text-anchor="middle" font-size="9.5" fill="#d4a843">LLM 生成 + 引用</text>
     </g>
     <!-- spine arrows -->
@@ -207,9 +209,9 @@
     <text x="378" y="900" font-size="11" font-weight="700" fill="#d4a843">多路召回 Hybrid Retrieval:</text>
     <g font-size="11" font-weight="600" fill="#fde68a">
       <rect x="378" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="437" y="925" text-anchor="middle">dense-vector</text>
-      <rect x="506" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="565" y="925" text-anchor="middle">sparse-BM25</text>
+      <rect x="506" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="565" y="925" text-anchor="middle">sparse-BM25*</text>
       <rect x="634" y="906" width="118" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="693" y="925" text-anchor="middle">rerank 重排</text>
-      <rect x="762" y="906" width="132" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="828" y="925" text-anchor="middle">fusion (RRF 融合)</text>
+      <rect x="762" y="906" width="132" height="30" rx="8" fill="#f59e0b" fill-opacity="0.12" stroke="#fbbf24" stroke-opacity="0.6"/><text x="828" y="925" text-anchor="middle">fusion (RRF)*</text>
     </g>
     <text x="916" y="918" font-size="10" fill="#d4a843">上下文管理 context-management.ts</text>
     <text x="916" y="933" font-size="10" fill="#d4a843">混合检索编排 hybrid-policy.ts</text>

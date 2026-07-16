@@ -69,6 +69,7 @@ async function parseWithPdfParse(
 
   try {
     const textResult = await parser.getText();
+    const pageTexts = textResult.pages.map(page => normalizeParsedPdfText(page.text || ''));
     let metadata: {
       total?: number;
       info?: Record<string, unknown>;
@@ -84,6 +85,7 @@ async function parseWithPdfParse(
       title: getStringMetadata(metadata?.info?.Title),
       author: getStringMetadata(metadata?.info?.Author),
       createdAt: getStringMetadata(metadata?.info?.CreationDate),
+      pageTexts,
       parseMethod: 'pdf-parse-v2',
     };
   } finally {

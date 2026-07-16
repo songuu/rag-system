@@ -32,6 +32,13 @@ test('RAG policy resolver preserves legacy /api/ask mode selection', () => {
     resolveRagPolicyId(createRequest({ storageBackend: 'milvus', useAdaptiveEntityRAG: true })),
     'adaptive-entity'
   );
+  assert.equal(
+    resolveRagPolicyId(createRequest({
+      storageBackend: 'milvus',
+      serverPolicyId: 'mirofish-research',
+    })),
+    'mirofish-research'
+  );
 });
 
 test('RAG kernel executes a policy and records an envelope without changing output', async () => {
@@ -152,6 +159,39 @@ test('RAG workflow invokes the kernel through a LangChain runnable with trace me
   assert.equal(result.workflow.metadata.workflow_name, 'Unit RAG Workflow');
   assert.equal(result.workflow.metadata.source, 'kernel-test');
   assert.equal(result.workflow.metadata.rag_policy, 'memory');
+});
+
+test('RAG workflow propagates runtime cancellation and never invokes a pre-aborted policy', async () => {
+  const controller = new AbortController();
+  let policyCalls = 0;
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'memory',
+      description: 'must not execute after disconnect',
+      execute: async () => {
+        policyCalls++;
+        return { success: true };
+      },
+    }),
+  ]);
+  controller.abort(new Error('private disconnect reason'));
+
+  await assert.rejects(
+    () => invokeRagKernelWorkflow(kernel, {
+      request: createRequest({ requestId: 'request-cancelled' }),
+      policyId: 'memory',
+      signal: controller.signal,
+      context: { traceId: 'trace-cancelled' },
+    }),
+    error => {
+      assert.ok(error instanceof RagKernelExecutionError);
+      assert.equal(error.envelope.status, 'failed');
+      assert.equal(error.envelope.error.code, 'RAG_REQUEST_ABORTED');
+      assert.equal(error.envelope.error.message.includes('private disconnect reason'), false);
+      return true;
+    }
+  );
+  assert.equal(policyCalls, 0);
 });
 
 test('RAG workflow preparation creates deterministic fallback trace ids', () => {
@@ -341,7 +381,7 @@ test('RAG workflow preserves RagKernelExecutionError for thrown policy failures'
   );
 });
 
-test('default retrieval plan models adaptive entity as filter plus fusion plus rerank', () => {
+test('default adaptive plan does not declare a synthetic fusion lane', () => {
   const plan = createDefaultRetrievalPlan(
     createRequest({ storageBackend: 'milvus', enableReranking: true }),
     'adaptive-entity',
@@ -350,9 +390,35 @@ test('default retrieval plan models adaptive entity as filter plus fusion plus r
 
   assert.deepEqual(
     plan.lanes.map(lane => lane.type),
-    ['metadata-filter', 'dense-vector', 'fusion', 'rerank']
+    ['metadata-filter', 'dense-vector', 'rerank', 'generation-only']
   );
   assert.equal(plan.policy_id, 'adaptive-entity');
+});
+
+test('MiroFish graph lane is optional and only planned for global or multi-hop queries', () => {
+  const ordinary = createDefaultRetrievalPlan(
+    createRequest({ question: 'Alice 的职位是什么？', storageBackend: 'milvus' }),
+    'mirofish-research'
+  );
+  const multiHop = createDefaultRetrievalPlan(
+    createRequest({
+      question: 'Alice 与 Acme 之间有什么关系？',
+      storageBackend: 'milvus',
+      graphArtifactIdentity: {
+        documentId: 'graph-doc',
+        documentVersion: 'sha256:v1',
+        trustLevel: 'reviewed',
+      },
+    }),
+    'mirofish-research'
+  );
+
+  assert.deepEqual(ordinary.lanes.map(lane => lane.type), ['dense-vector']);
+  assert.deepEqual(multiHop.lanes.map(lane => lane.type), ['dense-vector', 'graph-entity']);
+  assert.equal(multiHop.lanes[1].required, false);
+  assert.equal(multiHop.lanes[1].parameters.queryKind, 'multi-hop');
+  assert.equal(multiHop.lanes[1].parameters.documentId, 'graph-doc');
+  assert.equal(multiHop.lanes[1].parameters.documentVersion, 'sha256:v1');
 });
 
 function createRequest(overrides) {

@@ -27,3 +27,23 @@ tags, gold evidence, expected answer, or expected abstain. For security/citation
 returned evidence field to the fixed canonical corpus before scoring. V2 answerable cases require
 expected facts; hard gates cover retrieval, facts, citation/span, selective accuracy, abstention, and
 independent tenant/corpus/trust canaries. Canary keys may appear in queries, but secret payloads may not.
+
+## Security Guards Prove Expensive Call Count Is Zero
+
+For evidence-scope, quarantine, forged routing, and active-abstention regressions, asserting only a
+public error is insufficient. Inject a passage containing a unique private marker, spy on every
+passage-bearing provider callback, and assert invocation count is exactly zero. Also assert the marker
+is absent from prompt, context, cache dimensions, logs, and public failure envelopes.
+
+## Concurrency Limits Need Barrier Tests
+
+Serially pre-filling a limit does not test admission races. Hold accepted operations behind a barrier,
+launch `limit + 1` requests with `Promise.all`, and assert exactly `limit` reservations plus one stable
+rejection. For timeout/cancellation, keep non-cooperative operations unresolved and verify admission
+stays blocked until every orphan settles, not merely the most recent promise.
+
+## Durable Integrity Tests Include Key Configuration
+
+Checkpoint corruption tests must cover payload mutation, a process-persistent store without a key,
+and a valid HMAC produced under the wrong key. Lease tests must include a pre-aborted non-owner,
+revision-fenced terminal deletion, renewal, and explicit expired-lease recovery.

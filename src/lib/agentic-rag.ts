@@ -18,7 +18,11 @@ import { StringOutputParser } from '@langchain/core/output_parsers';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
 import { invokeStructuredJson } from './langchain-structured-output';
-import { getMilvusInstance, type MilvusConfig } from './milvus-client';
+import {
+  getMilvusInstance,
+  type MilvusConfig,
+  type MilvusSearchResult,
+} from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
 import {
   createLLM,
@@ -36,17 +40,28 @@ import {
   applyStatePatch,
   createRunnableStateNode,
 } from './rag/core/langchain-state-workflow';
+import { resolveLegacyMilvusSearchArguments } from './rag/retrieval/legacy-policy-scope';
+import {
+  adaptMilvusSearchResultsToEvidence,
+  invokeWithValidatedMilvusEvidence,
+  LegacyEvidenceValidationError,
+} from './rag/retrieval/legacy-evidence-adapter';
+import type { RagRetrievalScope } from './security/retrieval-scope';
 
 // LangSmith 追踪配置
 const LANGSMITH_ENABLED = process.env.LANGCHAIN_TRACING_V2 === 'true';
 const LANGSMITH_PROJECT = process.env.LANGCHAIN_PROJECT || 'agentic-rag';
 
 function trace(step: string, data: unknown) {
+  if (!LANGSMITH_ENABLED) return;
   const timestamp = new Date().toISOString();
-  console.log(`[LangSmith Trace] [${timestamp}] [${step}]`, JSON.stringify(data, null, 2));
-  if (LANGSMITH_ENABLED) {
-    console.log(`[LangSmith] Project: ${LANGSMITH_PROJECT}, Step: ${step}`);
-  }
+  // Request text, retrieved passages, provider errors, and credentials must not
+  // be mirrored into process logs. The real tracing integration owns any
+  // explicitly configured payload capture; this local breadcrumb is metadata-only.
+  void data;
+  console.log(
+    `[LangSmith Trace] [${timestamp}] project=${LANGSMITH_PROJECT} step=${step}`
+  );
 }
 
 // ==================== 类型定义 ====================
@@ -170,7 +185,10 @@ export interface AgentState {
 
 // ==================== LangChain Runnable 状态定义 ====================
 
-type AgenticWorkflowState = AgentState;
+type AgenticWorkflowState = AgentState & {
+  /** Runtime-only cancellation context; stripped before returning public state. */
+  executionSignal?: AbortSignal;
+};
 
 function createAgenticWorkflowState(input: Partial<AgenticWorkflowState>): AgenticWorkflowState {
   const query = input.query ?? input.originalQuery ?? '';
@@ -203,6 +221,7 @@ function createAgenticWorkflowState(input: Partial<AgenticWorkflowState>): Agent
     totalDuration: input.totalDuration,
     error: input.error,
     debugInfo: input.debugInfo,
+    executionSignal: input.executionSignal,
   };
 }
 
@@ -350,6 +369,108 @@ type MatchingEmbeddings = {
   modelName: string;
 };
 
+function throwIfExecutionAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+function rethrowIfExecutionAborted(error: unknown, signal?: AbortSignal): void {
+  if (signal?.aborted) signal.throwIfAborted();
+  if (error instanceof Error && error.name === 'AbortError') throw error;
+}
+
+function toPublicAgentState(state: AgenticWorkflowState): AgentState {
+  const publicState: Partial<AgenticWorkflowState> = { ...state };
+  delete publicState.executionSignal;
+  return publicState as AgentState;
+}
+
+function stripExecutionSignalFromStreamChunk(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripExecutionSignalFromStreamChunk);
+  }
+  if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'executionSignal')
+      .map(([key, child]) => [key, stripExecutionSignalFromStreamChunk(child)])
+  );
+}
+
+function toAgenticRetrievedDocuments(
+  results: readonly MilvusSearchResult[],
+  scope: RagRetrievalScope | undefined,
+  querySource: 'original' | 'rewritten'
+): RetrievedDocument[] {
+  if (!scope) {
+    return results.map(result => ({
+      content: result.content,
+      metadata: { ...result.metadata, id: result.id, querySource },
+      score: result.score,
+    }));
+  }
+
+  return adaptMilvusSearchResultsToEvidence(results, {
+    laneId: `agentic-${querySource}`,
+    scope,
+  }).map((evidence, index) => ({
+    content: evidence.content,
+    metadata: {
+      ...evidence.metadata,
+      id: evidence.id,
+      querySource,
+      tenantId: evidence.tenantId,
+      tenant_id: evidence.tenantId,
+      corpusId: evidence.corpusId,
+      corpus_id: evidence.corpusId,
+      documentId: evidence.documentId,
+      document_id: evidence.documentId,
+      documentVersion: evidence.documentVersion,
+      document_version: evidence.documentVersion,
+      trustLevel: evidence.trustLevel,
+      trust_level: evidence.trustLevel,
+    },
+    score: evidence.retrievalScore ?? results[index].score,
+  }));
+}
+
+function toAgenticMilvusResults(
+  documents: readonly RetrievedDocument[]
+): MilvusSearchResult[] {
+  return documents.map(document => ({
+    id: typeof document.metadata.id === 'string' ? document.metadata.id : '',
+    content: document.content,
+    metadata: document.metadata,
+    score: document.score,
+    distance: 0,
+  }));
+}
+
+function assertAgenticDocumentsInScope(
+  documents: readonly RetrievedDocument[],
+  scope: RagRetrievalScope | undefined
+): void {
+  if (!scope) return;
+  adaptMilvusSearchResultsToEvidence(toAgenticMilvusResults(documents), {
+    laneId: 'agentic-pre-llm',
+    scope,
+  });
+}
+
+async function invokeAgenticGeneration<T>(
+  documents: readonly RetrievedDocument[],
+  scope: RagRetrievalScope | undefined,
+  invoke: () => Promise<T>
+): Promise<T> {
+  if (!scope) return invoke();
+  return invokeWithValidatedMilvusEvidence(
+    toAgenticMilvusResults(documents),
+    { laneId: 'agentic-generation', scope },
+    invoke
+  );
+}
+
 // ==================== Agentic RAG 系统类 ====================
 
 export interface AgenticRAGConfig {
@@ -370,6 +491,8 @@ export interface AgenticRAGConfig {
   /** 异步幻觉检查发现严重问题时，发送修正事件 */
   onHallucinationCorrection?: (correction: { original: string; corrected: string }) => void;
   modelConfig?: Partial<ModelConfig>;
+  /** Server-derived tenant/corpus boundary for every retrieval attempt. */
+  retrievalScope?: RagRetrievalScope;
 }
 
 function normalizeQueryAnalysisPayload(value: unknown, originalQuery: string): QueryAnalysis {
@@ -485,10 +608,15 @@ export class AgenticRAGSystem {
       rerankerModel,
       milvusConfig = {},
       enableHallucinationCheck = true,
-      enableSemanticCache = true,
+      enableSemanticCache: requestedSemanticCache,
       semanticCacheConfig = {},
       modelConfig = {},
     } = config;
+    // The legacy SemanticCache has no tenant/corpus identity. Keep it disabled
+    // whenever the strangler adapter is executing inside a server scope.
+    const enableSemanticCache = config.retrievalScope
+      ? false
+      : requestedSemanticCache ?? true;
 
     this.config = {
       ...config,
@@ -553,6 +681,8 @@ export class AgenticRAGSystem {
   /** 路 A: analyze_query - 小模型/极速 API (~50ms) */
   private async analyzeQuery(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
+    const signal = state.executionSignal;
+    throwIfExecutionAborted(signal);
 
     try {
       const prompt = ChatPromptTemplate.fromTemplate(`
@@ -578,6 +708,7 @@ export class AgenticRAGSystem {
         input: messages,
         schema: QUERY_ANALYSIS_SCHEMA,
         normalize: (value) => normalizeQueryAnalysisPayload(value, state.query),
+        signal,
       });
       const analysis = enforceGreetingDecision(structuredAnalysis, state.query);
 
@@ -602,6 +733,7 @@ export class AgenticRAGSystem {
         ],
       };
     } catch (error) {
+      rethrowIfExecutionAborted(error, signal);
       return {
         processedQuery: state.query,
         shouldRetrieve: true,
@@ -612,7 +744,7 @@ export class AgenticRAGSystem {
             status: 'error',
             startTime: stepStart,
             endTime: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: 'AGENTIC_ANALYZE_QUERY_FAILED',
           },
         ],
       };
@@ -623,6 +755,8 @@ export class AgenticRAGSystem {
   private async retrieveOriginal(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const query = state.originalQuery || state.query;
+    const signal = state.executionSignal;
+    throwIfExecutionAborted(signal);
 
     if (!state.shouldRetrieve) {
       return {
@@ -637,20 +771,35 @@ export class AgenticRAGSystem {
     try {
       const milvus = getMilvusInstance(this.milvusConfig);
       await milvus.connect();
+      throwIfExecutionAborted(signal);
       await milvus.initializeCollection();
+      throwIfExecutionAborted(signal);
 
       const stats = await milvus.getCollectionStats();
+      throwIfExecutionAborted(signal);
       const collectionDimension = stats?.embeddingDimension || this.milvusConfig.embeddingDimension || 768;
       const { embeddings: matchingEmbeddings, modelName: embeddingModelName } = await this.getMatchingEmbeddings(collectionDimension);
+      throwIfExecutionAborted(signal);
 
       const embedding = await matchingEmbeddings.embedQuery(query);
-      const results = await milvus.search(embedding, state.topK, state.similarityThreshold);
+      throwIfExecutionAborted(signal);
+      const searchArguments = resolveLegacyMilvusSearchArguments({
+        retrievalScope: this.config.retrievalScope,
+        threshold: state.similarityThreshold,
+      });
+      const results = await milvus.search(
+        embedding,
+        state.topK,
+        searchArguments.options,
+        searchArguments.filter
+      );
+      throwIfExecutionAborted(signal);
 
-      const docs: RetrievedDocument[] = results.map((r) => ({
-        content: r.content,
-        metadata: { ...r.metadata, querySource: 'original' },
-        score: r.score,
-      }));
+      const docs = toAgenticRetrievedDocuments(
+        results,
+        this.config.retrievalScope,
+        'original'
+      );
 
       const stepEnd = Date.now();
       trace('retrieve_original', { count: docs.length, duration: stepEnd - stepStart });
@@ -678,6 +827,8 @@ export class AgenticRAGSystem {
         ],
       };
     } catch (error) {
+      rethrowIfExecutionAborted(error, signal);
+      if (error instanceof LegacyEvidenceValidationError) throw error;
       return {
         retrievedDocuments: [],
         originalQueryResults: [],
@@ -689,7 +840,7 @@ export class AgenticRAGSystem {
             status: 'error',
             startTime: stepStart,
             endTime: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: 'AGENTIC_RETRIEVE_ORIGINAL_FAILED',
           },
         ],
       };
@@ -699,6 +850,7 @@ export class AgenticRAGSystem {
   /** 并发执行 (Fan-out) + 汇聚 (Join): analyze_query || retrieve_original */
   private async fanOutAndJoin(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
+    throwIfExecutionAborted(state.executionSignal);
 
     const [analysisResult, retrievalResult] = await Promise.all([
       this.analyzeQuery(state),
@@ -731,6 +883,8 @@ export class AgenticRAGSystem {
   private async gradeRetrieval(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const MAX_RETRIES = 1;
+    const signal = state.executionSignal;
+    throwIfExecutionAborted(signal);
 
     if (state.retrievedDocuments.length === 0) {
       const canRetry = state.retryCount < MAX_RETRIES;
@@ -759,6 +913,11 @@ export class AgenticRAGSystem {
       };
     }
 
+    assertAgenticDocumentsInScope(
+      state.retrievedDocuments,
+      this.config.retrievalScope
+    );
+
     try {
       const docsForPrompt = state.retrievedDocuments
         .slice(0, 10)
@@ -785,6 +944,7 @@ export class AgenticRAGSystem {
         input: messages,
         schema: RETRIEVAL_GRADE_SCHEMA,
         normalize: (value) => normalizeRetrievalGradePayload(value, fallbackScore),
+        signal,
       });
       const overallScore = grade.overallScore;
       const reasoning = grade.reasoning;
@@ -827,6 +987,7 @@ export class AgenticRAGSystem {
         ],
       };
     } catch (error) {
+      rethrowIfExecutionAborted(error, signal);
       return {
         retrievalGrade: {
           isRelevant: true,
@@ -845,7 +1006,7 @@ export class AgenticRAGSystem {
             status: 'error',
             startTime: stepStart,
             endTime: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: 'AGENTIC_GRADE_RETRIEVAL_FAILED',
           },
         ],
       };
@@ -855,6 +1016,8 @@ export class AgenticRAGSystem {
   /** 查询重写（用于低分重试，最大 1 次） */
   private async rewriteQuery(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
+    const signal = state.executionSignal;
+    throwIfExecutionAborted(signal);
 
     try {
       const prompt = ChatPromptTemplate.fromTemplate(`
@@ -868,7 +1031,11 @@ export class AgenticRAGSystem {
 
       const feedback = state.retrievalGrade?.reasoning || '相关性不足';
       const chain = prompt.pipe(this.fastLlm).pipe(new StringOutputParser());
-      const rewritten = (await chain.invoke({ query: state.query, feedback })).trim();
+      const rewritten = (await chain.invoke(
+        { query: state.query, feedback },
+        { signal }
+      )).trim();
+      throwIfExecutionAborted(signal);
 
       return {
         queryAnalysis: state.queryAnalysis ? { ...state.queryAnalysis, rewrittenQuery: rewritten } : undefined,
@@ -886,6 +1053,7 @@ export class AgenticRAGSystem {
         ],
       };
     } catch (error) {
+      rethrowIfExecutionAborted(error, signal);
       return {
         shouldRewrite: false,
         processedQuery: state.query,
@@ -896,7 +1064,7 @@ export class AgenticRAGSystem {
             status: 'error',
             startTime: stepStart,
             endTime: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: 'AGENTIC_REWRITE_QUERY_FAILED',
           },
         ],
       };
@@ -907,24 +1075,41 @@ export class AgenticRAGSystem {
   private async retrieveAfterRewrite(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const query = state.processedQuery || state.query;
+    const signal = state.executionSignal;
+    throwIfExecutionAborted(signal);
 
     try {
       const milvus = getMilvusInstance(this.milvusConfig);
       await milvus.connect();
+      throwIfExecutionAborted(signal);
       await milvus.initializeCollection();
+      throwIfExecutionAborted(signal);
 
       const stats = await milvus.getCollectionStats();
+      throwIfExecutionAborted(signal);
       const collectionDimension = stats?.embeddingDimension || this.milvusConfig.embeddingDimension || 768;
       const { embeddings: matchingEmbeddings } = await this.getMatchingEmbeddings(collectionDimension);
+      throwIfExecutionAborted(signal);
 
       const embedding = await matchingEmbeddings.embedQuery(query);
-      const results = await milvus.search(embedding, state.topK, state.similarityThreshold);
+      throwIfExecutionAborted(signal);
+      const searchArguments = resolveLegacyMilvusSearchArguments({
+        retrievalScope: this.config.retrievalScope,
+        threshold: state.similarityThreshold,
+      });
+      const results = await milvus.search(
+        embedding,
+        state.topK,
+        searchArguments.options,
+        searchArguments.filter
+      );
+      throwIfExecutionAborted(signal);
 
-      const docs: RetrievedDocument[] = results.map((r) => ({
-        content: r.content,
-        metadata: { ...r.metadata, querySource: 'rewritten' },
-        score: r.score,
-      }));
+      const docs = toAgenticRetrievedDocuments(
+        results,
+        this.config.retrievalScope,
+        'rewritten'
+      );
 
       return {
         retrievedDocuments: docs,
@@ -943,6 +1128,8 @@ export class AgenticRAGSystem {
         ],
       };
     } catch (error) {
+      rethrowIfExecutionAborted(error, signal);
+      if (error instanceof LegacyEvidenceValidationError) throw error;
       return {
         retrievedDocuments: [],
         currentStep: 'retrieved',
@@ -952,7 +1139,7 @@ export class AgenticRAGSystem {
             status: 'error',
             startTime: stepStart,
             endTime: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: 'AGENTIC_RETRIEVE_REWRITE_FAILED',
           },
         ],
       };
@@ -963,12 +1150,15 @@ export class AgenticRAGSystem {
   private async generate(state: AgenticWorkflowState): Promise<Partial<AgenticWorkflowState>> {
     const stepStart = Date.now();
     const isGreeting = !state.shouldRetrieve && state.retrievedDocuments.length === 0;
+    const signal = state.executionSignal;
+    throwIfExecutionAborted(signal);
 
     try {
       if (isGreeting) {
         const prompt = ChatPromptTemplate.fromTemplate(`你是一个友好的AI助手。用户说: {question}\n请简短友好地回应:`);
         const chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
-        const answer = await chain.invoke({ question: state.query });
+        const answer = await chain.invoke({ question: state.query }, { signal });
+        throwIfExecutionAborted(signal);
 
         return {
           context: '（简单问候，无需检索）',
@@ -1006,30 +1196,40 @@ export class AgenticRAGSystem {
 `);
 
       const onToken = this.config.onToken;
-      let answer: string;
-
-      if (onToken) {
-        const messages = await prompt.formatMessages({ context, question: state.query });
-        const stream = await this.llm.stream(messages);
-        const chunks: string[] = [];
-        for await (const chunk of stream) {
-          const text = chunk.content?.toString() || '';
-          if (text) {
-            chunks.push(text);
-            onToken(text);
+      const answer = await invokeAgenticGeneration(
+        state.retrievedDocuments,
+        this.config.retrievalScope,
+        async () => {
+          if (onToken) {
+            const messages = await prompt.formatMessages({ context, question: state.query });
+            const stream = await this.llm.stream(messages, { signal });
+            const chunks: string[] = [];
+            for await (const chunk of stream) {
+              throwIfExecutionAborted(signal);
+              const text = chunk.content?.toString() || '';
+              if (text) {
+                chunks.push(text);
+                onToken(text);
+              }
+            }
+            return chunks.join('');
           }
+
+          const chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
+          const generatedAnswer = await chain.invoke(
+            { context, question: state.query },
+            { signal }
+          );
+          throwIfExecutionAborted(signal);
+          return generatedAnswer;
         }
-        answer = chunks.join('');
-      } else {
-        const chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
-        answer = await chain.invoke({ context, question: state.query });
-      }
+      );
 
       const stepEnd = Date.now();
 
       // 异步后台幻觉检查
       if (this.config.enableHallucinationCheck && answer && context !== '没有找到相关文档。') {
-        this.runAsyncHallucinationCheck(context, answer);
+        this.runAsyncHallucinationCheck(context, answer, signal);
       }
 
       return {
@@ -1048,6 +1248,8 @@ export class AgenticRAGSystem {
         ],
       };
     } catch (error) {
+      rethrowIfExecutionAborted(error, signal);
+      if (error instanceof LegacyEvidenceValidationError) throw error;
       return {
         answer: '抱歉，生成答案时发生错误。',
         currentStep: 'generated',
@@ -1057,7 +1259,7 @@ export class AgenticRAGSystem {
             status: 'error',
             startTime: stepStart,
             endTime: Date.now(),
-            error: error instanceof Error ? error.message : String(error),
+            error: 'AGENTIC_GENERATION_FAILED',
           },
         ],
       };
@@ -1065,7 +1267,11 @@ export class AgenticRAGSystem {
   }
 
   /** 异步后台幻觉检查，发现严重问题时发送修正事件 */
-  private async runAsyncHallucinationCheck(context: string, answer: string): Promise<void> {
+  private async runAsyncHallucinationCheck(
+    context: string,
+    answer: string,
+    signal?: AbortSignal
+  ): Promise<void> {
     const onCorrection = this.config.onHallucinationCorrection;
     if (!onCorrection) return;
 
@@ -1092,6 +1298,7 @@ export class AgenticRAGSystem {
         input: messages,
         schema: HALLUCINATION_CHECK_SCHEMA,
         normalize: normalizeHallucinationPayload,
+        signal,
       });
 
       if (
@@ -1231,13 +1438,16 @@ export class AgenticRAGSystem {
       maxRetries?: number;
       gradePassThreshold?: number;
       skipSemanticCache?: boolean;
+      signal?: AbortSignal;
     } = {}
   ): Promise<AgentState> {
     trace('query_start', { question, options });
+    throwIfExecutionAborted(options.signal);
 
     // 1. BFF 层语义缓存检查
     if (this.config.enableSemanticCache && !options.skipSemanticCache) {
       const cacheResult = await this.semanticCache.get(question);
+      throwIfExecutionAborted(options.signal);
       if (cacheResult.hit) {
         trace('semantic_cache_hit', { query: question });
         return {
@@ -1285,27 +1495,34 @@ export class AgenticRAGSystem {
       shouldRetrieve: true,
       workflowSteps: [] as WorkflowStep[],
       startTime: Date.now(),
+      executionSignal: options.signal,
     };
 
     try {
-      const result = await this.graph.invoke(initialState, { recursionLimit: 30 }) as unknown as AgentState;
+      const result = await this.graph.invoke(initialState, {
+        recursionLimit: 30,
+        signal: options.signal,
+      });
+      throwIfExecutionAborted(options.signal);
 
       // 写入语义缓存
       if (this.config.enableSemanticCache && result.answer && !result.error) {
         await this.semanticCache.set(question, result.answer, result.context);
+        throwIfExecutionAborted(options.signal);
       }
 
       trace('query_complete', { answerLength: result.answer?.length, totalDuration: result.totalDuration });
-      return result as AgentState;
+      return toPublicAgentState(result);
     } catch (error) {
-      trace('query_error', { error: error instanceof Error ? error.message : String(error) });
-      return {
+      rethrowIfExecutionAborted(error, options.signal);
+      trace('query_error', { code: 'AGENTIC_QUERY_FAILED' });
+      return toPublicAgentState({
         ...initialState,
-        error: error instanceof Error ? error.message : String(error),
+        error: 'AGENTIC_QUERY_FAILED',
         currentStep: 'error',
         endTime: Date.now(),
         totalDuration: Date.now() - initialState.startTime,
-      } as AgentState;
+      });
     }
   }
 
@@ -1319,6 +1536,7 @@ export class AgenticRAGSystem {
       skipSemanticCache?: boolean;
       onToken?: (token: string) => void;
       onHallucinationCorrection?: (correction: { original: string; corrected: string }) => void;
+      signal?: AbortSignal;
     } = {}
   ): AsyncGenerator<Partial<AgentState>> {
     const mergedConfig = {
@@ -1348,25 +1566,30 @@ export class AgenticRAGSystem {
       shouldRetrieve: true,
       workflowSteps: [] as WorkflowStep[],
       startTime: Date.now(),
+      executionSignal: options.signal,
     };
 
     try {
       if (this.config.enableSemanticCache && !options.skipSemanticCache) {
         const cacheResult = await this.semanticCache.get(question);
         if (cacheResult.hit) {
-          yield {
+          yield stripExecutionSignalFromStreamChunk({
             ...initialState,
             context: cacheResult.entry.context,
             answer: cacheResult.entry.answer,
             currentStep: 'completed',
             debugInfo: { semanticCacheHit: true },
-          };
+          }) as Partial<AgentState>;
           return;
         }
       }
 
-      for await (const chunk of await this.graph.stream(initialState, { recursionLimit: 30 })) {
-        yield chunk as Partial<AgentState>;
+      for await (const chunk of await this.graph.stream(initialState, {
+        recursionLimit: 30,
+        signal: options.signal,
+      })) {
+        throwIfExecutionAborted(options.signal);
+        yield stripExecutionSignalFromStreamChunk(chunk) as Partial<AgentState>;
       }
     } finally {
       this.config = prevConfig;

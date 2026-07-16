@@ -5,6 +5,21 @@ import type {
   RagTrustLevel,
 } from '../../security/retrieval-scope';
 
+const SCOPED_METADATA_ALIASES = [
+  ['tenantId', 'tenant_id'],
+  ['corpusId', 'corpus_id'],
+  ['documentId', 'document_id'],
+  ['documentVersion', 'document_version'],
+  ['trustLevel', 'trust_level'],
+] as const;
+
+export class LegacyEvidenceValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LegacyEvidenceValidationError';
+  }
+}
+
 export function adaptMilvusSearchResultsToEvidence(
   results: readonly MilvusSearchResult[],
   input: {
@@ -14,6 +29,8 @@ export function adaptMilvusSearchResultsToEvidence(
 ): RagEvidence[] {
   return results.map((result, index) => {
     const metadata = result.metadata ?? {};
+    assertNoConflictingAliases(metadata);
+    assertCanonicalResultShape(result, index);
     const tenantId = readString(metadata, ['tenant_id', 'tenantId']) ?? input.scope.tenantId;
     const corpusId = readString(metadata, ['corpus_id', 'corpusId']) ?? input.scope.corpusId;
     const trustLevel = normalizeTrustLevel(
@@ -21,6 +38,9 @@ export function adaptMilvusSearchResultsToEvidence(
     );
 
     assertScope(tenantId, corpusId, trustLevel, input.scope);
+    if (input.scope.enforceIsolation) {
+      assertAuthenticatedProvenance(metadata);
+    }
 
     const source = readString(metadata, ['source']);
     const fallbackHash = stableLegacyHash(
@@ -30,6 +50,7 @@ export function adaptMilvusSearchResultsToEvidence(
       readString(metadata, ['document_id', 'documentId']) ??
       source ??
       (result.id.trim() || 'legacy-document-' + fallbackHash);
+    assertSafeDocumentId(documentId);
     const documentVersion =
       readString(metadata, [
         'document_version',
@@ -48,7 +69,7 @@ export function adaptMilvusSearchResultsToEvidence(
         startOffset >= endOffset
       )
     ) {
-      throw new Error('Milvus evidence contains an invalid source span.');
+      throw new LegacyEvidenceValidationError('Milvus evidence contains an invalid source span.');
     }
 
     return {
@@ -71,6 +92,18 @@ export function adaptMilvusSearchResultsToEvidence(
   });
 }
 
+export async function invokeWithValidatedMilvusEvidence<T>(
+  results: readonly MilvusSearchResult[],
+  input: {
+    laneId: string;
+    scope: RagRetrievalScope;
+  },
+  invoke: (evidence: readonly RagEvidence[]) => Promise<T>
+): Promise<T> {
+  const evidence = adaptMilvusSearchResultsToEvidence(results, input);
+  return invoke(evidence);
+}
+
 function assertScope(
   tenantId: string,
   corpusId: string,
@@ -78,16 +111,16 @@ function assertScope(
   scope: RagRetrievalScope
 ): void {
   if (trustLevel === 'quarantined') {
-    throw new Error('Milvus adapter rejected quarantined evidence.');
+    throw new LegacyEvidenceValidationError('Milvus adapter rejected quarantined evidence.');
   }
   if (!scope.allowedTrustLevels.includes(trustLevel)) {
-    throw new Error('Milvus evidence trust level is outside the retrieval scope.');
+    throw new LegacyEvidenceValidationError('Milvus evidence trust level is outside the retrieval scope.');
   }
   if (scope.enforceIsolation && tenantId !== scope.tenantId) {
-    throw new Error('Milvus evidence tenant scope mismatch.');
+    throw new LegacyEvidenceValidationError('Milvus evidence tenant scope mismatch.');
   }
   if (scope.enforceIsolation && corpusId !== scope.corpusId) {
-    throw new Error('Milvus evidence corpus scope mismatch.');
+    throw new LegacyEvidenceValidationError('Milvus evidence corpus scope mismatch.');
   }
 }
 
@@ -95,7 +128,58 @@ function normalizeTrustLevel(value: string): RagTrustLevel {
   if (value === 'trusted' || value === 'reviewed' || value === 'external' || value === 'quarantined') {
     return value;
   }
-  throw new Error('Milvus evidence contains an unsupported trust level.');
+  throw new LegacyEvidenceValidationError('Milvus evidence contains an unsupported trust level.');
+}
+
+function assertNoConflictingAliases(metadata: Record<string, unknown>): void {
+  for (const [canonical, alias] of SCOPED_METADATA_ALIASES) {
+    if (
+      Object.prototype.hasOwnProperty.call(metadata, canonical)
+      && Object.prototype.hasOwnProperty.call(metadata, alias)
+      && !Object.is(metadata[canonical], metadata[alias])
+    ) {
+      throw new LegacyEvidenceValidationError(
+        `Milvus evidence contains conflicting ${canonical}/${alias} values.`
+      );
+    }
+  }
+}
+
+function assertCanonicalResultShape(result: MilvusSearchResult, index: number): void {
+  if (typeof result.id !== 'string') {
+    throw new LegacyEvidenceValidationError(`Milvus evidence[${index}] id must be a string.`);
+  }
+  if (typeof result.content !== 'string') {
+    throw new LegacyEvidenceValidationError(`Milvus evidence[${index}] content must be a string.`);
+  }
+  if (!Number.isFinite(result.score)) {
+    throw new LegacyEvidenceValidationError(`Milvus evidence[${index}] score must be finite.`);
+  }
+}
+
+function assertAuthenticatedProvenance(metadata: Record<string, unknown>): void {
+  const requiredFields = [
+    ['tenantId', ['tenant_id', 'tenantId']],
+    ['corpusId', ['corpus_id', 'corpusId']],
+    ['documentId', ['document_id', 'documentId']],
+    ['trustLevel', ['trust_level', 'trustLevel']],
+  ] as const;
+
+  for (const [field, keys] of requiredFields) {
+    if (!readString(metadata, keys)) {
+      throw new LegacyEvidenceValidationError(
+        `Authenticated Milvus evidence requires explicit ${field} provenance.`
+      );
+    }
+  }
+}
+
+function assertSafeDocumentId(value: string): void {
+  if (value.length > 256 || /[\u0000-\u001f]/.test(value)) {
+    throw new LegacyEvidenceValidationError(
+      'Milvus evidence documentId must be at most 256 characters without control characters.'
+    );
+  }
 }
 
 function readString(

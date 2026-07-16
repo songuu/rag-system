@@ -147,14 +147,11 @@ export function getScopedSearchFields(
 }
 
 /**
- * T6: Milvus hybrid (sparse + dense) feature gate
+ * Legacy compatibility flag for Milvus hybrid rollout.
  *
- * Hybrid 实现本身延后到 Sprint 2026-08（参见
- * docs/plans/2026-05-25-model-vector-cache-optimization.md 的 deferred 字段）；
- * 此处仅暴露 flag 给 retrieval-plan / lane handler 做条件分支。
- *
- * 默认 `false`；在多 Milvus 环境（含 Zilliz Serverless）下避免向上游 SDK 调
- * 未实现的 hybridSearch 路径。
+ * New callers use the off/shadow/active policy and an injected capability-checked
+ * native search port. This boolean remains for older planning code and can only
+ * opt that code into the safe shadow path; it does not activate evidence by itself.
  */
 export function isMilvusHybridEnabled(): boolean {
   return process.env.MILVUS_HYBRID_ENABLED === 'true';

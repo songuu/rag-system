@@ -15,7 +15,10 @@ registerHooks({
   },
 });
 
-const { adaptMilvusSearchResultsToEvidence } = await import('./legacy-evidence-adapter.ts');
+const {
+  adaptMilvusSearchResultsToEvidence,
+  invokeWithValidatedMilvusEvidence,
+} = await import('./legacy-evidence-adapter.ts');
 const { createRetrievalScope } = await import('../../security/retrieval-scope.ts');
 
 test('Milvus adapter preserves canonical identity, span, score, source and scope', () => {
@@ -102,7 +105,12 @@ test('Milvus adapter rejects cross-scope and quarantined evidence before generat
   assert.throws(
     () =>
       adaptMilvusSearchResultsToEvidence(
-        [{ ...base, metadata: { tenant_id: 'tenant-b', corpus_id: 'corpus-a', trust_level: 'reviewed' } }],
+        [{ ...base, metadata: {
+          tenant_id: 'tenant-b',
+          corpus_id: 'corpus-a',
+          document_id: 'doc-1',
+          trust_level: 'reviewed',
+        } }],
         { laneId: 'dense', scope }
       ),
     /tenant scope mismatch/
@@ -110,7 +118,12 @@ test('Milvus adapter rejects cross-scope and quarantined evidence before generat
   assert.throws(
     () =>
       adaptMilvusSearchResultsToEvidence(
-        [{ ...base, metadata: { tenant_id: 'tenant-a', corpus_id: 'corpus-a', trust_level: 'quarantined' } }],
+        [{ ...base, metadata: {
+          tenant_id: 'tenant-a',
+          corpus_id: 'corpus-a',
+          document_id: 'doc-1',
+          trust_level: 'quarantined',
+        } }],
         { laneId: 'dense', scope }
       ),
     /quarantined/
@@ -138,37 +151,107 @@ test('Milvus adapter creates deterministic local legacy identities', () => {
   assert.equal(first[0].trustLevel, 'external');
 });
 
-test('Milvus adapter gives authoritative scalar aliases precedence over metadata JSON', () => {
+test('Milvus adapter rejects conflicting canonical and snake-case provenance', () => {
   const scope = createRetrievalScope({
     tenantId: 'tenant-a',
     corpusId: 'corpus-a',
     allowedTrustLevels: ['external'],
     enforceIsolation: true,
   });
-  const [evidence] = adaptMilvusSearchResultsToEvidence(
-    [{
-      id: 'chunk-authoritative',
-      content: 'evidence',
-      score: 0.8,
-      distance: 0.2,
-      metadata: {
-        tenantId: 'tenant-b',
-        tenant_id: 'tenant-a',
-        corpusId: 'corpus-b',
-        corpus_id: 'corpus-a',
-        documentId: 'spoofed-document',
-        document_id: 'authoritative-document',
-        trustLevel: 'trusted',
-        trust_level: 'external',
-      },
-    }],
-    { laneId: 'dense', scope }
+  assert.throws(
+    () => adaptMilvusSearchResultsToEvidence(
+      [{
+        id: 'chunk-authoritative',
+        content: 'evidence',
+        score: 0.8,
+        distance: 0.2,
+        metadata: {
+          tenantId: 'tenant-b',
+          tenant_id: 'tenant-a',
+          corpusId: 'corpus-a',
+          corpus_id: 'corpus-a',
+          documentId: 'authoritative-document',
+          document_id: 'authoritative-document',
+          trustLevel: 'external',
+          trust_level: 'external',
+        },
+      }],
+      { laneId: 'dense', scope }
+    ),
+    /conflicting tenantId\/tenant_id/
   );
+});
 
-  assert.equal(evidence.tenantId, 'tenant-a');
-  assert.equal(evidence.corpusId, 'corpus-a');
-  assert.equal(evidence.documentId, 'authoritative-document');
-  assert.equal(evidence.trustLevel, 'external');
+test('authenticated Milvus evidence requires explicit scope, document, and trust provenance', () => {
+  const scope = createRetrievalScope({
+    tenantId: 'tenant-a',
+    corpusId: 'corpus-a',
+    enforceIsolation: true,
+  });
+  assert.throws(
+    () => adaptMilvusSearchResultsToEvidence(
+      [{
+        id: 'chunk-missing-document',
+        content: 'evidence',
+        score: 0.8,
+        distance: 0.2,
+        metadata: {
+          tenant_id: 'tenant-a',
+          corpus_id: 'corpus-a',
+          trust_level: 'reviewed',
+        },
+      }],
+      { laneId: 'dense', scope }
+    ),
+    /requires explicit documentId provenance/
+  );
+});
+
+test('agentic and adaptive generation guards never invoke providers for injected unsafe evidence', async () => {
+  const scope = createRetrievalScope({
+    tenantId: 'tenant-a',
+    corpusId: 'corpus-a',
+    allowedTrustLevels: ['trusted', 'reviewed', 'quarantined'],
+    enforceIsolation: true,
+  });
+  const unsafeMetadata = [
+    {
+      tenant_id: 'tenant-b',
+      corpus_id: 'corpus-a',
+      document_id: 'cross-tenant',
+      trust_level: 'reviewed',
+    },
+    {
+      tenant_id: 'tenant-a',
+      corpus_id: 'corpus-a',
+      document_id: 'quarantined',
+      trust_level: 'quarantined',
+    },
+  ];
+
+  for (const laneId of ['agentic-generation', 'adaptive-generation']) {
+    let generationInvocations = 0;
+    for (const metadata of unsafeMetadata) {
+      await assert.rejects(
+        invokeWithValidatedMilvusEvidence(
+          [{
+            id: `${laneId}-chunk`,
+            content: 'SECRET_CANARY',
+            score: 0.9,
+            distance: 0.1,
+            metadata,
+          }],
+          { laneId, scope },
+          async () => {
+            generationInvocations++;
+            return 'should-not-run';
+          }
+        ),
+        /tenant scope mismatch|quarantined/
+      );
+    }
+    assert.equal(generationInvocations, 0);
+  }
 });
 
 function isRelativeImport(specifier) {

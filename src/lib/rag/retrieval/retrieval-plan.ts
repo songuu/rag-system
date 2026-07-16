@@ -1,4 +1,5 @@
 import type { RagPolicyId, RagQueryRequest } from '../core/types';
+import { classifyRetrievalQuery } from './retrieval-router';
 
 export type RagRetrievalLaneType =
   | 'memory'
@@ -75,6 +76,11 @@ function createDefaultLanes(
           similarityThreshold: request.similarityThreshold,
         },
       }),
+      createRetrievalLane({
+        type: 'generation-only',
+        required: true,
+        description: 'Generate only after the memory evidence snapshot is available.',
+      }),
     ];
   }
 
@@ -89,6 +95,11 @@ function createDefaultLanes(
         type: 'rerank',
         required: true,
         description: 'Grade retrieval quality and optionally rewrite the query.',
+      }),
+      createRetrievalLane({
+        type: 'generation-only',
+        required: true,
+        description: 'Project the legacy generation result after canonical evidence is captured.',
       }),
     ];
   }
@@ -106,14 +117,14 @@ function createDefaultLanes(
         description: 'Run semantic retrieval against Milvus.',
       }),
       createRetrievalLane({
-        type: 'fusion',
-        required: true,
-        description: 'Merge structured and semantic matches.',
-      }),
-      createRetrievalLane({
         type: 'rerank',
         required: Boolean(request.enableReranking),
-        description: 'Rerank merged results when enabled.',
+        description: 'Rerank the request-local candidate set when enabled.',
+      }),
+      createRetrievalLane({
+        type: 'generation-only',
+        required: true,
+        description: 'Project the legacy generation result after canonical evidence is captured.',
       }),
     ];
   }
@@ -154,18 +165,29 @@ function createDefaultLanes(
   }
 
   if (policyId === 'maic-course' || policyId === 'mirofish-research') {
-    return [
+    const lanes: RagRetrievalLane[] = [
       createRetrievalLane({
         type: 'dense-vector',
         required: true,
         description: 'Retrieve product-scoped evidence from the shared corpus.',
       }),
-      createRetrievalLane({
+    ];
+    const queryKind = classifyRetrievalQuery(request.question).queryKind;
+    if (
+      policyId === 'mirofish-research'
+      && (queryKind === 'global' || queryKind === 'multi-hop')
+    ) {
+      lanes.push(createRetrievalLane({
         type: 'graph-entity',
         required: false,
-        description: 'Use product graph artifacts when available.',
-      }),
-    ];
+        description: 'Use a scoped MiroFish graph artifact for global or multi-hop expansion.',
+        parameters: {
+          queryKind,
+          ...request.graphArtifactIdentity,
+        },
+      }));
+    }
+    return lanes;
   }
 
   return [
@@ -180,4 +202,3 @@ function createDefaultLanes(
     }),
   ];
 }
-

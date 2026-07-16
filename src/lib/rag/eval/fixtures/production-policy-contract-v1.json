@@ -1,0 +1,635 @@
+{
+  "schemaVersion": "rag-production-policy-contract/v1",
+  "suiteId": "production-policy-control-plane",
+  "suiteVersion": "2026-07-15.v1",
+  "cases": [
+    {
+      "id": "memory-policy-keeps-retrieval-and-generation-boundaries",
+      "input": {
+        "kind": "policy-plan",
+        "policyId": "memory",
+        "question": "什么是人工智能？"
+      },
+      "expected": {
+        "planId": "memory:memory:4:0.25",
+        "policyId": "memory",
+        "laneSequence": [
+          "memory:required",
+          "generation-only:required"
+        ],
+        "graphIdentity": null
+      }
+    },
+    {
+      "id": "agentic-policy-keeps-generation-boundary",
+      "input": {
+        "kind": "policy-plan",
+        "policyId": "agentic",
+        "question": "如果检索质量不足，如何改写查询？"
+      },
+      "expected": {
+        "planId": "agentic:milvus:4:0.25",
+        "policyId": "agentic",
+        "laneSequence": [
+          "dense-vector:required",
+          "rerank:required",
+          "generation-only:required"
+        ],
+        "graphIdentity": null
+      }
+    },
+    {
+      "id": "adaptive-policy-rerank-remains-request-controlled",
+      "input": {
+        "kind": "policy-plan",
+        "policyId": "adaptive-entity",
+        "question": "查找 Acme 的产品资料",
+        "enableReranking": false
+      },
+      "expected": {
+        "planId": "adaptive-entity:milvus:4:0.25",
+        "policyId": "adaptive-entity",
+        "laneSequence": [
+          "metadata-filter:optional",
+          "dense-vector:required",
+          "rerank:optional",
+          "generation-only:required"
+        ],
+        "graphIdentity": null
+      }
+    },
+    {
+      "id": "mirofish-global-query-binds-optional-graph-identity",
+      "input": {
+        "kind": "policy-plan",
+        "policyId": "mirofish-research",
+        "question": "总结全部文档的整体关系",
+        "graphArtifactIdentity": {
+          "documentId": "graph-document-a",
+          "documentVersion": "sha256:graph-v3",
+          "trustLevel": "reviewed"
+        }
+      },
+      "expected": {
+        "planId": "mirofish-research:milvus:4:0.25",
+        "policyId": "mirofish-research",
+        "laneSequence": [
+          "dense-vector:required",
+          "graph-entity:optional"
+        ],
+        "graphIdentity": {
+          "queryKind": "global",
+          "documentId": "graph-document-a",
+          "documentVersion": "sha256:graph-v3",
+          "trustLevel": "reviewed"
+        }
+      }
+    },
+    {
+      "id": "mirofish-semantic-query-does-not-activate-graph",
+      "input": {
+        "kind": "policy-plan",
+        "policyId": "mirofish-research",
+        "question": "Acme 的总部在哪里？",
+        "graphArtifactIdentity": {
+          "documentId": "graph-document-a",
+          "documentVersion": "sha256:graph-v3",
+          "trustLevel": "reviewed"
+        }
+      },
+      "expected": {
+        "planId": "mirofish-research:milvus:4:0.25",
+        "policyId": "mirofish-research",
+        "laneSequence": [
+          "dense-vector:required"
+        ],
+        "graphIdentity": null
+      }
+    },
+    {
+      "id": "router-shadow-capability-cannot-change-generation-route",
+      "input": {
+        "kind": "retrieval-router",
+        "query": "错误码 ERR-42 的含义是什么？",
+        "hybrid": {
+          "mode": "shadow",
+          "usable": true
+        },
+        "orderedContext": {
+          "mode": "off",
+          "usable": false
+        }
+      },
+      "expected": {
+        "capabilities": {
+          "hybridActive": false,
+          "orderedContextActive": false
+        },
+        "route": "dense",
+        "queryKind": "identifier",
+        "reason": "identifier_hybrid_unavailable"
+      }
+    },
+    {
+      "id": "router-active-usable-hybrid-can-handle-identifiers",
+      "input": {
+        "kind": "retrieval-router",
+        "query": "错误码 ERR-42 的含义是什么？",
+        "hybrid": {
+          "mode": "active",
+          "usable": true
+        },
+        "orderedContext": {
+          "mode": "off",
+          "usable": false
+        }
+      },
+      "expected": {
+        "capabilities": {
+          "hybridActive": true,
+          "orderedContextActive": false
+        },
+        "route": "hybrid",
+        "queryKind": "identifier",
+        "reason": "identifier_prefers_lexical"
+      }
+    },
+    {
+      "id": "router-active-ordered-context-requires-a-bounded-complete-corpus",
+      "input": {
+        "kind": "retrieval-router",
+        "query": "总结全文并按顺序说明",
+        "hybrid": {
+          "mode": "off",
+          "usable": false
+        },
+        "orderedContext": {
+          "mode": "active",
+          "usable": true
+        },
+        "corpus": {
+          "documentCount": 2,
+          "characterCount": 2000,
+          "complete": true
+        }
+      },
+      "expected": {
+        "capabilities": {
+          "hybridActive": false,
+          "orderedContextActive": true
+        },
+        "route": "ordered-context",
+        "queryKind": "global",
+        "reason": "bounded_global_prefers_ordered_context"
+      }
+    },
+    {
+      "id": "hybrid-off-does-not-probe-or-participate",
+      "input": {
+        "kind": "hybrid-rollout",
+        "mode": "off",
+        "query": "Find ERR-42",
+        "capability": {
+          "nativeHybridSearch": true,
+          "bm25Function": true,
+          "schemaCompatible": true,
+          "provider": "hermetic-fake"
+        },
+        "hits": [
+          {
+            "id": "hybrid-hit-a",
+            "score": 0.9,
+            "content": "ERR-42 means retry later."
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "mode": "off",
+        "participatesInGeneration": false,
+        "hitIds": [],
+        "shadowHitIds": [],
+        "stopReason": "disabled",
+        "probeCalls": 0,
+        "searchCalls": 0
+      }
+    },
+    {
+      "id": "hybrid-shadow-records-hits-without-generation",
+      "input": {
+        "kind": "hybrid-rollout",
+        "mode": "shadow",
+        "query": "Find ERR-42",
+        "capability": {
+          "nativeHybridSearch": true,
+          "bm25Function": true,
+          "schemaCompatible": true,
+          "provider": "hermetic-fake"
+        },
+        "hits": [
+          {
+            "id": "hybrid-hit-a",
+            "score": 0.9,
+            "content": "ERR-42 means retry later."
+          },
+          {
+            "id": "hybrid-hit-b",
+            "score": 0.7,
+            "content": "ERR-42 is an example contract code."
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "mode": "shadow",
+        "participatesInGeneration": false,
+        "hitIds": [],
+        "shadowHitIds": [
+          "hybrid-hit-a",
+          "hybrid-hit-b"
+        ],
+        "stopReason": "shadow_only",
+        "probeCalls": 1,
+        "searchCalls": 1
+      }
+    },
+    {
+      "id": "hybrid-active-fails-closed-without-native-capability",
+      "input": {
+        "kind": "hybrid-rollout",
+        "mode": "active",
+        "query": "Find ERR-42",
+        "capability": {
+          "nativeHybridSearch": true,
+          "bm25Function": false,
+          "schemaCompatible": true,
+          "provider": "hermetic-fake"
+        },
+        "hits": []
+      },
+      "expected": {
+        "status": "rejected",
+        "code": "HYBRID_CAPABILITY_REQUIRED",
+        "probeCalls": 1,
+        "searchCalls": 0
+      }
+    },
+    {
+      "id": "hybrid-active-uses-native-hits-only-after-capability-gate",
+      "input": {
+        "kind": "hybrid-rollout",
+        "mode": "active",
+        "query": "Find ERR-42",
+        "capability": {
+          "nativeHybridSearch": true,
+          "bm25Function": true,
+          "schemaCompatible": true,
+          "provider": "hermetic-fake"
+        },
+        "hits": [
+          {
+            "id": "hybrid-hit-a",
+            "score": 0.9,
+            "content": "ERR-42 means retry later."
+          }
+        ]
+      },
+      "expected": {
+        "status": "completed",
+        "mode": "active",
+        "participatesInGeneration": true,
+        "hitIds": [
+          "hybrid-hit-a"
+        ],
+        "shadowHitIds": [],
+        "stopReason": "sufficient",
+        "probeCalls": 1,
+        "searchCalls": 1
+      }
+    },
+    {
+      "id": "lane-transform-preserves-evidence-identity-and-provenance",
+      "input": {
+        "kind": "lane-evidence-transform",
+        "evidence": [
+          {
+            "id": "chunk-a",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-a",
+            "documentVersion": "v1",
+            "content": "first source chunk",
+            "trustLevel": "reviewed",
+            "laneId": "dense-main",
+            "retrievalScore": 0.8
+          },
+          {
+            "id": "chunk-b",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-a",
+            "documentVersion": "v1",
+            "content": "second source chunk",
+            "trustLevel": "reviewed",
+            "laneId": "dense-main",
+            "retrievalScore": 0.7
+          }
+        ],
+        "orderedEvidenceIds": [
+          "chunk-b",
+          "chunk-a"
+        ],
+        "rerankScores": {
+          "chunk-a": 0.8,
+          "chunk-b": 0.95
+        }
+      },
+      "expected": {
+        "evidenceIds": [
+          "chunk-b",
+          "chunk-a"
+        ],
+        "documentIds": [
+          "document-a",
+          "document-a"
+        ],
+        "laneIds": [
+          "dense-main",
+          "dense-main"
+        ],
+        "rerankScores": [
+          0.95,
+          0.8
+        ],
+        "laneExecutions": [
+          {
+            "laneId": "dense-main",
+            "status": "completed",
+            "evidenceIds": [
+              "chunk-a",
+              "chunk-b"
+            ]
+          },
+          {
+            "laneId": "rerank-main",
+            "status": "completed",
+            "evidenceIds": [
+              "chunk-b",
+              "chunk-a"
+            ]
+          }
+        ],
+        "stopReason": "sufficient"
+      }
+    },
+    {
+      "id": "identifier-abstention-requires-lexical-proof",
+      "input": {
+        "kind": "abstention",
+        "queryKind": "identifier",
+        "evidence": [
+          {
+            "id": "dense-identifier-candidate",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-a",
+            "documentVersion": "v1",
+            "content": "A semantically similar but unproven identifier.",
+            "trustLevel": "reviewed",
+            "laneId": "dense-main",
+            "retrievalScore": 0.95
+          }
+        ],
+        "laneKinds": {
+          "dense-main": "dense"
+        },
+        "calibration": {
+          "version": "contract-calibration-v1",
+          "lanes": {
+            "dense-main": {
+              "minimumScore": 0.5,
+              "scoreField": "retrieval"
+            }
+          }
+        }
+      },
+      "expected": {
+        "abstain": true,
+        "reason": "identifier_requires_lexical_evidence",
+        "qualifiedEvidenceIds": [
+          "dense-identifier-candidate"
+        ],
+        "distinctDocumentCount": 1,
+        "calibrationVersion": "contract-calibration-v1"
+      }
+    },
+    {
+      "id": "identifier-abstention-allows-calibrated-hybrid-lexical-proof",
+      "input": {
+        "kind": "abstention",
+        "queryKind": "identifier",
+        "evidence": [
+          {
+            "id": "hybrid-identifier-proof",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-a",
+            "documentVersion": "v1",
+            "content": "ERR-42 exact lexical match.",
+            "trustLevel": "reviewed",
+            "laneId": "hybrid-main",
+            "retrievalScore": 0.95,
+            "metadata": {
+              "lexicalMatch": true
+            }
+          }
+        ],
+        "laneKinds": {
+          "hybrid-main": "hybrid"
+        },
+        "calibration": {
+          "version": "contract-calibration-v1",
+          "lanes": {
+            "hybrid-main": {
+              "minimumScore": 0.5,
+              "scoreField": "retrieval"
+            }
+          }
+        }
+      },
+      "expected": {
+        "abstain": false,
+        "reason": "sufficient_evidence",
+        "qualifiedEvidenceIds": [
+          "hybrid-identifier-proof"
+        ],
+        "distinctDocumentCount": 1,
+        "calibrationVersion": "contract-calibration-v1"
+      }
+    },
+    {
+      "id": "missing-graph-artifact-is-optional-no-gain",
+      "input": {
+        "kind": "graph-missing-artifact",
+        "query": "总结全部文档之间的关系",
+        "identity": {
+          "documentId": "missing-graph-document",
+          "documentVersion": "sha256:missing-v1",
+          "trustLevel": "reviewed"
+        }
+      },
+      "expected": {
+        "overallStopReason": "no_gain",
+        "evidenceIds": [],
+        "laneStatus": "completed",
+        "laneStopReason": "no_gain",
+        "fallbackReason": "graph_artifact_missing",
+        "documentVersion": "sha256:missing-v1"
+      }
+    },
+    {
+      "id": "populated-graph-artifact-emits-scoped-canonical-passage-evidence",
+      "input": {
+        "kind": "graph-populated-artifact",
+        "query": "Alice 做了什么？",
+        "identity": {
+          "documentId": "graph-active-document",
+          "documentVersion": "sha256:graph-active-v1",
+          "trustLevel": "reviewed"
+        }
+      },
+      "expected": {
+        "overallStopReason": "sufficient",
+        "laneStatus": "completed",
+        "laneStopReason": "sufficient",
+        "evidence": [
+          {
+            "id": "graph:sha256:graph-active-v1:passage-alice",
+            "content": "Alice founded Acme.",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "graph-active-document",
+            "documentVersion": "sha256:graph-active-v1",
+            "trustLevel": "reviewed",
+            "laneId": "graph-optional",
+            "graphPassageId": "passage-alice",
+            "graphEntityIds": [
+              "entity-alice"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "visual-shadow-never-participates-in-generation",
+      "input": {
+        "kind": "pdf-modality",
+        "query": "解释第 2 页的图表",
+        "mode": "shadow",
+        "capability": {
+          "available": true,
+          "analyzerId": "hermetic-visual"
+        }
+      },
+      "expected": {
+        "route": "text",
+        "reason": "shadow_visual_candidate",
+        "requestedVisual": true,
+        "selectedPageNumbers": [
+          2
+        ],
+        "missingPageNumbers": [],
+        "fallbackRoute": null,
+        "shadowRoute": "visual-page",
+        "analyzerId": "hermetic-visual",
+        "manifestIdentity": {
+          "sourceHash": "137bbe70e1fe37634ca4783001702773dc9c05208f206c5c802dff38b06720e6",
+          "documentVersion": "sha256:contract-v1",
+          "tenantId": "contract-tenant",
+          "corpusId": "contract-corpus"
+        }
+      }
+    },
+    {
+      "id": "visual-active-capability-missing-falls-back-to-text",
+      "input": {
+        "kind": "pdf-modality",
+        "query": "解释第 2 页的图表",
+        "mode": "active",
+        "capability": {
+          "available": false
+        }
+      },
+      "expected": {
+        "route": "text",
+        "reason": "visual_capability_unavailable",
+        "requestedVisual": true,
+        "selectedPageNumbers": [],
+        "missingPageNumbers": [],
+        "fallbackRoute": "text",
+        "shadowRoute": null,
+        "analyzerId": null,
+        "manifestIdentity": {
+          "sourceHash": "137bbe70e1fe37634ca4783001702773dc9c05208f206c5c802dff38b06720e6",
+          "documentVersion": "sha256:contract-v1",
+          "tenantId": "contract-tenant",
+          "corpusId": "contract-corpus"
+        }
+      }
+    },
+    {
+      "id": "visual-active-routes-only-after-capability-and-manifest-gates",
+      "input": {
+        "kind": "pdf-modality",
+        "query": "解释第 2 页的图表",
+        "mode": "active",
+        "capability": {
+          "available": true,
+          "analyzerId": "hermetic-visual"
+        }
+      },
+      "expected": {
+        "route": "visual-page",
+        "reason": "visual_intent",
+        "requestedVisual": true,
+        "selectedPageNumbers": [
+          2
+        ],
+        "missingPageNumbers": [],
+        "fallbackRoute": "text",
+        "shadowRoute": null,
+        "analyzerId": "hermetic-visual",
+        "manifestIdentity": {
+          "sourceHash": "137bbe70e1fe37634ca4783001702773dc9c05208f206c5c802dff38b06720e6",
+          "documentVersion": "sha256:contract-v1",
+          "tenantId": "contract-tenant",
+          "corpusId": "contract-corpus"
+        }
+      }
+    },
+    {
+      "id": "durable-adapter-replays-idempotently-with-scoped-key",
+      "input": {
+        "kind": "durable-workflow",
+        "workflowId": "contract-workflow",
+        "threadId": "thread-a",
+        "tenantId": "contract-tenant"
+      },
+      "expected": {
+        "checkpointKeyStable": true,
+        "tenantIdentitySeparated": true,
+        "threadIdentitySeparated": true,
+        "checkpointSchema": "rag-durable-checkpoint-v2",
+        "checkpointStatus": "completed",
+        "firstExecutedStepIds": [
+          "increment"
+        ],
+        "replayExecutedStepIds": [],
+        "replayResumed": true,
+        "idempotentReplay": true,
+        "checkpointProvider": "contract-memory-store",
+        "processPersistent": false
+      }
+    }
+  ]
+}

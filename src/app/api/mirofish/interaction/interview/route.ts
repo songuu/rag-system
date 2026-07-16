@@ -7,7 +7,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getInteractionAgent } from '@/lib/mirofish/interaction-agent';
 import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,7 +21,7 @@ export async function POST(request: NextRequest) {
       question: string;
       batch?: boolean;
     };
-    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
 
     if (!simulation_id || !question) {
       return NextResponse.json(
@@ -70,6 +73,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, response });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '采访失败' },
       { status: 500 }

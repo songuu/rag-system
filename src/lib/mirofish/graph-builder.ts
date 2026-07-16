@@ -5,16 +5,20 @@
  * 包装为 MiroFish 风格的接口，支持本体约束
  */
 
-import { EntityExtractor, type ExtractionConfig } from '../entity-extraction';
+import { randomUUID } from 'node:crypto';
+import {
+  EntityExtractor,
+  type ExtractionConfig,
+  type KnowledgeGraph,
+} from '../entity-extraction';
+import { createStableErrorLog } from '../security/error-redaction';
 import { TextProcessor } from './text-processor';
 import { getTaskManager } from './task-manager';
 import { createLLMFromOverride } from './model-override';
 import {
-  getMiroFishGraphCacheIdentity,
-  loadMiroFishGraphFromCache,
-  saveMiroFishGraphToCache,
-  type MiroFishCacheIdentity,
+  purgeMiroFishLegacyGraphCache,
 } from './artifact-cache';
+import { assertMiroFishGraphDataResourceLimits } from './graph-artifact-store';
 import type {
   Ontology,
   GraphData,
@@ -47,6 +51,134 @@ const GRAPH_PROGRESS_RANGES: Record<string, [number, number]> = {
   summarizing: [93, 98],
   completed: [100, 100],
 };
+
+const MIROFISH_GRAPH_ONTOLOGY_LIMITS = {
+  entityTypes: 10,
+  edgeTypes: 10,
+  attributes: 50,
+  examples: 50,
+  sourceTargets: 100,
+  nameLength: 200,
+  descriptionLength: 8_000,
+  analysisSummaryLength: 20_000,
+};
+
+const MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE =
+  'MIROFISH_GRAPH_ARTIFACT_LIMIT_EXCEEDED';
+
+export class MiroFishGraphArtifactLimitError extends Error {
+  readonly code = MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE;
+
+  constructor(cause?: unknown) {
+    super('MiroFish graph output exceeds the retained artifact limits.', {
+      cause,
+    });
+    this.name = 'MiroFishGraphArtifactLimitError';
+  }
+}
+
+export function createMiroFishGraphDocumentId(): string {
+  return `mirofish_${randomUUID()}`;
+}
+
+export class MiroFishGraphOntologyValidationError extends Error {
+  readonly code = 'INVALID_GRAPH_ONTOLOGY';
+
+  constructor(path: string) {
+    super(`Invalid MiroFish graph ontology at ${path}.`);
+    this.name = 'MiroFishGraphOntologyValidationError';
+  }
+}
+
+/**
+ * Runtime validation for the JSON boundary and direct library callers.
+ * Missing analysis_summary remains compatible with the legacy route shape.
+ */
+export function normalizeMiroFishGraphOntology(value: unknown): Ontology {
+  const ontology = requireOntologyRecord(value, 'ontology');
+  const entityTypes = requireOntologyArray(
+    ontology.entity_types,
+    'ontology.entity_types',
+    MIROFISH_GRAPH_ONTOLOGY_LIMITS.entityTypes
+  ).map((entry, index) => {
+    const path = `ontology.entity_types[${index}]`;
+    const entity = requireOntologyRecord(entry, path);
+    return {
+      name: normalizeOntologyString(entity.name, `${path}.name`, {
+        maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.nameLength,
+      }),
+      description: normalizeOntologyString(entity.description, `${path}.description`, {
+        allowEmpty: true,
+        maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.descriptionLength,
+      }),
+      attributes: normalizeOntologyAttributes(entity.attributes, `${path}.attributes`),
+      examples: requireOntologyArray(
+        entity.examples,
+        `${path}.examples`,
+        MIROFISH_GRAPH_ONTOLOGY_LIMITS.examples
+      ).map((example, exampleIndex) => normalizeOntologyString(
+        example,
+        `${path}.examples[${exampleIndex}]`,
+        {
+          allowEmpty: true,
+          maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.descriptionLength,
+        }
+      )),
+    };
+  });
+  const edgeTypes = requireOntologyArray(
+    ontology.edge_types,
+    'ontology.edge_types',
+    MIROFISH_GRAPH_ONTOLOGY_LIMITS.edgeTypes
+  ).map((entry, index) => {
+    const path = `ontology.edge_types[${index}]`;
+    const edge = requireOntologyRecord(entry, path);
+    return {
+      name: normalizeOntologyString(edge.name, `${path}.name`, {
+        maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.nameLength,
+      }),
+      description: normalizeOntologyString(edge.description, `${path}.description`, {
+        allowEmpty: true,
+        maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.descriptionLength,
+      }),
+      source_targets: requireOntologyArray(
+        edge.source_targets,
+        `${path}.source_targets`,
+        MIROFISH_GRAPH_ONTOLOGY_LIMITS.sourceTargets
+      ).map((entry, sourceTargetIndex) => {
+        const sourceTargetPath = `${path}.source_targets[${sourceTargetIndex}]`;
+        const sourceTarget = requireOntologyRecord(entry, sourceTargetPath);
+        return {
+          source: normalizeOntologyString(sourceTarget.source, `${sourceTargetPath}.source`, {
+            maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.nameLength,
+          }),
+          target: normalizeOntologyString(sourceTarget.target, `${sourceTargetPath}.target`, {
+            maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.nameLength,
+          }),
+        };
+      }),
+      attributes: normalizeOntologyAttributes(edge.attributes, `${path}.attributes`),
+    };
+  });
+
+  assertUniqueOntologyNames(entityTypes, 'ontology.entity_types');
+  assertUniqueOntologyNames(edgeTypes, 'ontology.edge_types');
+
+  return {
+    entity_types: entityTypes,
+    edge_types: edgeTypes,
+    analysis_summary: ontology.analysis_summary === undefined
+      ? ''
+      : normalizeOntologyString(
+        ontology.analysis_summary,
+        'ontology.analysis_summary',
+        {
+          allowEmpty: true,
+          maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.analysisSummaryLength,
+        }
+      ),
+  };
+}
 
 /**
  * MiroFish 图谱构建器
@@ -90,52 +222,59 @@ export class MiroFishGraphBuilder {
    */
   async buildGraphAsync(
     request: GraphBuildRequest,
-    onProgress?: (progress: ExtractionProgress) => void
+    onProgress?: (progress: ExtractionProgress) => void,
+    taskMetadata?: Record<string, unknown>,
+    reservedTaskId?: string
   ): Promise<string> {
     const { text, ontology, graphName, chunkSize, chunkOverlap } = request;
+    const normalizedOntology = normalizeMiroFishGraphOntology(ontology);
 
-    // 设置本体
-    if (ontology) {
-      this.setOntology(ontology);
-    }
+    // Validate and normalize before task allocation so malformed input cannot
+    // consume a global/tenant task slot.
+    this.setOntology(normalizedOntology);
 
     // 应用配置覆盖
     if (chunkSize) this.config.chunkSize = chunkSize;
     if (chunkOverlap) this.config.chunkOverlap = chunkOverlap;
 
-    // 创建任务
+    // Remove all unscoped legacy graph records before accepting new work.
+    await purgeMiroFishLegacyGraphCache();
+
+    // The HTTP route may reserve a task synchronously so admission and
+    // allocation cannot race. Direct library callers retain the legacy path.
     const taskManager = getTaskManager();
-    const taskId = taskManager.createTask('graph_build', {
+    const metadata = {
       graphName: graphName || 'MiroFish Graph',
       chunkSize: this.config.chunkSize,
       chunkOverlap: this.config.chunkOverlap,
       textLength: text.length,
-    });
-    const cacheIdentity = getMiroFishGraphCacheIdentity({
-      request: {
-        text,
-        ontology,
-        graphName,
-        chunkSize: this.config.chunkSize,
-        chunkOverlap: this.config.chunkOverlap,
-        batchSize: this.config.batchSize,
-      },
-      modelOverride: this.modelOverride,
-    });
-    const cached = await loadMiroFishGraphFromCache(cacheIdentity);
-    if (cached) {
-      taskManager.completeTask(taskId, {
-        graphId: cached.artifact.graph_id,
-        graphData: cached.artifact,
-        cache_status: 'hit',
-      });
-      return taskId;
+      ...taskMetadata,
+    };
+    let taskId: string;
+    if (reservedTaskId !== undefined) {
+      const reservedTask = taskManager.getTask(reservedTaskId);
+      if (
+        reservedTask?.task_type !== 'graph_build'
+        || reservedTask.status !== 'pending'
+      ) {
+        throw new Error('Reserved graph task is unavailable.');
+      }
+      taskId = reservedTaskId;
+      taskManager.updateTask(taskId, { metadata });
+    } else {
+      taskId = taskManager.createTask('graph_build', metadata);
     }
-
     // 在后台执行构建
-    this.buildGraphWorker(taskId, text, cacheIdentity, onProgress).catch(error => {
+    this.buildGraphWorker(taskId, text, onProgress).catch(error => {
+      console.error(
+        `[MiroFishGraphBuilder] taskId=${taskId} build failed`,
+        createStableErrorLog(error)
+      );
       const tm = getTaskManager();
-      tm.failTask(taskId, error instanceof Error ? error.message : String(error));
+      const task = tm.getTask(taskId);
+      if (task?.status === 'pending' || task?.status === 'processing') {
+        tm.failTask(taskId, 'MIROFISH_GRAPH_BUILD_FAILED');
+      }
     });
 
     return taskId;
@@ -147,7 +286,6 @@ export class MiroFishGraphBuilder {
   private async buildGraphWorker(
     taskId: string,
     text: string,
-    cacheIdentity: MiroFishCacheIdentity,
     onProgress?: (progress: ExtractionProgress) => void
   ): Promise<void> {
     const taskManager = getTaskManager();
@@ -159,129 +297,92 @@ export class MiroFishGraphBuilder {
       onProgress?.(progress);
     };
 
-    try {
-      // 1. 文本预处理
-      reportProgress({
-        stage: 'preprocessing',
-        current: 0,
-        total: 1,
-        message: '正在预处理文本...',
-      });
+    // 1. 文本预处理
+    reportProgress({
+      stage: 'preprocessing',
+      current: 0,
+      total: 1,
+      message: '正在预处理文本...',
+    });
 
-      const processedText = TextProcessor.preprocessText(text);
+    const processedText = TextProcessor.preprocessText(text);
 
-      // 2. 创建实体提取器（注入运行时模型覆盖）
-      const llmInstance = createLLMFromOverride(this.modelOverride, {
-        temperature: 0.1,
-        ollamaOptions: MIROFISH_GRAPH_OLLAMA_OPTIONS,
-      });
-      const extractor = new EntityExtractor(
-        createMiroFishGraphExtractionConfig(this.config),
-        { llmInstance }
-      );
+    // 2. 创建实体提取器（注入运行时模型覆盖）
+    const llmInstance = createLLMFromOverride(this.modelOverride, {
+      temperature: 0.1,
+      ollamaOptions: MIROFISH_GRAPH_OLLAMA_OPTIONS,
+    });
+    const extractor = new EntityExtractor(
+      createMiroFishGraphExtractionConfig(this.config),
+      {
+        llmInstance,
+        providerKey: this.modelOverride
+          ? [
+              this.modelOverride.provider,
+              this.modelOverride.modelName,
+              this.modelOverride.baseUrl ?? 'server-default',
+            ].join(':')
+          : undefined,
+      }
+    );
 
-      // 设置进度回调
-      extractor.onProgress(reportProgress);
+    // 设置进度回调
+    extractor.onProgress(reportProgress);
 
-      reportProgress({
-        stage: 'extracting',
-        current: 0,
-        total: 1,
-        message: '开始实体抽取...',
-      });
+    reportProgress({
+      stage: 'extracting',
+      current: 0,
+      total: 1,
+      message: '开始实体抽取...',
+    });
 
-      // 3. 执行实体抽取
-      const documentId = `mirofish_${Date.now()}`;
-      const graph = await extractor.extract(processedText, documentId);
+    // 3. 执行实体抽取
+    const documentId = createMiroFishGraphDocumentId();
+    const graph = await extractor.extract(processedText, documentId);
 
-      // 4. 转换为 GraphData 格式
-      const graphData = this.convertToGraphData(graph);
+    // 4. 转换为 GraphData 格式
+    const graphData = convertKnowledgeGraphToGraphData(graph);
 
-      // 5. 应用本体约束（过滤）
-      const filteredData = this.applyOntologyFilter(graphData);
-      await saveMiroFishGraphToCache(cacheIdentity, filteredData);
+    // 5. 应用本体约束（过滤）
+    const filteredData = this.applyOntologyFilter(graphData);
 
-      // 完成任务
-      taskManager.completeTask(taskId, {
-        graphId: documentId,
-        graphData: filteredData,
-        originalEntityCount: graphData.node_count,
-        filteredEntityCount: filteredData.node_count,
-        cache_status: 'stored',
-      });
+    // Complete only after the same hard resource budget used by durable graph
+    // artifacts accepts the result. Oversized provider output is never retained
+    // in TaskManager, even transiently.
+    this.completeGraphTask(taskId, documentId, graphData, filteredData);
 
-      reportProgress({
-        stage: 'completed',
-        current: 1,
-        total: 1,
-        message: '图谱构建完成',
-      });
-
-    } catch (error) {
-      console.error('[MiroFishGraphBuilder] 构建失败:', error);
-      throw error;
-    }
+    reportProgress({
+      stage: 'completed',
+      current: 1,
+      total: 1,
+      message: '图谱构建完成',
+    });
   }
 
-  /**
-   * 将实体抽取结果转换为图谱数据格式
-   */
-  private convertToGraphData(
-    graph: Awaited<ReturnType<EntityExtractor['extract']>>
-  ): GraphData {
-    const nodes: GraphNode[] = [];
-    const edges: GraphEdge[] = [];
-
-    // 转换实体为节点
-    for (const entity of graph.entities.values()) {
-      nodes.push({
-        uuid: entity.id,
-        name: entity.name,
-        labels: [entity.type],
-        summary: entity.description,
-        attributes: {
-          aliases: entity.aliases,
-          mentions: entity.mentions,
-          sourceChunks: entity.sourceChunks,
-          ...entity.metadata,
-        },
-        created_at: new Date().toISOString(),
-      });
-    }
-
-    // 转换关系为边
-    for (const relation of graph.relations.values()) {
-      const sourceNode = nodes.find(n => n.uuid === relation.source);
-      const targetNode = nodes.find(n => n.uuid === relation.target);
-
-      if (sourceNode && targetNode) {
-        edges.push({
-          uuid: relation.id,
-          name: relation.type,
-          fact: relation.description,
-          fact_type: relation.type,
-          source_node_uuid: relation.source,
-          target_node_uuid: relation.target,
-          source_node_name: sourceNode.name,
-          target_node_name: targetNode.name,
-          attributes: {
-            weight: relation.weight,
-            sourceChunks: relation.sourceChunks,
-            ...relation.metadata,
-          },
-          created_at: new Date().toISOString(),
-          episodes: [],
-        });
+  private completeGraphTask(
+    taskId: string,
+    documentId: string,
+    graphData: GraphData,
+    filteredData: GraphData
+  ): void {
+    const taskManager = getTaskManager();
+    try {
+      if (filteredData.graph_id !== documentId) {
+        throw new Error('Graph output identity does not match its document id.');
       }
+      assertMiroFishGraphDataResourceLimits(filteredData);
+    } catch (error) {
+      taskManager.failTask(taskId, MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE);
+      throw new MiroFishGraphArtifactLimitError(error);
     }
 
-    return {
-      graph_id: graph.metadata.documentId,
-      nodes,
-      edges,
-      node_count: nodes.length,
-      edge_count: edges.length,
-    };
+    taskManager.completeTask(taskId, {
+      graphId: documentId,
+      graphData: filteredData,
+      originalEntityCount: graphData.node_count,
+      filteredEntityCount: filteredData.node_count,
+      cache_status: 'disabled',
+    });
   }
 
   /**
@@ -314,6 +415,14 @@ export class MiroFishGraphBuilder {
       edge =>
         nodeIds.has(edge.source_node_uuid) && nodeIds.has(edge.target_node_uuid)
     );
+    const filteredEdgeIds = new Set(filteredEdges.map(edge => edge.uuid));
+    const filteredCommunities = graphData.communities
+      ?.map(community => ({
+        ...community,
+        entities: community.entities.filter(entityId => nodeIds.has(entityId)),
+        relations: community.relations.filter(relationId => filteredEdgeIds.has(relationId)),
+      }))
+      .filter(community => community.entities.length > 0);
 
     return {
       ...graphData,
@@ -321,6 +430,7 @@ export class MiroFishGraphBuilder {
       edges: filteredEdges,
       node_count: filteredNodes.length,
       edge_count: filteredEdges.length,
+      communities: filteredCommunities,
     };
   }
 
@@ -373,6 +483,8 @@ export class MiroFishGraphBuilder {
    * 删除图谱
    */
   async deleteGraph(graphId: string): Promise<boolean> {
+    await purgeMiroFishLegacyGraphCache();
+
     // 清理相关任务
     const taskManager = getTaskManager();
     const tasks = taskManager.getAllTasks();
@@ -405,6 +517,194 @@ export class MiroFishGraphBuilder {
     }
     return this.ontology.edge_types.map(e => e.name);
   }
+}
+
+/**
+ * 将完整抽取结果适配为可检索图 artifact。
+ *
+ * WHY: GraphRAG 的实体和社区只负责召回/排序，引用必须回落到原文 passage。
+ */
+export function convertKnowledgeGraphToGraphData(graph: KnowledgeGraph): GraphData {
+  const createdAt = graph.metadata.createdAt.toISOString();
+  const nodes: GraphNode[] = Array.from(graph.entities.values(), entity => ({
+    uuid: entity.id,
+    name: entity.name,
+    labels: [entity.type],
+    summary: entity.description,
+    attributes: {
+      ...entity.metadata,
+      aliases: entity.aliases,
+      mentions: entity.mentions,
+      sourceChunks: [...entity.sourceChunks],
+    },
+    created_at: createdAt,
+  }));
+  const nodesById = new Map(nodes.map(node => [node.uuid, node]));
+  const edges: GraphEdge[] = [];
+
+  for (const relation of graph.relations.values()) {
+    const sourceNode = nodesById.get(relation.source);
+    const targetNode = nodesById.get(relation.target);
+    if (!sourceNode || !targetNode) continue;
+    edges.push({
+      uuid: relation.id,
+      name: relation.type,
+      fact: relation.description,
+      fact_type: relation.type,
+      source_node_uuid: relation.source,
+      target_node_uuid: relation.target,
+      source_node_name: sourceNode.name,
+      target_node_name: targetNode.name,
+      attributes: {
+        ...relation.metadata,
+        weight: relation.weight,
+        sourceChunks: [...relation.sourceChunks],
+      },
+      created_at: createdAt,
+      episodes: [],
+    });
+  }
+
+  return {
+    graph_id: graph.metadata.documentId,
+    nodes,
+    edges,
+    node_count: nodes.length,
+    edge_count: edges.length,
+    artifact_version: 'mirofish-graph-v2',
+    passages: Array.from(graph.chunks.values(), chunk => ({
+      id: chunk.id,
+      document_id: graph.metadata.documentId,
+      content: chunk.content,
+      index: chunk.index,
+      start_offset: chunk.startChar,
+      end_offset: chunk.endChar,
+      source: readOptionalString(chunk.metadata, 'source'),
+      page: readOptionalPositiveInteger(chunk.metadata, 'page'),
+      section_path: readOptionalStringArray(chunk.metadata, 'sectionPath'),
+      metadata: chunk.metadata ? { ...chunk.metadata } : undefined,
+    })),
+    communities: Array.from(graph.communities.values(), community => ({
+      id: community.id,
+      name: community.name,
+      entities: [...community.entities],
+      relations: [...community.relations],
+      summary: community.summary,
+      keywords: [...community.keywords],
+      level: community.level,
+      parent_id: community.parentId,
+    })),
+  };
+}
+
+function normalizeOntologyAttributes(value: unknown, path: string) {
+  return requireOntologyArray(
+    value,
+    path,
+    MIROFISH_GRAPH_ONTOLOGY_LIMITS.attributes
+  ).map((entry, index) => {
+    const attributePath = `${path}[${index}]`;
+    const attribute = requireOntologyRecord(entry, attributePath);
+    return {
+      name: normalizeOntologyString(attribute.name, `${attributePath}.name`, {
+        maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.nameLength,
+      }),
+      type: normalizeOntologyString(attribute.type, `${attributePath}.type`, {
+        maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.nameLength,
+      }),
+      description: normalizeOntologyString(
+        attribute.description,
+        `${attributePath}.description`,
+        {
+          allowEmpty: true,
+          maxLength: MIROFISH_GRAPH_ONTOLOGY_LIMITS.descriptionLength,
+        }
+      ),
+    };
+  });
+}
+
+function requireOntologyRecord(value: unknown, path: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new MiroFishGraphOntologyValidationError(path);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireOntologyArray(value: unknown, path: string, maxLength: number): unknown[] {
+  if (!Array.isArray(value) || value.length > maxLength) {
+    throw new MiroFishGraphOntologyValidationError(path);
+  }
+  return value;
+}
+
+function normalizeOntologyString(
+  value: unknown,
+  path: string,
+  options: { allowEmpty?: boolean; maxLength: number }
+): string {
+  if (typeof value !== 'string') {
+    throw new MiroFishGraphOntologyValidationError(path);
+  }
+  const normalized = value.trim();
+  if ((!options.allowEmpty && normalized.length === 0) || normalized.length > options.maxLength) {
+    throw new MiroFishGraphOntologyValidationError(path);
+  }
+  return normalized;
+}
+
+function assertUniqueOntologyNames(
+  definitions: Array<{ name: string }>,
+  path: string
+): void {
+  const names = new Set<string>();
+  for (const definition of definitions) {
+    const normalizedName = definition.name.toLocaleLowerCase('en-US');
+    if (names.has(normalizedName)) {
+      throw new MiroFishGraphOntologyValidationError(path);
+    }
+    names.add(normalizedName);
+  }
+}
+
+/**
+ * Public graph APIs expose topology only. Source passages stay inside the
+ * scoped artifact store and must never be serialized by legacy graph routes.
+ */
+export function createPublicGraphProjection(
+  graph: GraphData
+): Omit<GraphData, 'passages'> {
+  const publicGraph = { ...graph };
+  delete publicGraph.passages;
+  return publicGraph;
+}
+
+function readOptionalString(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function readOptionalPositiveInteger(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'number' && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function readOptionalStringArray(
+  metadata: Record<string, unknown> | undefined,
+  key: string
+): string[] | undefined {
+  const value = metadata?.[key];
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+    ? value.map(item => item.trim()).filter(Boolean)
+    : undefined;
 }
 
 export function createMiroFishGraphExtractionConfig(config: {

@@ -18,7 +18,12 @@ export * from './types';
 
 // 核心服务导出
 export { OntologyGenerator } from './ontology-generator';
-export { MiroFishGraphBuilder } from './graph-builder';
+export {
+  MiroFishGraphBuilder,
+  convertKnowledgeGraphToGraphData,
+  createPublicGraphProjection,
+} from './graph-builder';
+export * from './graph-artifact-store';
 export { ProfileGenerator } from './profile-generator';
 export { TextProcessor } from './text-processor';
 export { TaskManager, getTaskManager } from './task-manager';

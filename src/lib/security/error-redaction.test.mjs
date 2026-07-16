@@ -15,7 +15,7 @@ registerHooks({
   },
 });
 
-const { redactErrorForLog } = await import('./error-redaction.ts');
+const { createStableErrorLog, redactErrorForLog } = await import('./error-redaction.ts');
 
 test('redactErrorForLog removes bearer, assignment, URL userinfo, and query secrets', () => {
   const redacted = redactErrorForLog(
@@ -52,4 +52,21 @@ test('redactErrorForLog removes quoted JSON and header secrets', () => {
 
 test('redactErrorForLog safely handles non-errors', () => {
   assert.deepEqual(redactErrorForLog('plain failure'), { name: 'Error', message: 'plain failure' });
+});
+
+test('createStableErrorLog drops arbitrary provider messages and unsafe codes', () => {
+  const error = new Error('confidential-passage must never reach operational logs');
+  error.name = 'ProviderError';
+  error.code = 'PROVIDER_TIMEOUT';
+  assert.deepEqual(createStableErrorLog(error), {
+    name: 'ProviderError',
+    code: 'PROVIDER_TIMEOUT',
+  });
+  assert.equal(JSON.stringify(createStableErrorLog(error)).includes('confidential-passage'), false);
+
+  const unsafe = new Error('private model output');
+  unsafe.name = 'bad\nname';
+  unsafe.code = 'private-value';
+  assert.deepEqual(createStableErrorLog(unsafe), { name: 'Error' });
+  assert.deepEqual(createStableErrorLog({ secret: 'confidential-passage' }), { name: 'Error' });
 });

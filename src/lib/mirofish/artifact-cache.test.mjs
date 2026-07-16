@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 registerHooks({
@@ -19,6 +22,7 @@ const {
   getMiroFishGraphCacheIdentity,
   getMiroFishOntologyCacheIdentity,
   getMiroFishProfileCacheIdentity,
+  purgeMiroFishLegacyGraphCache,
 } = await import('./artifact-cache.ts');
 
 const modelOverride = {
@@ -116,6 +120,58 @@ test('MiroFish graph cache identity includes normalized text and extraction sett
   assert.equal(first.cache_key, same.cache_key);
   assert.notEqual(first.cache_key, changedChunking.cache_key);
 });
+
+test('legacy graph cache cleanup removes raw graph records and preserves model caches', async t => {
+  const root = await mkdtemp(path.join(tmpdir(), 'mirofish-legacy-cache-'));
+  const cacheDirectory = path.join(root, 'uploads', 'mirofish-cache');
+  await mkdir(cacheDirectory, { recursive: true });
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const graphCacheFile = path.join(cacheDirectory, 'graph.json');
+  const graphTempFile = path.join(cacheDirectory, 'graph.json.123.tmp');
+  const ontologyCacheFile = path.join(cacheDirectory, 'ontology.json');
+  await writeFile(graphCacheFile, legacyCacheRecord('graph', {
+    graph_id: 'graph-private',
+    passages: [{ content: 'raw private source' }],
+  }));
+  await writeFile(graphTempFile, legacyCacheRecord('graph', {
+    graph_id: 'graph-incomplete',
+    passages: [{ content: 'raw temp source' }],
+  }));
+  await writeFile(ontologyCacheFile, legacyCacheRecord('ontology', {
+    entity_types: [],
+    edge_types: [],
+    analysis_summary:
+      '{"model_signature":{"version":"mirofish-llm-artifact-v1","artifact":"graph"}}',
+  }));
+
+  const result = await purgeMiroFishLegacyGraphCache(cacheDirectory);
+  const repeatedResult = await purgeMiroFishLegacyGraphCache(cacheDirectory);
+
+  assert.deepEqual(result, { scanned: 3, removed: 2 });
+  assert.deepEqual(repeatedResult, result);
+  await assert.rejects(readFile(graphCacheFile), { code: 'ENOENT' });
+  await assert.rejects(readFile(graphTempFile), { code: 'ENOENT' });
+  assert.match(await readFile(ontologyCacheFile, 'utf8'), /"artifact": "ontology"/);
+});
+
+function legacyCacheRecord(artifact, value) {
+  return JSON.stringify({
+    version: 'mirofish-llm-artifact-v1',
+    cache_key: `${artifact}-key`,
+    source_hash: `${artifact}-source`,
+    model_signature: {
+      version: 'mirofish-llm-artifact-v1',
+      artifact,
+      provider: 'ollama',
+      model_name: 'test',
+      base_url: '',
+      temperature: 0.1,
+    },
+    created_at: '2026-07-15T00:00:00.000Z',
+    artifact: value,
+  }, null, 2);
+}
 
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');

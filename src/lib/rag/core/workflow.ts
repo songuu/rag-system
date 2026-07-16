@@ -35,6 +35,8 @@ export interface RagWorkflowInput {
   policyId: RagPolicyId;
   context?: RagWorkflowContext;
   prepared?: PreparedRagWorkflowRun;
+  /** Transient request cancellation only. AbortSignal is never persisted. */
+  signal?: AbortSignal;
 }
 
 export interface PreparedRagWorkflowRun {
@@ -80,6 +82,7 @@ export function createRagKernelWorkflow<TOutput>(
           {
             now: state.prepared.startedAtDate,
             traceId: state.prepared.traceId,
+            signal: state.signal,
           }
         );
 

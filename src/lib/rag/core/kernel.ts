@@ -1,5 +1,9 @@
 import { createDefaultRetrievalPlan } from '../retrieval/retrieval-plan';
 import { RagLaneExecutionError } from '../retrieval/lane-executor';
+import {
+  RagRequestAbortedError,
+  throwIfRagRequestAborted,
+} from './cancellation';
 import type {
   RagKernelErrorSummary,
   RagKernelEnvelope,
@@ -20,7 +24,7 @@ export class RagKernel<TOutput> {
   async execute(
     request: RagQueryRequest,
     policyId: RagPolicyId,
-    options: { now?: Date; traceId?: string } = {}
+    options: { now?: Date; traceId?: string; signal?: AbortSignal } = {}
   ): Promise<RagKernelResult<TOutput>> {
     const policy = this.policies.get(policyId);
     if (!policy) {
@@ -33,13 +37,16 @@ export class RagKernel<TOutput> {
     const retrievalPlan = createDefaultRetrievalPlan(request, policyId, startedAtDate);
 
     try {
+      throwIfRagRequestAborted(options.signal);
       const result = await policy.execute({
         request,
         policyId,
         traceId,
         startedAt,
         retrievalPlan,
+        signal: options.signal,
       });
+      throwIfRagRequestAborted(options.signal);
       const outputError = summarizeFailedPolicyOutput(result.output);
       const executionError = summarizeFailedPolicyExecution(result);
       const policyError = outputError ?? executionError;
@@ -64,6 +71,10 @@ export class RagKernel<TOutput> {
         envelope,
       };
     } catch (error) {
+      const normalizedError = options.signal?.aborted
+        && !(error instanceof RagLaneExecutionError && error.code === 'RAG_REQUEST_ABORTED')
+        ? new RagRequestAbortedError()
+        : error;
       const partialResult =
         error instanceof RagLaneExecutionError
           ? error.partialResult
@@ -87,10 +98,10 @@ export class RagKernel<TOutput> {
                 stopReason: partialResult.stopReason,
               },
         status: 'failed',
-        error: summarizeError(error),
+        error: summarizeError(normalizedError),
       });
 
-      throw new RagKernelExecutionError(envelope, error);
+      throw new RagKernelExecutionError(envelope, normalizedError);
     }
   }
 }

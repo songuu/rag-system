@@ -24,6 +24,35 @@ import {
   getModelDimension,
 } from './model-config';
 import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
+import { resolveLegacyMilvusSearchArguments } from './rag/retrieval/legacy-policy-scope';
+import {
+  adaptMilvusSearchResultsToEvidence,
+  invokeWithValidatedMilvusEvidence,
+} from './rag/retrieval/legacy-evidence-adapter';
+import type { RagRetrievalScope } from './security/retrieval-scope';
+
+function throwIfExecutionAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+function rethrowIfExecutionAborted(error: unknown, signal?: AbortSignal): void {
+  if (signal?.aborted) signal.throwIfAborted();
+  if (error instanceof Error && error.name === 'AbortError') throw error;
+}
+
+function logAdaptiveFailure(component: string, error: unknown): void {
+  const candidateCode = error && typeof error === 'object' && 'code' in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  console.error(`[AdaptiveEntityRAG] component=${component} failed`, {
+    name: error instanceof Error && /^[A-Za-z][A-Za-z0-9]*Error$/.test(error.name)
+      ? error.name
+      : 'Error',
+    code: typeof candidateCode === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/.test(candidateCode)
+      ? candidateCode
+      : 'ADAPTIVE_ENTITY_OPERATION_FAILED',
+  });
+}
 
 // ==================== 类型定义 ====================
 
@@ -126,6 +155,18 @@ export interface WorkflowStep {
   error?: string;
 }
 
+export class AdaptiveEntityRAGExecutionError extends Error {
+  readonly state: WorkflowState;
+  readonly cause: unknown;
+
+  constructor(state: WorkflowState, cause: unknown) {
+    super('Adaptive entity RAG query failed.');
+    this.name = 'AdaptiveEntityRAGExecutionError';
+    this.state = state;
+    this.cause = cause;
+  }
+}
+
 /** 实体元数据 */
 export interface EntityMetadata {
   standardName: string;
@@ -146,6 +187,84 @@ export interface AdaptiveRAGConfig {
   similarityThreshold: number;
   enableReranking: boolean;
   milvusCollection: string;
+  /** Server-derived tenant/corpus boundary for every retry and fallback. */
+  retrievalScope?: RagRetrievalScope;
+}
+
+function toAdaptiveSearchResults(
+  results: readonly MilvusSearchResult[],
+  scope: RagRetrievalScope | undefined,
+  matchType: SearchResult['matchType']
+): SearchResult[] {
+  if (!scope) {
+    return results.map(result => ({
+      id: result.id,
+      content: result.content,
+      score: result.score,
+      metadata: result.metadata || {},
+      matchType,
+    }));
+  }
+
+  return adaptMilvusSearchResultsToEvidence(results, {
+    laneId: `adaptive-${matchType}`,
+    scope,
+  }).map((evidence, index) => ({
+    id: evidence.id,
+    content: evidence.content,
+    score: evidence.retrievalScore ?? results[index].score,
+    metadata: {
+      ...evidence.metadata,
+      tenantId: evidence.tenantId,
+      tenant_id: evidence.tenantId,
+      corpusId: evidence.corpusId,
+      corpus_id: evidence.corpusId,
+      documentId: evidence.documentId,
+      document_id: evidence.documentId,
+      documentVersion: evidence.documentVersion,
+      document_version: evidence.documentVersion,
+      trustLevel: evidence.trustLevel,
+      trust_level: evidence.trustLevel,
+    },
+    matchType,
+  }));
+}
+
+function toAdaptiveMilvusResults(
+  results: readonly SearchResult[]
+): MilvusSearchResult[] {
+  return results.map(result => ({
+    id: result.id,
+    content: result.content,
+    metadata: result.metadata,
+    score: result.score,
+    distance: 0,
+  }));
+}
+
+function assertAdaptiveResultsInScope(
+  results: readonly SearchResult[],
+  scope: RagRetrievalScope | undefined,
+  laneId: string
+): void {
+  if (!scope) return;
+  adaptMilvusSearchResultsToEvidence(toAdaptiveMilvusResults(results), {
+    laneId,
+    scope,
+  });
+}
+
+async function invokeAdaptiveGeneration<T>(
+  results: readonly SearchResult[],
+  scope: RagRetrievalScope | undefined,
+  invoke: () => Promise<T>
+): Promise<T> {
+  if (!scope) return invoke();
+  return invokeWithValidatedMilvusEvidence(
+    toAdaptiveMilvusResults(results),
+    { laneId: 'adaptive-generation', scope },
+    invoke
+  );
 }
 
 // ==================== 默认配置 ====================
@@ -701,10 +820,13 @@ export class CognitiveParser {
   /**
    * 解析用户查询，提取实体和逻辑关系
    */
-  async parse(query: string): Promise<ParsedQuery> {
+  async parse(query: string, signal?: AbortSignal): Promise<ParsedQuery> {
+    throwIfExecutionAborted(signal);
     // 快速路径：检测问候语/闲聊，直接返回空实体
     if (this.isGreetingOrSmallTalk(query)) {
-      console.log(`[CognitiveParser] 检测到问候语/闲聊: "${query}"`);
+      console.log('[CognitiveParser] 检测到问候语/闲聊', {
+        queryLength: query.length,
+      });
       return {
         originalQuery: query,
         entities: [],
@@ -721,8 +843,7 @@ export class CognitiveParser {
     // 1. 首先使用规则提取实体（作为基础）
     const ruleBasedEntities = EntityPreprocessor.extractEntitiesByRules(query);
     if (ruleBasedEntities.length > 0) {
-      console.log(`[CognitiveParser] 规则识别到 ${ruleBasedEntities.length} 个实体:`, 
-        ruleBasedEntities.map(e => `${e.name}(${e.type})`).join(', '));
+      console.log(`[CognitiveParser] 规则识别到 ${ruleBasedEntities.length} 个实体`);
     }
     
     // 2. 对于低能力模型，使用预处理增强
@@ -731,8 +852,7 @@ export class CognitiveParser {
       : { normalizedQuery: query, preMappedEntities: [] };
     
     if (preMappedEntities.length > 0) {
-      console.log(`[CognitiveParser] 预处理识别到 ${preMappedEntities.length} 个实体:`, 
-        preMappedEntities.map(e => `${e.original}→${e.normalized}`).join(', '));
+      console.log(`[CognitiveParser] 预处理识别到 ${preMappedEntities.length} 个实体`);
     }
 
     try {
@@ -742,7 +862,9 @@ export class CognitiveParser {
         input: prompt,
         schema: ENTITY_EXTRACTION_SCHEMA,
         normalize: normalizeObjectPayload,
+        signal,
       });
+      throwIfExecutionAborted(signal);
       
       const parsedEntities = Array.isArray(parsed.entities) ? parsed.entities : [];
 
@@ -781,7 +903,8 @@ export class CognitiveParser {
         keywords: readStringArray(parsed.keywords),
       };
     } catch (error) {
-      console.error('[CognitiveParser] LLM 解析失败，使用规则提取:', error);
+      rethrowIfExecutionAborted(error, signal);
+      logAdaptiveFailure('cognitive-parser', error);
       // 降级处理：使用规则提取的实体
       return this.fallbackParse(query, preMappedEntities, ruleBasedEntities);
     }
@@ -838,7 +961,10 @@ export class CognitiveParser {
       const inNormalized = normalizedLower.includes(nameLower) || normalizedLower.includes(valueLower);
       
       if (!inOriginal && !inNormalized) {
-        console.log(`[CognitiveParser] 过滤幻觉实体: "${entity.name}" (不在查询中)`);
+        console.log('[CognitiveParser] 过滤不在查询中的幻觉实体', {
+          entityType: entity.type,
+          entityNameLength: entity.name.length,
+        });
         return false;
       }
       
@@ -1009,11 +1135,18 @@ export class StrategyController {
   /**
    * 校验实体
    */
-  async validateEntities(entities: ExtractedEntity[]): Promise<ValidatedEntity[]> {
+  async validateEntities(
+    entities: ExtractedEntity[],
+    signal?: AbortSignal
+  ): Promise<ValidatedEntity[]> {
     const validated: ValidatedEntity[] = [];
 
     for (const entity of entities) {
-      console.log(`[StrategyController] 校验实体: "${entity.name}", 类型: ${entity.type}`);
+      throwIfExecutionAborted(signal);
+      console.log('[StrategyController] 校验实体', {
+        entityType: entity.type,
+        entityNameLength: entity.name.length,
+      });
       
       // 获取候选实体
       const candidates = await this.entityMetadataStore.findSimilar(entity.name, entity.type, 5);
@@ -1030,7 +1163,7 @@ export class StrategyController {
         continue;
       }
 
-      console.log(`[StrategyController] 找到 ${candidates.length} 个候选: ${candidates.map(c => c.standardName).join(', ')}`);
+      console.log(`[StrategyController] 找到 ${candidates.length} 个候选`);
 
       // 优先查找别名匹配（用户输入的名称是某个实体的别名）
       const aliasMatch = candidates.find(c => 
@@ -1038,7 +1171,7 @@ export class StrategyController {
       );
 
       if (aliasMatch) {
-        console.log(`[StrategyController] 别名匹配: "${entity.name}" -> "${aliasMatch.standardName}"`);
+        console.log('[StrategyController] 命中别名匹配');
         validated.push({
           ...entity,
           isValid: true,
@@ -1056,7 +1189,7 @@ export class StrategyController {
       );
 
       if (exactMatch) {
-        console.log(`[StrategyController] 标准名称匹配: "${entity.name}" -> "${exactMatch.standardName}"`);
+        console.log('[StrategyController] 命中标准名称匹配');
         validated.push({
           ...entity,
           isValid: true,
@@ -1084,7 +1217,9 @@ export class StrategyController {
           input: prompt,
           schema: ENTITY_RESOLUTION_SCHEMA,
           normalize: (value) => normalizeEntityResolutionPayload(value, entity.name),
+          signal,
         });
+        throwIfExecutionAborted(signal);
 
         validated.push({
           ...entity,
@@ -1094,7 +1229,8 @@ export class StrategyController {
           suggestions: result.suggestions || [],
         });
       } catch (error) {
-        console.error('[StrategyController] 实体校验失败:', error);
+        rethrowIfExecutionAborted(error, signal);
+        logAdaptiveFailure('strategy-controller', error);
         validated.push({
           ...entity,
           isValid: true,
@@ -1258,7 +1394,8 @@ export class SearchExecutor {
    * 获取或初始化 Milvus 实例
    * 注意：前端已确保选择的 embedding 模型与集合维度兼容
    */
-  private async getMilvusClient(): Promise<MilvusVectorStore> {
+  private async getMilvusClient(signal?: AbortSignal): Promise<MilvusVectorStore> {
+    throwIfExecutionAborted(signal);
     if (!this.milvus) {
       // 使用配置的 embedding 模型维度
       const dimension = getModelDimension(this.config.embeddingModel) || 768;
@@ -1271,14 +1408,17 @@ export class SearchExecutor {
       // 连接并验证维度
       try {
         await this.milvus.connect();
+        throwIfExecutionAborted(signal);
         const stats = await this.milvus.getCollectionStats();
+        throwIfExecutionAborted(signal);
         const collectionDimension = stats?.embeddingDimension;
         
         if (collectionDimension && collectionDimension !== dimension) {
           console.error(`[SearchExecutor] ⚠️ 维度不匹配: 模型 ${this.config.embeddingModel} (${dimension}D) vs 集合 (${collectionDimension}D)`);
           console.error(`[SearchExecutor] 请在前端选择与知识库兼容的 embedding 模型`);
         }
-      } catch {
+      } catch (error) {
+        rethrowIfExecutionAborted(error, signal);
         console.log('[SearchExecutor] 无法验证集合维度，继续使用配置的维度');
       }
     }
@@ -1291,8 +1431,10 @@ export class SearchExecutor {
   async structuredSearch(
     query: string,
     constraints: SearchConstraint[],
-    topK: number = 10
+    topK: number = 10,
+    signal?: AbortSignal
   ): Promise<SearchResult[]> {
+    throwIfExecutionAborted(signal);
     try {
       // 构建 Milvus 过滤表达式
       const filterExpr = this.buildFilterExpression(constraints);
@@ -1307,22 +1449,42 @@ export class SearchExecutor {
         ? `${query} ${entityValues.join(' ')}`
         : query;
       
-      console.log(`[SearchExecutor] 增强查询: "${enhancedQuery.substring(0, 100)}..."`);
+      console.log('[SearchExecutor] 已构造增强查询', {
+        queryLength: query.length,
+        enhancedQueryLength: enhancedQuery.length,
+        constraintCount: entityValues.length,
+      });
       
       // 生成查询向量
       const queryVector = await this.embeddings.embedQuery(enhancedQuery);
+      throwIfExecutionAborted(signal);
 
       // 获取 Milvus 客户端并执行搜索
-      const milvus = await this.getMilvusClient();
+      const milvus = await this.getMilvusClient(signal);
+      throwIfExecutionAborted(signal);
+      const searchArguments = resolveLegacyMilvusSearchArguments({
+        retrievalScope: this.config.retrievalScope,
+        threshold: this.config.similarityThreshold,
+        // Structured constraints are legacy local-only. Authenticated requests
+        // use the immutable server scope and apply entity boosting after search.
+        legacyLocalFilter: filterExpr || undefined,
+      });
       const results = await milvus.search(
         queryVector,
         topK,
-        this.config.similarityThreshold,
-        filterExpr || undefined
+        searchArguments.options,
+        searchArguments.filter
+      );
+      throwIfExecutionAborted(signal);
+
+      const scopedResults = toAdaptiveSearchResults(
+        results,
+        this.config.retrievalScope,
+        'structured'
       );
 
       // 对结果进行实体匹配后处理（提升包含实体的文档得分）
-      return results.map((r: MilvusSearchResult) => {
+      return scopedResults.map(r => {
         let boostedScore = r.score;
         
         // 检查内容中是否包含目标实体
@@ -1347,43 +1509,60 @@ export class SearchExecutor {
         };
       });
     } catch (error) {
-      console.error('[SearchExecutor] 结构化检索失败:', error);
-      return [];
+      rethrowIfExecutionAborted(error, signal);
+      logAdaptiveFailure('structured-retrieval', error);
+      throw new Error('Adaptive structured retrieval failed.', { cause: error });
     }
   }
 
   /**
    * 语义检索（纯向量搜索）
    */
-  async semanticSearch(query: string, topK: number = 10): Promise<SearchResult[]> {
+  async semanticSearch(
+    query: string,
+    topK: number = 10,
+    signal?: AbortSignal
+  ): Promise<SearchResult[]> {
+    throwIfExecutionAborted(signal);
     try {
-      console.log(`[SearchExecutor] 语义检索: "${query.substring(0, 50)}...", topK=${topK}, threshold=${this.config.similarityThreshold}`);
+      console.log('[SearchExecutor] 语义检索', {
+        queryLength: query.length,
+        topK,
+        threshold: this.config.similarityThreshold,
+      });
       const queryVector = await this.embeddings.embedQuery(query);
+      throwIfExecutionAborted(signal);
       console.log(`[SearchExecutor] 生成查询向量完成, 维度: ${queryVector.length}`);
 
       // 获取 Milvus 客户端并执行搜索
-      const milvus = await this.getMilvusClient();
+      const milvus = await this.getMilvusClient(signal);
+      throwIfExecutionAborted(signal);
+      const searchArguments = resolveLegacyMilvusSearchArguments({
+        retrievalScope: this.config.retrievalScope,
+        threshold: this.config.similarityThreshold,
+      });
       const results = await milvus.search(
         queryVector,
         topK,
-        this.config.similarityThreshold
+        searchArguments.options,
+        searchArguments.filter
       );
+      throwIfExecutionAborted(signal);
       
       console.log(`[SearchExecutor] Milvus 返回 ${results.length} 个结果`);
       if (results.length > 0) {
         console.log(`[SearchExecutor] 第一个结果: score=${results[0].score}, contentLength=${results[0].content?.length}`);
       }
 
-      return results.map((r: MilvusSearchResult) => ({
-        id: r.id,
-        content: r.content,
-        score: r.score,
-        metadata: r.metadata || {},
-        matchType: 'semantic' as const,
-      }));
+      return toAdaptiveSearchResults(
+        results,
+        this.config.retrievalScope,
+        'semantic'
+      );
     } catch (error) {
-      console.error('[SearchExecutor] 语义检索失败:', error);
-      return [];
+      rethrowIfExecutionAborted(error, signal);
+      logAdaptiveFailure('semantic-retrieval', error);
+      throw new Error('Adaptive semantic retrieval failed.', { cause: error });
     }
   }
 
@@ -1393,13 +1572,16 @@ export class SearchExecutor {
   async hybridSearch(
     query: string,
     constraints: SearchConstraint[],
-    topK: number = 10
+    topK: number = 10,
+    signal?: AbortSignal
   ): Promise<SearchResult[]> {
+    throwIfExecutionAborted(signal);
     // 并行执行结构化和语义检索
     const [structuredResults, semanticResults] = await Promise.all([
-      this.structuredSearch(query, constraints, topK),
-      this.semanticSearch(query, topK),
+      this.structuredSearch(query, constraints, topK, signal),
+      this.semanticSearch(query, topK, signal),
     ]);
+    throwIfExecutionAborted(signal);
 
     // 合并去重
     const resultMap = new Map<string, SearchResult>();
@@ -1432,8 +1614,15 @@ export class SearchExecutor {
   async rerank(
     results: SearchResult[],
     query: ParsedQuery,
-    topK: number = 5
+    topK: number = 5,
+    signal?: AbortSignal
   ): Promise<RankedResult[]> {
+    throwIfExecutionAborted(signal);
+    assertAdaptiveResultsInScope(
+      results,
+      this.config.retrievalScope,
+      'adaptive-pre-rerank'
+    );
     if (!this.config.enableReranking || results.length === 0) {
       return results.map(r => ({
         ...r,
@@ -1445,6 +1634,7 @@ export class SearchExecutor {
     const rankedResults: RankedResult[] = [];
 
     for (const result of results.slice(0, Math.min(results.length, 10))) {
+      throwIfExecutionAborted(signal);
       try {
         const prompt = RERANKING_PROMPT
           .replace('{query}', query.originalQuery)
@@ -1457,7 +1647,9 @@ export class SearchExecutor {
           input: prompt,
           schema: RERANKING_SCHEMA,
           normalize: (value) => normalizeRerankingPayload(value, result.score),
+          signal,
         });
+        throwIfExecutionAborted(signal);
         
         rankedResults.push({
           ...result,
@@ -1465,7 +1657,8 @@ export class SearchExecutor {
           relevanceExplanation: parsed.explanation || '',
         });
       } catch (error) {
-        console.error('[SearchExecutor] 重排序失败:', error);
+        rethrowIfExecutionAborted(error, signal);
+        logAdaptiveFailure('reranking', error);
         rankedResults.push({
           ...result,
           rerankedScore: result.score,
@@ -1482,26 +1675,41 @@ export class SearchExecutor {
   private buildFilterExpression(constraints: SearchConstraint[]): string {
     if (constraints.length === 0) return '';
 
+    const allowedFields = new Set([
+      'person',
+      'organization',
+      'location',
+      'product',
+      'date',
+      'event',
+      'concept',
+      'content',
+    ]);
     const expressions = constraints.map(c => {
+      if (!allowedFields.has(c.field)) return '';
       switch (c.operator) {
         case 'eq':
-          return `${c.field} == "${c.value}"`;
+          return `${c.field} == ${JSON.stringify(String(c.value))}`;
         case 'contains':
           // Milvus 不支持 LIKE '%xxx%' 模式，只支持前缀匹配 'xxx%' 或精确匹配
           // 对于 content 字段使用前缀匹配，其他字段跳过（依赖向量语义搜索）
           if (c.field === 'content') {
             // 使用前缀匹配（Milvus 支持）
-            return `${c.field} like "${c.value}%"`;
+            return `${c.field} like ${JSON.stringify(String(c.value) + '%')}`;
           }
           // 对于实体字段（person, organization 等），跳过 filter
           // 因为这些字段可能不存在于 Milvus schema 中
           // 依赖向量搜索的语义相似度来召回相关文档
-          console.log(`[SearchExecutor] 跳过 contains 约束: ${c.field}="${c.value}" (依赖语义搜索)`);
+          console.log('[SearchExecutor] 跳过实体 contains 约束并依赖语义搜索', {
+            fieldLength: c.field.length,
+          });
           return '';
         case 'in':
-          return `${c.field} in [${(c.value as string[]).map(v => `"${v}"`).join(', ')}]`;
+          return Array.isArray(c.value)
+            ? `${c.field} in [${c.value.map(v => JSON.stringify(String(v))).join(', ')}]`
+            : '';
         case 'not':
-          return `${c.field} != "${c.value}"`;
+          return `${c.field} != ${JSON.stringify(String(c.value))}`;
         default:
           return '';
       }
@@ -1587,7 +1795,7 @@ export class EntityMetadataStore {
       await writeFile(fullPath, JSON.stringify(data, null, 2), 'utf-8');
       console.log(`[EntityMetadataStore] 保存了 ${this.entities.size} 个实体到文件`);
     } catch (error) {
-      console.error('[EntityMetadataStore] 保存失败:', error);
+      logAdaptiveFailure('metadata-save', error);
     }
   }
 
@@ -1676,11 +1884,14 @@ export class EntityMetadataStore {
     // 使用标准名称作为主键存储
     this.entities.set(metadata.standardName.toLowerCase(), metadata);
     
-    console.log(`[EntityMetadataStore] 添加实体: ${metadata.standardName}, 类型: ${metadata.type}, 别名: ${metadata.aliases.join(', ')}`);
+    console.log('[EntityMetadataStore] 添加实体', {
+      entityType: metadata.type,
+      aliasCount: metadata.aliases.length,
+    });
     
     // 如果需要持久化，保存到文件
     if (persist) {
-      this.saveToFile().catch(err => console.error('[EntityMetadataStore] 持久化失败:', err));
+      this.saveToFile().catch(error => logAdaptiveFailure('metadata-persist', error));
     }
   }
 
@@ -1692,9 +1903,11 @@ export class EntityMetadataStore {
     const deleted = this.entities.delete(key);
     
     if (deleted) {
-      console.log(`[EntityMetadataStore] 删除实体: ${standardName}`);
+      console.log('[EntityMetadataStore] 删除实体', {
+        standardNameLength: standardName.length,
+      });
       if (persist) {
-        this.saveToFile().catch(err => console.error('[EntityMetadataStore] 持久化失败:', err));
+        this.saveToFile().catch(error => logAdaptiveFailure('metadata-persist', error));
       }
     }
     return deleted;
@@ -1710,9 +1923,12 @@ export class EntityMetadataStore {
     if (existing) {
       const updated = { ...existing, ...updates };
       this.entities.set(key, updated);
-      console.log(`[EntityMetadataStore] 更新实体: ${standardName}`);
+      console.log('[EntityMetadataStore] 更新实体', {
+        standardNameLength: standardName.length,
+        updatedFieldCount: Object.keys(updates).length,
+      });
       if (persist) {
-        this.saveToFile().catch(err => console.error('[EntityMetadataStore] 持久化失败:', err));
+        this.saveToFile().catch(error => logAdaptiveFailure('metadata-persist', error));
       }
       return true;
     }
@@ -1735,13 +1951,16 @@ export class EntityMetadataStore {
     const fuzzyMatches: EntityMetadata[] = [];      // 模糊匹配的
     const lowerName = name.toLowerCase();
 
-    console.log(`[EntityMetadataStore] 查找实体: "${name}", 类型: ${type}`);
+    console.log('[EntityMetadataStore] 查找实体', {
+      entityType: type,
+      entityNameLength: name.length,
+    });
 
     // 遍历所有实体
     for (const [key, metadata] of this.entities) {
       // 1. 别名精确匹配（优先级最高）
       if (metadata.aliases.some(a => a.toLowerCase() === lowerName)) {
-        console.log(`[EntityMetadataStore] 找到别名匹配: "${name}" -> "${metadata.standardName}"`);
+        console.log('[EntityMetadataStore] 找到别名匹配');
         // 类型匹配的优先
         if (metadata.type === type || metadata.type === 'PERSON' && type === 'OTHER' || type === 'PERSON' && metadata.type === 'OTHER') {
           if (!exactTypeMatches.find(c => c.standardName === metadata.standardName)) {
@@ -1836,8 +2055,11 @@ export class ResponseGenerator {
 
   async generate(
     query: ParsedQuery,
-    results: RankedResult[]
+    results: RankedResult[],
+    signal?: AbortSignal,
+    retrievalScope?: RagRetrievalScope
   ): Promise<string> {
+    throwIfExecutionAborted(signal);
     console.log(`[ResponseGenerator] 收到 ${results.length} 个结果进行生成`);
     if (results.length === 0) {
       console.log('[ResponseGenerator] 无结果，返回默认消息');
@@ -1856,13 +2078,19 @@ export class ResponseGenerator {
       .replace('{context}', context);
 
     try {
-      const response = await this.llm.invoke(prompt);
+      const response = await invokeAdaptiveGeneration(
+        results,
+        retrievalScope,
+        () => this.llm.invoke(prompt, { signal })
+      );
+      throwIfExecutionAborted(signal);
       return typeof response.content === 'string' 
         ? response.content 
         : JSON.stringify(response.content);
     } catch (error) {
-      console.error('[ResponseGenerator] 生成失败:', error);
-      return '抱歉，生成回答时出现错误。请稍后重试。';
+      rethrowIfExecutionAborted(error, signal);
+      logAdaptiveFailure('response-generation', error);
+      throw new Error('Adaptive response generation failed.', { cause: error });
     }
   }
 }
@@ -1904,18 +2132,25 @@ export class AdaptiveEntityRAG {
   /**
    * 确保已初始化
    */
-  private async ensureInitialized(): Promise<void> {
+  private async ensureInitialized(signal?: AbortSignal): Promise<void> {
+    throwIfExecutionAborted(signal);
     if (!this.initialized) {
       await this.initialize();
+      throwIfExecutionAborted(signal);
     }
   }
 
   /**
    * 执行完整的 RAG 流程
    */
-  async query(question: string, topK: number = 5): Promise<WorkflowState> {
+  async query(
+    question: string,
+    topK: number = 5,
+    signal?: AbortSignal
+  ): Promise<WorkflowState> {
+    throwIfExecutionAborted(signal);
     // 确保已初始化（加载持久化数据）
-    await this.ensureInitialized();
+    await this.ensureInitialized(signal);
     
     const startTime = Date.now();
     const steps: WorkflowStep[] = [];
@@ -1953,7 +2188,8 @@ export class AdaptiveEntityRAG {
       parseStep.status = 'running';
       
       const parseStart = Date.now();
-      state.query = await this.cognitiveParser.parse(question);
+      state.query = await this.cognitiveParser.parse(question, signal);
+      throwIfExecutionAborted(signal);
       parseStep.duration = Date.now() - parseStart;
       parseStep.status = 'completed';
       parseStep.details = {
@@ -1990,7 +2226,11 @@ export class AdaptiveEntityRAG {
       validateStep.status = 'running';
 
       const validateStart = Date.now();
-      state.validatedEntities = await this.strategyController.validateEntities(state.query.entities);
+      state.validatedEntities = await this.strategyController.validateEntities(
+        state.query.entities,
+        signal
+      );
+      throwIfExecutionAborted(signal);
       validateStep.duration = Date.now() - validateStart;
       validateStep.status = 'completed';
       
@@ -2100,12 +2340,13 @@ export class AdaptiveEntityRAG {
             results = await this.searchExecutor.structuredSearch(
               question,
               state.currentDecision.constraints,
-              topK * 2
+              topK * 2,
+              signal
             );
             break;
           case 'semantic_search':
             searchOperations.push('纯语义向量检索（无过滤条件）');
-            results = await this.searchExecutor.semanticSearch(question, topK * 2);
+            results = await this.searchExecutor.semanticSearch(question, topK * 2, signal);
             break;
           case 'hybrid_search':
             searchOperations.push('混合检索: 结构化过滤 + 语义检索');
@@ -2115,7 +2356,8 @@ export class AdaptiveEntityRAG {
             results = await this.searchExecutor.hybridSearch(
               question,
               state.currentDecision.constraints,
-              topK * 2
+              topK * 2,
+              signal
             );
             break;
           case 'relax_constraints':
@@ -2126,10 +2368,12 @@ export class AdaptiveEntityRAG {
             results = await this.searchExecutor.structuredSearch(
               question,
               state.currentDecision.constraints,
-              topK * 2
+              topK * 2,
+              signal
             );
             break;
         }
+        throwIfExecutionAborted(signal);
 
         searchStep.duration = Date.now() - searchStart;
         searchOperations.push(`检索耗时: ${searchStep.duration}ms`);
@@ -2183,7 +2427,13 @@ export class AdaptiveEntityRAG {
           rerankOperations.push('使用 LLM 进行相关性重排序');
           
           const rerankStart = Date.now();
-          state.rankedResults = await this.searchExecutor.rerank(state.searchResults, state.query, topK);
+          state.rankedResults = await this.searchExecutor.rerank(
+            state.searchResults,
+            state.query,
+            topK,
+            signal
+          );
+          throwIfExecutionAborted(signal);
           rerankStep.duration = Date.now() - rerankStart;
           rerankStep.status = 'completed';
           
@@ -2264,7 +2514,13 @@ export class AdaptiveEntityRAG {
       }
 
       const generateStart = Date.now();
-      state.finalResponse = await this.responseGenerator.generate(state.query, state.rankedResults);
+      state.finalResponse = await this.responseGenerator.generate(
+        state.query,
+        state.rankedResults,
+        signal,
+        this.config.retrievalScope
+      );
+      throwIfExecutionAborted(signal);
       generateStep.duration = Date.now() - generateStart;
       generateStep.status = 'completed';
       
@@ -2280,13 +2536,16 @@ export class AdaptiveEntityRAG {
       };
 
     } catch (error) {
-      console.error('[AdaptiveEntityRAG] 查询失败:', error);
+      rethrowIfExecutionAborted(error, signal);
+      logAdaptiveFailure('query', error);
       const errorStep = steps.find(s => s.status === 'running');
       if (errorStep) {
         errorStep.status = 'failed';
-        errorStep.error = error instanceof Error ? error.message : String(error);
+        errorStep.error = 'ADAPTIVE_ENTITY_RAG_FAILED';
       }
-      state.finalResponse = `处理查询时出错: ${error instanceof Error ? error.message : '未知错误'}`;
+      state.steps = steps;
+      state.totalDuration = Date.now() - startTime;
+      throw new AdaptiveEntityRAGExecutionError(state, error);
     }
 
     state.steps = steps;
@@ -2331,7 +2590,7 @@ export class AdaptiveEntityRAG {
     // 同步初始化（如果尚未初始化）
     if (!this.initialized) {
       // 触发异步初始化，但不等待
-      this.initialize().catch(err => console.error('[AdaptiveEntityRAG] 初始化失败:', err));
+      this.initialize().catch(error => logAdaptiveFailure('initialization', error));
     }
     return this.entityMetadataStore;
   }

@@ -72,6 +72,36 @@ export interface GraphEdge {
   episodes: string[];
 }
 
+/** 可回溯到原文的图谱 passage。图实体/社区只能用于排序，不能替代 passage 作为证据。 */
+export interface GraphPassage {
+  id: string;
+  document_id: string;
+  content: string;
+  index: number;
+  start_offset: number;
+  end_offset: number;
+  source?: string;
+  page?: number;
+  section_path?: string[];
+  tenant_id?: string;
+  corpus_id?: string;
+  document_version?: string;
+  trust_level?: 'trusted' | 'reviewed' | 'external' | 'quarantined';
+  metadata?: Record<string, unknown>;
+}
+
+/** MiroFish 社区信息。summary 仅用于图排序，不可直接作为引用证据。 */
+export interface GraphCommunity {
+  id: string;
+  name: string;
+  entities: string[];
+  relations: string[];
+  summary: string;
+  keywords: string[];
+  level: number;
+  parent_id?: string;
+}
+
 /** 图谱数据 */
 export interface GraphData {
   graph_id: string;
@@ -79,6 +109,10 @@ export interface GraphData {
   edges: GraphEdge[];
   node_count: number;
   edge_count: number;
+  /** Optional v2 fields keep legacy graph consumers source compatible. */
+  artifact_version?: 'mirofish-graph-v2';
+  passages?: GraphPassage[];
+  communities?: GraphCommunity[];
 }
 
 /** 图谱信息 */

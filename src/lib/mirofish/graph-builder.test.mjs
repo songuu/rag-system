@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 registerHooks({
@@ -17,8 +20,13 @@ registerHooks({
 
 const {
   MiroFishGraphBuilder,
+  MiroFishGraphOntologyValidationError,
+  convertKnowledgeGraphToGraphData,
+  createPublicGraphProjection,
   createMiroFishGraphExtractionConfig,
+  normalizeMiroFishGraphOntology,
 } = await import('./graph-builder.ts');
+const { getTaskManager } = await import('./task-manager.ts');
 
 test('MiroFish graph builder uses a fast extraction profile by default', () => {
   const builder = new MiroFishGraphBuilder();
@@ -39,6 +47,200 @@ test('MiroFish graph extraction disables gleaning to avoid doubling LLM calls', 
   assert.equal(config.enableGleaning, false);
   assert.equal(config.maxChunkTimeout, 45000);
 });
+
+test('MiroFish graph ontology validation normalizes legacy optional summary', () => {
+  const ontology = normalizeMiroFishGraphOntology({
+    entity_types: [{
+      name: ' Person ',
+      description: ' A person ',
+      attributes: [],
+      examples: [],
+    }],
+    edge_types: [],
+  });
+
+  assert.equal(ontology.entity_types[0].name, 'Person');
+  assert.equal(ontology.entity_types[0].description, 'A person');
+  assert.equal(ontology.analysis_summary, '');
+});
+
+test('invalid ontology fails before allocating a graph task', async () => {
+  const taskManager = getTaskManager();
+  const taskCount = taskManager.getAllTasks().length;
+  const builder = new MiroFishGraphBuilder();
+
+  await assert.rejects(
+    builder.buildGraphAsync({ text: 'source', ontology: {} }),
+    MiroFishGraphOntologyValidationError
+  );
+  assert.equal(taskManager.getAllTasks().length, taskCount);
+});
+
+test('graph builds purge legacy raw cache and never write a replacement', async t => {
+  const originalCwd = process.cwd();
+  const root = await mkdtemp(path.join(tmpdir(), 'mirofish-builder-cache-'));
+  const cacheDirectory = path.join(root, 'uploads', 'mirofish-cache');
+  const graphCacheFile = path.join(cacheDirectory, 'graph.json');
+  const ontologyCacheFile = path.join(cacheDirectory, 'ontology.json');
+  const originalWorker = MiroFishGraphBuilder.prototype.buildGraphWorker;
+  await mkdir(cacheDirectory, { recursive: true });
+  await writeFile(graphCacheFile, legacyCacheRecord('graph', {
+    graph_id: 'graph-private',
+    passages: [{ content: 'raw private source' }],
+  }));
+  await writeFile(ontologyCacheFile, legacyCacheRecord('ontology', {
+    entity_types: [],
+    edge_types: [],
+  }));
+  MiroFishGraphBuilder.prototype.buildGraphWorker = async taskId => {
+    getTaskManager().completeTask(taskId, {
+      graphId: 'graph-new',
+      graphData: { graph_id: 'graph-new', nodes: [], edges: [] },
+    });
+  };
+  process.chdir(root);
+  t.after(async () => {
+    process.chdir(originalCwd);
+    MiroFishGraphBuilder.prototype.buildGraphWorker = originalWorker;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const taskId = await new MiroFishGraphBuilder().buildGraphAsync({
+    text: 'source',
+    ontology: { entity_types: [], edge_types: [] },
+  });
+  t.after(() => getTaskManager().deleteTask(taskId));
+
+  await assert.rejects(readFile(graphCacheFile), { code: 'ENOENT' });
+  assert.match(await readFile(ontologyCacheFile, 'utf8'), /"artifact": "ontology"/);
+  assert.deepEqual(await readdir(cacheDirectory), ['ontology.json']);
+  assert.equal(getTaskManager().getTask(taskId)?.status, 'completed');
+});
+
+test('background graph failures store a stable code and never log provider content', async t => {
+  const originalCwd = process.cwd();
+  const root = await mkdtemp(path.join(tmpdir(), 'mirofish-builder-error-'));
+  const originalWorker = MiroFishGraphBuilder.prototype.buildGraphWorker;
+  const originalConsoleError = console.error;
+  const logged = [];
+  MiroFishGraphBuilder.prototype.buildGraphWorker = async () => {
+    const error = new Error(
+      'confidential-passage provider api_key=sk-do-not-store'
+    );
+    error.name = 'ProviderError';
+    error.code = 'PROVIDER_TIMEOUT';
+    throw error;
+  };
+  console.error = (...values) => logged.push(values);
+  process.chdir(root);
+  t.after(async () => {
+    process.chdir(originalCwd);
+    MiroFishGraphBuilder.prototype.buildGraphWorker = originalWorker;
+    console.error = originalConsoleError;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const taskId = await new MiroFishGraphBuilder().buildGraphAsync({
+    text: 'source',
+    ontology: { entity_types: [], edge_types: [] },
+  });
+  t.after(() => getTaskManager().deleteTask(taskId));
+  await new Promise(resolve => setImmediate(resolve));
+
+  const task = getTaskManager().getTask(taskId);
+  assert.equal(task?.status, 'failed');
+  assert.equal(task?.error, 'MIROFISH_GRAPH_BUILD_FAILED');
+  assert.doesNotMatch(JSON.stringify(task), /sk-do-not-store|confidential-passage/);
+  assert.doesNotMatch(JSON.stringify(logged), /sk-do-not-store|confidential-passage/);
+  assert.match(JSON.stringify(logged), /ProviderError/);
+  assert.match(JSON.stringify(logged), /PROVIDER_TIMEOUT/);
+});
+
+test('MiroFish graph adapter retains source passages and communities', () => {
+  const graph = convertKnowledgeGraphToGraphData({
+    entities: new Map([['entity-1', {
+      id: 'entity-1',
+      name: 'Alice',
+      type: 'PERSON',
+      description: 'Founder',
+      aliases: [],
+      mentions: 1,
+      sourceChunks: ['chunk-1'],
+      metadata: {
+        aliases: ['forged'],
+        mentions: 999,
+        sourceChunks: ['forged-chunk'],
+      },
+    }]]),
+    relations: new Map([['relation-1', {
+      id: 'relation-1',
+      source: 'entity-1',
+      target: 'entity-1',
+      type: 'FOUNDED',
+      description: 'Alice founded the company.',
+      weight: 0.7,
+      sourceChunks: ['chunk-1'],
+      metadata: { weight: 99, sourceChunks: ['forged-chunk'] },
+    }]]),
+    communities: new Map([['community-1', {
+      id: 'community-1',
+      name: 'Founders',
+      entities: ['entity-1'],
+      relations: [],
+      summary: 'Founder community',
+      keywords: ['founder'],
+      level: 0,
+    }]]),
+    chunks: new Map([['chunk-1', {
+      id: 'chunk-1',
+      content: 'Alice is a founder.',
+      index: 0,
+      startChar: 0,
+      endChar: 19,
+      overlap: { previous: null, next: null },
+      metadata: { source: 'source.txt', page: 1 },
+    }]]),
+    metadata: {
+      documentId: 'document-1',
+      createdAt: new Date('2026-07-15T00:00:00.000Z'),
+      entityCount: 1,
+      relationCount: 0,
+      communityCount: 1,
+    },
+  });
+
+  assert.equal(graph.artifact_version, 'mirofish-graph-v2');
+  assert.equal(graph.passages[0].id, 'chunk-1');
+  assert.equal(graph.passages[0].source, 'source.txt');
+  assert.equal(graph.communities[0].id, 'community-1');
+  assert.deepEqual(graph.nodes[0].attributes.sourceChunks, ['chunk-1']);
+  assert.deepEqual(graph.nodes[0].attributes.aliases, []);
+  assert.equal(graph.nodes[0].attributes.mentions, 1);
+  assert.deepEqual(graph.edges[0].attributes.sourceChunks, ['chunk-1']);
+  assert.equal(graph.edges[0].attributes.weight, 0.7);
+
+  const publicGraph = createPublicGraphProjection(graph);
+  assert.equal('passages' in publicGraph, false);
+  assert.equal(JSON.stringify(publicGraph).includes('Alice is a founder.'), false);
+});
+
+function legacyCacheRecord(artifact, value) {
+  return JSON.stringify({
+    version: 'mirofish-llm-artifact-v1',
+    cache_key: `${artifact}-key`,
+    source_hash: `${artifact}-source`,
+    model_signature: {
+      version: 'mirofish-llm-artifact-v1',
+      artifact,
+      provider: 'ollama',
+      model_name: 'test',
+      base_url: '',
+      temperature: 0.1,
+    },
+    created_at: '2026-07-15T00:00:00.000Z',
+    artifact: value,
+  }, null, 2);
+}
 
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');

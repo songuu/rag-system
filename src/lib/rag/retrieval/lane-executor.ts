@@ -11,6 +11,10 @@ import type {
   RagRetrievalLaneType,
   RagRetrievalPlan,
 } from './retrieval-plan';
+import {
+  RagRequestAbortedError,
+  throwIfRagRequestAborted,
+} from '../core/cancellation';
 
 export interface RagLaneHandlerContext {
   request: RagQueryRequest;
@@ -22,6 +26,10 @@ export interface RagLaneHandlerContext {
 
 export interface RagLaneHandlerResult {
   evidence: RagEvidence[];
+  transform?: {
+    orderedEvidenceIds: string[];
+    rerankScores?: Record<string, number>;
+  };
   retrievalQuality?: number;
   generationUtility?: number;
   uncertainty?: number;
@@ -66,6 +74,26 @@ export class RagLaneExecutionError extends Error {
   }
 }
 
+export class RagLaneEvidenceValidationError extends Error {
+  readonly code = 'RAG_EVIDENCE_SCOPE_VIOLATION';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RagLaneEvidenceValidationError';
+  }
+}
+
+export class RagLaneProviderBusyError extends Error {
+  readonly code = 'RAG_LANE_PROVIDER_BUSY';
+
+  constructor(retriever: string) {
+    super('Retrieval provider still has detached work in flight: ' + retriever);
+    this.name = 'RagLaneProviderBusyError';
+  }
+}
+
+const DETACHED_PROVIDER_WORK = new Map<string, Set<Promise<void>>>();
+
 export class RagLaneExecutor {
   private readonly handlers: Map<RagRetrievalLaneType, RagLaneHandler>;
   private readonly now: () => number;
@@ -88,7 +116,9 @@ export class RagLaneExecutor {
     request: RagQueryRequest;
     plan: RagRetrievalPlan;
     budget: RagExecutionBudget;
+    signal?: AbortSignal;
   }): Promise<RagLaneExecutorResult> {
+    throwIfRagRequestAborted(input.signal);
     validateBudget(input.budget);
     const startedAt = this.now();
     const transitions: RagExecutionTransition[] = [
@@ -101,6 +131,7 @@ export class RagLaneExecutor {
     let stopReason: RagStopReason | undefined;
 
     for (const lane of input.plan.lanes) {
+      throwIfRagRequestAborted(input.signal);
       if (this.now() - startedAt >= input.budget.maxDurationMs) {
         stopReason = 'budget';
         break;
@@ -164,8 +195,11 @@ export class RagLaneExecutor {
               signal,
             }),
           remainingDurationMs,
-          lane.id
+          lane.id,
+          handler.retriever,
+          input.signal
         );
+        throwIfRagRequestAborted(input.signal);
         if (this.now() - startedAt >= input.budget.maxDurationMs) {
           throw new RagLaneTimeoutError(lane.id);
         }
@@ -184,6 +218,15 @@ export class RagLaneExecutor {
         }
         if (result.evidence.length > acceptedIds.length && evidence.length >= input.budget.maxEvidence) {
           truncated = true;
+        }
+        if (result.transform) {
+          const transformed = applyEvidenceTransform(evidence, result.transform);
+          evidence.splice(0, evidence.length, ...transformed);
+          acceptedIds.splice(
+            0,
+            acceptedIds.length,
+            ...result.transform.orderedEvidenceIds
+          );
         }
         laneExecutions.push({
           laneId: lane.id,
@@ -209,8 +252,19 @@ export class RagLaneExecutor {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const timedOut = error instanceof RagLaneTimeoutError;
+        const requestAborted = error instanceof RagRequestAbortedError;
+        const providerBusy = error instanceof RagLaneProviderBusyError;
+        const evidenceValidationFailed = error instanceof RagLaneEvidenceValidationError;
         const laneStopReason: RagStopReason = timedOut ? 'budget' : 'failed';
-        const errorCode = timedOut ? 'RAG_LANE_TIMEOUT' : 'RAG_LANE_FAILED';
+        const errorCode = requestAborted
+          ? error.code
+          : timedOut
+          ? 'RAG_LANE_TIMEOUT'
+          : providerBusy
+            ? error.code
+          : evidenceValidationFailed
+            ? error.code
+            : 'RAG_LANE_FAILED';
         laneExecutions.push({
           laneId: lane.id,
           retriever: handler.retriever,
@@ -220,7 +274,7 @@ export class RagLaneExecutor {
           stopReason: laneStopReason,
           errorCode,
         });
-        if (lane.required) {
+        if (lane.required || evidenceValidationFailed || requestAborted) {
           const partialResult = createFailureResult({
             evidence,
             laneExecutions,
@@ -228,11 +282,21 @@ export class RagLaneExecutor {
             budget: input.budget,
             stopReason: laneStopReason,
             at: this.now(),
-            reason: timedOut ? 'required_lane_timed_out' : 'required_lane_failed',
+            reason: timedOut
+              ? 'required_lane_timed_out'
+              : requestAborted
+                ? 'request_aborted'
+              : providerBusy
+                ? 'required_lane_provider_busy'
+              : evidenceValidationFailed
+                ? 'evidence_scope_validation_failed'
+                : 'required_lane_failed',
           });
           throw new RagLaneExecutionError(
             lane.id,
-            'Required retrieval lane failed: ' + lane.id + ': ' + message,
+            evidenceValidationFailed
+              ? 'Retrieval lane evidence validation failed: ' + lane.id + ': ' + message
+              : 'Required retrieval lane failed: ' + lane.id + ': ' + message,
             partialResult,
             { cause: error, code: errorCode }
           );
@@ -244,6 +308,7 @@ export class RagLaneExecutor {
       }
     }
 
+    throwIfRagRequestAborted(input.signal);
     if (!stopReason) {
       stopReason = evidence.length > 0 ? 'sufficient' : 'no_gain';
     }
@@ -281,30 +346,82 @@ class RagLaneTimeoutError extends Error {
 async function executeLaneWithDeadline<T>(
   execute: (signal: AbortSignal) => Promise<T>,
   remainingDurationMs: number,
-  laneId: string
+  laneId: string,
+  retriever: string,
+  requestSignal?: AbortSignal
 ): Promise<T> {
+  throwIfRagRequestAborted(requestSignal);
   if (remainingDurationMs <= 0) {
     throw new RagLaneTimeoutError(laneId);
   }
+  if ((DETACHED_PROVIDER_WORK.get(retriever)?.size ?? 0) > 0) {
+    throw new RagLaneProviderBusyError(retriever);
+  }
   const controller = new AbortController();
+  let operationSettled = false;
+  const operation = Promise.resolve().then(() => execute(controller.signal));
+  const settlement = operation
+    .then(
+      () => { operationSettled = true; },
+      () => { operationSettled = true; }
+    )
+    .finally(() => {
+      const pendingWork = DETACHED_PROVIDER_WORK.get(retriever);
+      pendingWork?.delete(settlement);
+      if (pendingWork?.size === 0) {
+        DETACHED_PROVIDER_WORK.delete(retriever);
+      }
+    });
+  let tracked = false;
+  const trackUnsettledOperation = () => {
+    if (operationSettled || tracked) return;
+    const pendingWork = DETACHED_PROVIDER_WORK.get(retriever) ?? new Set();
+    pendingWork.add(settlement);
+    DETACHED_PROVIDER_WORK.set(retriever, pendingWork);
+    tracked = true;
+  };
   let timeout: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: RagLaneTimeoutError | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
-      reject(new RagLaneTimeoutError(laneId));
-      controller.abort();
+      const error = new RagLaneTimeoutError(laneId);
+      timeoutError = error;
+      controller.abort(error);
+      reject(error);
     }, remainingDurationMs);
   });
+  let requestAbortError: RagRequestAbortedError | undefined;
+  let rejectRequestAbort: ((error: RagRequestAbortedError) => void) | undefined;
+  const requestAbortPromise = new Promise<never>((_, reject) => {
+    rejectRequestAbort = reject;
+  });
+  const abortFromRequest = () => {
+    if (requestAbortError || timeoutError) return;
+    const error = new RagRequestAbortedError();
+    requestAbortError = error;
+    controller.abort(error);
+    rejectRequestAbort?.(error);
+  };
+  requestSignal?.addEventListener('abort', abortFromRequest, { once: true });
+  if (requestSignal?.aborted) abortFromRequest();
   try {
     return await Promise.race([
-      execute(controller.signal),
+      operation,
       timeoutPromise,
+      requestAbortPromise,
     ]);
   } catch (error) {
-    if (controller.signal.aborted) {
-      throw new RagLaneTimeoutError(laneId);
+    if (requestAbortError) {
+      trackUnsettledOperation();
+      throw requestAbortError;
+    }
+    if (timeoutError) {
+      trackUnsettledOperation();
+      throw timeoutError;
     }
     throw error;
   } finally {
+    requestSignal?.removeEventListener('abort', abortFromRequest);
     if (timeout !== undefined) {
       clearTimeout(timeout);
     }
@@ -338,25 +455,69 @@ function assertEvidenceAllowed(
   request: RagQueryRequest
 ): void {
   if (!evidence.id.trim() || !evidence.content.trim()) {
-    throw new Error('Retrieval lane returned evidence without identity or content.');
+    throw new RagLaneEvidenceValidationError(
+      'Retrieval lane returned evidence without identity or content.'
+    );
   }
   if (evidence.laneId !== lane.id) {
-    throw new Error('Retrieval lane returned evidence with mismatched lane provenance.');
+    throw new RagLaneEvidenceValidationError(
+      'Retrieval lane returned evidence with mismatched lane provenance.'
+    );
   }
   if (evidence.trustLevel === 'quarantined') {
-    throw new Error('Retrieval lane returned quarantined evidence.');
+    throw new RagLaneEvidenceValidationError(
+      'Retrieval lane returned quarantined evidence.'
+    );
   }
   const scope = request.retrievalScope;
   if (!scope) return;
   if (evidence.tenantId !== scope.tenantId) {
-    throw new Error('Retrieval lane returned evidence with a tenant scope mismatch.');
+    throw new RagLaneEvidenceValidationError(
+      'Retrieval lane returned evidence with a tenant scope mismatch.'
+    );
   }
   if (evidence.corpusId !== scope.corpusId) {
-    throw new Error('Retrieval lane returned evidence with a corpus scope mismatch.');
+    throw new RagLaneEvidenceValidationError(
+      'Retrieval lane returned evidence with a corpus scope mismatch.'
+    );
   }
   if (!scope.allowedTrustLevels.includes(evidence.trustLevel)) {
-    throw new Error('Retrieval lane returned evidence outside the allowed trust scope.');
+    throw new RagLaneEvidenceValidationError(
+      'Retrieval lane returned evidence outside the allowed trust scope.'
+    );
   }
+}
+
+function applyEvidenceTransform(
+  evidence: readonly RagEvidence[],
+  transform: NonNullable<RagLaneHandlerResult['transform']>
+): RagEvidence[] {
+  if (transform.orderedEvidenceIds.length !== evidence.length) {
+    throw new Error('Evidence transform must preserve the complete evidence set.');
+  }
+  const byId = new Map(evidence.map(item => [item.id, item]));
+  const seen = new Set<string>();
+  const rerankScores = transform.rerankScores ?? {};
+  for (const [id, score] of Object.entries(rerankScores)) {
+    if (!byId.has(id)) {
+      throw new Error('Evidence transform contains a rerank score for an unknown evidence ID.');
+    }
+    if (!Number.isFinite(score)) {
+      throw new Error('Evidence transform rerank scores must be finite.');
+    }
+  }
+  return transform.orderedEvidenceIds.map(id => {
+    if (seen.has(id)) {
+      throw new Error('Evidence transform contains a duplicate evidence ID.');
+    }
+    seen.add(id);
+    const item = byId.get(id);
+    if (!item) {
+      throw new Error('Evidence transform contains an unknown evidence ID.');
+    }
+    const rerankScore = rerankScores[id];
+    return rerankScore === undefined ? item : { ...item, rerankScore };
+  });
 }
 
 function validateBudget(budget: RagExecutionBudget): void {

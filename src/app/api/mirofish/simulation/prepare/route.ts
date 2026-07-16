@@ -7,7 +7,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProjectStore } from '@/lib/mirofish/project-store';
 import { prepareMiroFishSimulation } from '@/lib/mirofish/prepare-service';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 import type {
   EntityProfile,
   GraphNode,
@@ -53,7 +56,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const modelOverride = validateModelOverride(body.modelOverride) ?? project.model_config;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) ?? project.model_config;
     const result = await prepareMiroFishSimulation({
       project,
       graphNodes,
@@ -81,6 +84,10 @@ export async function POST(request: NextRequest) {
       config: result.config,
     });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '准备模拟环境失败' },
       { status: 500 }

@@ -8,7 +8,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getReportAgent } from '@/lib/mirofish/report-agent';
 import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 import type { ReportInfo } from '@/lib/mirofish/types';
 
 // 内存存储报告
@@ -23,7 +26,7 @@ export async function POST(request: NextRequest) {
       simulation_id: string;
       project_id: string;
     };
-    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
 
     if (!simulation_id) {
       return NextResponse.json(
@@ -88,6 +91,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, report_id: reportId });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '生成报告失败' },
       { status: 500 }

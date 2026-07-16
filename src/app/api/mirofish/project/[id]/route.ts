@@ -8,7 +8,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getProjectStore } from '@/lib/mirofish/project-store';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -77,7 +80,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       }
     }
     if (body.model_config !== undefined && body.model_config !== null) {
-      const validated = validateModelOverride(body.model_config);
+      const validated = validateHttpModelOverride(body.model_config);
       if (!validated) {
         return NextResponse.json({ success: false, error: 'model_config 格式无效' }, { status: 400 });
       }
@@ -96,6 +99,10 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
     return NextResponse.json({ success: true, project });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '更新项目失败' },
       { status: 500 }

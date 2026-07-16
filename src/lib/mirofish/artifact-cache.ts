@@ -5,6 +5,8 @@
  * without mutating the global model factory state.
  */
 
+import { open, opendir, unlink } from 'node:fs/promises';
+import path from 'node:path';
 import {
   createArtifactCacheIdentity,
   loadArtifactFromCache,
@@ -16,7 +18,6 @@ import { getConfigSummary } from '../model-config';
 import type {
   EntityProfile,
   GraphBuildRequest,
-  GraphData,
   ModelOverride,
   Ontology,
   OntologyGenerateRequest,
@@ -26,6 +27,14 @@ import type {
 
 const CACHE_VERSION = 'mirofish-llm-artifact-v1';
 const CACHE_DIR = 'uploads/mirofish-cache';
+const LEGACY_GRAPH_CACHE_PREFIX_BYTES = 16 * 1024;
+const LEGACY_GRAPH_CACHE_MAX_DIRECTORY_ENTRIES = 10_000;
+const LEGACY_GRAPH_CACHE_SIGNATURE =
+  /"model_signature"\s*:\s*\{\s*"version"\s*:\s*"mirofish-llm-artifact-v1"\s*,\s*"artifact"\s*:\s*"graph"/;
+const legacyGraphCacheCleanupByDirectory = new Map<
+  string,
+  Promise<MiroFishLegacyGraphCacheCleanupResult>
+>();
 
 type MiroFishCacheArtifact = 'ontology' | 'profile' | 'profile_batch' | 'graph';
 
@@ -39,6 +48,11 @@ interface MiroFishModelSignature {
 
 export type MiroFishCacheIdentity = ArtifactCacheIdentity<MiroFishModelSignature>;
 export type MiroFishCacheHit<T> = ArtifactCacheHit<T>;
+
+export interface MiroFishLegacyGraphCacheCleanupResult {
+  scanned: number;
+  removed: number;
+}
 
 export function getMiroFishOntologyCacheIdentity(input: {
   request: OntologyGenerateRequest;
@@ -97,6 +111,7 @@ export function getMiroFishGraphCacheIdentity(input: {
     temperature: input.modelOverride?.temperature ?? 0.1,
     modelOverride: input.modelOverride,
     source: {
+      graphArtifactVersion: 'mirofish-graph-v2',
       text: normalizeText(input.request.text),
       ontology: normalizeOntology(input.request.ontology),
       chunkSize: input.request.chunkSize,
@@ -155,21 +170,75 @@ export function saveMiroFishProfileBatchToCache(
   });
 }
 
-export function loadMiroFishGraphFromCache(
-  identity: MiroFishCacheIdentity
-): Promise<MiroFishCacheHit<GraphData> | null> {
-  return loadArtifactFromCache(identity, isGraphData);
+/**
+ * Remove the retired graph cache without touching ontology/profile artifacts.
+ *
+ * WHY: legacy graph cache records contain raw source passages but have no
+ * tenant/corpus binding, quota, or TTL. They are intentionally never read or
+ * written again. Cleanup examines only the bounded record prefix because the
+ * model signature precedes the potentially large raw graph payload.
+ */
+export async function purgeMiroFishLegacyGraphCache(
+  cacheDirectory = resolveMiroFishCacheDirectory()
+): Promise<MiroFishLegacyGraphCacheCleanupResult> {
+  const resolvedDirectory = path.resolve(cacheDirectory);
+  const existingCleanup = legacyGraphCacheCleanupByDirectory.get(resolvedDirectory);
+  if (existingCleanup) return existingCleanup;
+
+  const cleanup = scanAndPurgeMiroFishLegacyGraphCache(resolvedDirectory);
+  legacyGraphCacheCleanupByDirectory.set(resolvedDirectory, cleanup);
+  try {
+    return await cleanup;
+  } catch (error) {
+    if (legacyGraphCacheCleanupByDirectory.get(resolvedDirectory) === cleanup) {
+      legacyGraphCacheCleanupByDirectory.delete(resolvedDirectory);
+    }
+    throw error;
+  }
 }
 
-export function saveMiroFishGraphToCache(
-  identity: MiroFishCacheIdentity,
-  graph: GraphData
-): Promise<boolean> {
-  return saveArtifactToCache(identity, graph, {
-    artifact: 'graph',
-    node_count: graph.node_count,
-    edge_count: graph.edge_count,
-  });
+async function scanAndPurgeMiroFishLegacyGraphCache(
+  cacheDirectory: string
+): Promise<MiroFishLegacyGraphCacheCleanupResult> {
+  let directory;
+  try {
+    directory = await opendir(cacheDirectory);
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') {
+      return { scanned: 0, removed: 0 };
+    }
+    throw createLegacyGraphCacheCleanupError(error);
+  }
+
+  let scanned = 0;
+  let removed = 0;
+  let directoryEntryCount = 0;
+  try {
+    for await (const entry of directory) {
+      directoryEntryCount += 1;
+      if (directoryEntryCount > LEGACY_GRAPH_CACHE_MAX_DIRECTORY_ENTRIES) {
+        throw new Error('Legacy MiroFish cache directory exceeds cleanup limits.');
+      }
+      if (!entry.isFile() || !entry.name.includes('.json')) continue;
+      scanned += 1;
+      const cacheFile = path.join(cacheDirectory, entry.name);
+      try {
+        if (!await isLegacyGraphCacheFile(cacheFile)) continue;
+        await unlink(cacheFile);
+        removed += 1;
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'ENOENT') continue;
+        throw createLegacyGraphCacheCleanupError(error);
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Legacy MiroFish cache directory exceeds cleanup limits.') {
+      throw createLegacyGraphCacheCleanupError(error);
+    }
+    throw error;
+  }
+
+  return { scanned, removed };
 }
 
 function createMiroFishCacheIdentity(input: {
@@ -275,14 +344,31 @@ function isEntityProfileArray(value: unknown): value is EntityProfile[] {
   return Array.isArray(value) && value.every(isEntityProfile);
 }
 
-function isGraphData(value: unknown): value is GraphData {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<GraphData>;
-  return (
-    typeof candidate.graph_id === 'string' &&
-    Array.isArray(candidate.nodes) &&
-    Array.isArray(candidate.edges) &&
-    typeof candidate.node_count === 'number' &&
-    typeof candidate.edge_count === 'number'
-  );
+function resolveMiroFishCacheDirectory(): string {
+  return path.join(process.cwd(), 'uploads', 'mirofish-cache');
+}
+
+async function isLegacyGraphCacheFile(cacheFile: string): Promise<boolean> {
+  const handle = await open(cacheFile, 'r');
+  try {
+    const buffer = Buffer.alloc(LEGACY_GRAPH_CACHE_PREFIX_BYTES);
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      LEGACY_GRAPH_CACHE_PREFIX_BYTES,
+      0
+    );
+    const prefix = buffer.toString('utf8', 0, bytesRead);
+    return LEGACY_GRAPH_CACHE_SIGNATURE.test(prefix);
+  } finally {
+    await handle.close();
+  }
+}
+
+function createLegacyGraphCacheCleanupError(cause: unknown): Error {
+  return new Error('Legacy MiroFish graph cache cleanup failed.', { cause });
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return !!error && typeof error === 'object' && 'code' in error;
 }

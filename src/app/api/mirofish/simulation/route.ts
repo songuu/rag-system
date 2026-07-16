@@ -9,7 +9,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { buildSimulationConfig } from '@/lib/mirofish/config-normalizer';
 import { getProjectStore } from '@/lib/mirofish/project-store';
 import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 import type { EntityProfile, SimulationConfigDraft } from '@/lib/mirofish/types';
 
 export async function POST(request: NextRequest) {
@@ -21,7 +24,7 @@ export async function POST(request: NextRequest) {
       prepare_id?: string;
       project_id?: string;
     };
-    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
 
     const projectId = config?.project_id || project_id;
     if (!projectId) {
@@ -73,6 +76,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, simulation: info });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '创建模拟失败' },
       { status: 500 }

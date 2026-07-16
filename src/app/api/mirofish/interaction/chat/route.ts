@@ -6,7 +6,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getReportAgent } from '@/lib/mirofish/report-agent';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 import { reportStore } from '../../report/route';
 
 export async function POST(request: NextRequest) {
@@ -17,7 +20,7 @@ export async function POST(request: NextRequest) {
       question: string;
       history?: Array<{ role: string; content: string }>;
     };
-    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
 
     if (!report_id || !question) {
       return NextResponse.json(
@@ -50,6 +53,10 @@ export async function POST(request: NextRequest) {
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '对话失败' },
       { status: 500 }

@@ -11,6 +11,7 @@ export interface InvokeStructuredJsonOptions<T> {
   input: BaseLanguageModelInput;
   schema: StructuredJsonSchema;
   normalize: (value: unknown) => T;
+  signal?: AbortSignal;
 }
 
 export interface StructuredJsonResult<T> {
@@ -20,7 +21,10 @@ export interface StructuredJsonResult<T> {
 }
 
 type StructuredRunnable<T> = {
-  invoke(input: BaseLanguageModelInput): Promise<T | { parsed: T; raw?: unknown }>;
+  invoke(
+    input: BaseLanguageModelInput,
+    options?: { signal?: AbortSignal }
+  ): Promise<T | { parsed: T; raw?: unknown }>;
 };
 
 /**
@@ -32,14 +36,17 @@ export async function invokeStructuredJson<T>({
   input,
   schema,
   normalize,
+  signal,
 }: InvokeStructuredJsonOptions<T>): Promise<StructuredJsonResult<T>> {
+  signal?.throwIfAborted();
   try {
     const runnable = model.withStructuredOutput?.(schema.schema, { name: schema.name }) as
       | StructuredRunnable<unknown>
       | undefined;
 
     if (runnable) {
-      const raw = await runnable.invoke(input);
+      const raw = await runnable.invoke(input, { signal });
+      signal?.throwIfAborted();
       const parsed = isParsedStructuredOutput(raw) ? raw.parsed : raw;
       return {
         data: normalize(parsed),
@@ -47,16 +54,24 @@ export async function invokeStructuredJson<T>({
         raw,
       };
     }
-  } catch {
+  } catch (error) {
+    rethrowIfAborted(error, signal);
     // Some local providers expose the method but do not support the schema path.
   }
 
-  const raw = await model.invoke(input);
+  signal?.throwIfAborted();
+  const raw = await model.invoke(input, { signal });
+  signal?.throwIfAborted();
   return {
     data: normalize(parseStructuredJson(raw)),
     mode: 'json',
     raw,
   };
+}
+
+function rethrowIfAborted(error: unknown, signal?: AbortSignal): void {
+  if (signal?.aborted) signal.throwIfAborted();
+  if (error instanceof Error && error.name === 'AbortError') throw error;
 }
 
 export function parseStructuredJson(raw: unknown): unknown {

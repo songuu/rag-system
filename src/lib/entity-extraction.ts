@@ -15,6 +15,34 @@ import { Embeddings } from "@langchain/core/embeddings";
 import { BaseMessage } from "@langchain/core/messages";
 import { createLLM, createEmbedding, getModelFactory, getConfigSummary } from "./model-config";
 import { getEmbeddingConfigSummary } from "./embedding-config";
+import { createStableErrorLog } from "./security/error-redaction";
+
+export class EntityExtractionProviderBusyError extends Error {
+  readonly code = 'ENTITY_EXTRACTION_PROVIDER_BUSY';
+
+  constructor() {
+    super('Entity extraction provider still has timed-out work in flight.');
+    this.name = 'EntityExtractionProviderBusyError';
+  }
+}
+
+export class EntityExtractionProviderTimeoutError extends Error {
+  readonly code = 'ENTITY_EXTRACTION_PROVIDER_TIMEOUT';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'EntityExtractionProviderTimeoutError';
+  }
+}
+
+const TIMED_OUT_ENTITY_EXTRACTION_WORK = new Map<string, Set<Promise<void>>>();
+
+function isEntityExtractionProviderAdmissionError(
+  error: unknown
+): error is EntityExtractionProviderBusyError | EntityExtractionProviderTimeoutError {
+  return error instanceof EntityExtractionProviderBusyError
+    || error instanceof EntityExtractionProviderTimeoutError;
+}
 
 // ==================== 类型定义 ====================
 
@@ -337,6 +365,8 @@ export class EntityExtractor {
   private config: ExtractionConfig;
   private llm: BaseChatModel;
   private embeddings: Embeddings;
+  private readonly providerAdmissionKey: string;
+  private readonly activeProviderControllers = new Set<AbortController>();
   private progressCallback?: (progress: ExtractionProgress) => void;
   
   // 超时控制
@@ -346,7 +376,11 @@ export class EntityExtractor {
 
   constructor(
     config: Partial<ExtractionConfig> = {},
-    options: { llmInstance?: BaseChatModel } = {}
+    options: {
+      llmInstance?: BaseChatModel;
+      embeddingInstance?: Embeddings;
+      providerKey?: string;
+    } = {}
   ) {
     // 使用动态获取的默认配置，确保使用正确的模型名
     const defaultConfig = getDefaultExtractionConfig();
@@ -361,9 +395,11 @@ export class EntityExtractor {
       });
     }
 
-    this.embeddings = createEmbedding(this.config.embeddingModel !== 'default' ? this.config.embeddingModel : undefined);
-
     const factory = getModelFactory();
+    this.embeddings = options.embeddingInstance
+      ?? createEmbedding(this.config.embeddingModel !== 'default' ? this.config.embeddingModel : undefined);
+    this.providerAdmissionKey = options.providerKey?.trim()
+      || `${factory.getProvider()}:${this.config.llmModel.trim() || 'default'}`;
     console.log(`[EntityExtractor] 初始化完成, 提供商: ${factory.getProvider()}, LLM: ${this.config.llmModel}, Embedding: ${this.config.embeddingModel}`);
   }
 
@@ -498,21 +534,66 @@ export class EntityExtractor {
   }
 
   /**
-   * 带超时的 Promise 包装器
+   * Provider deadline with orphan admission control.
+   *
+   * AbortSignal is advisory: a provider may ignore it. When that happens, the
+   * real settlement remains reserved for this provider/model key so later
+   * extraction work cannot multiply detached requests.
    */
   private async withTimeout<T>(
-    promise: Promise<T>,
+    operation: (signal: AbortSignal) => Promise<T>,
     timeoutMs: number,
     errorMessage: string
   ): Promise<T> {
+    const timedOutWork = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.providerAdmissionKey);
+    if (timedOutWork && timedOutWork.size > 0) {
+      throw new EntityExtractionProviderBusyError();
+    }
+
+    const controller = new AbortController();
+    this.activeProviderControllers.add(controller);
+    let operationSettled = false;
+    let timeoutError: EntityExtractionProviderTimeoutError | undefined;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const operationPromise = Promise.resolve()
+      .then(() => operation(controller.signal));
+    const settlement = operationPromise
+      .then(
+        () => undefined,
+        () => undefined
+      );
+    void settlement.then(() => {
+      operationSettled = true;
+      this.activeProviderControllers.delete(controller);
+      const reservations = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.providerAdmissionKey);
+      reservations?.delete(settlement);
+      if (reservations?.size === 0) {
+        TIMED_OUT_ENTITY_EXTRACTION_WORK.delete(this.providerAdmissionKey);
+      }
+    });
+
     try {
       return await Promise.race([
-        promise,
+        operationPromise,
         new Promise<T>((_, reject) => {
-          timeoutId = setTimeout(() => reject(new Error(errorMessage)), timeoutMs);
+          timeoutId = setTimeout(() => {
+            timeoutError = new EntityExtractionProviderTimeoutError(errorMessage);
+            if (!operationSettled) {
+              const reservations = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.providerAdmissionKey)
+                ?? new Set<Promise<void>>();
+              reservations.add(settlement);
+              TIMED_OUT_ENTITY_EXTRACTION_WORK.set(this.providerAdmissionKey, reservations);
+            }
+            reject(timeoutError);
+            controller.abort(timeoutError);
+          }, timeoutMs);
         }),
       ]);
+    } catch (error) {
+      if (timeoutError) {
+        throw timeoutError;
+      }
+      throw error;
     } finally {
       if (timeoutId) clearTimeout(timeoutId);
     }
@@ -532,6 +613,9 @@ export class EntityExtractor {
    */
   abort(): void {
     this.aborted = true;
+    for (const controller of this.activeProviderControllers) {
+      controller.abort(new Error('Entity extraction aborted.'));
+    }
   }
 
   /**
@@ -750,7 +834,13 @@ export class EntityExtractor {
         this.checkTimeout();
 
       } catch (error) {
-        console.error(`[EntityExtractor] 提取块 ${chunk.id} 失败:`, error);
+        if (isEntityExtractionProviderAdmissionError(error)) {
+          throw error;
+        }
+        console.error(
+          '[EntityExtractor] chunk extraction failed',
+          createStableErrorLog(error)
+        );
       }
     }
 
@@ -922,7 +1012,7 @@ export class EntityExtractor {
     try {
       // 使用超时包装 LLM 调用
       const response = await this.withTimeout(
-        this.llm.invoke(prompt),
+        signal => this.llm.invoke(prompt, { signal }),
         chunkTimeout,
         `单块提取超时 (${Math.round(chunkTimeout / 1000)}秒)`
       );
@@ -952,7 +1042,7 @@ export class EntityExtractor {
           }))
           .filter(r => r.source.length > 0 && r.target.length > 0);
 
-        console.log(`[EntityExtractor] 块 ${chunk.id}: 提取 ${validEntities.length} 实体, ${validRelations.length} 关系`);
+        console.log(`[EntityExtractor] 提取 ${validEntities.length} 实体, ${validRelations.length} 关系`);
         
         return {
           entities: validEntities,
@@ -960,12 +1050,21 @@ export class EntityExtractor {
         };
       }
       
-      console.warn(`[EntityExtractor] 块 ${chunk.id}: 无法解析 JSON，跳过`);
+      console.warn('[EntityExtractor] 无法解析 JSON，跳过当前块');
     } catch (error) {
+      if (isEntityExtractionProviderAdmissionError(error)) {
+        throw error;
+      }
       if (error instanceof Error && error.message.includes('超时')) {
-        console.warn(`[EntityExtractor] 块 ${chunk.id}: ${error.message}`);
+        console.warn(
+          '[EntityExtractor] chunk extraction timed out',
+          createStableErrorLog(error)
+        );
       } else {
-        console.error(`[EntityExtractor] 块 ${chunk.id} 提取失败:`, error instanceof Error ? error.message : error);
+        console.error(
+          '[EntityExtractor] chunk extraction failed',
+          createStableErrorLog(error)
+        );
       }
     }
 
@@ -1002,7 +1101,7 @@ export class EntityExtractor {
       try {
         const gleaningTimeout = this.getOperationTimeout(this.calculateChunkTimeout(chunk.content.length));
         const response = await this.withTimeout(
-          this.llm.invoke(prompt),
+          signal => this.llm.invoke(prompt, { signal }),
           gleaningTimeout,
           `Gleaning 超时 (${Math.round(gleaningTimeout / 1000)}秒)`
         );
@@ -1068,7 +1167,10 @@ export class EntityExtractor {
           }
         }
       } catch (error) {
-        console.error('[EntityExtractor] Gleaning 失败:', error);
+        if (isEntityExtractionProviderAdmissionError(error)) {
+          throw error;
+        }
+        console.error('[EntityExtractor] gleaning failed', createStableErrorLog(error));
       }
     }
   }
@@ -1243,7 +1345,7 @@ export class EntityExtractor {
 
       const mergeTimeout = this.getOperationTimeout(Math.min(15000, this.config.maxChunkTimeout));
       const response = await this.withTimeout(
-        this.llm.invoke(prompt),
+        signal => this.llm.invoke(prompt, { signal }),
         mergeTimeout,
         `实体消歧超时 (${Math.round(mergeTimeout / 1000)}秒)`
       );
@@ -1254,7 +1356,10 @@ export class EntityExtractor {
         return result.isSameEntity === true && (result.confidence || 0) > 0.7;
       }
     } catch (error) {
-      console.error('[EntityExtractor] 实体消歧判断失败:', error);
+      if (isEntityExtractionProviderAdmissionError(error)) {
+        throw error;
+      }
+      console.error('[EntityExtractor] entity resolution failed', createStableErrorLog(error));
     }
 
     return false;
@@ -1485,7 +1590,13 @@ export class EntityExtractor {
         community.embedding = embedding;
 
       } catch (error) {
-        console.error(`[EntityExtractor] 生成社区 ${id} 摘要失败:`, error);
+        if (isEntityExtractionProviderAdmissionError(error)) {
+          throw error;
+        }
+        console.error(
+          '[EntityExtractor] community summary generation failed',
+          createStableErrorLog(error)
+        );
         community.name = `社区 ${summarized + 1}`;
         community.summary = `包含 ${community.entities.length} 个实体的社区`;
         community.keywords = [];
@@ -1540,7 +1651,7 @@ export class EntityExtractor {
     try {
       const summaryTimeout = this.getOperationTimeout(Math.min(20000, this.config.maxChunkTimeout));
       const response = await this.withTimeout(
-        this.llm.invoke(prompt),
+        signal => this.llm.invoke(prompt, { signal }),
         summaryTimeout,
         `社区摘要超时 (${Math.round(summaryTimeout / 1000)}秒)`
       );
@@ -1554,7 +1665,13 @@ export class EntityExtractor {
         };
       }
     } catch (error) {
-      console.error('[EntityExtractor] 解析社区摘要失败:', error);
+      if (isEntityExtractionProviderAdmissionError(error)) {
+        throw error;
+      }
+      console.error(
+        '[EntityExtractor] community summary parsing failed',
+        createStableErrorLog(error)
+      );
     }
 
     return {
@@ -1577,7 +1694,6 @@ export class EntityExtractor {
     this.estimatedTimeout = this.calculateTimeout(text.length, estimatedChunkCount);
     
     console.log(`[EntityExtractor] 开始抽取任务`, {
-      documentId,
       textLength: text.length,
       estimatedChunks: estimatedChunkCount,
       estimatedTimeoutSeconds: Math.round(this.estimatedTimeout / 1000),
@@ -1662,7 +1778,10 @@ export class EntityExtractor {
       };
     } catch (error) {
       const duration = Date.now() - this.startTime;
-      console.error(`[EntityExtractor] 抽取失败 (运行 ${Math.round(duration / 1000)} 秒):`, error);
+      console.error(
+        `[EntityExtractor] extraction failed after ${Math.round(duration / 1000)} seconds`,
+        createStableErrorLog(error)
+      );
       throw error;
     }
   }

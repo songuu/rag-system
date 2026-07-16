@@ -6,7 +6,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { OntologyGenerator } from '@/lib/mirofish/ontology-generator';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 import {
   getMiroFishOntologyCacheIdentity,
   loadMiroFishOntologyFromCache,
@@ -29,7 +32,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
     const cacheIdentity = getMiroFishOntologyCacheIdentity({
       request: {
         texts: body.texts,
@@ -61,6 +64,10 @@ export async function POST(request: NextRequest) {
       cache_status: stored ? 'stored' : 'miss',
     });
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     console.error('[MiroFish Ontology API] 生成失败:', error);
 
     return NextResponse.json(

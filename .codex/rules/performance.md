@@ -37,3 +37,16 @@ provider calls. Race each lane against its remaining budget, abort cooperatively
 rejections as timeout/budget, and check the signal after every non-cancellable provider stage. Record
 that SDK calls without signal support are soft cancellation: the request stops, but the in-flight call
 may finish in the background and needs provider timeout/concurrency limits.
+
+## Provider Orphans Are Sets, Not One Slot
+
+Several concurrent calls can time out or be cancelled before any underlying provider call settles.
+Track every orphan promise per provider/model in a set, admission-block new work while the set is
+non-empty, and remove each reservation only from that operation's settlement callback. A single map
+value is overwritten by later failures and can reopen capacity while older work is still running.
+
+## Graph Budgets Cover The Whole Read Path
+
+Graph traversal limits must include adjacency construction, seed selection, BFS state/edge expansion,
+community joins, passage selection, and evidence projection—not only the BFS queue. Enforce aggregate
+reference limits when loading artifacts and yield in bounded batches so request timeout/abort can run.

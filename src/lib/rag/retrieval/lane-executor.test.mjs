@@ -142,6 +142,167 @@ test('abort-aware handlers are still classified as lane timeouts', async () => {
   );
 });
 
+test('timed-out non-cooperative providers are admission-blocked until work settles', async () => {
+  let calls = 0;
+  let releaseTimedOutCall;
+  const executor = new RagLaneExecutor([
+    {
+      type: 'dense-vector',
+      retriever: 'non-cooperative-dense',
+      async execute({ lane }) {
+        calls++;
+        if (calls === 1) {
+          return new Promise(resolve => {
+            releaseTimedOutCall = () => resolve({
+              evidence: [createEvidence('late', lane.id)],
+            });
+          });
+        }
+        return { evidence: [createEvidence('fresh', lane.id)] };
+      },
+    },
+  ]);
+  const input = {
+    request: createRequest(),
+    plan: createPlan([createLane('dense', 'dense-vector', true)]),
+    budget: { maxLanes: 1, maxEvidence: 2, maxDurationMs: 5 },
+  };
+
+  await assert.rejects(() => executor.execute(input), error => {
+    assert.equal(error.code, 'RAG_LANE_TIMEOUT');
+    return true;
+  });
+  await assert.rejects(
+    () => executor.execute({ ...input, budget: { ...input.budget, maxDurationMs: 1000 } }),
+    error => {
+      assert.equal(error.code, 'RAG_LANE_PROVIDER_BUSY');
+      return true;
+    }
+  );
+  assert.equal(calls, 1);
+
+  releaseTimedOutCall();
+  await new Promise(resolve => setImmediate(resolve));
+  const result = await executor.execute({
+    ...input,
+    budget: { ...input.budget, maxDurationMs: 1000 },
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(result.evidence.map(item => item.id), ['fresh']);
+});
+
+test('provider admission remains blocked until every concurrent timed-out call settles', async () => {
+  const releases = [];
+  let calls = 0;
+  const retriever = `concurrent-non-cooperative-${Date.now()}`;
+  const executor = new RagLaneExecutor([
+    {
+      type: 'dense-vector',
+      retriever,
+      async execute({ lane }) {
+        calls++;
+        if (calls <= 2) {
+          return new Promise(resolve => {
+            releases.push(() => resolve({
+              evidence: [createEvidence(`late-${calls}`, lane.id)],
+            }));
+          });
+        }
+        return { evidence: [createEvidence('fresh', lane.id)] };
+      },
+    },
+  ]);
+  const input = {
+    request: createRequest(),
+    plan: createPlan([createLane('dense', 'dense-vector', true)]),
+    budget: { maxLanes: 1, maxEvidence: 2, maxDurationMs: 10 },
+  };
+
+  const timedOutCalls = await Promise.allSettled([
+    executor.execute(input),
+    executor.execute(input),
+  ]);
+  assert.deepEqual(
+    timedOutCalls.map(result => result.status === 'rejected' ? result.reason.code : 'fulfilled'),
+    ['RAG_LANE_TIMEOUT', 'RAG_LANE_TIMEOUT']
+  );
+  assert.equal(calls, 2);
+  assert.equal(releases.length, 2);
+
+  releases[1]();
+  await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(
+    () => executor.execute({ ...input, budget: { ...input.budget, maxDurationMs: 1000 } }),
+    error => error?.code === 'RAG_LANE_PROVIDER_BUSY'
+  );
+  assert.equal(calls, 2);
+
+  releases[0]();
+  await new Promise(resolve => setImmediate(resolve));
+  const recovered = await executor.execute({
+    ...input,
+    budget: { ...input.budget, maxDurationMs: 1000 },
+  });
+  assert.equal(calls, 3);
+  assert.deepEqual(recovered.evidence.map(item => item.id), ['fresh']);
+});
+
+test('external cancellation is distinct from timeout and admission-blocks orphaned provider work', async () => {
+  const controller = new AbortController();
+  let releaseCancelledCall;
+  let observedSignal;
+  let calls = 0;
+  const retriever = `cancelled-non-cooperative-${Date.now()}`;
+  const executor = new RagLaneExecutor([
+    {
+      type: 'dense-vector',
+      retriever,
+      async execute({ lane, signal }) {
+        calls++;
+        observedSignal = signal;
+        if (calls === 1) {
+          return new Promise(resolve => {
+            releaseCancelledCall = () => resolve({
+              evidence: [createEvidence('cancelled-late', lane.id)],
+            });
+          });
+        }
+        return { evidence: [createEvidence('fresh-after-cancel', lane.id)] };
+      },
+    },
+  ]);
+  const input = {
+    request: createRequest(),
+    plan: createPlan([createLane('dense', 'dense-vector', true)]),
+    budget: { maxLanes: 1, maxEvidence: 2, maxDurationMs: 1000 },
+  };
+
+  const cancelled = executor.execute({ ...input, signal: controller.signal });
+  await new Promise(resolve => setImmediate(resolve));
+  controller.abort(new Error('private disconnect reason'));
+  await assert.rejects(cancelled, error => {
+    assert.ok(error instanceof RagLaneExecutionError);
+    assert.equal(error.code, 'RAG_REQUEST_ABORTED');
+    assert.equal(error.partialResult.stopReason, 'failed');
+    assert.equal(error.partialResult.laneExecutions[0].errorCode, 'RAG_REQUEST_ABORTED');
+    assert.equal(error.message.includes('private disconnect reason'), false);
+    return true;
+  });
+  assert.equal(observedSignal.aborted, true);
+
+  await assert.rejects(
+    () => executor.execute(input),
+    error => error?.code === 'RAG_LANE_PROVIDER_BUSY'
+  );
+  assert.equal(calls, 1);
+
+  releaseCancelledCall();
+  await new Promise(resolve => setImmediate(resolve));
+  const recovered = await executor.execute(input);
+  assert.equal(calls, 2);
+  assert.deepEqual(recovered.evidence.map(item => item.id), ['fresh-after-cancel']);
+});
+
 test('lane executor enforces evidence and trust budgets', async () => {
   const executor = new RagLaneExecutor([
     {
@@ -185,6 +346,125 @@ test('lane executor enforces evidence and trust budgets', async () => {
       }),
     /quarantined/
   );
+});
+
+test('optional lanes fail closed when evidence violates scope or quarantine invariants', async () => {
+  for (const unsafeEvidence of [
+    { tenantId: 'tenant-b' },
+    { corpusId: 'corpus-b' },
+    { trustLevel: 'quarantined' },
+  ]) {
+    const executor = new RagLaneExecutor([
+      {
+        type: 'graph-entity',
+        retriever: 'unsafe-optional-graph',
+        async execute({ lane }) {
+          return {
+            evidence: [{ ...createEvidence('unsafe', lane.id), ...unsafeEvidence }],
+          };
+        },
+      },
+    ]);
+
+    await assert.rejects(
+      () => executor.execute({
+        request: createRequest(),
+        plan: createPlan([createLane('graph', 'graph-entity', false)]),
+        budget: { maxLanes: 1, maxEvidence: 2, maxDurationMs: 1000 },
+      }),
+      error => {
+        assert.ok(error instanceof RagLaneExecutionError);
+        assert.equal(error.code, 'RAG_EVIDENCE_SCOPE_VIOLATION');
+        assert.equal(error.partialResult.transitions.at(-1).reason, 'evidence_scope_validation_failed');
+        return true;
+      }
+    );
+  }
+});
+
+test('fusion and rerank lanes can transform evidence order without losing provenance', async () => {
+  const executor = new RagLaneExecutor([
+    {
+      type: 'dense-vector',
+      retriever: 'unit-dense',
+      async execute({ lane }) {
+        return {
+          evidence: [
+            { ...createEvidence('ev-1', lane.id), retrievalScore: 0.9 },
+            { ...createEvidence('ev-2', lane.id), retrievalScore: 0.8 },
+          ],
+        };
+      },
+    },
+    {
+      type: 'fusion',
+      retriever: 'unit-fusion',
+      async execute({ priorEvidence }) {
+        return {
+          evidence: [],
+          transform: {
+            orderedEvidenceIds: [...priorEvidence].reverse().map(item => item.id),
+            rerankScores: { 'ev-2': 1, 'ev-1': 0.9 },
+          },
+        };
+      },
+    },
+  ]);
+
+  const result = await executor.execute({
+    request: createRequest(),
+    plan: createPlan([
+      createLane('dense', 'dense-vector', true),
+      createLane('fusion', 'fusion', true),
+    ]),
+    budget: { maxLanes: 2, maxEvidence: 3, maxDurationMs: 1000 },
+  });
+
+  assert.deepEqual(result.evidence.map(item => item.id), ['ev-2', 'ev-1']);
+  assert.deepEqual(result.evidence.map(item => item.laneId), ['dense', 'dense']);
+  assert.deepEqual(result.evidence.map(item => item.rerankScore), [1, 0.9]);
+  assert.deepEqual(result.laneExecutions[1].retrievedEvidenceIds, ['ev-2', 'ev-1']);
+});
+
+test('evidence transforms reject unknown, duplicate, incomplete, and non-finite updates', async () => {
+  for (const transform of [
+    { orderedEvidenceIds: ['missing'] },
+    { orderedEvidenceIds: ['ev-1', 'ev-1'] },
+    { orderedEvidenceIds: [] },
+    { orderedEvidenceIds: ['ev-1'], rerankScores: { 'ev-1': Number.NaN } },
+  ]) {
+    const executor = new RagLaneExecutor([
+      {
+        type: 'dense-vector',
+        retriever: 'unit-dense',
+        async execute({ lane }) {
+          return { evidence: [createEvidence('ev-1', lane.id)] };
+        },
+      },
+      {
+        type: 'fusion',
+        retriever: 'unsafe-transform',
+        async execute() {
+          return { evidence: [], transform };
+        },
+      },
+    ]);
+    await assert.rejects(
+      () => executor.execute({
+        request: createRequest(),
+        plan: createPlan([
+          createLane('dense', 'dense-vector', true),
+          createLane('fusion', 'fusion', true),
+        ]),
+        budget: { maxLanes: 2, maxEvidence: 3, maxDurationMs: 1000 },
+      }),
+      error => {
+        assert.ok(error instanceof RagLaneExecutionError);
+        assert.equal(error.laneId, 'fusion');
+        return true;
+      }
+    );
+  }
 });
 
 function createRequest() {

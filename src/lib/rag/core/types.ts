@@ -33,6 +33,14 @@ export interface RagQueryRequest {
   requestId?: string;
   securityContext?: RagSecurityContext;
   retrievalScope?: RagRetrievalScope;
+  /** Server-owned policy selection; never populated from request JSON. */
+  serverPolicyId?: 'mirofish-research';
+  /** Exact server-owned graph artifact identity for an optional graph lane. */
+  graphArtifactIdentity?: {
+    documentId: string;
+    documentVersion: string;
+    trustLevel: RagTrustLevel;
+  };
   raw?: Record<string, unknown>;
 }
 
@@ -42,6 +50,8 @@ export interface RagPolicyContext {
   traceId: string;
   startedAt: number;
   retrievalPlan: RagRetrievalPlan;
+  /** Transient request cancellation only. AbortSignal is never serialized. */
+  signal?: AbortSignal;
 }
 
 export interface RagPolicyResult<TOutput> {

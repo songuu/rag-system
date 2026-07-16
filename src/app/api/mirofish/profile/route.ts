@@ -7,7 +7,10 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { ProfileGenerator } from '@/lib/mirofish/profile-generator';
-import { validateModelOverride } from '@/lib/mirofish/model-override';
+import {
+  getHttpModelOverrideErrorResponse,
+  validateHttpModelOverride,
+} from '@/lib/mirofish/model-override';
 import {
   getMiroFishProfileBatchCacheIdentity,
   getMiroFishProfileCacheIdentity,
@@ -24,7 +27,7 @@ import type {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const modelOverride = validateModelOverride(body.modelOverride) || undefined;
+    const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
 
     // 判断是否为批量请求
     const isBatch = body.entities !== undefined;
@@ -113,6 +116,10 @@ export async function POST(request: NextRequest) {
       });
     }
   } catch (error) {
+    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
+    if (modelOverrideError) {
+      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
+    }
     console.error('[MiroFish Profile API] 生成失败:', error);
 
     return NextResponse.json(

@@ -22,13 +22,15 @@ const {
 } = await import('./langchain-structured-output.ts');
 
 test('invokeStructuredJson prefers native structured output when available', async () => {
+  const controller = new AbortController();
   const model = {
     withStructuredOutput(schema, config) {
       assert.equal(schema.type, 'object');
       assert.equal(config.name, 'ScorePayload');
       return {
-        async invoke(input) {
+        async invoke(input, options) {
           assert.equal(input, 'grade this');
+          assert.equal(options.signal, controller.signal);
           return { parsed: { score: '0.8', reasoning: 'ok' } };
         },
       };
@@ -43,6 +45,7 @@ test('invokeStructuredJson prefers native structured output when available', asy
       score: Number(value.score),
       reasoning: value.reasoning,
     }),
+    signal: controller.signal,
   });
 
   assert.equal(result.mode, 'native');
@@ -50,9 +53,11 @@ test('invokeStructuredJson prefers native structured output when available', asy
 });
 
 test('invokeStructuredJson falls back to prompt JSON parsing', async () => {
+  const controller = new AbortController();
   const model = {
-    async invoke(input) {
+    async invoke(input, options) {
       assert.equal(input, 'grade this');
+      assert.equal(options.signal, controller.signal);
       return { content: '```json\n{"score":0.7,"reasoning":"fallback"}\n```' };
     },
   };
@@ -62,10 +67,43 @@ test('invokeStructuredJson falls back to prompt JSON parsing', async () => {
     input: 'grade this',
     schema: { name: 'ScorePayload', schema: { type: 'object' } },
     normalize: (value) => value,
+    signal: controller.signal,
   });
 
   assert.equal(result.mode, 'json');
   assert.deepEqual(result.data, { score: 0.7, reasoning: 'fallback' });
+});
+
+test('invokeStructuredJson does not fall back after native invocation is aborted', async () => {
+  const controller = new AbortController();
+  let fallbackCalls = 0;
+  const model = {
+    withStructuredOutput() {
+      return {
+        async invoke(_input, options) {
+          assert.equal(options.signal, controller.signal);
+          controller.abort(new DOMException('lane timed out', 'AbortError'));
+          throw controller.signal.reason;
+        },
+      };
+    },
+    async invoke() {
+      fallbackCalls += 1;
+      return { content: '{}' };
+    },
+  };
+
+  await assert.rejects(
+    invokeStructuredJson({
+      model,
+      input: 'grade this',
+      schema: { name: 'ScorePayload', schema: { type: 'object' } },
+      normalize: (value) => value,
+      signal: controller.signal,
+    }),
+    { name: 'AbortError' }
+  );
+  assert.equal(fallbackCalls, 0);
 });
 
 test('parseStructuredJson extracts the first balanced JSON object', () => {

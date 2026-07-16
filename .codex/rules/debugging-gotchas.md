@@ -33,3 +33,16 @@ UTF-16 boundaries, and make the no-evidence path abstain without calling the LLM
 A hermetic hashing embedding can map an isolation-canary token onto an unrelated corpus token and make an
 unanswerable probe look answerable. Keep the dimension high enough for the fixture, inspect unexpected
 non-zero similarities, and make unanswerable TPR part of the default CLI gate.
+
+## Abort Timers Cannot Preempt A Synchronous Hot Loop
+
+Checking `signal.aborted` inside a long synchronous graph or parsing loop is not enough: the timer that
+aborts the signal cannot run until JavaScript yields to the event loop. Bound total preprocessing and
+postprocessing operations, and yield in deterministic batches when legal inputs can still be large.
+
+## Cancellation Ownership Must Be Fenced
+
+A pre-aborted contender must not cancel or release another invocation's active lease. Distinguish
+request abort, internal timeout, and explicit management recovery; every lease mutation and terminal
+delete must compare owner and revision. Treat expired takeover as at-least-once and reuse a stable
+step execution ID for downstream idempotency.

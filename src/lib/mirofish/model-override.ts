@@ -16,6 +16,18 @@ interface LLMOverrideDefaults {
   ollamaOptions?: Record<string, unknown>;
 }
 
+const HTTP_MODEL_OVERRIDE_FORBIDDEN_CODE = 'MIROFISH_HTTP_MODEL_OVERRIDE_FORBIDDEN';
+
+export class MiroFishHttpModelOverrideValidationError extends Error {
+  readonly code = HTTP_MODEL_OVERRIDE_FORBIDDEN_CODE;
+  readonly status = 400;
+
+  constructor() {
+    super('客户端 modelOverride 不允许包含 baseUrl 或 apiKey');
+    this.name = 'MiroFishHttpModelOverrideValidationError';
+  }
+}
+
 /**
  * 根据 override 创建 LLM；override 为空时走默认工厂。
  */
@@ -114,6 +126,47 @@ export function validateModelOverride(input: unknown): ModelOverride | null {
   }
 
   return result;
+}
+
+/**
+ * Validate model selection received directly from an untrusted HTTP body.
+ *
+ * `validateModelOverride` remains the trusted internal/project-normalization
+ * boundary and therefore still understands endpoint and credential fields.
+ * Public request handlers must use this narrower function so callers cannot
+ * turn any MiroFish feature into an SSRF proxy or submit secrets for storage.
+ */
+export function validateHttpModelOverride(input: unknown): ModelOverride | null {
+  if (input !== null && typeof input === 'object') {
+    const object = input as Record<string, unknown>;
+    if (
+      Object.prototype.hasOwnProperty.call(object, 'baseUrl')
+      || Object.prototype.hasOwnProperty.call(object, 'apiKey')
+    ) {
+      throw new MiroFishHttpModelOverrideValidationError();
+    }
+  }
+
+  return validateModelOverride(input);
+}
+
+export function getHttpModelOverrideErrorResponse(error: unknown): {
+  status: number;
+  body: {
+    success: false;
+    error: string;
+    code: string;
+  };
+} | null {
+  if (!(error instanceof MiroFishHttpModelOverrideValidationError)) return null;
+  return {
+    status: error.status,
+    body: {
+      success: false,
+      error: error.message,
+      code: error.code,
+    },
+  };
 }
 
 /**

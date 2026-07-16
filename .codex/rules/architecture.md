@@ -117,3 +117,26 @@ For this project, container support should keep Next server startup, local Milvu
 ## MAIC Structured Output Has One Reasoning-Aware Parser
 
 Route MAIC read, plan, and manager structured model responses through one shared parser. Attempt exact JSON first, treat reasoning closing tags as delimiters only outside valid JSON ranges, and preserve each stage's existing malformed-output fallback. Never log the raw model response from this parsing boundary; it can contain course content or provider-adjacent context.
+
+## Legacy Retrieval Is Untrusted Until Canonical Evidence Exists
+
+Agentic and adaptive compatibility paths may retrieve before the unified lane projection, but no
+query grader, reranker, answer generator, cache, or trace may consume those passages first. Convert
+every provider result to canonical evidence, reject alias conflicts, require explicit authenticated
+tenant/corpus/document/trust provenance, and validate scope before the first passage-bearing model
+call. A fallback that catches this validation error is a security bypass.
+
+## Admission And Allocation Share One Atomic Boundary
+
+Capacity checks must reserve the admitted task synchronously in the same state owner. Counting work,
+awaiting, and then creating a task is a race even in one JavaScript process. An in-memory check-and-
+reserve only protects one process; horizontal deployments must move both quota and reservation to a
+shared CAS/transactional provider before scaling out.
+
+## Request Cancellation Is Runtime-Only And End-To-End
+
+Propagate the server request `AbortSignal` through workflow, Kernel policy context, retrieval lanes,
+provider calls, and generation deadlines, but never persist or include it in cache identity. External
+request cancellation is distinct from an internal timeout and must fail the whole request with a
+stable code. If a provider ignores abort, retain an admission reservation until its real operation
+settles so disconnected clients cannot create unbounded orphan work.
