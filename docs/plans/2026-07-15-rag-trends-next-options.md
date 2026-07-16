@@ -416,11 +416,19 @@ Task 5（T15）完成后按 sprint/context-handoff 规则生成完整 + compact 
   与原 policy HTTP code。
 - E3：完成 `off | shadow | active` hybrid capability gate、native BM25+dense port contract、
   RRF/weighted fusion、Contextual Retrieval v2 和可注册的 sparse lane handler。shadow 不参与生成，
-  capability/schema 不满足时 fail closed；handler/contextualizer 尚未接 production route/ingest。
+  capability/schema 不满足时 fail closed。Contextual Retrieval v2 的默认 deadline 为 30 秒、硬上限
+  为 120 秒；每次调用使用内部 `AbortSignal`，外部 abort 与内部 timeout 分离且公开错误脱敏；
+  provider/model 维度用 Set 保留所有未结束 orphan 的准入占位。handler/contextualizer 尚未接
+  production route/ingest。
 - E4：完成 structure/token-aware composer、纯规则 query router、per-lane abstention；
   ordered-context 在没有真实 bounded-corpus reader 前保持 inactive。
 - E5：完成 tenant/corpus/document/version/trust 绑定的 GraphRAG artifact store、entity/1-2 hop/
   community-to-passage read lane 与 dense fallback；public graph API 仅返回无原文 projection。
+  graph extraction 使用 source-aligned chunk，`content === source.slice(startOffset, endOffset)`，
+  相邻 chunk 保持准确 overlap；provider 输入在单次调用与累计两层同时做 preflight/runtime 预算。
+  embedding 同样受 deadline、budget 与 orphan admission 约束；artifact 任一步失败都不发布 result，
+  task ID 使用 UUID。embedding admission key 与 LLM selector 分离，按服务端真实 embedding
+  provider/model/base URL hash 生成；轮换合法 LLM selector 不能绕过同一 embedding orphan。
   当前 read path 依赖预置 scoped artifact，graph builder 尚未写入该 store。
 - E6：完成 PDF page manifest、资源/路径/scope 校验、text/visual modality router 与 optional visual
   evidence adapter contract；纯文本永不进入 visual。尚未接 PDF ingest/index/query production caller。
@@ -447,21 +455,23 @@ production caller，也未启用真实 page-image 生成/视觉模型。GraphRAG
 - checkpoint store 使用 revision/CAS 与 lease；稳定 `stepExecutionId` 允许外部副作用实现幂等，
   新 adapter 实例可从 paused checkpoint 恢复。
 - 运行时 `AbortSignal` 不持久化；abort 即写 terminal `cancelled`，typed permanent failure 写
-  terminal `failed`，普通可重试失败写 `paused`。step 即使 abort 后正常返回也不能提交 state。
+  terminal `failed`，普通可重试失败写 `paused`。不合作 step 无须等待 provider settle 即可立即
+  返回稳定 cancellation；terminal checkpoint 阻止该 step replay，step 即使 abort 后正常返回也
+  不能提交 state。
 - loaded checkpoint 会重算 job fingerprint；敏感 credential/vector/error 字段、非纯 JSON、
   decorated/accessor array 和 `toJSON` 绕过均 fail closed。
 - `createDurableRagKernelStep` 使用稳定 step execution ID 作为 Kernel trace；Kernel result 仅投影
   scope/document/trust 校验后的 policy/evidence ID/lane ID，不复制 envelope 中的 prompt-visible
   content。checkpoint 仍会持久化 caller 提供的 job/state，调用方必须继续最小化并脱敏。
 
-验证：durable 定向最终 20/20、全量 TypeScript、scoped ESLint 通过；独立复核原 7 个 P1
+验证：durable 定向最终 22/22、全量 TypeScript、scoped ESLint 通过；独立复核原 7 个 P1
 与后续 lease/HMAC P2 全部关闭。当前 store 仍为 `processPersistent: false` 的 in-memory provider；
 未声明跨进程 restart、HITL 或外部 provider 已上线。生产绑定需另行提供原子 CAS store、凭据
 与真实跨重启演练。
 
 ### T17：Production-policy contract、L4 验证与最终收口
 
-T17 将 E2b-E7 的禁用、正常、失败与安全边界组合成 21-case hermetic control-plane gate。
+T17 将 E2b-E7 的禁用、正常、失败与安全边界组合成 23-case hermetic control-plane gate。
 contract target 运行真实 planner/lane/composer/router/abstention/artifact/modality/durable 代码，但
 禁用外部服务，报告固定写明 `productionQualityMeasured=false`，因此不把控制面正确性冒充为
 线上 Milvus/LLM 质量。
@@ -474,21 +484,32 @@ contract target 运行真实 planner/lane/composer/router/abstention/artifact/mo
   在 off/shadow 保持原语义，在 active 不进入生成。
 - `NextRequest.signal` 贯通 Workflow/Kernel/lane/generation；request abort 与 timeout 分离，
   多个不合作 provider Promise 以 Set 保留准入占位直到各自 settle。
+- Context composer contract 使用真实 `RagEvidence.page`；fixture 刻意让 page 序与 offset 序相反，
+  证明 composer 按文档页序拼接，并保留 source/page/span。
+- MiroFish model selector 对历史 `project.model_config` 每次读取重新校验；OpenAI/custom 凭据与
+  base URL 只由服务端配置提供，公开 project/config projection 不回传 credential 或私有 endpoint。
 - MiroFish graph task 使用同步 check-and-reserve；五路并发、limit=4 的 barrier 回归为
   4×200 + 1×429。graphName、ontology、scope、raw graph cache、public projection 与 delete
   readback 均 fail closed。
 - Graph 遍历的 node/edge/reference/operation 全路径有界，并批次 yield；PDF analyzer 有
   timeout、最严格 per-ID 并发准入、digest/byteLength 和 forged-decision 回归。
+- Graph extraction 在 JSON 解析前限制累计 provider output；raw entity/relation（含无效项）、
+  字段长度、聚合 `E² + RE` 查找、实体 pair、`pair × embedding dimension` 与社区 embedding
+  均有独立硬预算。超限固定为 `MIROFISH_GRAPH_OUTPUT_BUDGET_EXCEEDED`，不保留 result/graphData。
 - Durable terminal retention/delete、lease renew/recovery/owner fence、wrong-key/no-key HMAC 与
   `timingSafeEqual` 回归完成。
 
 最终验证证据：
 
-- `pnpm test`：49 个测试文件、492/492 通过。
+- `pnpm test`：52 个测试文件、545 个用例全部通过；默认链包含 E1b、matrix 与 23-case
+  production-policy contract。
 - `pnpm rag:eval:e1b`：8/8；matrix 两个 target 各 8/8；0 security violation。
-- `pnpm rag:eval:contracts`：21/21，hermetic in-process，外部服务禁用。
+- `pnpm rag:eval:contracts`：23/23，hermetic in-process，外部服务禁用。
+- durable workflow 定向合同：22/22。
+- entity extraction security：19/19；MiroFish graph builder：10/10；graph route：32/32。
 - TypeScript `--noEmit --incremental false` 与所有触及 `.ts/.tsx/.mjs` 的 scoped ESLint 通过。
-- `pnpm build`：Next.js 16.2.6 production build 通过，88/88 页面生成。
+- `pnpm build`：首次在 sandbox 因 `spawn EPERM` 受阻；同命令经批准提升权限后通过，
+  Next.js 16.2.6 production build 完成 88/88 页面生成。
 - `git diff --check` 通过；全量 `pnpm lint` 仍为历史 357 errors / 113 warnings，触及文件为 0。
 
 诚实边界：E3 未连接真实 hybrid collection；E5 producer 未写入 scoped File store且多实例 quota

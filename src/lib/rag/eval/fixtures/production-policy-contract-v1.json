@@ -383,6 +383,110 @@
       }
     },
     {
+      "id": "context-composer-preserves-document-order-and-source-spans",
+      "input": {
+        "kind": "context-composer",
+        "maxTokens": 1000,
+        "order": "document",
+        "evidence": [
+          {
+            "id": "context-a-2",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-a",
+            "documentVersion": "v1",
+            "content": "alpha-two",
+            "trustLevel": "reviewed",
+            "laneId": "dense-main",
+            "source": "document-a.pdf",
+            "page": 2,
+            "startOffset": 0,
+            "endOffset": 9
+          },
+          {
+            "id": "context-b-1",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-b",
+            "documentVersion": "v1",
+            "content": "beta-one",
+            "trustLevel": "reviewed",
+            "laneId": "dense-main",
+            "source": "document-b.pdf",
+            "page": 1,
+            "startOffset": 0,
+            "endOffset": 8
+          },
+          {
+            "id": "context-a-1",
+            "tenantId": "contract-tenant",
+            "corpusId": "contract-corpus",
+            "documentId": "document-a",
+            "documentVersion": "v1",
+            "content": "alpha-one",
+            "trustLevel": "reviewed",
+            "laneId": "dense-main",
+            "source": "document-a.pdf",
+            "page": 1,
+            "startOffset": 100,
+            "endOffset": 109
+          }
+        ]
+      },
+      "expected": {
+        "version": "evidence-context/v2",
+        "order": "document",
+        "includedEvidence": [
+          {
+            "id": "context-a-1",
+            "startOffset": 100,
+            "endOffset": 109
+          },
+          {
+            "id": "context-a-2",
+            "startOffset": 0,
+            "endOffset": 9
+          },
+          {
+            "id": "context-b-1",
+            "startOffset": 0,
+            "endOffset": 8
+          }
+        ],
+        "excludedEvidenceIds": [],
+        "truncated": false,
+        "withinBudget": true
+      }
+    },
+    {
+      "id": "contextual-v2-off-rolls-back-and-active-uses-deadline-seam",
+      "input": {
+        "kind": "contextual-retrieval-v2",
+        "documentText": "Alpha founded Beta.",
+        "chunkText": "Alpha founded Beta.",
+        "generatedContext": "contract context"
+      },
+      "expected": {
+        "off": {
+          "mode": "off",
+          "status": "disabled",
+          "denseText": "Alpha founded Beta.",
+          "participatesInDenseIndex": false,
+          "providerCallsAfterOff": 0
+        },
+        "active": {
+          "mode": "active",
+          "status": "contextualized",
+          "generatedContext": "contract context",
+          "denseText": "contract context\n\nAlpha founded Beta.",
+          "participatesInDenseIndex": true,
+          "generatedCharacters": 16,
+          "providerCalls": 1,
+          "receivedInternalSignal": true
+        }
+      }
+    },
+    {
       "id": "identifier-abstention-requires-lexical-proof",
       "input": {
         "kind": "abstention",

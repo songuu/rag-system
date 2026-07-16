@@ -90,6 +90,11 @@ Treat OOXML and other archive-backed uploads as compressed adversarial input. In
 
 Model, embedding, reasoning, Milvus, and retrieval feature choices should be resolved from a shared runtime configuration snapshot before any page-level fallback is used. UI model selectors may display Ollama installation status, but they must not use Ollama availability as the source of truth for the selected model when `MODEL_PROVIDER`, `EMBEDDING_PROVIDER`, or `REASONING_PROVIDER` already define the runtime model.
 
+Persisted model selectors are untrusted input, including values written by an older release. Revalidate
+provider and model bounds whenever a project configuration is read or used. OpenAI/custom credentials
+and private base URLs are server-owned configuration; public project/config projections must omit them,
+and historical persisted secrets must never be reflected back to the client.
+
 ## LangChain v1 For Leaf Agents, LangGraph v1 For Stateful Workflows
 
 For this project, adopt LangChain v1 `createAgent`, middleware, model profiles, and structured output for leaf-level agent tasks such as query analysis, entity extraction, reranking, hallucination checks, prompt guardrails, and model retry policy. Keep custom RAG orchestration, constraint relaxation, MAIC prepare/classroom flows, and MiroFish simulations on explicit LangGraph-style state machines. Do not replace an observable `StateGraph` workflow with one opaque agent loop when the workflow semantics are part of the product.
@@ -140,3 +145,19 @@ provider calls, and generation deadlines, but never persist or include it in cac
 request cancellation is distinct from an internal timeout and must fail the whole request with a
 stable code. If a provider ignores abort, retain an admission reservation until its real operation
 settles so disconnected clients cannot create unbounded orphan work.
+
+For a durable workflow, cancellation must also win against a non-cooperative step immediately. Persist
+one terminal cancelled checkpoint before returning, consume any late provider rejection, and prohibit
+replay or state commit from a step that settles after the terminal checkpoint.
+
+## Graph Artifacts Publish Atomically
+
+Build source-aligned graph chunks with exact source offsets and overlap; do not reconstruct offsets from
+normalized text after extraction. Bound provider input both per call and cumulatively before and during
+execution, and apply the same deadline, budget, and orphan-admission contract to embedding calls. Publish
+no artifact result when any required stage fails, and use opaque UUID task identifiers rather than
+predictable counters.
+
+Treat model output and post-processing work as separate admission planes: reject oversized raw output
+before parsing, then reserve entity/relation aggregation and pairwise vector work before scanning.
+Required-stage budget failures publish one stable terminal code and no partial task result.

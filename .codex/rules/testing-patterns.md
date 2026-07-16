@@ -47,3 +47,32 @@ stays blocked until every orphan settles, not merely the most recent promise.
 Checkpoint corruption tests must cover payload mutation, a process-persistent store without a key,
 and a valid HMAC produced under the wrong key. Lease tests must include a pre-aborted non-owner,
 revision-fenced terminal deletion, renewal, and explicit expired-lease recovery.
+
+Also hold a non-cooperative step unresolved, abort the invocation, and assert immediate terminal
+cancellation without replay or late state commit. Consuming the provider's late rejection is part of
+the regression; merely checking the cooperative-signal path is insufficient.
+
+## Source Alignment And Ordered Context Need Adversarial Fixtures
+
+For graph chunks, assert every `content` equals the original source slice at its exact start/end offsets,
+every chunk stays within the requested size, and adjacent chunks have the exact configured overlap. For
+context composition, use `RagEvidence.page` and deliberately make page order disagree with offset order;
+assert the output follows document/page order while preserving source, page, and span metadata.
+
+## Persisted Configuration Is Revalidated At Read Time
+
+Model-selector tests must seed invalid historical provider/model/base-URL/credential combinations, then
+exercise project read, list, and execution paths. Assert fail-closed revalidation, server-owned provider
+configuration, and a public projection with no credential or private endpoint. Graph task tests must also
+assert UUID identifiers and that a failed required stage publishes no artifact/result.
+
+Embedding orphan tests must keep the server embedding provider/model/base URL constant while rotating
+through multiple valid LLM selectors. Every attempt must remain admission-blocked until the original
+embedding operation settles, proving the orphan key cannot be bypassed through client model choice.
+
+## Untrusted Structured Output Tests Must Cover Work Amplification
+
+For graph/entity providers, test raw response characters before parsing, invalid raw array entries,
+cross-chunk and gleaning accumulation, overlong fields, pre-embedding aggregation/pair rejection,
+embedding count/dimension/finite/vector-operation failures, and a legal workload large enough to prove
+event-loop yield. The background task assertion must use a stable code and require no `result/graphData`.

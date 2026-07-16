@@ -10,12 +10,14 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
+import { createHash } from "node:crypto";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Embeddings } from "@langchain/core/embeddings";
 import { BaseMessage } from "@langchain/core/messages";
 import { createLLM, createEmbedding, getModelFactory, getConfigSummary } from "./model-config";
 import { getEmbeddingConfigSummary } from "./embedding-config";
 import { createStableErrorLog } from "./security/error-redaction";
+import { createSourceAlignedTextWindows } from "./source-aligned-chunking";
 
 export class EntityExtractionProviderBusyError extends Error {
   readonly code = 'ENTITY_EXTRACTION_PROVIDER_BUSY';
@@ -35,14 +37,42 @@ export class EntityExtractionProviderTimeoutError extends Error {
   }
 }
 
+export class EntityExtractionProviderBudgetError extends Error {
+  readonly code = 'ENTITY_EXTRACTION_PROVIDER_BUDGET_EXCEEDED';
+
+  constructor() {
+    super('Entity extraction provider budget exceeded.');
+    this.name = 'EntityExtractionProviderBudgetError';
+  }
+}
+
+export class EntityExtractionOutputBudgetError extends Error {
+  readonly code = 'ENTITY_EXTRACTION_OUTPUT_BUDGET_EXCEEDED';
+
+  constructor() {
+    super('Entity extraction output budget exceeded.');
+    this.name = 'EntityExtractionOutputBudgetError';
+  }
+}
+
 const TIMED_OUT_ENTITY_EXTRACTION_WORK = new Map<string, Set<Promise<void>>>();
 
-function isEntityExtractionProviderAdmissionError(
+function isEntityExtractionFatalError(
   error: unknown
-): error is EntityExtractionProviderBusyError | EntityExtractionProviderTimeoutError {
+): error is EntityExtractionProviderBusyError
+  | EntityExtractionProviderTimeoutError
+  | EntityExtractionProviderBudgetError
+  | EntityExtractionOutputBudgetError {
   return error instanceof EntityExtractionProviderBusyError
-    || error instanceof EntityExtractionProviderTimeoutError;
+    || error instanceof EntityExtractionProviderTimeoutError
+    || error instanceof EntityExtractionProviderBudgetError
+    || error instanceof EntityExtractionOutputBudgetError;
 }
+
+const ENTITY_EXTRACTION_FIELD_LIMITS = Object.freeze({
+  identifierCharacters: 512,
+  descriptionCharacters: 8_000,
+});
 
 // ==================== 类型定义 ====================
 
@@ -134,6 +164,15 @@ export interface ExtractionConfig {
   maxChunkTimeout: number;   // 单块最大超时（毫秒），默认 60 秒
   baseChunkTime: number;     // 单块基础处理时间（毫秒），默认 10 秒
   timeoutPerChar: number;    // 每字符额外时间（毫秒），默认 20ms
+  maxProviderCalls: number;  // 单次抽取允许的 LLM/embedding 调用数
+  maxProviderInputCharacters: number; // 所有 provider 输入的累计字符上限
+  maxProviderOutputCharacters: number; // 所有 LLM 文本输出的累计字符上限
+  maxExtractedEntities: number; // provider 返回的原始实体观察数上限
+  maxExtractedRelations: number; // provider 返回的原始关系观察数上限
+  maxAggregationLookupComparisons: number; // 聚合阶段名称/端点查找比较上限
+  maxEntityResolutionComparisons: number; // 实体消歧两两比较上限
+  maxEntityResolutionVectorOperations: number; // 余弦相似度标量运算上限
+  maxEmbeddingDimensions: number; // 单个实体向量维度上限
 }
 
 /** 超时配置常量 */
@@ -205,6 +244,15 @@ function getDefaultExtractionConfig(): ExtractionConfig {
     maxChunkTimeout: 60 * 1000,        // 单块最大 60 秒
     baseChunkTime: 10 * 1000,          // 基础 10 秒/块
     timeoutPerChar: 20,                // 每字符 20ms
+    maxProviderCalls: 10_000,
+    maxProviderInputCharacters: 100_000_000,
+    maxProviderOutputCharacters: 2_000_000,
+    maxExtractedEntities: 1_000,
+    maxExtractedRelations: 5_000,
+    maxAggregationLookupComparisons: 100_000,
+    maxEntityResolutionComparisons: 50_000,
+    maxEntityResolutionVectorOperations: 50_000_000,
+    maxEmbeddingDimensions: 4_096,
   };
 }
 
@@ -227,6 +275,15 @@ export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   maxChunkTimeout: 60 * 1000,
   baseChunkTime: 10 * 1000,
   timeoutPerChar: 20,
+  maxProviderCalls: 10_000,
+  maxProviderInputCharacters: 100_000_000,
+  maxProviderOutputCharacters: 2_000_000,
+  maxExtractedEntities: 1_000,
+  maxExtractedRelations: 5_000,
+  maxAggregationLookupComparisons: 100_000,
+  maxEntityResolutionComparisons: 50_000,
+  maxEntityResolutionVectorOperations: 50_000_000,
+  maxEmbeddingDimensions: 4_096,
 };
 
 // ==================== 提示词模板 ====================
@@ -280,6 +337,17 @@ const ENTITY_EXTRACTION_PROMPT = `你是一个专业的信息抽取专家。请�
     {{"source": "源实体名称", "target": "目标实体名称", "type": "关系类型", "description": "关系描述"}}
   ]
 }}`;
+
+export function calculateEntityExtractionPromptCharacters(
+  chunkContentLength: number
+): number {
+  if (!Number.isSafeInteger(chunkContentLength) || chunkContentLength < 0) {
+    throw new Error('Invalid entity extraction prompt content length.');
+  }
+  return ENTITY_EXTRACTION_PROMPT.length
+    - '{text}'.length
+    + chunkContentLength;
+}
 
 const GLEANING_PROMPT = `你是一个信息抽取质检专家。请检查以下抽取结果，找出遗漏的重要实体和关系。
 
@@ -365,8 +433,15 @@ export class EntityExtractor {
   private config: ExtractionConfig;
   private llm: BaseChatModel;
   private embeddings: Embeddings;
-  private readonly providerAdmissionKey: string;
+  private readonly llmAdmissionKey: string;
+  private readonly embeddingAdmissionKey: string;
   private readonly activeProviderControllers = new Set<AbortController>();
+  private providerCallCount = 0;
+  private providerInputCharacterCount = 0;
+  private providerOutputCharacterCount = 0;
+  private extractedEntityObservationCount = 0;
+  private extractedRelationObservationCount = 0;
+  private aggregationLookupComparisonCount = 0;
   private progressCallback?: (progress: ExtractionProgress) => void;
   
   // 超时控制
@@ -380,11 +455,26 @@ export class EntityExtractor {
       llmInstance?: BaseChatModel;
       embeddingInstance?: Embeddings;
       providerKey?: string;
+      embeddingProviderKey?: string;
     } = {}
   ) {
     // 使用动态获取的默认配置，确保使用正确的模型名
     const defaultConfig = getDefaultExtractionConfig();
     this.config = { ...defaultConfig, ...config };
+    const resourceLimits = [
+      this.config.maxProviderCalls,
+      this.config.maxProviderInputCharacters,
+      this.config.maxProviderOutputCharacters,
+      this.config.maxExtractedEntities,
+      this.config.maxExtractedRelations,
+      this.config.maxAggregationLookupComparisons,
+      this.config.maxEntityResolutionComparisons,
+      this.config.maxEntityResolutionVectorOperations,
+      this.config.maxEmbeddingDimensions,
+    ];
+    if (resourceLimits.some(limit => !Number.isSafeInteger(limit) || limit < 1)) {
+      throw new Error('Entity extraction resource budgets must use positive safe integers.');
+    }
 
     // 允许调用方注入已构造好的 LLM 实例（用于运行时模型覆盖）
     if (options.llmInstance) {
@@ -398,8 +488,15 @@ export class EntityExtractor {
     const factory = getModelFactory();
     this.embeddings = options.embeddingInstance
       ?? createEmbedding(this.config.embeddingModel !== 'default' ? this.config.embeddingModel : undefined);
-    this.providerAdmissionKey = options.providerKey?.trim()
+    this.llmAdmissionKey = options.providerKey?.trim()
       || `${factory.getProvider()}:${this.config.llmModel.trim() || 'default'}`;
+    const embeddingConfig = getEmbeddingConfigSummary();
+    this.embeddingAdmissionKey = options.embeddingProviderKey?.trim()
+      || createEmbeddingAdmissionKey(
+        embeddingConfig.provider,
+        this.config.embeddingModel.trim() || embeddingConfig.model,
+        embeddingConfig.baseUrl
+      );
     console.log(`[EntityExtractor] 初始化完成, 提供商: ${factory.getProvider()}, LLM: ${this.config.llmModel}, Embedding: ${this.config.embeddingModel}`);
   }
 
@@ -543,12 +640,27 @@ export class EntityExtractor {
   private async withTimeout<T>(
     operation: (signal: AbortSignal) => Promise<T>,
     timeoutMs: number,
-    errorMessage: string
+    errorMessage: string,
+    providerInputCharacters: number,
+    admissionKey = this.llmAdmissionKey
   ): Promise<T> {
-    const timedOutWork = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.providerAdmissionKey);
+    const timedOutWork = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(admissionKey);
     if (timedOutWork && timedOutWork.size > 0) {
       throw new EntityExtractionProviderBusyError();
     }
+    const nextProviderCallCount = this.providerCallCount + 1;
+    const nextProviderInputCharacterCount =
+      this.providerInputCharacterCount + providerInputCharacters;
+    if (
+      !Number.isSafeInteger(providerInputCharacters)
+      || providerInputCharacters < 0
+      || nextProviderCallCount > this.config.maxProviderCalls
+      || nextProviderInputCharacterCount > this.config.maxProviderInputCharacters
+    ) {
+      throw new EntityExtractionProviderBudgetError();
+    }
+    this.providerCallCount = nextProviderCallCount;
+    this.providerInputCharacterCount = nextProviderInputCharacterCount;
 
     const controller = new AbortController();
     this.activeProviderControllers.add(controller);
@@ -565,10 +677,10 @@ export class EntityExtractor {
     void settlement.then(() => {
       operationSettled = true;
       this.activeProviderControllers.delete(controller);
-      const reservations = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.providerAdmissionKey);
+      const reservations = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(admissionKey);
       reservations?.delete(settlement);
       if (reservations?.size === 0) {
-        TIMED_OUT_ENTITY_EXTRACTION_WORK.delete(this.providerAdmissionKey);
+        TIMED_OUT_ENTITY_EXTRACTION_WORK.delete(admissionKey);
       }
     });
 
@@ -579,10 +691,10 @@ export class EntityExtractor {
           timeoutId = setTimeout(() => {
             timeoutError = new EntityExtractionProviderTimeoutError(errorMessage);
             if (!operationSettled) {
-              const reservations = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.providerAdmissionKey)
+              const reservations = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(admissionKey)
                 ?? new Set<Promise<void>>();
               reservations.add(settlement);
-              TIMED_OUT_ENTITY_EXTRACTION_WORK.set(this.providerAdmissionKey, reservations);
+              TIMED_OUT_ENTITY_EXTRACTION_WORK.set(admissionKey, reservations);
             }
             reject(timeoutError);
             controller.abort(timeoutError);
@@ -649,67 +761,19 @@ export class EntityExtractor {
       message: '正在进行智能语义切分...',
     });
 
-    const chunks: TextChunk[] = [];
     const { chunkSize, chunkOverlap } = this.config;
-
-    // 首先按段落分割
-    const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
-    
-    let currentChunk = '';
-    let currentStart = 0;
-    let charOffset = 0;
-
-    for (let i = 0; i < paragraphs.length; i++) {
-      const paragraph = paragraphs[i].trim();
-      
-      // 如果当前块加上新段落超过目标大小
-      if (currentChunk.length + paragraph.length > chunkSize && currentChunk.length > 0) {
-        // 保存当前块
-        const chunkId = `${documentId}_chunk_${chunks.length}`;
-        chunks.push({
-          id: chunkId,
-          content: currentChunk.trim(),
-          index: chunks.length,
-          startChar: currentStart,
-          endChar: currentStart + currentChunk.length,
-          overlap: {
-            previous: chunks.length > 0 ? this.getOverlapText(chunks[chunks.length - 1].content, chunkOverlap, 'end') : null,
-            next: null,  // 稍后填充
-          },
-        });
-
-        // 开始新块，带重叠
-        const overlapText = this.getOverlapText(currentChunk, chunkOverlap, 'end');
-        currentChunk = overlapText + (overlapText ? '\n\n' : '') + paragraph;
-        currentStart = charOffset - (overlapText ? overlapText.length : 0);
-      } else {
-        // 继续累积
-        currentChunk += (currentChunk ? '\n\n' : '') + paragraph;
-      }
-
-      charOffset += paragraph.length + 2; // 加上段落分隔符
-    }
-
-    // 保存最后一个块
-    if (currentChunk.trim().length > 0) {
-      const chunkId = `${documentId}_chunk_${chunks.length}`;
-      chunks.push({
-        id: chunkId,
-        content: currentChunk.trim(),
-        index: chunks.length,
-        startChar: currentStart,
-        endChar: currentStart + currentChunk.length,
+    const chunks = createSourceAlignedTextWindows(text, chunkSize, chunkOverlap)
+      .map((window, index): TextChunk => ({
+        id: `${documentId}_chunk_${index}`,
+        content: window.content,
+        index,
+        startChar: window.startChar,
+        endChar: window.endChar,
         overlap: {
-          previous: chunks.length > 0 ? this.getOverlapText(chunks[chunks.length - 1].content, chunkOverlap, 'end') : null,
-          next: null,
+          previous: window.previousOverlap,
+          next: window.nextOverlap,
         },
-      });
-    }
-
-    // 填充 next overlap
-    for (let i = 0; i < chunks.length - 1; i++) {
-      chunks[i].overlap.next = this.getOverlapText(chunks[i + 1].content, chunkOverlap, 'start');
-    }
+      }));
 
     this.reportProgress({
       stage: 'chunking',
@@ -720,39 +784,6 @@ export class EntityExtractor {
     });
 
     return chunks;
-  }
-
-  /** 获取重叠文本 */
-  private getOverlapText(text: string, overlapSize: number, position: 'start' | 'end'): string {
-    if (text.length <= overlapSize) return text;
-    
-    if (position === 'start') {
-      // 从开头取，尽量在句子边界切
-      const candidate = text.substring(0, overlapSize);
-      const lastPeriod = Math.max(
-        candidate.lastIndexOf('。'),
-        candidate.lastIndexOf('！'),
-        candidate.lastIndexOf('？'),
-        candidate.lastIndexOf('.'),
-        candidate.lastIndexOf('!'),
-        candidate.lastIndexOf('?')
-      );
-      return lastPeriod > overlapSize * 0.5 ? text.substring(0, lastPeriod + 1) : candidate;
-    } else {
-      // 从末尾取
-      const candidate = text.substring(text.length - overlapSize);
-      const firstPeriod = Math.min(
-        candidate.indexOf('。') >= 0 ? candidate.indexOf('。') : Infinity,
-        candidate.indexOf('！') >= 0 ? candidate.indexOf('！') : Infinity,
-        candidate.indexOf('？') >= 0 ? candidate.indexOf('？') : Infinity,
-        candidate.indexOf('.') >= 0 ? candidate.indexOf('.') : Infinity,
-        candidate.indexOf('!') >= 0 ? candidate.indexOf('!') : Infinity,
-        candidate.indexOf('?') >= 0 ? candidate.indexOf('?') : Infinity
-      );
-      return firstPeriod < overlapSize * 0.5 && firstPeriod !== Infinity 
-        ? text.substring(text.length - overlapSize + firstPeriod + 1) 
-        : candidate;
-    }
   }
 
   /**
@@ -780,6 +811,11 @@ export class EntityExtractor {
       try {
         // 主抽取
         const extracted = await this.extractFromChunk(chunk);
+        this.reserveAggregationLookupBudget(
+          extracted.entities.length,
+          extracted.relations.length,
+          entities.size
+        );
         
         // 合并实体
         for (const entity of extracted.entities) {
@@ -834,7 +870,7 @@ export class EntityExtractor {
         this.checkTimeout();
 
       } catch (error) {
-        if (isEntityExtractionProviderAdmissionError(error)) {
+        if (isEntityExtractionFatalError(error)) {
           throw error;
         }
         console.error(
@@ -894,6 +930,158 @@ export class EntityExtractor {
       return typeof response.content === 'string' ? response.content : '';
     }
     return '';
+  }
+
+  /**
+   * Charge every textual LLM response before parsing it. Providers can ignore
+   * requested structured-output limits, so downstream JSON repair must never
+   * process an unbounded response.
+   */
+  private reserveProviderOutput(response: string | BaseMessage): void {
+    const outputCharacters = this.extractContent(response).length;
+    const nextOutputCharacterCount =
+      this.providerOutputCharacterCount + outputCharacters;
+    if (
+      !Number.isSafeInteger(nextOutputCharacterCount)
+      || nextOutputCharacterCount > this.config.maxProviderOutputCharacters
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    this.providerOutputCharacterCount = nextOutputCharacterCount;
+  }
+
+  /**
+   * Validate and normalize the untrusted entity/relation arrays once. Raw
+   * observations count against the task budget even when individual records
+   * are malformed, preventing invalid-entry floods from bypassing admission.
+   */
+  private normalizeExtractionOutput(result: {
+    entities: unknown[];
+    relations: unknown[];
+  }): {
+    entities: Array<{ name: string; type: string; description: string }>;
+    relations: Array<{ source: string; target: string; type: string; description: string }>;
+  } {
+    const nextEntityCount =
+      this.extractedEntityObservationCount + result.entities.length;
+    const nextRelationCount =
+      this.extractedRelationObservationCount + result.relations.length;
+    if (
+      !Number.isSafeInteger(nextEntityCount)
+      || !Number.isSafeInteger(nextRelationCount)
+      || nextEntityCount > this.config.maxExtractedEntities
+      || nextRelationCount > this.config.maxExtractedRelations
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    this.extractedEntityObservationCount = nextEntityCount;
+    this.extractedRelationObservationCount = nextRelationCount;
+
+    const entities: Array<{ name: string; type: string; description: string }> = [];
+    for (const rawEntity of result.entities) {
+      if (!isExtractionRecord(rawEntity)) continue;
+      const name = this.normalizeExtractionString(
+        rawEntity.name,
+        ENTITY_EXTRACTION_FIELD_LIMITS.identifierCharacters,
+        true
+      );
+      if (!name) continue;
+      const type = this.normalizeExtractionString(
+        rawEntity.type,
+        ENTITY_EXTRACTION_FIELD_LIMITS.identifierCharacters,
+        false
+      ) || 'OTHER';
+      const description = this.normalizeExtractionString(
+        rawEntity.description,
+        ENTITY_EXTRACTION_FIELD_LIMITS.descriptionCharacters,
+        false
+      ) || '';
+      entities.push({
+        name,
+        type: type.toUpperCase(),
+        description,
+      });
+    }
+
+    const relations: Array<{
+      source: string;
+      target: string;
+      type: string;
+      description: string;
+    }> = [];
+    for (const rawRelation of result.relations) {
+      if (!isExtractionRecord(rawRelation)) continue;
+      const source = this.normalizeExtractionString(
+        rawRelation.source,
+        ENTITY_EXTRACTION_FIELD_LIMITS.identifierCharacters,
+        true
+      );
+      const target = this.normalizeExtractionString(
+        rawRelation.target,
+        ENTITY_EXTRACTION_FIELD_LIMITS.identifierCharacters,
+        true
+      );
+      if (!source || !target) continue;
+      const type = this.normalizeExtractionString(
+        rawRelation.type,
+        ENTITY_EXTRACTION_FIELD_LIMITS.identifierCharacters,
+        false
+      ) || '相关';
+      const description = this.normalizeExtractionString(
+        rawRelation.description,
+        ENTITY_EXTRACTION_FIELD_LIMITS.descriptionCharacters,
+        false
+      ) || '';
+      relations.push({ source, target, type, description });
+    }
+
+    return { entities, relations };
+  }
+
+  private normalizeExtractionString(
+    value: unknown,
+    maxCharacters: number,
+    required: boolean
+  ): string | null {
+    if (typeof value !== 'string') {
+      return required ? null : '';
+    }
+    if (value.length > maxCharacters) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    const normalized = value.trim();
+    return normalized || (required ? null : '');
+  }
+
+  /**
+   * Reserve the worst-case synchronous name/endpoint scans before aggregation.
+   * This covers entity insertion against the current + preceding new entities,
+   * then both endpoint lookups for every new relation.
+   */
+  private reserveAggregationLookupBudget(
+    newEntityCount: number,
+    newRelationCount: number,
+    currentEntityCount: number
+  ): void {
+    const entityLookupComparisons =
+      (newEntityCount * currentEntityCount)
+      + ((newEntityCount * (newEntityCount - 1)) / 2);
+    const relationLookupComparisons =
+      2 * newRelationCount * (currentEntityCount + newEntityCount);
+    const requestedComparisons =
+      entityLookupComparisons + relationLookupComparisons;
+    const nextComparisonCount =
+      this.aggregationLookupComparisonCount + requestedComparisons;
+    if (
+      !Number.isSafeInteger(entityLookupComparisons)
+      || !Number.isSafeInteger(relationLookupComparisons)
+      || !Number.isSafeInteger(requestedComparisons)
+      || !Number.isSafeInteger(nextComparisonCount)
+      || nextComparisonCount > this.config.maxAggregationLookupComparisons
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    this.aggregationLookupComparisonCount = nextComparisonCount;
   }
 
   /**
@@ -1006,7 +1194,7 @@ export class EntityExtractor {
       return { entities: [], relations: [] };
     }
 
-    const prompt = ENTITY_EXTRACTION_PROMPT.replace('{text}', chunk.content);
+    const prompt = ENTITY_EXTRACTION_PROMPT.replace('{text}', () => chunk.content);
     const chunkTimeout = this.getOperationTimeout(this.calculateChunkTimeout(chunk.content.length));
     
     try {
@@ -1014,33 +1202,19 @@ export class EntityExtractor {
       const response = await this.withTimeout(
         signal => this.llm.invoke(prompt, { signal }),
         chunkTimeout,
-        `单块提取超时 (${Math.round(chunkTimeout / 1000)}秒)`
+        `单块提取超时 (${Math.round(chunkTimeout / 1000)}秒)`,
+        prompt.length
       );
+      this.reserveProviderOutput(response);
       
       // 使用安全的 JSON 解析
       const result = this.safeParseJson(response);
       
       if (result) {
-        // 过滤和验证实体
-        const validEntities = (result.entities as Array<{ name?: string; type?: string; description?: string }>)
-          .filter(e => e && typeof e === 'object' && e.name && typeof e.name === 'string')
-          .map(e => ({
-            name: String(e.name || '').trim(),
-            type: String(e.type || 'OTHER').toUpperCase(),
-            description: String(e.description || '').trim(),
-          }))
-          .filter(e => e.name.length > 0);
-
-        // 过滤和验证关系
-        const validRelations = (result.relations as Array<{ source?: string; target?: string; type?: string; description?: string }>)
-          .filter(r => r && typeof r === 'object' && r.source && r.target)
-          .map(r => ({
-            source: String(r.source || '').trim(),
-            target: String(r.target || '').trim(),
-            type: String(r.type || '相关').trim(),
-            description: String(r.description || '').trim(),
-          }))
-          .filter(r => r.source.length > 0 && r.target.length > 0);
+        const {
+          entities: validEntities,
+          relations: validRelations,
+        } = this.normalizeExtractionOutput(result);
 
         console.log(`[EntityExtractor] 提取 ${validEntities.length} 实体, ${validRelations.length} 关系`);
         
@@ -1052,7 +1226,7 @@ export class EntityExtractor {
       
       console.warn('[EntityExtractor] 无法解析 JSON，跳过当前块');
     } catch (error) {
-      if (isEntityExtractionProviderAdmissionError(error)) {
+      if (isEntityExtractionFatalError(error)) {
         throw error;
       }
       if (error instanceof Error && error.message.includes('超时')) {
@@ -1094,54 +1268,50 @@ export class EntityExtractor {
         .join('\n');
 
       const prompt = GLEANING_PROMPT
-        .replace('{text}', chunk.content)
-        .replace('{existingEntities}', existingEntities || '无')
-        .replace('{existingRelations}', existingRelations || '无');
+        .replace('{text}', () => chunk.content)
+        .replace('{existingEntities}', () => existingEntities || '无')
+        .replace('{existingRelations}', () => existingRelations || '无');
 
       try {
         const gleaningTimeout = this.getOperationTimeout(this.calculateChunkTimeout(chunk.content.length));
         const response = await this.withTimeout(
           signal => this.llm.invoke(prompt, { signal }),
           gleaningTimeout,
-          `Gleaning 超时 (${Math.round(gleaningTimeout / 1000)}秒)`
+          `Gleaning 超时 (${Math.round(gleaningTimeout / 1000)}秒)`,
+          prompt.length
         );
+        this.reserveProviderOutput(response);
         
         // 使用安全的 JSON 解析
         const parsed = this.safeParseJson(response);
         
         if (parsed) {
+          const gleaned = this.normalizeExtractionOutput(parsed);
+          this.reserveAggregationLookupBudget(
+            gleaned.entities.length,
+            gleaned.relations.length,
+            entities.size
+          );
           // 合并新发现的实体
-          if (Array.isArray(parsed.entities)) {
-            for (const rawEntity of parsed.entities) {
-              const entity = rawEntity as { name?: string; type?: string; description?: string };
-              if (!entity || !entity.name) continue;
-              
+          for (const entity of gleaned.entities) {
               const existingId = this.findSimilarEntity(entity.name, entities);
               if (!existingId) {
                 const entityId = `entity_${entities.size}_${Date.now()}`;
                 entities.set(entityId, {
                   id: entityId,
-                  name: String(entity.name).trim(),
-                  type: (String(entity.type || 'OTHER').toUpperCase()) as EntityType,
-                  description: String(entity.description || '').trim(),
-                  aliases: [String(entity.name).trim()],
+                  name: entity.name,
+                  type: entity.type as EntityType,
+                  description: entity.description,
+                  aliases: [entity.name],
                   mentions: 1,
                   sourceChunks: [chunk.id],
                 });
-                initialExtraction.entities.push({
-                  name: String(entity.name).trim(),
-                  type: String(entity.type || 'OTHER').toUpperCase(),
-                  description: String(entity.description || '').trim(),
-                });
+                initialExtraction.entities.push(entity);
               }
             }
-          }
 
           // 合并新发现的关系
-          if (Array.isArray(parsed.relations)) {
-            for (const rawRelation of parsed.relations) {
-              const relation = rawRelation as { source?: string; target?: string; type?: string; description?: string };
-              if (!relation?.source || !relation?.target) continue;
+          for (const relation of gleaned.relations) {
               const sourceId = this.findEntityByName(relation.source, entities);
               const targetId = this.findEntityByName(relation.target, entities);
               
@@ -1151,23 +1321,22 @@ export class EntityExtractor {
                   id: relationId,
                   source: sourceId,
                   target: targetId,
-                  type: relation.type || 'RELATED_TO',
-                  description: relation.description || '',
+                  type: relation.type,
+                  description: relation.description,
                   weight: 0.8, // Gleaning 发现的关系权重稍低
                   sourceChunks: [chunk.id],
                 });
                 initialExtraction.relations.push({
                   source: relation.source,
                   target: relation.target,
-                  type: relation.type || 'RELATED_TO',
-                  description: relation.description || '',
+                  type: relation.type,
+                  description: relation.description,
                 });
               }
             }
-          }
         }
       } catch (error) {
-        if (isEntityExtractionProviderAdmissionError(error)) {
+        if (isEntityExtractionFatalError(error)) {
           throw error;
         }
         console.error('[EntityExtractor] gleaning failed', createStableErrorLog(error));
@@ -1222,21 +1391,73 @@ export class EntityExtractor {
 
     const entityArray = Array.from(entities.values());
     const mergeMap = new Map<string, string>(); // oldId -> newId
+    if (entityArray.length === 0) return;
+    if (entityArray.length > this.config.maxExtractedEntities) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    const comparisonCount =
+      (entityArray.length * (entityArray.length - 1)) / 2;
+    if (
+      !Number.isSafeInteger(comparisonCount)
+      || comparisonCount > this.config.maxEntityResolutionComparisons
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
 
     // 计算实体嵌入
     const entityTexts = entityArray.map(e => `${e.name}: ${e.description}`);
-    const entityEmbeddings = await this.embeddings.embedDocuments(entityTexts);
+    const embeddingTimeout = this.getOperationTimeout(
+      Math.min(30_000, this.config.maxChunkTimeout)
+    );
+    const entityEmbeddings = await this.withTimeout(
+      () => this.embeddings.embedDocuments(entityTexts),
+      embeddingTimeout,
+      `实体嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
+      countProviderInputCharacters(entityTexts),
+      this.embeddingAdmissionKey
+    );
     this.checkTimeout();
-    
+
+    if (
+      !Array.isArray(entityEmbeddings)
+      || entityEmbeddings.length !== entityArray.length
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    let embeddingDimensions: number | undefined;
+    for (const rawEmbedding of entityEmbeddings) {
+      const embedding = this.validateEmbeddingVector(
+        rawEmbedding,
+        embeddingDimensions
+      );
+      if (embeddingDimensions === undefined) {
+        embeddingDimensions = embedding.length;
+      }
+    }
+    const vectorOperations = comparisonCount * (embeddingDimensions ?? 0);
+    if (
+      !Number.isSafeInteger(vectorOperations)
+      || vectorOperations > this.config.maxEntityResolutionVectorOperations
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+
     for (let i = 0; i < entityArray.length; i++) {
       entityArray[i].embedding = entityEmbeddings[i];
     }
 
     // 找出潜在的重复实体对
     const candidates: Array<[Entity, Entity, number]> = [];
-    
+    let processedComparisons = 0;
+
     for (let i = 0; i < entityArray.length; i++) {
       for (let j = i + 1; j < entityArray.length; j++) {
+        processedComparisons += 1;
+        if (processedComparisons % 1_024 === 0) {
+          this.checkTimeout();
+          await new Promise<void>(resolve => setImmediate(resolve));
+          this.checkTimeout();
+        }
         const entity1 = entityArray[i];
         const entity2 = entityArray[j];
         
@@ -1256,6 +1477,7 @@ export class EntityExtractor {
         }
       }
     }
+    this.checkTimeout();
 
     // 使用 LLM 确认合并
     for (const [entity1, entity2] of candidates) {
@@ -1335,20 +1557,22 @@ export class EntityExtractor {
     // 使用 LLM 判断复杂情况
     try {
       const prompt = ENTITY_RESOLUTION_PROMPT
-        .replace('{entity1}', entity1.name)
-        .replace('{type1}', entity1.type)
-        .replace('{desc1}', entity1.description)
-        .replace('{entity2}', entity2.name)
-        .replace('{type2}', entity2.type)
-        .replace('{desc2}', entity2.description)
+        .replace('{entity1}', () => entity1.name)
+        .replace('{type1}', () => entity1.type)
+        .replace('{desc1}', () => entity1.description)
+        .replace('{entity2}', () => entity2.name)
+        .replace('{type2}', () => entity2.type)
+        .replace('{desc2}', () => entity2.description)
         .replace('{context}', '无额外上下文');
 
       const mergeTimeout = this.getOperationTimeout(Math.min(15000, this.config.maxChunkTimeout));
       const response = await this.withTimeout(
         signal => this.llm.invoke(prompt, { signal }),
         mergeTimeout,
-        `实体消歧超时 (${Math.round(mergeTimeout / 1000)}秒)`
+        `实体消歧超时 (${Math.round(mergeTimeout / 1000)}秒)`,
+        prompt.length
       );
+      this.reserveProviderOutput(response);
       const parsed = this.safeParseJsonGeneric(response);
       
       if (parsed && typeof parsed === 'object') {
@@ -1356,7 +1580,7 @@ export class EntityExtractor {
         return result.isSameEntity === true && (result.confidence || 0) > 0.7;
       }
     } catch (error) {
-      if (isEntityExtractionProviderAdmissionError(error)) {
+      if (isEntityExtractionFatalError(error)) {
         throw error;
       }
       console.error('[EntityExtractor] entity resolution failed', createStableErrorLog(error));
@@ -1491,6 +1715,22 @@ export class EntityExtractor {
     return dotProduct / (Math.sqrt(norm1) * Math.sqrt(norm2));
   }
 
+  private validateEmbeddingVector(
+    value: unknown,
+    expectedDimensions?: number
+  ): number[] {
+    if (
+      !Array.isArray(value)
+      || value.length < 1
+      || value.length > this.config.maxEmbeddingDimensions
+      || (expectedDimensions !== undefined && value.length !== expectedDimensions)
+      || value.some(item => typeof item !== 'number' || !Number.isFinite(item))
+    ) {
+      throw new EntityExtractionOutputBudgetError();
+    }
+    return value;
+  }
+
   /**
    * 步骤4: 社区发现与摘要
    */
@@ -1576,7 +1816,7 @@ export class EntityExtractor {
     });
 
     let summarized = 0;
-    for (const [id, community] of communities) {
+    for (const community of communities.values()) {
       this.checkTimeout();
 
       try {
@@ -1586,11 +1826,20 @@ export class EntityExtractor {
         community.keywords = summary.keywords;
 
         // 生成社区摘要的嵌入
-        const embedding = await this.embeddings.embedQuery(summary.summary);
-        community.embedding = embedding;
+        const embeddingTimeout = this.getOperationTimeout(
+          Math.min(30_000, this.config.maxChunkTimeout)
+        );
+        const embedding = await this.withTimeout(
+          () => this.embeddings.embedQuery(summary.summary),
+          embeddingTimeout,
+          `社区嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
+          countProviderInputCharacters([summary.summary]),
+          this.embeddingAdmissionKey
+        );
+        community.embedding = this.validateEmbeddingVector(embedding);
 
       } catch (error) {
-        if (isEntityExtractionProviderAdmissionError(error)) {
+        if (isEntityExtractionFatalError(error)) {
           throw error;
         }
         console.error(
@@ -1645,16 +1894,18 @@ export class EntityExtractor {
       .join('\n');
 
     const prompt = COMMUNITY_SUMMARY_PROMPT
-      .replace('{entities}', entityInfos || '无')
-      .replace('{relations}', relationInfos || '无');
+      .replace('{entities}', () => entityInfos || '无')
+      .replace('{relations}', () => relationInfos || '无');
 
     try {
       const summaryTimeout = this.getOperationTimeout(Math.min(20000, this.config.maxChunkTimeout));
       const response = await this.withTimeout(
         signal => this.llm.invoke(prompt, { signal }),
         summaryTimeout,
-        `社区摘要超时 (${Math.round(summaryTimeout / 1000)}秒)`
+        `社区摘要超时 (${Math.round(summaryTimeout / 1000)}秒)`,
+        prompt.length
       );
+      this.reserveProviderOutput(response);
       const parsed = this.safeParseJsonGeneric(response);
       
       if (parsed) {
@@ -1665,7 +1916,7 @@ export class EntityExtractor {
         };
       }
     } catch (error) {
-      if (isEntityExtractionProviderAdmissionError(error)) {
+      if (isEntityExtractionFatalError(error)) {
         throw error;
       }
       console.error(
@@ -1688,6 +1939,12 @@ export class EntityExtractor {
     // 初始化超时控制
     this.startTime = Date.now();
     this.aborted = false;
+    this.providerCallCount = 0;
+    this.providerInputCharacterCount = 0;
+    this.providerOutputCharacterCount = 0;
+    this.extractedEntityObservationCount = 0;
+    this.extractedRelationObservationCount = 0;
+    this.aggregationLookupComparisonCount = 0;
     
     // 预估切片数量用于计算超时
     const estimatedChunkCount = Math.ceil(text.length / this.config.chunkSize);
@@ -1823,6 +2080,36 @@ export class EntityExtractor {
       metadata: data.metadata,
     };
   }
+}
+
+function countProviderInputCharacters(values: readonly string[]): number {
+  let total = 0;
+  for (const value of values) {
+    total += value.length;
+    if (!Number.isSafeInteger(total)) {
+      throw new EntityExtractionProviderBudgetError();
+    }
+  }
+  return total;
+}
+
+function isExtractionRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function createEmbeddingAdmissionKey(
+  provider: string,
+  model: string,
+  baseUrl: string
+): string {
+  const digest = createHash('sha256')
+    .update(provider)
+    .update('\0')
+    .update(model)
+    .update('\0')
+    .update(baseUrl)
+    .digest('hex');
+  return `entity-extraction:embedding:${digest}`;
 }
 
 // ==================== 导出 ====================

@@ -10,11 +10,11 @@ import { prepareMiroFishSimulation } from '@/lib/mirofish/prepare-service';
 import {
   getHttpModelOverrideErrorResponse,
   validateHttpModelOverride,
+  validatePersistedModelOverride,
 } from '@/lib/mirofish/model-override';
 import type {
   EntityProfile,
   GraphNode,
-  ModelOverride,
   SimulationConfigDraft,
 } from '@/lib/mirofish/types';
 
@@ -56,13 +56,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const modelOverride = validateHttpModelOverride(body.modelOverride) ?? project.model_config;
+    const requestModelOverride = validateHttpModelOverride(body.modelOverride);
+    const persistedModelOverride = validatePersistedModelOverride(project.model_config);
+    const modelOverride = requestModelOverride ?? persistedModelOverride ?? undefined;
     const result = await prepareMiroFishSimulation({
       project,
       graphNodes,
       selectedEntityIds: body.selectedEntityIds,
       config: body.config,
-      modelOverride: modelOverride as ModelOverride | undefined,
+      modelOverride,
       providedProfiles: body.profiles,
       forceRegenerate: body.forceRegenerate,
     });

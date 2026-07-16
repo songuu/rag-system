@@ -2,8 +2,30 @@ import { createHash } from 'node:crypto';
 
 export const CONTEXTUAL_RETRIEVAL_V2_VERSION = 'contextual-retrieval/v2' as const;
 export const CONTEXTUAL_IDENTITY_VERSION = 'contextual-chunk-identity/v2' as const;
+export const DEFAULT_CONTEXTUALIZER_V2_TIMEOUT_MS = 30_000;
+export const MAX_CONTEXTUALIZER_V2_TIMEOUT_MS = 120_000;
+
+const DETACHED_CONTEXTUALIZER_WORK = new Map<string, Set<Promise<void>>>();
 
 export type ContextualRetrievalV2Mode = 'off' | 'shadow' | 'active';
+
+export class ContextualizerV2BusyError extends Error {
+  readonly code = 'CONTEXTUALIZER_BUSY' as const;
+
+  constructor() {
+    super('Contextualizer provider has unsettled detached work.');
+    this.name = 'ContextualizerV2BusyError';
+  }
+}
+
+export class ContextualizerV2TimeoutError extends Error {
+  readonly code = 'CONTEXTUALIZER_TIMEOUT' as const;
+
+  constructor() {
+    super('Contextualizer provider exceeded its execution deadline.');
+    this.name = 'ContextualizerV2TimeoutError';
+  }
+}
 
 export interface ContextualChunkInputV2 {
   id: string;
@@ -55,7 +77,10 @@ export interface ContextualizedChunkV2 {
   shadowDenseText?: string;
   status: 'disabled' | 'contextualized' | 'fallback' | 'truncated';
   participatesInDenseIndex: boolean;
-  errorCode?: 'CONTEXTUALIZER_FAILED';
+  errorCode?:
+    | 'CONTEXTUALIZER_FAILED'
+    | 'CONTEXTUALIZER_TIMEOUT'
+    | 'CONTEXTUALIZER_BUSY';
 }
 
 export interface ContextualRetrievalV2Result {
@@ -82,6 +107,10 @@ export interface ContextualRetrievalV2Options {
   maxDocumentCharacters?: number;
   maxOutputCharactersPerChunk?: number;
   maxTotalOutputCharacters?: number;
+  /** Deadline for each provider call. Ignored while mode is off. */
+  contextualizerTimeoutMs?: number;
+  /** Provider admission identity; always combined with model. */
+  providerKey?: string;
   failureMode?: 'fallback' | 'throw';
   signal?: AbortSignal;
 }
@@ -140,9 +169,6 @@ export async function contextualizeChunksV2(
   options: ContextualRetrievalV2Options
 ): Promise<ContextualRetrievalV2Result> {
   const mode = validateMode(options.mode ?? resolveContextualRetrievalV2Mode());
-  if (options.failureMode !== undefined && !['fallback', 'throw'].includes(options.failureMode)) {
-    throw new Error('Unsupported contextual failureMode: ' + String(options.failureMode));
-  }
   const maxChunks = boundedInteger(options.maxChunks ?? 512, 1, 10_000, 'maxChunks');
   assertNonBlank(options.documentText, 'documentText');
   if (options.chunks.length > maxChunks) {
@@ -188,6 +214,10 @@ export async function contextualizeChunksV2(
     };
   }
 
+  if (options.failureMode !== undefined && !['fallback', 'throw'].includes(options.failureMode)) {
+    throw new Error('Unsupported contextual failureMode: ' + String(options.failureMode));
+  }
+
   const concurrency = boundedInteger(options.concurrency ?? 3, 1, 32, 'concurrency');
   const maxProviderCalls = boundedInteger(
     options.maxProviderCalls ?? 256,
@@ -219,6 +249,13 @@ export async function contextualizeChunksV2(
     5_000_000,
     'maxTotalOutputCharacters'
   );
+  const contextualizerTimeoutMs = boundedInteger(
+    options.contextualizerTimeoutMs ?? DEFAULT_CONTEXTUALIZER_V2_TIMEOUT_MS,
+    1,
+    MAX_CONTEXTUALIZER_V2_TIMEOUT_MS,
+    'contextualizerTimeoutMs'
+  );
+  const providerKey = contextualizerAdmissionKey(options.providerKey, model);
   if (options.chunks.length > maxProviderCalls) {
     throw new Error('Contextual provider call count exceeds the configured budget.');
   }
@@ -251,7 +288,11 @@ export async function contextualizeChunksV2(
     throw new Error('Contextual chunk identities must be unique within a document version.');
   }
 
-  const generated = new Array<{ context: string; failed: boolean }>(options.chunks.length);
+  const generated = new Array<{
+    context: string;
+    failed: boolean;
+    errorCode?: ContextualizedChunkV2['errorCode'];
+  }>(options.chunks.length);
   let nextIndex = 0;
   const workers = Array.from(
     { length: Math.min(concurrency, Math.max(1, options.chunks.length)) },
@@ -262,19 +303,24 @@ export async function contextualizeChunksV2(
         try {
           const sourceChunk = options.chunks[index];
           const contextWindow = contextWindows[index];
-          const context = await options.contextualizer.generateContext({
-            documentText: contextWindow.text,
-            documentWindowStartOffset: contextWindow.startOffset,
-            chunk: {
-              ...sourceChunk,
-              startOffset: sourceChunk.startOffset - contextWindow.startOffset,
-              endOffset: sourceChunk.endOffset - contextWindow.startOffset,
+          const context = await invokeContextualizerWithDeadline({
+            contextualizer: options.contextualizer,
+            providerKey,
+            timeoutMs: contextualizerTimeoutMs,
+            externalSignal: options.signal,
+            input: {
+              documentText: contextWindow.text,
+              documentWindowStartOffset: contextWindow.startOffset,
+              chunk: {
+                ...sourceChunk,
+                startOffset: sourceChunk.startOffset - contextWindow.startOffset,
+                endOffset: sourceChunk.endOffset - contextWindow.startOffset,
+              },
+              identity: identities[index],
+              model,
+              promptVersion,
+              maxOutputCharacters: maxPerChunk,
             },
-            identity: identities[index],
-            model,
-            promptVersion,
-            maxOutputCharacters: maxPerChunk,
-            signal: options.signal,
           });
           assertNotAborted(options.signal);
           generated[index] = {
@@ -284,7 +330,11 @@ export async function contextualizeChunksV2(
         } catch (error) {
           if (options.signal?.aborted) throw abortError();
           if (options.failureMode === 'throw') throw error;
-          generated[index] = { context: '', failed: true };
+          generated[index] = {
+            context: '',
+            failed: true,
+            errorCode: contextualizerErrorCode(error),
+          };
         }
       }
     }
@@ -319,7 +369,7 @@ export async function contextualizeChunksV2(
           ? 'truncated'
           : 'contextualized',
       participatesInDenseIndex: mode === 'active',
-      ...(failed ? { errorCode: 'CONTEXTUALIZER_FAILED' as const } : {}),
+      ...(failed ? { errorCode: generatedItem.errorCode ?? 'CONTEXTUALIZER_FAILED' } : {}),
     };
   });
 
@@ -330,6 +380,104 @@ export async function contextualizeChunksV2(
     generatedCharacters: maxTotal - remaining,
     fallbackCount,
   };
+}
+
+async function invokeContextualizerWithDeadline(input: {
+  contextualizer: ContextualizerV2Port;
+  providerKey: string;
+  timeoutMs: number;
+  externalSignal?: AbortSignal;
+  input: Omit<ContextualizerV2Input, 'signal'>;
+}): Promise<string> {
+  assertNotAborted(input.externalSignal);
+  if ((DETACHED_CONTEXTUALIZER_WORK.get(input.providerKey)?.size ?? 0) > 0) {
+    throw new ContextualizerV2BusyError();
+  }
+
+  const controller = new AbortController();
+  let operationSettled = false;
+  const operation = Promise.resolve().then(() =>
+    input.contextualizer.generateContext({
+      ...input.input,
+      signal: controller.signal,
+    })
+  );
+  const settlement = operation.then(
+    () => { operationSettled = true; },
+    () => { operationSettled = true; }
+  );
+  void settlement.then(() => {
+    const detached = DETACHED_CONTEXTUALIZER_WORK.get(input.providerKey);
+    detached?.delete(settlement);
+    if (detached?.size === 0) {
+      DETACHED_CONTEXTUALIZER_WORK.delete(input.providerKey);
+    }
+  });
+
+  let tracked = false;
+  const trackDetachedOperation = () => {
+    if (operationSettled || tracked) return;
+    const detached = DETACHED_CONTEXTUALIZER_WORK.get(input.providerKey) ?? new Set();
+    detached.add(settlement);
+    DETACHED_CONTEXTUALIZER_WORK.set(input.providerKey, detached);
+    tracked = true;
+  };
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let timeoutError: ContextualizerV2TimeoutError | undefined;
+  const timeoutOutcome = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      if (timeoutError) return;
+      timeoutError = new ContextualizerV2TimeoutError();
+      trackDetachedOperation();
+      reject(timeoutError);
+      controller.abort(timeoutError);
+    }, input.timeoutMs);
+  });
+
+  let externalAbortError: Error | undefined;
+  let rejectExternalAbort: ((error: Error) => void) | undefined;
+  const externalAbortOutcome = new Promise<never>((_, reject) => {
+    rejectExternalAbort = reject;
+  });
+  const onExternalAbort = () => {
+    if (externalAbortError || timeoutError) return;
+    externalAbortError = abortError();
+    trackDetachedOperation();
+    rejectExternalAbort?.(externalAbortError);
+    controller.abort(externalAbortError);
+  };
+  input.externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+  if (input.externalSignal?.aborted) onExternalAbort();
+
+  try {
+    return await Promise.race([operation, timeoutOutcome, externalAbortOutcome]);
+  } catch (error) {
+    if (externalAbortError) throw externalAbortError;
+    if (timeoutError) throw timeoutError;
+    throw error;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    input.externalSignal?.removeEventListener('abort', onExternalAbort);
+  }
+}
+
+function contextualizerAdmissionKey(providerKey: string | undefined, model: string): string {
+  const candidate = providerKey === undefined
+    ? 'contextualizer-v2/default'
+    : required(providerKey, 'providerKey');
+  if (candidate.length > 256 || /[\u0000-\u001f\u007f]/.test(candidate)) {
+    throw new Error('Contextual providerKey must be a safe string of at most 256 characters.');
+  }
+  return digest(JSON.stringify([candidate, model]));
+}
+
+function contextualizerErrorCode(
+  error: unknown
+): NonNullable<ContextualizedChunkV2['errorCode']> {
+  if (error instanceof ContextualizerV2TimeoutError) return error.code;
+  if (error instanceof ContextualizerV2BusyError) return error.code;
+  return 'CONTEXTUALIZER_FAILED';
 }
 
 function validateChunk(chunk: ContextualChunkInputV2): void {

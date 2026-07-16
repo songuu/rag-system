@@ -8,17 +8,22 @@
 import { randomUUID } from 'node:crypto';
 import {
   EntityExtractor,
+  EntityExtractionOutputBudgetError,
   type ExtractionConfig,
   type KnowledgeGraph,
 } from '../entity-extraction';
 import { createStableErrorLog } from '../security/error-redaction';
-import { TextProcessor } from './text-processor';
 import { getTaskManager } from './task-manager';
 import { createLLMFromOverride } from './model-override';
 import {
   purgeMiroFishLegacyGraphCache,
 } from './artifact-cache';
 import { assertMiroFishGraphDataResourceLimits } from './graph-artifact-store';
+import {
+  MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT,
+  MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS,
+  MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT,
+} from './graph-extraction-budget';
 import type {
   Ontology,
   GraphData,
@@ -65,6 +70,8 @@ const MIROFISH_GRAPH_ONTOLOGY_LIMITS = {
 
 const MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE =
   'MIROFISH_GRAPH_ARTIFACT_LIMIT_EXCEEDED';
+const MIROFISH_GRAPH_OUTPUT_BUDGET_LIMIT_CODE =
+  'MIROFISH_GRAPH_OUTPUT_BUDGET_EXCEEDED';
 
 export class MiroFishGraphArtifactLimitError extends Error {
   readonly code = MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE;
@@ -203,9 +210,9 @@ export class MiroFishGraphBuilder {
     modelOverride?: ModelOverride
   ) {
     this.config = {
-      chunkSize: config?.chunkSize || MIROFISH_GRAPH_DEFAULTS.chunkSize,
-      chunkOverlap: config?.chunkOverlap || MIROFISH_GRAPH_DEFAULTS.chunkOverlap,
-      batchSize: config?.batchSize || MIROFISH_GRAPH_DEFAULTS.batchSize,
+      chunkSize: config?.chunkSize ?? MIROFISH_GRAPH_DEFAULTS.chunkSize,
+      chunkOverlap: config?.chunkOverlap ?? MIROFISH_GRAPH_DEFAULTS.chunkOverlap,
+      batchSize: config?.batchSize ?? MIROFISH_GRAPH_DEFAULTS.batchSize,
     };
     this.modelOverride = modelOverride;
   }
@@ -234,8 +241,8 @@ export class MiroFishGraphBuilder {
     this.setOntology(normalizedOntology);
 
     // 应用配置覆盖
-    if (chunkSize) this.config.chunkSize = chunkSize;
-    if (chunkOverlap) this.config.chunkOverlap = chunkOverlap;
+    if (chunkSize !== undefined) this.config.chunkSize = chunkSize;
+    if (chunkOverlap !== undefined) this.config.chunkOverlap = chunkOverlap;
 
     // Remove all unscoped legacy graph records before accepting new work.
     await purgeMiroFishLegacyGraphCache();
@@ -273,7 +280,12 @@ export class MiroFishGraphBuilder {
       const tm = getTaskManager();
       const task = tm.getTask(taskId);
       if (task?.status === 'pending' || task?.status === 'processing') {
-        tm.failTask(taskId, 'MIROFISH_GRAPH_BUILD_FAILED');
+        tm.failTask(
+          taskId,
+          error instanceof EntityExtractionOutputBudgetError
+            ? MIROFISH_GRAPH_OUTPUT_BUDGET_LIMIT_CODE
+            : 'MIROFISH_GRAPH_BUILD_FAILED'
+        );
       }
     });
 
@@ -305,7 +317,9 @@ export class MiroFishGraphBuilder {
       message: '正在预处理文本...',
     });
 
-    const processedText = TextProcessor.preprocessText(text);
+    // Evidence offsets must remain relative to the exact accepted source. Any
+    // destructive whitespace normalization would make passage offsets forged.
+    const sourceText = text;
 
     // 2. 创建实体提取器（注入运行时模型覆盖）
     const llmInstance = createLLMFromOverride(this.modelOverride, {
@@ -338,7 +352,7 @@ export class MiroFishGraphBuilder {
 
     // 3. 执行实体抽取
     const documentId = createMiroFishGraphDocumentId();
-    const graph = await extractor.extract(processedText, documentId);
+    const graph = await extractor.extract(sourceText, documentId);
 
     // 4. 转换为 GraphData 格式
     const graphData = convertKnowledgeGraphToGraphData(graph);
@@ -716,6 +730,9 @@ export function createMiroFishGraphExtractionConfig(config: {
     chunkOverlap: config.chunkOverlap,
     enableGleaning: false,
     maxChunkTimeout: 45 * 1000,
+    maxProviderCalls: MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT,
+    maxProviderInputCharacters: MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT,
+    ...MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS,
   };
 }
 

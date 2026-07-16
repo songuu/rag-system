@@ -16,6 +16,10 @@ registerHooks({
 });
 
 const {
+  ContextualizerV2BusyError,
+  ContextualizerV2TimeoutError,
+  DEFAULT_CONTEXTUALIZER_V2_TIMEOUT_MS,
+  MAX_CONTEXTUALIZER_V2_TIMEOUT_MS,
   contextualizeChunksV2,
   createContextualChunkIdentityV2,
   resolveContextualRetrievalV2Mode,
@@ -81,6 +85,9 @@ test('off mode ignores inactive provider budgets even above the default call cap
     maxDocumentCharacters: 1,
     maxOutputCharactersPerChunk: 0,
     maxTotalOutputCharacters: 0,
+    contextualizerTimeoutMs: 0,
+    providerKey: '',
+    failureMode: 'invalid',
     contextualizer: {
       async generateContext() {
         calls += 1;
@@ -92,6 +99,29 @@ test('off mode ignores inactive provider budgets even above the default call cap
   assert.equal(calls, 0);
   assert.equal(result.chunks.length, 257);
   assert.ok(result.chunks.every(chunk => chunk.status === 'disabled'));
+});
+
+test('active modes validate the contextualizer deadline before provider work', async () => {
+  assert.equal(DEFAULT_CONTEXTUALIZER_V2_TIMEOUT_MS, 30_000);
+  assert.equal(MAX_CONTEXTUALIZER_V2_TIMEOUT_MS, 120_000);
+  let calls = 0;
+  for (const contextualizerTimeoutMs of [0, 120_001, 1.5]) {
+    await assert.rejects(
+      contextualizeChunksV2({
+        ...baseOptions(),
+        mode: 'active',
+        contextualizerTimeoutMs,
+        contextualizer: {
+          async generateContext() {
+            calls += 1;
+            return 'unused';
+          },
+        },
+      }),
+      /contextualizerTimeoutMs/
+    );
+  }
+  assert.equal(calls, 0);
 });
 
 test('shadow mode enforces concurrency and total output cap without changing dense text', async () => {
@@ -139,6 +169,152 @@ test('active mode falls back per chunk and preserves raw content', async () => {
   assert.equal(result.chunks[1].status, 'fallback');
   assert.equal(result.chunks[1].errorCode, 'CONTEXTUALIZER_FAILED');
   assert.equal(result.fallbackCount, 1);
+});
+
+test('contextualizer timeout has explicit fallback and throw semantics', async () => {
+  const fallbackRelease = deferred();
+  let fallbackCalls = 0;
+  const fallback = await contextualizeChunksV2({
+    ...baseOptions(),
+    mode: 'active',
+    providerKey: 'timeout-fallback-provider',
+    contextualizerTimeoutMs: 5,
+    contextualizer: {
+      async generateContext() {
+        fallbackCalls += 1;
+        return fallbackRelease.promise;
+      },
+    },
+  });
+  assert.equal(fallbackCalls, 1);
+  assert.equal(fallback.fallbackCount, 1);
+  assert.equal(fallback.chunks[0].status, 'fallback');
+  assert.equal(fallback.chunks[0].errorCode, 'CONTEXTUALIZER_TIMEOUT');
+
+  let blockedCalls = 0;
+  const blocked = await contextualizeChunksV2({
+    ...baseOptions(),
+    mode: 'active',
+    providerKey: 'timeout-fallback-provider',
+    contextualizerTimeoutMs: 100,
+    contextualizer: {
+      async generateContext() {
+        blockedCalls += 1;
+        return 'must not run';
+      },
+    },
+  });
+  assert.equal(blockedCalls, 0);
+  assert.equal(blocked.chunks[0].errorCode, 'CONTEXTUALIZER_BUSY');
+  fallbackRelease.resolve('late context');
+  await flushSettlements();
+
+  await assert.rejects(
+    contextualizeChunksV2({
+      ...baseOptions(),
+      mode: 'shadow',
+      providerKey: 'timeout-throw-provider',
+      contextualizerTimeoutMs: 5,
+      failureMode: 'throw',
+      contextualizer: {
+        async generateContext(input) {
+          return new Promise((_, reject) => {
+            input.signal.addEventListener('abort', () => reject(input.signal.reason), {
+              once: true,
+            });
+          });
+        },
+      },
+    }),
+    error => error instanceof ContextualizerV2TimeoutError
+      && error.code === 'CONTEXTUALIZER_TIMEOUT'
+  );
+});
+
+test('external abort fences every noncooperative orphan until all provider work settles', async () => {
+  const releases = [deferred(), deferred()];
+  const receivedSignals = [];
+  let calls = 0;
+  const controller = new AbortController();
+  const running = contextualizeChunksV2({
+    ...baseOptions(2),
+    mode: 'active',
+    concurrency: 2,
+    providerKey: 'noncooperative-abort-provider',
+    contextualizerTimeoutMs: 1_000,
+    signal: controller.signal,
+    contextualizer: {
+      async generateContext(input) {
+        receivedSignals.push(input.signal);
+        return releases[calls++].promise;
+      },
+    },
+  });
+  await waitFor(() => calls === 2);
+
+  controller.abort(new Error('private caller cancellation reason'));
+  await assert.rejects(
+    running,
+    error => error?.name === 'AbortError'
+      && error.message === 'Contextual retrieval was aborted.'
+      && !error.message.includes('private caller')
+  );
+  assert.equal(receivedSignals.length, 2);
+  assert.ok(receivedSignals.every(signal => signal !== controller.signal));
+  assert.ok(receivedSignals.every(signal => signal.aborted));
+  assert.ok(receivedSignals.every(signal => signal.reason?.name === 'AbortError'));
+  assert.ok(receivedSignals.every(
+    signal => !String(signal.reason?.message).includes('private caller')
+  ));
+
+  let contenderCalls = 0;
+  const runContender = () => contextualizeChunksV2({
+    ...baseOptions(),
+    mode: 'active',
+    providerKey: 'noncooperative-abort-provider',
+    contextualizerTimeoutMs: 100,
+    contextualizer: {
+      async generateContext() {
+        contenderCalls += 1;
+        return 'recovered context';
+      },
+    },
+  });
+
+  const blockedByBoth = await runContender();
+  assert.equal(blockedByBoth.chunks[0].errorCode, 'CONTEXTUALIZER_BUSY');
+  assert.equal(contenderCalls, 0);
+  await assert.rejects(
+    contextualizeChunksV2({
+      ...baseOptions(),
+      mode: 'active',
+      providerKey: 'noncooperative-abort-provider',
+      contextualizerTimeoutMs: 100,
+      failureMode: 'throw',
+      contextualizer: {
+        async generateContext() {
+          contenderCalls += 1;
+          return 'must not run';
+        },
+      },
+    }),
+    error => error instanceof ContextualizerV2BusyError
+      && error.code === 'CONTEXTUALIZER_BUSY'
+  );
+  assert.equal(contenderCalls, 0);
+
+  releases[0].resolve('late first');
+  await flushSettlements();
+  const blockedBySecond = await runContender();
+  assert.equal(blockedBySecond.chunks[0].errorCode, 'CONTEXTUALIZER_BUSY');
+  assert.equal(contenderCalls, 0);
+
+  releases[1].resolve('late second');
+  await flushSettlements();
+  const recovered = await runContender();
+  assert.equal(contenderCalls, 1);
+  assert.equal(recovered.chunks[0].status, 'contextualized');
+  assert.match(recovered.chunks[0].denseText, /^recovered context\n\n/);
 });
 
 test('contextualizer input is capped without trimming source document boundaries', async () => {
@@ -287,6 +463,28 @@ function baseOptions(chunkCount = 1) {
     promptVersion: 'prompt-v1',
     chunks,
   };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushSettlements() {
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+async function waitFor(predicate) {
+  const deadline = Date.now() + 1_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('Timed out waiting for contextualizer calls.');
+    await new Promise(resolve => setImmediate(resolve));
+  }
 }
 
 function isRelativeImport(specifier) {

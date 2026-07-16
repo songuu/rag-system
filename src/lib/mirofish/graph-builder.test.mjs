@@ -26,6 +26,11 @@ const {
   createMiroFishGraphExtractionConfig,
   normalizeMiroFishGraphOntology,
 } = await import('./graph-builder.ts');
+const {
+  EntityExtractor,
+  EntityExtractionOutputBudgetError,
+} = await import('../entity-extraction.ts');
+const { MIROFISH_GRAPH_ARTIFACT_LIMITS } = await import('./graph-artifact-store.ts');
 const { getTaskManager } = await import('./task-manager.ts');
 
 test('MiroFish graph builder uses a fast extraction profile by default', () => {
@@ -46,6 +51,17 @@ test('MiroFish graph extraction disables gleaning to avoid doubling LLM calls', 
   assert.equal(config.chunkOverlap, 300);
   assert.equal(config.enableGleaning, false);
   assert.equal(config.maxChunkTimeout, 45000);
+});
+
+test('MiroFish graph builder preserves an explicit zero-overlap budget', () => {
+  const builder = new MiroFishGraphBuilder({
+    chunkSize: 100,
+    chunkOverlap: 0,
+    batchSize: 1,
+  });
+
+  assert.equal(builder.config.chunkSize, 100);
+  assert.equal(builder.config.chunkOverlap, 0);
 });
 
 test('MiroFish graph ontology validation normalizes legacy optional summary', () => {
@@ -156,6 +172,81 @@ test('background graph failures store a stable code and never log provider conte
   assert.match(JSON.stringify(logged), /PROVIDER_TIMEOUT/);
 });
 
+test('artifact-limit worker failure keeps its stable code and stores no graphData', async t => {
+  const originalExtract = EntityExtractor.prototype.extract;
+  const originalFilter = MiroFishGraphBuilder.prototype.applyOntologyFilter;
+  const exactSource = '  source with leading spaces\n\nline with trailing spaces  ';
+  let observedSource;
+  EntityExtractor.prototype.extract = async (text, documentId) => {
+    observedSource = text;
+    return {
+      entities: new Map(),
+      relations: new Map(),
+      communities: new Map(),
+      chunks: new Map(),
+      metadata: {
+        documentId,
+        createdAt: new Date(),
+        entityCount: 0,
+        relationCount: 0,
+        communityCount: 0,
+      },
+    };
+  };
+  MiroFishGraphBuilder.prototype.applyOntologyFilter = graphData => ({
+    ...graphData,
+    passages: [{
+      id: 'oversized-passage',
+      document_id: graphData.graph_id,
+      content: 'x'.repeat(
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.maxPassageCharacters + 1
+      ),
+      index: 0,
+      start_offset: 0,
+      end_offset: MIROFISH_GRAPH_ARTIFACT_LIMITS.maxPassageCharacters + 1,
+    }],
+  });
+  t.after(() => {
+    EntityExtractor.prototype.extract = originalExtract;
+    MiroFishGraphBuilder.prototype.applyOntologyFilter = originalFilter;
+  });
+
+  const taskId = await new MiroFishGraphBuilder().buildGraphAsync({
+    text: exactSource,
+    ontology: { entity_types: [], edge_types: [] },
+  });
+  t.after(() => getTaskManager().deleteTask(taskId));
+  const task = await waitForTerminalTask(taskId);
+
+  assert.equal(task.status, 'failed');
+  assert.equal(task.error, 'MIROFISH_GRAPH_ARTIFACT_LIMIT_EXCEEDED');
+  assert.equal(task.result, undefined);
+  assert.equal(JSON.stringify(task).includes('graphData'), false);
+  assert.equal(observedSource, exactSource);
+});
+
+test('output-budget worker failure keeps its stable code and stores no graphData', async t => {
+  const originalExtract = EntityExtractor.prototype.extract;
+  EntityExtractor.prototype.extract = async () => {
+    throw new EntityExtractionOutputBudgetError();
+  };
+  t.after(() => {
+    EntityExtractor.prototype.extract = originalExtract;
+  });
+
+  const taskId = await new MiroFishGraphBuilder().buildGraphAsync({
+    text: 'bounded source',
+    ontology: { entity_types: [], edge_types: [] },
+  });
+  t.after(() => getTaskManager().deleteTask(taskId));
+  const task = await waitForTerminalTask(taskId);
+
+  assert.equal(task.status, 'failed');
+  assert.equal(task.error, 'MIROFISH_GRAPH_OUTPUT_BUDGET_EXCEEDED');
+  assert.equal(task.result, undefined);
+  assert.equal(JSON.stringify(task).includes('graphData'), false);
+});
+
 test('MiroFish graph adapter retains source passages and communities', () => {
   const graph = convertKnowledgeGraphToGraphData({
     entities: new Map([['entity-1', {
@@ -240,6 +331,17 @@ function legacyCacheRecord(artifact, value) {
     created_at: '2026-07-15T00:00:00.000Z',
     artifact: value,
   }, null, 2);
+}
+
+async function waitForTerminalTask(taskId) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const task = getTaskManager().getTask(taskId);
+    if (task?.status === 'completed' || task?.status === 'failed') {
+      return task;
+    }
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  throw new Error(`Task ${taskId} did not reach a terminal state.`);
 }
 
 function isRelativeImport(specifier) {

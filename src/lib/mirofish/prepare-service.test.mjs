@@ -19,6 +19,7 @@ const {
   createPrepareFingerprint,
   prepareMiroFishSimulation,
 } = await import('./prepare-service.ts');
+const { getHttpModelOverrideErrorResponse } = await import('./model-override.ts');
 
 test('prepareMiroFishSimulation reuses an existing prepared project when fingerprint matches', async () => {
   const config = {
@@ -113,6 +114,77 @@ test('prepareMiroFishSimulation can force regeneration through injected profile 
   assert.equal(result.already_prepared, false);
   assert.equal(result.prepare_id, 'prep_forced');
   assert.deepEqual(result.profiles.map(item => item.entity_id), ['node_1']);
+});
+
+test('prepareMiroFishSimulation rejects poisoned persisted model config before profile generation', async () => {
+  const secretUrl = 'http://169.254.169.254/latest/meta-data';
+  let generatorCalls = 0;
+  let generatorFactoryCalls = 0;
+
+  await assert.rejects(
+    prepareMiroFishSimulation({
+      project: {
+        ...project(),
+        model_config: {
+          provider: 'custom',
+          modelName: 'legacy-model',
+          baseUrl: secretUrl,
+          apiKey: 'historical-secret',
+        },
+      },
+      graphNodes: [node('node_1')],
+    }, {
+      async generateProfiles() {
+        generatorCalls += 1;
+        return [profile('node_1')];
+      },
+      createProfileGenerator() {
+        generatorFactoryCalls += 1;
+        throw new Error('provider factory must not run');
+      },
+    }),
+    error => {
+      const response = getHttpModelOverrideErrorResponse(error);
+      assert.equal(response?.status, 400);
+      assert.equal(response?.body.code, 'MIROFISH_HTTP_MODEL_OVERRIDE_FORBIDDEN');
+      assert.doesNotMatch(JSON.stringify(response), /169\.254\.169\.254|historical-secret/);
+      return true;
+    }
+  );
+
+  assert.equal(generatorCalls, 0);
+  assert.equal(generatorFactoryCalls, 0);
+});
+
+test('prepareMiroFishSimulation passes a validated persisted selector to profile generation', async () => {
+  let receivedOverride;
+  const result = await prepareMiroFishSimulation({
+    project: {
+      ...project(),
+      model_config: {
+        provider: 'ollama',
+        modelName: 'server-model',
+        temperature: 0.4,
+      },
+    },
+    graphNodes: [node('node_1')],
+  }, {
+    createProfileGenerator(modelOverride) {
+      receivedOverride = modelOverride;
+      return {
+        async generateProfiles() {
+          return [profile('node_1')];
+        },
+      };
+    },
+  });
+
+  assert.equal(result.already_prepared, false);
+  assert.deepEqual(receivedOverride, {
+    provider: 'ollama',
+    modelName: 'server-model',
+    temperature: 0.4,
+  });
 });
 
 function project() {

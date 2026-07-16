@@ -46,3 +46,29 @@ A pre-aborted contender must not cancel or release another invocation's active l
 request abort, internal timeout, and explicit management recovery; every lease mutation and terminal
 delete must compare owner and revision. Treat expired takeover as at-least-once and reuse a stable
 step execution ID for downstream idempotency.
+
+## Persisted Model Configuration Can Outlive Its Validator
+
+Validating only the request that writes a model selector does not protect rows created by older code.
+Revalidate persisted provider/model data on every read/use boundary, keep credentials and custom base
+URLs server-owned, and shape public project/config responses from an allowlist instead of returning the
+stored object.
+
+## Graph Build Success Must Be All-Or-Nothing
+
+A task can finish extraction while embedding, budget accounting, or artifact persistence still fails.
+Do not expose a result merely because an early stage completed. Publish the artifact/result only after
+all required stages pass; otherwise retain a stable failed task state with no partial result. Exact graph
+chunk offsets must come from slicing the original source, not from searching normalized chunk text.
+
+## Embedding Admission Identity Is Not The LLM Selector
+
+If an embedding orphan is keyed by the client-selectable generation model, a caller can rotate to another
+valid LLM selector and reopen capacity while the same embedding backend is still busy. Build the admission
+key from the effective server embedding provider/model/base URL hash and never expose the raw endpoint.
+
+## Bounded JSON Size Does Not Bound Graph CPU
+
+A provider response can fit under a text-size cap yet amplify into quadratic entity merging, relation
+endpoint scans, or pairwise vector math. Count raw observations, reserve `E² + RE` lookup work before
+the first scan, cap pair/vector operations, and validate community vectors before artifact assignment.

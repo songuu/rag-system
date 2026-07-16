@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProjectStore } from '@/lib/mirofish/project-store';
 import {
+  createPublicProjectProjection,
   getHttpModelOverrideErrorResponse,
   validateHttpModelOverride,
 } from '@/lib/mirofish/model-override';
@@ -30,7 +31,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    return NextResponse.json({ success: true, project });
+    return NextResponse.json({ success: true, project: createPublicProjectProjection(project) });
   } catch (error) {
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '获取项目失败' },
@@ -97,7 +98,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
       );
     }
 
-    return NextResponse.json({ success: true, project });
+    return NextResponse.json({ success: true, project: createPublicProjectProjection(project) });
   } catch (error) {
     const modelOverrideError = getHttpModelOverrideErrorResponse(error);
     if (modelOverrideError) {

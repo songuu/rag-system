@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { normalizeSimulationConfig } from './config-normalizer';
+import { validatePersistedModelOverride } from './model-override';
 import { ProfileGenerator } from './profile-generator';
 import type {
   EntityProfile,
@@ -23,6 +24,9 @@ export interface MiroFishPrepareInput {
 
 export interface PrepareServiceDependencies {
   generateProfiles?: (entities: PreparedEntity[], simulationContext: string) => Promise<EntityProfile[]>;
+  createProfileGenerator?: (
+    modelOverride: ModelOverride | undefined
+  ) => Pick<ProfileGenerator, 'generateProfiles'>;
   now?: () => Date;
   createId?: () => string;
 }
@@ -39,6 +43,10 @@ export async function prepareMiroFishSimulation(
   input: MiroFishPrepareInput,
   dependencies: PrepareServiceDependencies = {}
 ): Promise<SimulationPrepareResult> {
+  // Project data crosses a trust boundary here. Validate even when a request
+  // override exists so a poisoned historical record cannot remain latent.
+  const persistedModelOverride = validatePersistedModelOverride(input.project.model_config) ?? undefined;
+  const effectiveModelOverride = input.modelOverride ?? persistedModelOverride;
   const selectedEntities = selectEntities(input.graphNodes, input.selectedEntityIds);
   if (selectedEntities.length === 0) {
     throw new Error('至少需要选择一个实体来准备模拟环境');
@@ -57,7 +65,7 @@ export async function prepareMiroFishSimulation(
     simulationRequirement: input.project.simulation_requirement,
     selectedEntityIds: selectedEntities.map(entity => entity.id),
     config: normalizedConfig,
-    modelOverride: input.modelOverride ?? input.project.model_config,
+    modelOverride: effectiveModelOverride,
   });
 
   if (!input.forceRegenerate && isPreparedProject(input.project, fingerprint)) {
@@ -74,7 +82,7 @@ export async function prepareMiroFishSimulation(
 
   const profiles = profileSource?.length
     ? profileSource
-    : await generateProfiles(selectedEntities, input.project.simulation_requirement, input.modelOverride, dependencies);
+    : await generateProfiles(selectedEntities, input.project.simulation_requirement, effectiveModelOverride, dependencies);
 
   if (profiles.length === 0) {
     throw new Error('Agent 人设生成结果为空，无法准备模拟环境');
@@ -86,7 +94,7 @@ export async function prepareMiroFishSimulation(
     simulationRequirement: input.project.simulation_requirement,
     selectedEntityIds: selectedEntities.map(entity => entity.id),
     config,
-    modelOverride: input.modelOverride ?? input.project.model_config,
+    modelOverride: effectiveModelOverride,
   });
   const preparedAt = (dependencies.now?.() ?? new Date()).toISOString();
 
@@ -163,7 +171,8 @@ async function generateProfiles(
     return dependencies.generateProfiles(entities, simulationContext);
   }
 
-  const generator = new ProfileGenerator(modelOverride);
+  const generator = dependencies.createProfileGenerator?.(modelOverride)
+    ?? new ProfileGenerator(modelOverride);
   return generator.generateProfiles({
     entities,
     simulationContext,

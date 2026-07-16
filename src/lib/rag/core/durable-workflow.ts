@@ -701,14 +701,18 @@ export class DurableRagWorkflowAdapter<
       };
 
       try {
-        const nextState = await step.execute({
-          job: cloneDurableJson(checkpoint.job),
-          state: cloneDurableJson(checkpoint.state),
-          identity: cloneDurableJson(checkpoint.identity),
-          stepExecutionId,
+        const nextState = await executeDurableStepWithCancellation(
+          () => step.execute({
+            job: cloneDurableJson(checkpoint.job),
+            state: cloneDurableJson(checkpoint.state),
+            identity: cloneDurableJson(checkpoint.identity),
+            stepExecutionId,
+            signal,
+            renewLease,
+          }),
           signal,
-          renewLease,
-        });
+          step.id
+        );
         await leaseRenewalQueue;
         stepSettled = true;
         if (signal.aborted) {
@@ -742,7 +746,8 @@ export class DurableRagWorkflowAdapter<
         stepSettled = true;
         await leaseRenewalQueue.catch(() => undefined);
         if (error instanceof DurableWorkflowConflictError) throw error;
-        const wasCancelled = signal.aborted;
+        const wasCancelled = signal.aborted
+          || error instanceof DurableWorkflowCancelledError;
         const terminalFailure = error instanceof DurableWorkflowTerminalStepError;
         const pausedCheckpoint: DurableWorkflowCheckpoint<TJob, TState> = {
           ...checkpoint,
@@ -1017,6 +1022,41 @@ export class DurableRagWorkflowAdapter<
       checkpointProvider: this.store.providerId,
       processPersistent: this.store.processPersistent,
     };
+  }
+}
+
+async function executeDurableStepWithCancellation<T>(
+  execute: () => Promise<T>,
+  signal: AbortSignal,
+  stepId: string
+): Promise<T> {
+  if (signal.aborted) {
+    throw new DurableWorkflowCancelledError(stepId);
+  }
+
+  let rejectCancellation: ((error: DurableWorkflowCancelledError) => void) | undefined;
+  const cancellation = new Promise<never>((_, reject) => {
+    rejectCancellation = reject;
+  });
+  const cancel = () => {
+    rejectCancellation?.(new DurableWorkflowCancelledError(stepId));
+  };
+  signal.addEventListener('abort', cancel, { once: true });
+  if (signal.aborted) cancel();
+
+  const operation = Promise.resolve().then(() => {
+    if (signal.aborted) {
+      throw new DurableWorkflowCancelledError(stepId);
+    }
+    return execute();
+  });
+  try {
+    // Promise.race installs rejection handlers on both inputs. If cancellation
+    // wins and a non-cooperative step rejects later, that rejection is still
+    // observed while the terminal checkpoint prevents replay of the step.
+    return await Promise.race([operation, cancellation]);
+  } finally {
+    signal.removeEventListener('abort', cancel);
   }
 }
 

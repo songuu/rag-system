@@ -41,8 +41,8 @@ test('production policy control-plane fixture passes hermetically and determinis
   );
 
   assert.equal(first.passed, true);
-  assert.equal(first.totalCases, 21);
-  assert.equal(first.passedCases, 21);
+  assert.equal(first.totalCases, 23);
+  assert.equal(first.passedCases, 23);
   assert.equal(first.failedCases, 0);
   assert.equal(first.target.executionMode, 'hermetic-in-process');
   assert.equal(first.target.externalServicePolicy, 'disabled');

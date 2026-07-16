@@ -434,7 +434,7 @@ export class ModelFactory {
     console.log(`[ModelFactory] 创建 OpenAI LLM: ${actualModel}`);
 
     return new ChatOpenAI({
-      openAIApiKey: apiKey,
+      apiKey,
       modelName: actualModel,
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
@@ -475,7 +475,8 @@ export class ModelFactory {
       throw new Error('自定义 API 配置不完整。请设置 CUSTOM_API_KEY 和 CUSTOM_BASE_URL。');
     }
 
-    console.log(`[ModelFactory] 创建自定义 LLM: ${actualModel} @ ${baseUrl}`);
+    // Base URLs may identify private infrastructure; never emit them in logs.
+    console.log(`[ModelFactory] 创建自定义 LLM: ${actualModel}`);
 
     // 使用 OpenAI 兼容 API
     return new ChatOpenAI({

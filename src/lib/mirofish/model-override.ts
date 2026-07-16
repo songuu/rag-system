@@ -5,11 +5,9 @@
  * 不修改单例全局状态，避免影响其他模块。
  */
 
-import { ChatOllama } from '@langchain/ollama';
-import { ChatOpenAI } from '@langchain/openai';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createLLM, isOllamaProvider } from '../model-config';
-import type { ModelOverride } from './types';
+import type { ModelOverride, Project } from './types';
 
 interface LLMOverrideDefaults {
   temperature?: number;
@@ -17,14 +15,22 @@ interface LLMOverrideDefaults {
 }
 
 const HTTP_MODEL_OVERRIDE_FORBIDDEN_CODE = 'MIROFISH_HTTP_MODEL_OVERRIDE_FORBIDDEN';
+const HTTP_MODEL_OVERRIDE_INVALID_CODE = 'MIROFISH_HTTP_MODEL_OVERRIDE_INVALID';
+const MAX_HTTP_MODEL_NAME_LENGTH = 200;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
 
 export class MiroFishHttpModelOverrideValidationError extends Error {
-  readonly code = HTTP_MODEL_OVERRIDE_FORBIDDEN_CODE;
+  readonly code: string;
   readonly status = 400;
 
-  constructor() {
-    super('客户端 modelOverride 不允许包含 baseUrl 或 apiKey');
+  constructor(kind: 'forbidden' | 'invalid' = 'forbidden') {
+    super(kind === 'forbidden'
+      ? '客户端 modelOverride 不允许包含 baseUrl 或 apiKey'
+      : 'modelOverride 格式无效');
     this.name = 'MiroFishHttpModelOverrideValidationError';
+    this.code = kind === 'forbidden'
+      ? HTTP_MODEL_OVERRIDE_FORBIDDEN_CODE
+      : HTTP_MODEL_OVERRIDE_INVALID_CODE;
   }
 }
 
@@ -44,44 +50,19 @@ export function createLLMFromOverride(
     });
   }
 
-  switch (override.provider) {
-    case 'ollama':
-      return new ChatOllama({
-        baseUrl: override.baseUrl || 'http://localhost:11434',
-        model: override.modelName,
-        temperature,
-        ...normalizeOllamaOptions(defaults.ollamaOptions),
-      });
-
-    case 'openai': {
-      if (!override.apiKey) {
-        throw new Error('OpenAI 提供商需要 API Key');
-      }
-      return new ChatOpenAI({
-        openAIApiKey: override.apiKey,
-        modelName: override.modelName,
-        temperature,
-        configuration: override.baseUrl ? { baseURL: override.baseUrl } : undefined,
-      });
-    }
-
-    case 'custom': {
-      if (!override.apiKey || !override.baseUrl) {
-        throw new Error('Custom 提供商需要 API Key 和 Base URL');
-      }
-      return new ChatOpenAI({
-        apiKey: override.apiKey,
-        model: override.modelName,
-        temperature,
-        configuration: { baseURL: override.baseUrl },
-      });
-    }
-
-    default: {
-      const exhaustive: never = override.provider;
-      throw new Error(`不支持的模型提供商: ${exhaustive}`);
-    }
-  }
+  // Model selection may come from a safe HTTP selector, while credentials and
+  // endpoints remain server-owned. The shared factory resolves missing
+  // secrets from the selected provider's environment configuration. Trusted
+  // internal overrides can still explicitly supply those fields.
+  return createLLM(override.modelName, {
+    provider: override.provider,
+    temperature,
+    apiKey: override.apiKey,
+    baseUrl: override.baseUrl,
+    options: override.provider === 'ollama'
+      ? normalizeOllamaOptions(defaults.ollamaOptions)
+      : undefined,
+  });
 }
 
 function normalizeOllamaOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -98,8 +79,11 @@ function normalizeOllamaOptions(options: Record<string, unknown> | undefined): R
 }
 
 /**
- * 校验并归一化来自外部输入的 modelOverride。
- * 返回 null 表示无效输入（调用方应走默认配置）。
+ * Normalize a trusted, server-managed model override.
+ *
+ * This compatibility parser understands explicit endpoints and credentials.
+ * Never use it for HTTP bodies or persisted project data; those boundaries
+ * must use the strict validators below.
  */
 export function validateModelOverride(input: unknown): ModelOverride | null {
   if (!input || typeof input !== 'object') return null;
@@ -137,17 +121,85 @@ export function validateModelOverride(input: unknown): ModelOverride | null {
  * turn any MiroFish feature into an SSRF proxy or submit secrets for storage.
  */
 export function validateHttpModelOverride(input: unknown): ModelOverride | null {
-  if (input !== null && typeof input === 'object') {
-    const object = input as Record<string, unknown>;
-    if (
-      Object.prototype.hasOwnProperty.call(object, 'baseUrl')
-      || Object.prototype.hasOwnProperty.call(object, 'apiKey')
-    ) {
-      throw new MiroFishHttpModelOverrideValidationError();
-    }
+  return validateUntrustedModelOverride(input);
+}
+
+/**
+ * Revalidate project data at the point where it becomes executable.
+ *
+ * Older stores can contain endpoint or credential fields written before the
+ * HTTP boundary became restrictive. Treat that data as untrusted too: a type
+ * assertion or successful deserialization must never make it executable.
+ */
+export function validatePersistedModelOverride(input: unknown): ModelOverride | null {
+  return validateUntrustedModelOverride(input);
+}
+
+function validateUntrustedModelOverride(input: unknown): ModelOverride | null {
+  if (input === undefined || input === null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new MiroFishHttpModelOverrideValidationError('invalid');
   }
 
-  return validateModelOverride(input);
+  const object = input as Record<string, unknown>;
+  if (
+    Object.prototype.hasOwnProperty.call(object, 'baseUrl')
+    || Object.prototype.hasOwnProperty.call(object, 'apiKey')
+  ) {
+    throw new MiroFishHttpModelOverrideValidationError();
+  }
+
+  const allowedFields = new Set(['provider', 'modelName', 'temperature']);
+  if (Object.keys(object).some(field => !allowedFields.has(field))) {
+    throw new MiroFishHttpModelOverrideValidationError('invalid');
+  }
+
+  const provider = object.provider;
+  const rawModelName = object.modelName;
+  const modelName = typeof rawModelName === 'string' ? rawModelName.trim() : '';
+  if (
+    (provider !== 'ollama' && provider !== 'openai' && provider !== 'custom')
+    || modelName.length === 0
+    || modelName.length > MAX_HTTP_MODEL_NAME_LENGTH
+    || CONTROL_CHARACTER_PATTERN.test(modelName)
+  ) {
+    throw new MiroFishHttpModelOverrideValidationError('invalid');
+  }
+
+  const temperature = object.temperature;
+  if (
+    temperature !== undefined
+    && (typeof temperature !== 'number' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)
+  ) {
+    throw new MiroFishHttpModelOverrideValidationError('invalid');
+  }
+
+  return {
+    provider,
+    modelName,
+    ...(temperature !== undefined ? { temperature } : {}),
+  };
+}
+
+/**
+ * Build the public project representation without reflecting historical
+ * endpoint or credential fields back to clients. Invalid legacy overrides are
+ * omitted; execution paths independently reject them instead of silently
+ * using a default provider.
+ */
+export function createPublicProjectProjection(project: Project): Project {
+  const projection = { ...project };
+  try {
+    const modelConfig = validatePersistedModelOverride(project.model_config);
+    if (modelConfig) {
+      projection.model_config = modelConfig;
+    } else {
+      delete projection.model_config;
+    }
+  } catch {
+    delete projection.model_config;
+  }
+  return projection;
 }
 
 export function getHttpModelOverrideErrorResponse(error: unknown): {
@@ -170,11 +222,12 @@ export function getHttpModelOverrideErrorResponse(error: unknown): {
 }
 
 /**
- * 从 PUT 请求中移除 apiKey 便于返回给前端（安全）。
- * 前端用 hasApiKey 布尔判断是否已配置。
+ * Create a credential- and endpoint-free summary for administrative display.
  */
-export function maskModelOverride(override: ModelOverride | undefined): (Omit<ModelOverride, 'apiKey'> & { hasApiKey: boolean }) | undefined {
+export function maskModelOverride(override: ModelOverride | undefined): (
+  Omit<ModelOverride, 'apiKey' | 'baseUrl'> & { hasApiKey: boolean; hasBaseUrl: boolean }
+) | undefined {
   if (!override) return undefined;
-  const { apiKey, ...rest } = override;
-  return { ...rest, hasApiKey: !!apiKey };
+  const { apiKey, baseUrl, ...rest } = override;
+  return { ...rest, hasApiKey: Boolean(apiKey), hasBaseUrl: Boolean(baseUrl) };
 }

@@ -40,7 +40,10 @@ configureSingleTenant('owner');
 
 const { NextRequest } = await import('next/server');
 const { MiroFishGraphBuilder } = await import('@/lib/mirofish/graph-builder');
-const { getTaskManager } = await import('@/lib/mirofish/task-manager');
+const { TaskManager, getTaskManager } = await import('@/lib/mirofish/task-manager');
+const { calculateMiroFishGraphExtractionBudget } = await import(
+  '@/lib/mirofish/graph-extraction-budget'
+);
 const { createMiroFishGraphTaskScopeMetadata } = await import(
   '@/lib/mirofish/graph-api-scope'
 );
@@ -303,6 +306,13 @@ test('graph chunk upper bound is exact at the provider-call budget boundary', ()
   assert.equal(calculateMiroFishGraphChunkUpperBound(50_051, 100, 50), 1_001);
 });
 
+test('graph preflight budget counts exact prompt characters across overlap', () => {
+  const budget = calculateMiroFishGraphExtractionBudget(10_000, 4_000, 2_000);
+
+  assert.equal(budget.providerCallCount, 4);
+  assert.equal(budget.providerInputCharacters > 16_000, true);
+});
+
 test('POST rejects amplified graph extraction before task allocation', async () => {
   configureSingleTenant('owner');
   const taskManager = getTaskManager();
@@ -325,6 +335,79 @@ test('POST rejects amplified graph extraction before task allocation', async () 
     taskManager.getAllTasks().map(task => task.task_id),
     taskIdsBefore
   );
+});
+
+test('POST rejects cumulative provider input before task or provider allocation', async t => {
+  configureSingleTenant('owner');
+  const taskManager = getTaskManager();
+  const taskIdsBefore = taskManager.getAllTasks().map(task => task.task_id);
+  const originalBuild = MiroFishGraphBuilder.prototype.buildGraphAsync;
+  let builderCalls = 0;
+  MiroFishGraphBuilder.prototype.buildGraphAsync = async () => {
+    builderCalls += 1;
+    throw new Error('builder must not be allocated');
+  };
+  t.after(() => {
+    MiroFishGraphBuilder.prototype.buildGraphAsync = originalBuild;
+  });
+
+  const response = await POST(request('', {
+    method: 'POST',
+    body: JSON.stringify({
+      text: 'x'.repeat(2_000_000),
+      ontology: minimalOntology(),
+      chunkSize: 4_000,
+      chunkOverlap: 2_000,
+    }),
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 422);
+  assert.equal(body.code, 'MIROFISH_GRAPH_PROVIDER_INPUT_LIMIT');
+  assert.equal(builderCalls, 0);
+  assert.deepEqual(
+    taskManager.getAllTasks().map(task => task.task_id),
+    taskIdsBefore
+  );
+});
+
+test('POST admits 2M unbroken text only as bounded default windows', async t => {
+  configureSingleTenant('owner');
+  const taskManager = getTaskManager();
+  const originalBuild = MiroFishGraphBuilder.prototype.buildGraphAsync;
+  let observedRequest;
+  MiroFishGraphBuilder.prototype.buildGraphAsync = async (
+    buildRequest,
+    _onProgress,
+    _taskMetadata,
+    reservedTaskId
+  ) => {
+    observedRequest = buildRequest;
+    return reservedTaskId;
+  };
+  t.after(() => {
+    MiroFishGraphBuilder.prototype.buildGraphAsync = originalBuild;
+  });
+
+  const response = await POST(request('', {
+    method: 'POST',
+    body: JSON.stringify({
+      text: 'x'.repeat(2_000_000),
+      ontology: minimalOntology(),
+    }),
+  }));
+  const body = await response.json();
+  t.after(() => taskManager.deleteTask(body.taskId));
+
+  const budget = calculateMiroFishGraphExtractionBudget(
+    observedRequest.text.length,
+    observedRequest.chunkSize,
+    observedRequest.chunkOverlap
+  );
+  assert.equal(response.status, 200);
+  assert.equal(observedRequest.chunkSize, 4_000);
+  assert.equal(budget.providerCallCount > 1, true);
+  assert.equal(budget.providerInputCharacters < 4_000_000, true);
 });
 
 test('POST admits the exact graph extraction budget boundary', async t => {
@@ -755,6 +838,22 @@ test('POST enforces a process-wide active worker cap across foreign scopes', asy
   assert.equal(body.code, 'MIROFISH_GRAPH_GLOBAL_ACTIVE_JOB_LIMIT');
   assert.equal(
     foreignTaskIds.every(taskId => taskManager.getTask(taskId) !== null),
+    true
+  );
+});
+
+test('task ids remain UUID-unique under concurrent allocation', async () => {
+  const taskManager = new TaskManager();
+  const taskIds = await Promise.all(
+    Array.from({ length: 1_000 }, async () => taskManager.createTask('graph_build'))
+  );
+
+  assert.equal(new Set(taskIds).size, taskIds.length);
+  assert.equal(
+    taskIds.every(taskId =>
+      /^task_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        .test(taskId)
+    ),
     true
   );
 });

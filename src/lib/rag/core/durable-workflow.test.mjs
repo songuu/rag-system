@@ -506,6 +506,69 @@ test('in-step cancellation is terminal and AbortSignal stays runtime-only', asyn
   assert.equal(calls, 1);
 });
 
+test('non-cooperative step cancellation settles immediately and cannot replay', async t => {
+  const store = new InMemoryDurableCheckpointStore();
+  const controller = new AbortController();
+  let enterStep;
+  let releaseStep;
+  let calls = 0;
+  const entered = new Promise(resolve => { enterStep = resolve; });
+  const blocked = new Promise(resolve => { releaseStep = resolve; });
+  const adapter = new DurableRagWorkflowAdapter({
+    id: 'non-cooperative-cancel-workflow',
+    version: 'v1',
+    projectJobForCheckpoint(job) { return { amount: job.amount }; },
+    projectStateForCheckpoint(state) { return { done: state.done }; },
+    createInitialState() { return { done: false }; },
+    steps: [{
+      id: 'blocked-step',
+      async execute() {
+        calls += 1;
+        enterStep();
+        await blocked;
+        return { done: true };
+      },
+    }],
+  }, store);
+  t.after(() => releaseStep());
+  const invocation = {
+    ...createInvocation('non-cooperative-cancel'),
+    signal: controller.signal,
+  };
+
+  const running = adapter.invoke(invocation);
+  await entered;
+  controller.abort(new Error('private disconnect reason'));
+  await assert.rejects(
+    running,
+    error => (
+      error instanceof DurableWorkflowCancelledError
+      && error.stepId === 'blocked-step'
+      && !error.message.includes('private disconnect reason')
+    )
+  );
+
+  const checkpointKey = buildDurableCheckpointKey(
+    'non-cooperative-cancel-workflow',
+    'non-cooperative-cancel',
+    'tenant-a'
+  );
+  const cancelled = await store.load(checkpointKey);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.lastFailureCode, 'INVOCATION_ABORTED');
+  assert.equal('activeStep' in cancelled, false);
+  await assert.rejects(
+    () => adapter.invoke(createInvocation('non-cooperative-cancel')),
+    error => error instanceof DurableWorkflowCancelledError
+  );
+  assert.equal(calls, 1);
+
+  releaseStep();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await store.load(checkpointKey)).status, 'cancelled');
+  assert.equal(calls, 1);
+});
+
 test('typed terminal step failures cannot be retried', async () => {
   const store = new InMemoryDurableCheckpointStore();
   let calls = 0;

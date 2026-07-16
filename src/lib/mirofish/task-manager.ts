@@ -5,6 +5,7 @@
  */
 
 import type { TaskInfo } from './types';
+import { randomUUID } from 'node:crypto';
 
 export interface TaskAdmissionConstraint {
   id: string;
@@ -28,7 +29,7 @@ export class TaskManager {
    * 创建新任务
    */
   createTask(taskType: string, metadata?: Record<string, unknown>): string {
-    const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const taskId = `task_${randomUUID()}`;
 
     const task: TaskInfo = {
       task_id: taskId,

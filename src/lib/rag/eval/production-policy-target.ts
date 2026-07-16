@@ -1,3 +1,4 @@
+import { composeEvidenceContextV2 } from '../core/context-composer';
 import type { RagEvidence, RagPolicyId, RagQueryRequest } from '../core/types';
 import {
   buildDurableCheckpointKey,
@@ -16,6 +17,7 @@ import {
   type AbstentionLaneKind,
   type LaneScoreCalibration,
 } from '../retrieval/abstention-policy';
+import { contextualizeChunksV2 } from '../retrieval/contextual-retrieval-v2';
 import { createGraphEntityLaneHandler } from '../retrieval/graph-entity-lane';
 import {
   milvusHybridSearch,
@@ -72,6 +74,10 @@ export const productionPolicyContractTarget: ProductionPolicyContractTarget = {
         return observeHybridRollout(input);
       case 'lane-evidence-transform':
         return observeLaneEvidenceTransform(input);
+      case 'context-composer':
+        return observeContextComposer(input);
+      case 'contextual-retrieval-v2':
+        return observeContextualRetrievalV2(input);
       case 'abstention':
         return observeAbstention(input);
       case 'graph-missing-artifact':
@@ -302,6 +308,100 @@ async function observeLaneEvidenceTransform(
       evidenceIds: item.retrievedEvidenceIds,
     })),
     stopReason: result.stopReason,
+  };
+}
+
+function observeContextComposer(input: ContractJsonObject): ContractJsonValue {
+  const evidence = arrayField(input, 'evidence').map((value, index) =>
+    parseEvidence(value, `evidence[${index}]`)
+  );
+  const maxTokens = integerField(input, 'maxTokens');
+  const result = composeEvidenceContextV2(evidence, {
+    maxTokens,
+    order: contextOrderField(input, 'order'),
+    includeScores: false,
+    scope: contractScope(),
+  });
+  return {
+    version: result.version,
+    order: result.order,
+    includedEvidence: result.includedEvidence.map(item => ({
+      id: item.id,
+      startOffset: item.startOffset ?? null,
+      endOffset: item.endOffset ?? null,
+    })),
+    excludedEvidenceIds: result.excludedEvidenceIds,
+    truncated: result.truncated,
+    withinBudget: result.tokenEstimate <= maxTokens,
+  };
+}
+
+async function observeContextualRetrievalV2(
+  input: ContractJsonObject
+): Promise<ContractJsonValue> {
+  const documentText = stringField(input, 'documentText');
+  const chunkText = stringField(input, 'chunkText');
+  const chunkStart = documentText.indexOf(chunkText);
+  if (chunkStart < 0) {
+    throw new Error('Contract contextual chunk must be a source document span.');
+  }
+  const generatedContext = stringField(input, 'generatedContext');
+  let providerCalls = 0;
+  let receivedInternalSignal = false;
+  const contextualizer = {
+    async generateContext(contextualizerInput: { signal?: AbortSignal }) {
+      providerCalls += 1;
+      receivedInternalSignal = contextualizerInput.signal instanceof AbortSignal;
+      return generatedContext;
+    },
+  };
+  const base = {
+    documentText,
+    sourceHash: 'sha256:contract-contextual-source',
+    documentVersion: 'contract-contextual-v1',
+    model: 'contract-contextualizer',
+    promptVersion: 'contract-contextual-prompt-v1',
+    chunks: [{
+      id: 'contract-contextual-chunk',
+      text: chunkText,
+      startOffset: chunkStart,
+      endOffset: chunkStart + chunkText.length,
+    }],
+    contextualizer,
+  };
+  const off = await contextualizeChunksV2({
+    ...base,
+    mode: 'off',
+    // Invalid provider controls prove that the rollback path never validates
+    // or executes provider-only configuration.
+    contextualizerTimeoutMs: 0,
+    providerKey: '',
+  });
+  const providerCallsAfterOff = providerCalls;
+  const active = await contextualizeChunksV2({
+    ...base,
+    mode: 'active',
+    contextualizerTimeoutMs: 1_000,
+    providerKey: 'contract-contextualizer',
+  });
+  return {
+    off: {
+      mode: off.mode,
+      status: off.chunks[0].status,
+      denseText: off.chunks[0].denseText,
+      participatesInDenseIndex: off.chunks[0].participatesInDenseIndex,
+      providerCallsAfterOff,
+    },
+    active: {
+      mode: active.mode,
+      status: active.chunks[0].status,
+      generatedContext: active.chunks[0].generatedContext,
+      denseText: active.chunks[0].denseText,
+      participatesInDenseIndex: active.chunks[0].participatesInDenseIndex,
+      generatedCharacters: active.generatedCharacters,
+      providerCalls,
+      receivedInternalSignal,
+    },
   };
 }
 
@@ -646,6 +746,18 @@ function parseEvidence(value: ContractJsonValue, path: string): RagEvidence {
     ...(item.metadata === undefined
       ? {}
       : { metadata: objectField(item, 'metadata') }),
+    ...(item.source === undefined
+      ? {}
+      : { source: stringField(item, 'source') }),
+    ...(item.page === undefined
+      ? {}
+      : { page: integerField(item, 'page') }),
+    ...(item.startOffset === undefined
+      ? {}
+      : { startOffset: integerField(item, 'startOffset') }),
+    ...(item.endOffset === undefined
+      ? {}
+      : { endOffset: integerField(item, 'endOffset') }),
   };
 }
 
@@ -770,6 +882,17 @@ function queryKindField(input: ContractJsonObject, field: string): RetrievalQuer
     throw new Error(`Contract input ${field} has an unsupported query kind.`);
   }
   return value as RetrievalQueryKind;
+}
+
+function contextOrderField(
+  input: ContractJsonObject,
+  field: string
+): 'retrieval' | 'document' {
+  const value = stringField(input, field);
+  if (value !== 'retrieval' && value !== 'document') {
+    throw new Error(`Contract input ${field} has an unsupported context order.`);
+  }
+  return value;
 }
 
 function laneKind(value: ContractJsonValue, path: string): AbstentionLaneKind {

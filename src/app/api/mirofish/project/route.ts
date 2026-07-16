@@ -6,13 +6,14 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { createPublicProjectProjection } from '@/lib/mirofish/model-override';
 import { getProjectStore } from '@/lib/mirofish/project-store';
 import type { CreateProjectRequest } from '@/lib/mirofish/types';
 
 export async function GET() {
   try {
     const store = getProjectStore();
-    const projects = store.list();
+    const projects = store.list().map(createPublicProjectProjection);
 
     return NextResponse.json({ success: true, projects });
   } catch (error) {
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest) {
     const store = getProjectStore();
     const project = store.create(body);
 
-    return NextResponse.json({ success: true, project });
+    return NextResponse.json({ success: true, project: createPublicProjectProjection(project) });
   } catch (error) {
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : '创建项目失败' },

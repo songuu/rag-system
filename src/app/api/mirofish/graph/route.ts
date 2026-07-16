@@ -16,6 +16,11 @@ import {
   normalizeMiroFishGraphOntology,
 } from '@/lib/mirofish/graph-builder';
 import { purgeMiroFishLegacyGraphCache } from '@/lib/mirofish/artifact-cache';
+import {
+  MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT,
+  MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT,
+  calculateMiroFishGraphExtractionBudget,
+} from '@/lib/mirofish/graph-extraction-budget';
 import { getTaskManager } from '@/lib/mirofish/task-manager';
 import {
   getHttpModelOverrideErrorResponse,
@@ -45,7 +50,6 @@ const MIROFISH_GRAPH_GLOBAL_TASK_LIMIT = 200;
 const MIROFISH_GRAPH_GLOBAL_TERMINAL_TASK_LIMIT = 100;
 const MIROFISH_GRAPH_GLOBAL_ACTIVE_JOB_LIMIT = 16;
 const MIROFISH_GRAPH_ACTIVE_JOB_LIMIT = 4;
-const MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT = 1_000;
 const MIROFISH_GRAPH_BATCH_LIMIT = 20;
 const MIROFISH_GRAPH_NAME_LIMIT = 200;
 
@@ -491,23 +495,11 @@ export function calculateMiroFishGraphChunkUpperBound(
   chunkSize: number,
   chunkOverlap: number
 ): number {
-  if (
-    !Number.isInteger(textLength)
-    || textLength < 0
-    || !Number.isInteger(chunkSize)
-    || chunkSize < 1
-    || !Number.isInteger(chunkOverlap)
-    || chunkOverlap < 0
-    || chunkOverlap >= chunkSize
-  ) {
-    throw new Error('Invalid MiroFish graph chunk-bound inputs.');
-  }
-  if (textLength === 0) return 0;
-  if (textLength <= chunkSize) return 1;
-
-  return 1 + Math.ceil(
-    (textLength - chunkSize) / (chunkSize - chunkOverlap)
-  );
+  return calculateMiroFishGraphExtractionBudget(
+    textLength,
+    chunkSize,
+    chunkOverlap
+  ).providerCallCount;
 }
 
 function enforceGraphExtractionBudget(
@@ -515,15 +507,25 @@ function enforceGraphExtractionBudget(
   chunkSize: number,
   chunkOverlap: number
 ): void {
-  const callUpperBound = calculateMiroFishGraphChunkUpperBound(
+  const budget = calculateMiroFishGraphExtractionBudget(
     textLength,
     chunkSize,
     chunkOverlap
   );
-  if (callUpperBound > MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT) {
+  if (budget.providerCallCount > MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT) {
     throw new RequestValidationError(
       'MIROFISH_GRAPH_PROVIDER_CALL_LIMIT',
       '图谱输入会产生过多提取调用，请增大 chunkSize 或缩短文本',
+      422
+    );
+  }
+  if (
+    budget.providerInputCharacters
+    > MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT
+  ) {
+    throw new RequestValidationError(
+      'MIROFISH_GRAPH_PROVIDER_INPUT_LIMIT',
+      '图谱输入会产生过多累计模型输入，请减小重叠或缩短文本',
       422
     );
   }

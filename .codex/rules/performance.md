@@ -45,8 +45,31 @@ Track every orphan promise per provider/model in a set, admission-block new work
 non-empty, and remove each reservation only from that operation's settlement callback. A single map
 value is overwritten by later failures and can reopen capacity while older work is still running.
 
+Contextual Retrieval v2 uses a 30-second default deadline with a 120-second hard cap. Give each call an
+internal abort controller, keep external cancellation distinct from internal timeout, and key orphan
+sets by provider/model so several timed-out calls cannot reopen admission prematurely. Public abort and
+timeout errors must remain stable and must not include prompt, document, credential, or endpoint data.
+
 ## Graph Budgets Cover The Whole Read Path
 
 Graph traversal limits must include adjacency construction, seed selection, BFS state/edge expansion,
 community joins, passage selection, and evidence projection—not only the BFS queue. Enforce aggregate
 reference limits when loading artifacts and yield in bounded batches so request timeout/abort can run.
+
+Graph extraction budgets must cover both each provider call and cumulative provider input, with checks
+at admission and immediately before runtime invocation. Embedding is part of the provider budget, not a
+free preprocessing step: apply deadline, input limits, and orphan reservations there too. Source-aligned
+chunking must retain exact offsets and bounded overlap without copying normalized text into a larger
+hidden provider payload.
+
+Key embedding admission independently from the selectable LLM identity. Derive it from the effective
+server-owned embedding provider, model, and a hash of its base URL; rotating to another valid LLM model
+must not bypass an orphan reservation for the same embedding backend.
+
+## Graph Provider Output And Quadratic Work Are Separate Budgets
+
+Cap textual provider output before regex repair or JSON parsing, then count raw entity/relation array
+entries even when records are invalid. A byte/character cap alone does not bound downstream work:
+reserve worst-case aggregation lookups before fuzzy-name scans, cap entity-pair comparisons and
+`pairs × embedding dimensions`, validate finite bounded vectors, and yield after deterministic batches.
+Apply the same vector validation to community embeddings before attaching them to an artifact.
