@@ -1,9 +1,11 @@
 import type { RagPolicyId, RagQueryRequest } from '../core/types';
-import { classifyRetrievalQuery } from './retrieval-router';
+import { classifyRetrievalQuery, type RetrievalRouteDecision } from './retrieval-router';
 
 export type RagRetrievalLaneType =
   | 'memory'
   | 'dense-vector'
+  | 'ordered-context'
+  | 'visual-page'
   | 'sparse-bm25'
   | 'metadata-filter'
   | 'graph-entity'
@@ -11,12 +13,23 @@ export type RagRetrievalLaneType =
   | 'rerank'
   | 'generation-only';
 
+export const DEFAULT_HYBRID_LANE_TIMEOUT_MS = 5_000;
+export const DEFAULT_HYBRID_DENSE_FALLBACK_RESERVE_MS = 15_000;
+
+export interface RagLaneExecutionBudget {
+  /** Hard relative deadline for this lane, still capped by the global budget. */
+  maxDurationMs: number;
+  /** Time the executor must leave for a later required rollback lane. */
+  reserveForRequiredMs?: number;
+}
+
 export interface RagRetrievalLane {
   id: string;
   type: RagRetrievalLaneType;
   required: boolean;
   description: string;
   parameters?: Record<string, unknown>;
+  executionBudget?: RagLaneExecutionBudget;
 }
 
 export interface RagRetrievalPlan {
@@ -39,6 +52,9 @@ export function createRetrievalLane(
     required: input.required,
     description: input.description,
     parameters: input.parameters,
+    executionBudget: input.executionBudget
+      ? { ...input.executionBudget }
+      : undefined,
   };
 }
 
@@ -201,4 +217,114 @@ function createDefaultLanes(
       },
     }),
   ];
+}
+
+export function createRoutedMilvusRetrievalPlan(
+  basePlan: RagRetrievalPlan,
+  decision: RetrievalRouteDecision,
+  options: {
+    hybridMode?: 'off' | 'shadow' | 'active';
+    hybridUsable?: boolean;
+    pdfVisualMode?: 'off' | 'shadow' | 'active';
+    hybridLaneTimeoutMs?: number;
+    hybridDenseFallbackReserveMs?: number;
+    pdfVisualUsable?: boolean;
+    pdfVisualIntent?: boolean;
+  } = {}
+): RagRetrievalPlan {
+  if (decision.route === 'ordered-context') {
+    let replacedDenseLane = false;
+    const lanes = basePlan.lanes.map(lane => {
+      if (lane.type !== 'dense-vector') return lane;
+      replacedDenseLane = true;
+      return createRetrievalLane({
+        id: 'ordered-context-required',
+        type: 'ordered-context',
+        required: true,
+        description: 'Read the complete bounded corpus in deterministic source order.',
+        parameters: {
+          routerVersion: decision.version,
+          activationReason: decision.reason,
+        },
+      });
+    });
+    if (!replacedDenseLane) {
+      throw new Error('Ordered context routing requires a dense control lane to replace.');
+    }
+    return appendPdfVisualLane({
+      ...basePlan,
+      id: basePlan.id + ':ordered-context',
+      lanes,
+    }, options);
+  }
+
+  const hybridMode = options.hybridMode ?? 'off';
+  if (hybridMode === 'off' || !options.hybridUsable) return appendPdfVisualLane(basePlan, options);
+  if (!basePlan.lanes.some(lane => lane.type === 'dense-vector')) {
+    throw new Error('Hybrid routing requires a dense rollback lane.');
+  }
+  const hybridLane = createRetrievalLane({
+    id: hybridMode === 'active' ? 'hybrid-primary' : 'hybrid-shadow',
+    type: 'sparse-bm25',
+    required: false,
+    description: hybridMode === 'active'
+      ? 'Run native Milvus hybrid retrieval before the dense rollback lane.'
+      : 'Run native Milvus hybrid retrieval for shadow diagnostics only.',
+    executionBudget: {
+      maxDurationMs: options.hybridLaneTimeoutMs ?? DEFAULT_HYBRID_LANE_TIMEOUT_MS,
+      reserveForRequiredMs: options.hybridDenseFallbackReserveMs ?? DEFAULT_HYBRID_DENSE_FALLBACK_RESERVE_MS,
+    },
+    parameters: {
+      mode: hybridMode,
+      routerVersion: decision.version,
+      plannedRoute: decision.route,
+      activationReason: decision.reason,
+    },
+  });
+  return appendPdfVisualLane({
+    ...basePlan,
+    id: basePlan.id + ':hybrid-' + hybridMode,
+    lanes: [
+      hybridLane,
+      ...basePlan.lanes.filter(lane => lane.type !== 'sparse-bm25'),
+    ],
+  }, options);
+}
+
+function appendPdfVisualLane(
+  plan: RagRetrievalPlan,
+  options: {
+    pdfVisualMode?: 'off' | 'shadow' | 'active';
+    pdfVisualUsable?: boolean;
+    pdfVisualIntent?: boolean;
+  }
+): RagRetrievalPlan {
+  const mode = options.pdfVisualMode ?? 'off';
+  if (mode === 'off' || !options.pdfVisualUsable || !options.pdfVisualIntent) {
+    return plan;
+  }
+  const hasTextRollback = plan.lanes.some(lane =>
+    lane.type === 'dense-vector'
+    || lane.type === 'ordered-context'
+    || lane.type === 'sparse-bm25'
+  );
+  if (!hasTextRollback) {
+    throw new Error('PDF visual routing requires a text retrieval rollback lane.');
+  }
+  return {
+    ...plan,
+    id: plan.id + ':pdf-visual-' + mode,
+    lanes: [
+      ...plan.lanes.filter(lane => lane.type !== 'visual-page'),
+      createRetrievalLane({
+        id: mode === 'active' ? 'pdf-visual-active' : 'pdf-visual-shadow',
+        type: 'visual-page',
+        required: false,
+        description: mode === 'active'
+          ? 'Analyze exact scoped PDF page assets after text retrieval.'
+          : 'Analyze exact scoped PDF page assets for shadow diagnostics only.',
+        parameters: { mode },
+      }),
+    ],
+  };
 }

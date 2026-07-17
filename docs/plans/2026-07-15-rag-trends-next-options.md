@@ -3,7 +3,7 @@ title: "2026 RAG 趋势与当前项目下一阶段选择"
 type: sprint
 status: completed
 created: "2026-07-15"
-updated: "2026-07-15"
+updated: "2026-07-16"
 research_cutoff: "2026-07-15"
 risk_level: L4
 future_runtime_risk: L4
@@ -19,6 +19,7 @@ goal_iteration: 0
 goal_status: completed
 tags: [sprint, rag, research, evaluation, security, hybrid-search, graphrag, multimodal]
 aliases: ["rag-trends-next-options"]
+superseded_by: "docs/plans/2026-07-16-rag-live-activation.md"
 invariants:
   - "先验证 MiroFish/OpenMAIC 官方增量，只移植当前架构可闭环的变化；E0、E1a、E2a 与 E1b 已完成，E2b-E7 继续沿同一合同实施，不整仓覆盖上游"
   - "未来能力优先进入 RagKernel policy、retrieval lane、corpus adapter、evaluator 或 cache layer，不新增顶层 /api/ask 分支"
@@ -32,10 +33,10 @@ invariant_tests:
   - "rg -n \"composeEvidenceContext|RagAnswerEnvelope\" src -g \"*.ts\" -g \"*.tsx\""
   - "git diff --check"
 deferred:
-  - "E3 production collection 切流：等待真实 Milvus 2.6 capability probe、shadow 回填与回滚演练"
-  - "E5 producer/lifecycle：Graph builder 尚未写入 scoped File artifact store；TTL/delete 与多实例共享 quota 需要外部 provider"
-  - "E6 visual lane 默认启用：等待真实 visual subset 证明相对 text/OCR 提升"
-  - "E7 外部 durable provider 默认启用：等待真实跨重启/HITL 生命周期与凭据"
+  - "E3 live collection 切流：代码已接入 native hybrid/contextual caller；仍等待真实 Milvus 2.6 shadow 回填、质量/p95/成本门禁与回滚演练"
+  - "E5 cross-host failover：本地 builder/read/lifecycle 已闭环；多实例共享事务与配额仍需要外部 provider"
+  - "E6 默认切流：ingest/query caller 与本地生命周期已闭环；仍等待真实 visual subset 质量/资源门禁及共享 provider"
+  - "E7 cross-host 默认切流：文件 checkpoint/result 与真实 route 已闭环；仍等待共享 provider、跨主机 failover/HITL 演练和生产 canary"
 ---
 
 # 2026 RAG 趋势与当前项目下一阶段选择
@@ -512,9 +513,11 @@ contract target 运行真实 planner/lane/composer/router/abstention/artifact/mo
   Next.js 16.2.6 production build 完成 88/88 页面生成。
 - `git diff --check` 通过；全量 `pnpm lint` 仍为历史 357 errors / 113 warnings，触及文件为 0。
 
-诚实边界：E3 未连接真实 hybrid collection；E5 producer 未写入 scoped File store且多实例 quota
-需共享 provider；E6 无 production caller/真实视觉模型；E7 无外部 durable provider/live restart。
-这些是已记录的 activation work，不是隐藏在“completed”中的上线声明。
+历史边界说明：以上验证记录对应 2026-07-15 的 contract sprint。后续
+`docs/plans/2026-07-16-rag-live-activation.md` 已把 E3 native hybrid/contextual caller、
+E5 builder→scoped store、E6 ingest/query caller，以及 E7 文件 checkpoint/result route
+接入真实代码路径。仍保留的边界只涉及真实基础设施迁移、共享 provider、质量/延迟/成本门禁、
+跨主机 failover 与 production canary；代码接线完成不等于已经切换生产流量。
 
 ## Wave 1 实施回写（2026-07-15）
 

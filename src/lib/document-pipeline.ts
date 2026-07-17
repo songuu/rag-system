@@ -15,17 +15,43 @@
  */
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
-import { type MilvusDocument, getMilvusInstance } from './milvus-client';
+import { createHash } from 'node:crypto';
+import {
+  createMilvusHybridRuntimeManifest,
+  type MilvusDocument,
+  getMilvusInstance,
+} from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
 import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
-import { createEmbedding } from './model-config';
+import { createEmbedding, getConfigSummary } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
-import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
-import { parsePdfBuffer } from './pdf-parser';
+import {
+  CONTEXTUAL_RETRIEVAL_V2_VERSION,
+  contextualizeChunksV2,
+  resolveContextualRetrievalV2Mode,
+  type ContextualRetrievalV2Mode,
+  type ContextualizerV2Port,
+} from './rag/retrieval/contextual-retrieval-v2';
+import {
+  LANGCHAIN_CONTEXTUALIZER_V2_PROMPT_VERSION,
+  createLangChainContextualizerV2,
+} from './rag/retrieval/langchain-contextualizer-v2';
+import { parsePdfBuffer, type PdfParseOutput } from './pdf-parser';
+import { createCanonicalPdfDocumentText } from './rag/multimodal/pdf-asset-manifest';
 import { safeFetchExternalUrl } from './security/safe-external-url';
-import { isTenantIsolationRequired } from './security/retrieval-scope';
+import {
+  createRetrievalScope,
+  isTenantIsolationRequired,
+  type RagRetrievalScope,
+  type RagTrustLevel,
+} from './security/retrieval-scope';
+import {
+  resolvePdfMultimodalMode,
+  type PdfMultimodalMode,
+} from './rag/multimodal/pdf-modality-router';
 import { assertSafeZipArchive } from './security/zip-safety';
+import { resolveMilvusHybridRolloutMode } from './rag/retrieval/hybrid-policy';
 
 // ============== 类型定义 ==============
 
@@ -41,6 +67,11 @@ export interface DocumentMetadata {
   createdAt?: string;
   url?: string;
   chunkIndex?: number;
+  documentId?: string;
+  documentVersion?: string;
+  sourceHash?: string;
+  startOffset?: number;
+  endOffset?: number;
   totalChunks?: number;
   pageNumber?: number;
   originalContent?: string;
@@ -52,18 +83,104 @@ export interface DocumentMetadata {
 export interface LoadedDocument {
   content: string;
   metadata: DocumentMetadata;
+  /** Internal-only PDF bytes used for content-addressed sidecar publication. */
+  pdfAssetSource?: Uint8Array;
+  /** Internal-only page-wise parse output; never copied into metadata/API responses. */
+  pdfParsed?: PdfParseOutput;
 }
 
 // 文档块
 export interface DocumentChunk {
   id: string;
   content: string;
+  /** Text used only for embedding; persisted evidence remains content. */
+  embeddingContent?: string;
   metadata: DocumentMetadata;
 }
 
 // 处理后的文档（带向量）
 export interface ProcessedDocument extends DocumentChunk {
   embedding: number[];
+}
+
+export interface MilvusHybridIngestAuditIdentity {
+  version: 'milvus-hybrid-ingest-compensation/v1';
+  reconciliationId: string;
+  tenantId: string;
+  corpusId: string;
+  denseCollectionName: string;
+  hybridCollectionName: string;
+  chunkCount: number;
+}
+
+export class MilvusHybridIngestOperationalError extends Error {
+  readonly code:
+    | 'MILVUS_HYBRID_ACTIVE_WRITE_FAILED_ROLLED_BACK'
+    | 'MILVUS_HYBRID_INGEST_RECONCILIATION_REQUIRED';
+  readonly status: 502 | 503;
+  readonly auditIdentity: MilvusHybridIngestAuditIdentity;
+  readonly compensationStatus: 'rolled_back' | 'reconciliation_required';
+
+  constructor(input: {
+    code: MilvusHybridIngestOperationalError['code'];
+    status: MilvusHybridIngestOperationalError['status'];
+    auditIdentity: MilvusHybridIngestAuditIdentity;
+    compensationStatus: MilvusHybridIngestOperationalError['compensationStatus'];
+    message: string;
+    cause?: unknown;
+  }) {
+    super(input.message, { cause: input.cause });
+    this.name = 'MilvusHybridIngestOperationalError';
+    this.code = input.code;
+    this.status = input.status;
+    this.auditIdentity = input.auditIdentity;
+    this.compensationStatus = input.compensationStatus;
+  }
+}
+
+export class MilvusHybridActiveWriteRolledBackError
+  extends MilvusHybridIngestOperationalError {
+  constructor(auditIdentity: MilvusHybridIngestAuditIdentity, cause: unknown) {
+    super({
+      code: 'MILVUS_HYBRID_ACTIVE_WRITE_FAILED_ROLLED_BACK',
+      status: 502,
+      auditIdentity,
+      compensationStatus: 'rolled_back',
+      message:
+        'Active Milvus hybrid write failed; exact dense and hybrid compensation completed. '
+        + formatMilvusHybridAuditIdentity(auditIdentity),
+      cause,
+    });
+    this.name = 'MilvusHybridActiveWriteRolledBackError';
+  }
+}
+
+export class MilvusHybridIngestReconciliationRequiredError
+  extends MilvusHybridIngestOperationalError {
+  readonly failedCompensations: Array<'dense' | 'hybrid'>;
+
+  constructor(input: {
+    auditIdentity: MilvusHybridIngestAuditIdentity;
+    failedCompensations: Array<'dense' | 'hybrid'>;
+    cause: unknown;
+  }) {
+    const failedCompensations = [...new Set(input.failedCompensations)].sort() as Array<
+      'dense' | 'hybrid'
+    >;
+    super({
+      code: 'MILVUS_HYBRID_INGEST_RECONCILIATION_REQUIRED',
+      status: 503,
+      auditIdentity: input.auditIdentity,
+      compensationStatus: 'reconciliation_required',
+      message:
+        'Milvus hybrid ingest requires reconciliation after compensation failure. '
+        + formatMilvusHybridAuditIdentity(input.auditIdentity)
+        + ' failedCompensations=' + failedCompensations.join(','),
+      cause: input.cause,
+    });
+    this.name = 'MilvusHybridIngestReconciliationRequiredError';
+    this.failedCompensations = failedCompensations;
+  }
 }
 
 // 管道配置
@@ -78,7 +195,14 @@ export interface PipelineConfig {
 
   // Contextual Retrieval 配置
   contextualRetrieval?: boolean;
+  /** Server-owned rollout mode. Legacy true can only request shadow. */
+  contextualRetrievalMode?: ContextualRetrievalV2Mode;
   contextualRetrievalModel?: string;
+  /** Internal test/runtime injection; never populated from request input. */
+  contextualizerV2?: ContextualizerV2Port;
+
+  /** Server-owned PDF visual sidecar rollout. */
+  pdfVisualMode?: PdfMultimodalMode;
 
   // 存储配置
   storageBackend?: 'memory' | 'milvus';
@@ -96,6 +220,18 @@ export interface ProcessingProgress {
   message: string;
 }
 
+export interface PipelinePdfVisualSummary {
+  mode: PdfMultimodalMode;
+  status: 'not_applicable' | 'disabled' | 'published' | 'fallback';
+  version?: string;
+  manifestVersion?: string;
+  documentId?: string;
+  documentVersion?: string;
+  pageCount: number;
+  visualPageCount: number;
+  fallbackReason?: 'visual_sidecar_unavailable';
+}
+
 // 默认配置
 const DEFAULT_CONFIG: Required<PipelineConfig> = {
   chunkSize: 500,
@@ -103,7 +239,10 @@ const DEFAULT_CONFIG: Required<PipelineConfig> = {
   embeddingModel: 'nomic-embed-text',
   ollamaBaseUrl: 'http://localhost:11434',
   contextualRetrieval: false,
+  contextualRetrievalMode: 'off',
   contextualRetrievalModel: '',
+  contextualizerV2: undefined as unknown as ContextualizerV2Port,
+  pdfVisualMode: 'off',
   storageBackend: 'milvus',
   milvusConfig: {
     address: 'localhost:19530',
@@ -142,10 +281,11 @@ export async function loadPdfFile(buffer: Buffer, filename: string): Promise<Loa
   
   try {
     const pdf = await parsePdfBuffer(buffer, filename, { includeMetadata: true });
-    console.log(`[Pipeline PDF] 文本提取成功, 长度: ${pdf.text.length}, 页数: ${pdf.pages}, 方法: ${pdf.parseMethod}`);
+    const canonicalText = createCanonicalPdfDocumentText(pdf);
+    console.log(`[Pipeline PDF] 文本提取成功, 长度: ${canonicalText.length}, 页数: ${pdf.pages}, 方法: ${pdf.parseMethod}`);
     
     return {
-      content: pdf.text.trim(),
+      content: canonicalText,
       metadata: {
         source: filename,
         type: 'pdf',
@@ -154,7 +294,9 @@ export async function loadPdfFile(buffer: Buffer, filename: string): Promise<Loa
         createdAt: pdf.createdAt || new Date().toISOString(),
         pageCount: pdf.pages,
         parseMethod: pdf.parseMethod,
-      }
+      },
+      pdfAssetSource: new Uint8Array(buffer),
+      pdfParsed: pdf,
     };
   } catch (error) {
     console.error(`[Pipeline PDF] 解析失败:`, error);
@@ -632,15 +774,29 @@ export async function splitDocument(
     );
   }
   
-  return chunks.map((content, index) => ({
-    id: `${document.metadata.source}-chunk-${index}-${uuidv4().slice(0, 8)}`,
-    content,
-    metadata: {
-      ...document.metadata,
-      chunkIndex: index,
-      totalChunks: chunks.length,
+  let searchCursor = 0;
+  return chunks.map((content, index) => {
+    const startOffset = document.content.indexOf(
+      content,
+      searchCursor
+    );
+    if (startOffset < 0) {
+      throw new Error('Document chunk cannot be aligned to its source content.');
     }
-  }));
+    const endOffset = startOffset + content.length;
+    searchCursor = Math.max(startOffset + 1, endOffset - chunkOverlap);
+    return {
+      id: `${document.metadata.source}-chunk-${index}-${uuidv4().slice(0, 8)}`,
+      content,
+      metadata: {
+        ...document.metadata,
+        chunkIndex: index,
+        totalChunks: chunks.length,
+        startOffset,
+        endOffset,
+      },
+    };
+  });
 }
 
 // ============== 嵌入生成器 ==============
@@ -674,7 +830,9 @@ export async function generateEmbeddings(
     offset += PIPELINE_WORK_LIMITS.embeddingBatchSize
   ) {
     const batch = chunks.slice(offset, offset + PIPELINE_WORK_LIMITS.embeddingBatchSize);
-    const vectors = await embeddings.embedDocuments(batch.map(chunk => chunk.content));
+    const vectors = await embeddings.embedDocuments(
+      batch.map(chunk => chunk.embeddingContent ?? chunk.content)
+    );
     if (vectors.length !== batch.length) {
       throw new Error('Embedding provider returned an unexpected vector count.');
     }
@@ -703,7 +861,13 @@ export async function generateEmbeddings(
  */
 export async function storeToMilvus(
   documents: ProcessedDocument[],
-  config: { address?: string; collectionName?: string; token?: string; ssl?: boolean } = {},
+  config: {
+    address?: string;
+    collectionName?: string;
+    token?: string;
+    ssl?: boolean;
+    embeddingModel?: string;
+  } = {},
   onProgress?: (progress: ProcessingProgress) => void
 ): Promise<string[]> {
   onProgress?.({
@@ -772,8 +936,79 @@ export async function storeToMilvus(
     };
   });
   
+  const hybridMode = resolveMilvusHybridRolloutMode();
+  const denseCollectionName = config.collectionName || connConfig.defaultCollection;
+  const activeManifest = hybridMode === 'active'
+    ? createMilvusHybridRuntimeManifest({
+      sourceCollectionName: denseCollectionName,
+      embeddingModel: config.embeddingModel || getEmbeddingConfigSummary().model,
+      embeddingDimension: firstDimension,
+    })
+    : undefined;
+  const activeCompensation = activeManifest
+    ? createMilvusHybridIngestCompensationContext(
+      milvusDocs,
+      denseCollectionName,
+      activeManifest.collectionName
+    )
+    : undefined;
+
   console.log(`[Pipeline] Calling milvus.insertDocuments with ${milvusDocs.length} documents`);
   const ids = await milvus.insertDocuments(milvusDocs);
+  if (hybridMode === 'shadow') {
+    try {
+      const manifest = createMilvusHybridRuntimeManifest({
+        sourceCollectionName: denseCollectionName,
+        embeddingModel: config.embeddingModel || getEmbeddingConfigSummary().model,
+        embeddingDimension: firstDimension,
+      });
+      await milvus.insertHybridDocuments(manifest, milvusDocs);
+    } catch (error) {
+      console.warn(
+        '[Pipeline] Hybrid shadow write failed; dense ingestion remains authoritative:',
+        error instanceof Error ? error.message : String(error)
+      );
+    }
+  }
+  if (hybridMode === 'active') {
+    if (!activeManifest || !activeCompensation) {
+      throw new Error('Active Milvus hybrid ingest compensation was not prepared.');
+    }
+    try {
+      await milvus.insertHybridDocuments(activeManifest, milvusDocs);
+    } catch (error) {
+      const failedCompensations: Array<'dense' | 'hybrid'> = [];
+      try {
+        await milvus.deleteScopedHybridDocuments(
+          activeManifest,
+          activeCompensation.ids,
+          activeCompensation.scope
+        );
+      } catch {
+        failedCompensations.push('hybrid');
+      }
+      try {
+        await milvus.deleteScopedDocuments(
+          activeCompensation.ids,
+          activeCompensation.scope
+        );
+      } catch {
+        failedCompensations.push('dense');
+      }
+      if (failedCompensations.length > 0) {
+        throw new MilvusHybridIngestReconciliationRequiredError({
+          auditIdentity: activeCompensation.auditIdentity,
+          failedCompensations,
+          cause: error,
+        });
+      }
+      throw new MilvusHybridActiveWriteRolledBackError(
+        activeCompensation.auditIdentity,
+        error
+      );
+    }
+  }
+
   
   onProgress?.({
     stage: 'storing',
@@ -783,6 +1018,384 @@ export async function storeToMilvus(
   });
   
   return ids;
+}
+
+function createMilvusHybridIngestCompensationContext(
+  documents: MilvusDocument[],
+  denseCollectionName: string,
+  hybridCollectionName: string
+): {
+  ids: string[];
+  scope: RagRetrievalScope;
+  auditIdentity: MilvusHybridIngestAuditIdentity;
+} {
+  const ids = documents.map((document, index) => {
+    if (
+      typeof document.id !== 'string'
+      || !document.id.trim()
+      || document.id.length > 256
+      || /[\u0000-\u001f]/.test(document.id)
+    ) {
+      throw new Error('Active Milvus hybrid ingest received an invalid chunk ID at index ' + index + '.');
+    }
+    return document.id.trim();
+  });
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('Active Milvus hybrid ingest requires unique chunk IDs.');
+  }
+
+  const tenantIds = new Set<string>();
+  const corpusIds = new Set<string>();
+  const trustLevels = new Set<RagTrustLevel>();
+  for (const document of documents) {
+    tenantIds.add(readMilvusCompensationScopeValue(
+      document.metadata,
+      ['tenantId', 'tenant_id'],
+      'tenantId'
+    ));
+    corpusIds.add(readMilvusCompensationScopeValue(
+      document.metadata,
+      ['corpusId', 'corpus_id'],
+      'corpusId'
+    ));
+    const trustLevel = readMilvusCompensationScopeValue(
+      document.metadata,
+      ['trustLevel', 'trust_level'],
+      'trustLevel'
+    );
+    if (!['trusted', 'reviewed', 'external', 'quarantined'].includes(trustLevel)) {
+      throw new Error('Active Milvus hybrid ingest received an invalid trust level.');
+    }
+    trustLevels.add(trustLevel as RagTrustLevel);
+  }
+  if (tenantIds.size !== 1 || corpusIds.size !== 1) {
+    throw new Error('Active Milvus hybrid ingest cannot span tenant or corpus boundaries.');
+  }
+  const tenantId = [...tenantIds][0];
+  const corpusId = [...corpusIds][0];
+  const scope = createRetrievalScope({
+    tenantId,
+    corpusId,
+    allowedTrustLevels: [...trustLevels],
+    enforceIsolation: true,
+  });
+  const version = 'milvus-hybrid-ingest-compensation/v1' as const;
+  const reconciliationId = createHash('sha256')
+    .update(JSON.stringify({
+      version,
+      tenantId,
+      corpusId,
+      denseCollectionName,
+      hybridCollectionName,
+      trustLevels: [...trustLevels].sort(),
+      ids: [...ids].sort(),
+    }))
+    .digest('hex');
+  return {
+    ids,
+    scope,
+    auditIdentity: {
+      version,
+      reconciliationId,
+      tenantId,
+      corpusId,
+      denseCollectionName,
+      hybridCollectionName,
+      chunkCount: ids.length,
+    },
+  };
+}
+
+function readMilvusCompensationScopeValue(
+  metadata: Record<string, unknown>,
+  aliases: string[],
+  field: string
+): string {
+  const values = aliases
+    .map(alias => metadata[alias])
+    .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    .map(value => value.trim());
+  if (values.length === 0 || new Set(values).size !== 1) {
+    throw new Error('Active Milvus hybrid ingest requires one authoritative ' + field + '.');
+  }
+  return values[0];
+}
+
+function formatMilvusHybridAuditIdentity(
+  identity: MilvusHybridIngestAuditIdentity
+): string {
+  return [
+    'reconciliationId=' + identity.reconciliationId,
+    'tenantId=' + identity.tenantId,
+    'corpusId=' + identity.corpusId,
+    'denseCollection=' + identity.denseCollectionName,
+    'hybridCollection=' + identity.hybridCollectionName,
+    'chunkCount=' + identity.chunkCount,
+  ].join(' ');
+}
+
+export async function applyContextualRetrievalV2ToChunks(input: {
+  mode: ContextualRetrievalV2Mode;
+  documentText: string;
+  sourceHash: string;
+  documentVersion: string;
+  model: string;
+  promptVersion: string;
+  chunks: DocumentChunk[];
+  contextualizer: ContextualizerV2Port;
+  signal?: AbortSignal;
+}) {
+  const contextualChunks = input.chunks.map((chunk, index) => {
+    const startOffset = chunk.metadata.startOffset;
+    const endOffset = chunk.metadata.endOffset;
+    if (
+      !Number.isInteger(startOffset)
+      || !Number.isInteger(endOffset)
+      || (startOffset as number) < 0
+      || (endOffset as number) <= (startOffset as number)
+      || input.documentText.slice(startOffset as number, endOffset as number) !== chunk.content
+    ) {
+      throw new Error('Pipeline chunk does not match its source-aligned span.');
+    }
+    const tenantId = pipelineIdentityValue(
+      chunk.metadata.tenantId ?? chunk.metadata.tenant_id,
+      process.env.SUPABASE_DEFAULT_TENANT_ID || 'local'
+    );
+    const corpusId = pipelineIdentityValue(
+      chunk.metadata.corpusId ?? chunk.metadata.corpus_id,
+      process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default'
+    );
+    const documentId = pipelineIdentityValue(
+      chunk.metadata.documentId ?? chunk.metadata.document_id,
+      chunk.metadata.source
+    );
+    const stableChunkId = 'chunk:sha256:' + createHash('sha256')
+      .update(JSON.stringify([
+        tenantId,
+        corpusId,
+        documentId,
+        input.documentVersion,
+        index,
+        startOffset,
+        endOffset,
+        createHash('sha256').update(chunk.content).digest('hex'),
+      ]))
+      .digest('hex');
+    return {
+      id: stableChunkId,
+      text: chunk.content,
+      startOffset: startOffset as number,
+      endOffset: endOffset as number,
+    };
+  });
+
+  const result = await contextualizeChunksV2({
+    mode: input.mode,
+    documentText: input.documentText,
+    sourceHash: input.sourceHash,
+    documentVersion: input.documentVersion,
+    model: input.model,
+    promptVersion: input.promptVersion,
+    chunks: contextualChunks,
+    contextualizer: input.contextualizer,
+    signal: input.signal,
+    failureMode: 'fallback',
+    maxChunks: PIPELINE_WORK_LIMITS.maxChunksPerDocument,
+    maxProviderCalls: PIPELINE_WORK_LIMITS.maxChunksPerDocument,
+  });
+
+  result.chunks.forEach((contextualChunk, index) => {
+    const chunk = input.chunks[index];
+    // Never persist generated context as citation content or sparse/BM25 text.
+    chunk.embeddingContent = contextualChunk.denseText;
+    delete chunk.metadata.originalContent;
+    delete chunk.metadata.contextualPreamble;
+    chunk.metadata.contextualIdentity = contextualChunk.identity.key;
+    chunk.metadata.contextualVersion = result.version;
+    chunk.metadata.contextualMode = result.mode;
+    chunk.metadata.contextualStatus = contextualChunk.status;
+    chunk.metadata.contextualModel = input.model;
+    chunk.metadata.contextualPromptVersion = input.promptVersion;
+  });
+  return result;
+}
+
+export function resolvePipelineDocumentId(requested: unknown, source: string): string {
+  if (requested !== undefined && requested !== null && requested !== '') {
+    if (typeof requested !== 'string') {
+      throw new Error('Pipeline documentId must be a string.');
+    }
+    const normalized = requested.trim();
+    if (!normalized || normalized.length > 256 || /[\u0000-\u001f]/.test(normalized)) {
+      throw new Error('Pipeline documentId is outside the safe scalar bounds.');
+    }
+    return normalized;
+  }
+  const normalizedSource = source.trim();
+  if (normalizedSource && normalizedSource.length <= 256 && !/[\u0000-\u001f]/.test(normalizedSource)) {
+    return normalizedSource;
+  }
+  return 'source:sha256:' + createHash('sha256').update(source).digest('hex');
+}
+
+function pipelineIdentityValue(value: unknown, fallback: string): string {
+  const normalized = typeof value === 'string' && value.trim() ? value.trim() : fallback.trim();
+  if (!normalized) throw new Error('Pipeline contextual identity is incomplete.');
+  return normalized;
+}
+
+function assertPipelineNotAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('Document processing was aborted.');
+  error.name = 'AbortError';
+  throw error;
+}
+
+export async function publishPipelinePdfVisualSidecar(input: {
+  document: LoadedDocument;
+  documentId: string;
+  documentVersion: string;
+  mode: PdfMultimodalMode;
+  signal?: AbortSignal;
+}): Promise<PipelinePdfVisualSummary> {
+  const pageCount = input.document.pdfParsed?.pages
+    ?? (Number.isInteger(input.document.metadata.pageCount)
+      ? input.document.metadata.pageCount as number
+      : 0);
+  if (input.document.metadata.type !== 'pdf') {
+    return {
+      mode: input.mode,
+      status: 'not_applicable',
+      pageCount: 0,
+      visualPageCount: 0,
+    };
+  }
+  if (input.mode === 'off') {
+    return {
+      mode: input.mode,
+      status: 'disabled',
+      documentId: input.documentId,
+      documentVersion: input.documentVersion,
+      pageCount,
+      visualPageCount: 0,
+    };
+  }
+  if (!input.document.pdfAssetSource || !input.document.pdfParsed) {
+    return {
+      mode: input.mode,
+      status: 'fallback',
+      documentId: input.documentId,
+      documentVersion: input.documentVersion,
+      pageCount,
+      visualPageCount: 0,
+      fallbackReason: 'visual_sidecar_unavailable',
+    };
+  }
+
+  try {
+    assertPipelineNotAborted(input.signal);
+    const [{ getPdfVisualAssetRuntime }, { publishPdfVisualSidecar }] =
+      await Promise.all([
+        import('./rag/multimodal/pdf-visual-runtime'),
+        import('./rag/multimodal/pdf-visual-ingest'),
+      ]);
+    const runtime = getPdfVisualAssetRuntime();
+    const { scope, trustLevel } = resolvePipelinePdfScope(input.document.metadata);
+    const summary = await publishPdfVisualSidecar({
+      mode: input.mode,
+      source: input.document.pdfAssetSource,
+      sourceName: input.document.metadata.source,
+      documentId: input.documentId,
+      documentVersion: input.documentVersion,
+      parsed: input.document.pdfParsed,
+      scope,
+      trustLevel,
+      store: runtime.store,
+      renderer: runtime.renderer,
+      maxRenderPages: runtime.maxRenderPages,
+      signal: input.signal,
+    });
+    return {
+      mode: summary.mode,
+      status: summary.status,
+      version: summary.version,
+      manifestVersion: summary.manifestVersion,
+      documentId: summary.documentId,
+      documentVersion: summary.documentVersion,
+      pageCount: summary.pageCount,
+      visualPageCount: summary.visualPageCount,
+    };
+  } catch (error) {
+    assertPipelineNotAborted(input.signal);
+    console.warn(
+      '[Pipeline] PDF visual sidecar fell back to text retrieval.',
+      error instanceof Error ? error.name : 'Error'
+    );
+    return {
+      mode: input.mode,
+      status: 'fallback',
+      documentId: input.documentId,
+      documentVersion: input.documentVersion,
+      pageCount,
+      visualPageCount: 0,
+      fallbackReason: 'visual_sidecar_unavailable',
+    };
+  }
+}
+
+function resolvePipelinePdfScope(metadata: DocumentMetadata): {
+  scope: RagRetrievalScope;
+  trustLevel: RagTrustLevel;
+} {
+  const tenantId = strictMetadataAlias(
+    metadata.tenantId,
+    metadata.tenant_id,
+    process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
+    'tenant'
+  );
+  const corpusId = strictMetadataAlias(
+    metadata.corpusId,
+    metadata.corpus_id,
+    process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
+    'corpus'
+  );
+  const trustValue = strictMetadataAlias(
+    metadata.trustLevel,
+    metadata.trust_level,
+    'external',
+    'trust'
+  );
+  if (!['trusted', 'reviewed', 'external', 'quarantined'].includes(trustValue)) {
+    throw new Error('Pipeline PDF trust level is invalid.');
+  }
+  const trustLevel = trustValue as RagTrustLevel;
+  return {
+    scope: createRetrievalScope({
+      tenantId,
+      corpusId,
+      allowedTrustLevels: [trustLevel],
+      enforceIsolation: true,
+    }),
+    trustLevel,
+  };
+}
+
+function strictMetadataAlias(
+  canonical: unknown,
+  alias: unknown,
+  fallback: string,
+  field: string
+): string {
+  const canonicalValue = typeof canonical === 'string' && canonical.trim()
+    ? canonical.trim()
+    : undefined;
+  const aliasValue = typeof alias === 'string' && alias.trim()
+    ? alias.trim()
+    : undefined;
+  if (canonicalValue && aliasValue && canonicalValue !== aliasValue) {
+    throw new Error('Pipeline PDF ' + field + ' provenance aliases conflict.');
+  }
+  return canonicalValue ?? aliasValue ?? fallback;
 }
 
 // ============== 完整管道 ==============
@@ -796,7 +1409,21 @@ export class DocumentPipeline {
   private config: Required<PipelineConfig>;
   
   constructor(config: PipelineConfig = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    const requestedMode = config.contextualRetrievalMode
+      ?? (config.contextualRetrieval === true
+        ? 'shadow'
+        : config.contextualRetrieval === false
+          ? 'off'
+          : resolveContextualRetrievalV2Mode());
+    const pdfVisualMode = config.pdfVisualMode ?? resolvePdfMultimodalMode();
+    this.config = {
+      ...DEFAULT_CONFIG,
+      ...config,
+      contextualRetrievalMode: requestedMode,
+      pdfVisualMode,
+      contextualizerV2: config.contextualizerV2
+        ?? createLangChainContextualizerV2(),
+    };
   }
   
   /**
@@ -810,6 +1437,8 @@ export class DocumentPipeline {
       /** Server-derived metadata such as tenant/corpus scope. */
       metadata?: Record<string, unknown>;
       /** Internal batch budget; callers cannot raise the global ceiling. */
+      /** Request cancellation propagated to contextual/model/storage boundaries. */
+      signal?: AbortSignal;
       maxChunks?: number;
     } = {},
     onProgress?: (progress: ProcessingProgress) => void
@@ -818,6 +1447,13 @@ export class DocumentPipeline {
     chunks: number;
     ids: string[];
     metadata: DocumentMetadata;
+    contextualRetrieval: {
+      version: typeof CONTEXTUAL_RETRIEVAL_V2_VERSION;
+      mode: ContextualRetrievalV2Mode;
+      fallbackCount: number;
+      generatedCharacters: number;
+    };
+    pdfVisual: PipelinePdfVisualSummary;
   }> {
     // 1. 加载文档
     onProgress?.({
@@ -828,9 +1464,24 @@ export class DocumentPipeline {
     });
     
     const document = await loadDocument(input, options);
+    const sourceIdentity = document.pdfAssetSource ?? document.content;
+    const sourceHash = createHash('sha256').update(sourceIdentity).digest('hex');
+    const documentVersion = 'sha256:' + sourceHash;
+    const requestedDocumentId = options.metadata?.documentId ?? options.metadata?.document_id;
+    const defaultDocumentId = document.pdfAssetSource
+      ? 'pdf:sha256:' + sourceHash
+      : document.metadata.source;
+    const documentId = resolvePipelineDocumentId(requestedDocumentId, defaultDocumentId);
+    assertPipelineNotAborted(options.signal);
     document.metadata = {
       ...document.metadata,
       ...(options.metadata ?? {}),
+      documentId,
+      document_id: documentId,
+      documentVersion,
+      document_version: documentVersion,
+      sourceHash: documentVersion,
+      source_hash: documentVersion,
     };
     
     onProgress?.({
@@ -861,11 +1512,9 @@ export class DocumentPipeline {
       message: `分割完成: ${chunks.length} 个块`
     });
 
-    // 2.5 Contextual Retrieval - 为每个 chunk 生成上下文提要
-    const crConfig = loadContextualRetrievalConfig();
-    const crEnabled = this.config.contextualRetrieval ?? crConfig.enabled;
-
-    if (crEnabled && chunks.length > 0) {
+    // 2.5 Contextual Retrieval v2 only changes the embedding input.
+    const contextualMode = this.config.contextualRetrievalMode;
+    if (contextualMode !== 'off' && chunks.length > 0) {
       onProgress?.({
         stage: 'contextualizing',
         current: 0,
@@ -873,31 +1522,24 @@ export class DocumentPipeline {
         message: '正在生成上下文提要...'
       });
 
-      const crResults = await contextualizeChunks({
-        fullDocument: document.content,
-        chunks: chunks.map(c => ({ text: c.content })),
-        config: {
-          enabled: true,
-          model: this.config.contextualRetrievalModel || crConfig.model,
-        },
-        onProgress: (current, total) => {
-          onProgress?.({
-            stage: 'contextualizing',
-            current,
-            total,
-            message: `正在生成上下文提要 (${current}/${total})...`
-          });
-        },
-      });
-
-      // 替换 chunk 内容为 contextualized 版本，保存原始内容和 preamble 到 metadata
-      for (let i = 0; i < chunks.length; i++) {
-        const cr = crResults[i];
-        chunks[i].metadata.originalContent = cr.originalText;
-        chunks[i].metadata.contextualPreamble = cr.contextualPreamble;
-        chunks[i].content = cr.contextualizedText;
-      }
-
+    }
+    const contextualModel = contextualMode === 'off'
+      ? 'disabled'
+      : this.config.contextualRetrievalModel
+        || process.env.CONTEXTUAL_RETRIEVAL_V2_MODEL?.trim()
+        || getConfigSummary().llmModel;
+    const contextualResult = await applyContextualRetrievalV2ToChunks({
+      mode: contextualMode,
+      documentText: document.content,
+      sourceHash: documentVersion,
+      documentVersion,
+      model: contextualModel,
+      promptVersion: LANGCHAIN_CONTEXTUALIZER_V2_PROMPT_VERSION,
+      chunks,
+      contextualizer: this.config.contextualizerV2,
+      signal: options.signal,
+    });
+    if (contextualMode !== 'off' && chunks.length > 0) {
       onProgress?.({
         stage: 'contextualizing',
         current: chunks.length,
@@ -907,19 +1549,42 @@ export class DocumentPipeline {
     }
 
     // 3. 生成嵌入
+    assertPipelineNotAborted(options.signal);
     const processedDocs = await generateEmbeddings(chunks, {
       embeddingModel: this.config.embeddingModel,
       ollamaBaseUrl: this.config.ollamaBaseUrl,
     }, onProgress);
     
     // 4. 存储
-    const ids = await storeToMilvus(processedDocs, this.config.milvusConfig, onProgress);
+    assertPipelineNotAborted(options.signal);
+    const ids = await storeToMilvus(
+      processedDocs,
+      { ...this.config.milvusConfig, embeddingModel: this.config.embeddingModel },
+      onProgress
+    );
+    assertPipelineNotAborted(options.signal);
+    // Text/OCR retrieval is authoritative; visual sidecars publish afterwards.
+    const pdfVisual = await publishPipelinePdfVisualSidecar({
+      document,
+      documentId,
+      documentVersion,
+      mode: this.config.pdfVisualMode,
+      signal: options.signal,
+    });
+    assertPipelineNotAborted(options.signal);
     
     return {
-      documentId: document.metadata.source,
+      documentId,
       chunks: chunks.length,
       ids,
       metadata: document.metadata,
+      contextualRetrieval: {
+        version: contextualResult.version,
+        mode: contextualResult.mode,
+        fallbackCount: contextualResult.fallbackCount,
+        generatedCharacters: contextualResult.generatedCharacters,
+      },
+      pdfVisual,
     };
   }
   
@@ -932,6 +1597,7 @@ export class DocumentPipeline {
       type?: DataSourceType;
       filename?: string;
       metadata?: Record<string, unknown>;
+      signal?: AbortSignal;
     }>,
     onProgress?: (progress: ProcessingProgress & { documentIndex: number }) => void
   ): Promise<Array<{
@@ -946,7 +1612,7 @@ export class DocumentPipeline {
     let processedChunks = 0;
     
     for (let i = 0; i < inputs.length; i++) {
-      const { input, type, filename, metadata } = inputs[i];
+      const { input, type, filename, metadata, signal } = inputs[i];
       
       try {
         const remainingChunks = PIPELINE_WORK_LIMITS.maxChunksPerBatch - processedChunks;
@@ -963,6 +1629,7 @@ export class DocumentPipeline {
               PIPELINE_WORK_LIMITS.maxChunksPerDocument,
               remainingChunks
             ),
+            signal,
           },
           (progress) => {
             onProgress?.({
@@ -975,6 +1642,8 @@ export class DocumentPipeline {
         processedChunks += result.chunks;
         results.push({ ...result, success: true });
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') throw error;
+        if (error instanceof MilvusHybridIngestReconciliationRequiredError) throw error;
         results.push({
           documentId: filename || `document-${i}`,
           chunks: 0,

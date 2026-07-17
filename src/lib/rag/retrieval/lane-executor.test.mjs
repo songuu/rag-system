@@ -191,6 +191,74 @@ test('timed-out non-cooperative providers are admission-blocked until work settl
   assert.deepEqual(result.evidence.map(item => item.id), ['fresh']);
 });
 
+test('optional lane timeout preserves required fallback budget and fences detached work', async () => {
+  let hybridCalls = 0;
+  let denseCalls = 0;
+  let releaseTimedOutHybrid;
+  const retriever = `optional-hybrid-${Date.now()}`;
+  const executor = new RagLaneExecutor([
+    {
+      type: 'sparse-bm25',
+      retriever,
+      async execute() {
+        hybridCalls++;
+        if (hybridCalls === 1) {
+          return new Promise(resolve => {
+            releaseTimedOutHybrid = () => resolve({ evidence: [] });
+          });
+        }
+        return { evidence: [] };
+      },
+    },
+    {
+      type: 'dense-vector',
+      retriever: 'required-dense-after-optional-timeout',
+      async execute({ lane }) {
+        denseCalls++;
+        return { evidence: [createEvidence(`dense-${denseCalls}`, lane.id)] };
+      },
+    },
+  ]);
+  const plan = createPlan([
+    {
+      ...createLane('hybrid', 'sparse-bm25', false),
+      executionBudget: {
+        maxDurationMs: 10,
+        reserveForRequiredMs: 100,
+      },
+    },
+    createLane('dense', 'dense-vector', true),
+  ]);
+  const input = {
+    request: createRequest(),
+    plan,
+    budget: { maxLanes: 2, maxEvidence: 2, maxDurationMs: 200 },
+  };
+
+  const timedOut = await executor.execute(input);
+  assert.deepEqual(timedOut.evidence.map(item => item.id), ['dense-1']);
+  assert.deepEqual(
+    timedOut.laneExecutions.map(item => [item.retriever, item.status, item.errorCode]),
+    [
+      [retriever, 'failed', 'RAG_LANE_TIMEOUT'],
+      ['required-dense-after-optional-timeout', 'completed', undefined],
+    ]
+  );
+  assert.equal(timedOut.stopReason, 'sufficient');
+
+  const admissionBlocked = await executor.execute(input);
+  assert.deepEqual(admissionBlocked.evidence.map(item => item.id), ['dense-2']);
+  assert.equal(admissionBlocked.laneExecutions[0].errorCode, 'RAG_LANE_PROVIDER_BUSY');
+  assert.equal(hybridCalls, 1);
+  assert.equal(denseCalls, 2);
+
+  releaseTimedOutHybrid();
+  await new Promise(resolve => setImmediate(resolve));
+  const recovered = await executor.execute(input);
+  assert.deepEqual(recovered.evidence.map(item => item.id), ['dense-3']);
+  assert.equal(hybridCalls, 2);
+  assert.equal(denseCalls, 3);
+});
 test('provider admission remains blocked until every concurrent timed-out call settles', async () => {
   const releases = [];
   let calls = 0;

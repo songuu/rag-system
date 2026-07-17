@@ -76,3 +76,15 @@ For graph/entity providers, test raw response characters before parsing, invalid
 cross-chunk and gleaning accumulation, overlong fields, pre-embedding aggregation/pair rejection,
 embedding count/dimension/finite/vector-operation failures, and a legal workload large enough to prove
 event-loop yield. The background task assertion must use a stable code and require no `result/graphData`.
+
+## Compose Adjacent Recovery State Machines
+
+Crash tests for a file-backed store must cross subsystem boundaries: new-scope admission, root
+reservation, scope activation, bundle commit/delete, root rebuild, scope reclaim, and the next
+scope allocation. Single-journal tests miss capacity leaks and unsafe missing-scope recovery.
+
+## Final Gates Follow The Last Source Edit
+
+After the final source or build-config edit, rerun the production build and inspect its artifacts.
+For standalone routes with dynamic file stores, make the NFT raw-source assertion part of postbuild
+so a warning-free build cannot regress by packaging test files.

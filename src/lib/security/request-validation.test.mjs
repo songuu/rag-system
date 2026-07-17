@@ -68,6 +68,7 @@ test('validateAskInput applies stable defaults and ignores legacy identity', () 
   assert.equal(input.topK, 3);
   assert.equal(input.storageBackend, 'memory');
   assert.equal('userId' in input, false);
+  assert.equal(input.executionMode, 'sync');
   assert.equal('tenantId' in input, false);
 });
 
@@ -103,6 +104,17 @@ test('validateAskInput enforces booleans and mutually exclusive advanced modes',
   );
 });
 
+
+test('validateAskInput accepts only explicit sync or durable execution', () => {
+  assert.equal(
+    validateAskInput({ question: 'q', executionMode: 'durable' }, {}).executionMode,
+    'durable'
+  );
+  assert.throws(
+    () => validateAskInput({ question: 'q', executionMode: 'background' }, {}),
+    match('INVALID_ENUM', 400)
+  );
+});
 test('validateAskInput rejects unknown backend and unknown fields', () => {
   assert.throws(() => validateAskInput({ question: 'q', storageBackend: 'memroy' }, {}), match('INVALID_ENUM', 400));
   assert.throws(() => validateAskInput({ question: 'q', surprise: true }, {}), match('UNKNOWN_FIELDS', 400));

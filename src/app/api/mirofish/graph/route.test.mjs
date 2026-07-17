@@ -34,6 +34,17 @@ const originalEnvironment = captureEnvironment([
   'RAG_SINGLE_TENANT_ACTOR_ID',
   'SUPABASE_DEFAULT_TENANT_ID',
   'SUPABASE_DEFAULT_CORPUS_ID',
+  'RAG_MIROFISH_GRAPH_STORE_ROOT',
+  'RAG_MIROFISH_GRAPH_INGEST_TRUST_LEVEL',
+  'RAG_MIROFISH_GRAPH_ARTIFACT_TTL_MS',
+  'RAG_MIROFISH_GRAPH_MAX_ARTIFACTS',
+  'RAG_MIROFISH_GRAPH_MAX_TOTAL_BYTES',
+  'RAG_MIROFISH_GRAPH_MAX_SCOPE_ARTIFACTS',
+  'RAG_MIROFISH_GRAPH_MAX_SCOPE_BYTES',
+  'RAG_MIROFISH_GRAPH_MAX_TOMBSTONES',
+  'RAG_MIROFISH_GRAPH_STAGING_TTL_MS',
+  'RAG_MIROFISH_GRAPH_MULTI_INSTANCE',
+  'RAG_MIROFISH_GRAPH_REQUIRE_SHARED_CONTROL_PLANE',
 ]);
 
 configureSingleTenant('owner');
@@ -48,24 +59,38 @@ const { createMiroFishGraphTaskScopeMetadata } = await import(
   '@/lib/mirofish/graph-api-scope'
 );
 const {
+  FileMiroFishGraphArtifactStore,
+  createMiroFishGraphArtifact,
+  createMiroFishGraphDocumentVersion,
+} = await import('@/lib/mirofish/graph-artifact-store');
+const {
   POST,
   GET,
   DELETE,
+  PATCH,
   calculateMiroFishGraphChunkUpperBound,
 } = await import('./route.ts');
 
 after(() => restoreEnvironment(originalEnvironment));
 
-test('POST authorizes ingest and binds tenant, corpus, and actor to the new task', async t => {
+test('POST authorizes ingest and binds only server-owned publication scope', async t => {
   configureSingleTenant('owner');
+  setTemporaryEnvironment(t, {
+    RAG_MIROFISH_GRAPH_INGEST_TRUST_LEVEL: 'external',
+  });
   const taskManager = getTaskManager();
   const originalBuild = MiroFishGraphBuilder.prototype.buildGraphAsync;
+  let observedPublication;
   MiroFishGraphBuilder.prototype.buildGraphAsync = async (
     _request,
     _onProgress,
     _taskMetadata,
-    reservedTaskId
-  ) => reservedTaskId;
+    reservedTaskId,
+    publication
+  ) => {
+    observedPublication = publication;
+    return reservedTaskId;
+  };
   t.after(() => {
     MiroFishGraphBuilder.prototype.buildGraphAsync = originalBuild;
   });
@@ -76,6 +101,9 @@ test('POST authorizes ingest and binds tenant, corpus, and actor to the new task
       text: 'A bounded graph source.',
       ontology: { entity_types: [], edge_types: [] },
       corpusId: 'corpus-a',
+      trustLevel: 'trusted',
+      documentVersion: 'client-forged-version',
+      tenantId: 'tenant-forged',
     }),
   }));
   const body = await response.json();
@@ -87,6 +115,10 @@ test('POST authorizes ingest and binds tenant, corpus, and actor to the new task
     corpusId: 'corpus-a',
     actorId: 'actor-a',
   });
+  assert.equal(observedPublication.tenantId, 'tenant-a');
+  assert.equal(observedPublication.corpusId, 'corpus-a');
+  assert.equal(observedPublication.trustLevel, 'external');
+  assert.equal(observedPublication.store.coordination, 'process');
 });
 
 test('POST rejects a viewer through the stable RagSecurityError contract', async () => {
@@ -260,6 +292,276 @@ test('DELETE rejects a viewer before revealing whether a graph exists', async ()
   assert.equal(response.status, 403);
   assert.equal(body.code, 'RAG_CAPABILITY_FORBIDDEN');
 });
+
+test('durable graph data, catalog, activation CAS, and deletion survive TaskManager loss', async t => {
+  configureSingleTenant('owner');
+  const root = await configureGraphRouteStore(t);
+  const store = new FileMiroFishGraphArtifactStore(root);
+  const graphId = 'durable-graph-a';
+  const graphData = graph(graphId);
+  const identity = {
+    tenantId: 'tenant-a',
+    corpusId: 'corpus-a',
+    documentId: graphId,
+    documentVersion: createMiroFishGraphDocumentVersion(graphData),
+    trustLevel: 'reviewed',
+  };
+  await store.put(createMiroFishGraphArtifact({
+    identity,
+    graph: graphData,
+  }), { graphName: 'Durable Graph' });
+
+  const dataResponse = await GET(request(`?action=data&graphId=${graphId}`));
+  const dataBody = await dataResponse.json();
+  const listResponse = await GET(request('?action=list'));
+  const listBody = await listResponse.json();
+
+  assert.equal(dataResponse.status, 200);
+  assert.equal(dataBody.graph.graph_id, graphId);
+  assert.equal('passages' in dataBody.graph, false);
+  assert.equal(
+    listBody.graphs.find(candidate => candidate.graphId === graphId)?.graphName,
+    'Durable Graph'
+  );
+
+  const activateResponse = await PATCH(request('', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      graphId,
+      documentVersion: identity.documentVersion,
+      trustLevel: identity.trustLevel,
+      expectedRevision: 0,
+      active: true,
+    }),
+  }));
+  assert.equal(activateResponse.status, 200);
+  assert.equal((await activateResponse.json()).revision, 1);
+
+  const staleResponse = await PATCH(request('', {
+    method: 'PATCH',
+    body: JSON.stringify({ graphId, expectedRevision: 0, active: true }),
+  }));
+  assert.equal(staleResponse.status, 409);
+  assert.equal(
+    (await staleResponse.json()).code,
+    'MIROFISH_GRAPH_ACTIVE_REVISION_CONFLICT'
+  );
+
+  const activeDelete = await DELETE(request(`?graphId=${graphId}`, {
+    method: 'DELETE',
+  }));
+  assert.equal(activeDelete.status, 409);
+  assert.equal((await activeDelete.json()).code, 'MIROFISH_GRAPH_ARTIFACT_ACTIVE');
+
+  const activeListBody = await (await GET(request('?action=list'))).json();
+  assert.equal(
+    activeListBody.graphs.find(candidate => candidate.graphId === graphId)?.active,
+    true
+  );
+
+  const deactivateResponse = await PATCH(request('', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      graphId,
+      expectedRevision: 1,
+      active: false,
+    }),
+  }));
+  assert.equal(deactivateResponse.status, 200);
+  assert.equal((await deactivateResponse.json()).revision, 2);
+
+  const deleteResponse = await DELETE(request(`?graphId=${graphId}`, {
+    method: 'DELETE',
+  }));
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(
+    (await GET(request(`?action=data&graphId=${graphId}`))).status,
+    404
+  );
+});
+
+test('GET trust matrix never enumerates quarantined graphs for viewers or admins', async t => {
+  const root = await configureGraphRouteStore(t);
+  t.after(() => configureSingleTenant('owner'));
+  const store = new FileMiroFishGraphArtifactStore(root);
+  const identities = new Map();
+  for (const trustLevel of ['trusted', 'reviewed', 'external', 'quarantined']) {
+    const graphId = `trust-matrix-${trustLevel}`;
+    const graphData = graph(graphId);
+    const graphIdentity = {
+      tenantId: 'tenant-a',
+      corpusId: 'corpus-a',
+      documentId: graphId,
+      documentVersion: createMiroFishGraphDocumentVersion(graphData),
+      trustLevel,
+    };
+    identities.set(trustLevel, graphIdentity);
+    await store.put(createMiroFishGraphArtifact({
+      identity: graphIdentity,
+      graph: graphData,
+    }), { graphName: `Trust ${trustLevel}` });
+  }
+  const quarantinedTaskId = createTask(t, currentScope());
+  getTaskManager().getTask(quarantinedTaskId).result.trustLevel = 'quarantined';
+
+  for (const role of ['viewer', 'admin']) {
+    configureSingleTenant(role);
+    const listResponse = await GET(request('?action=list'));
+    const listBody = await listResponse.json();
+    assert.equal(listResponse.status, 200);
+    assert.deepEqual(
+      listBody.graphs
+        .filter(item => item.graphId.startsWith('trust-matrix-'))
+        .map(item => item.trustLevel)
+        .sort(),
+      ['external', 'reviewed', 'trusted']
+    );
+
+    for (const trustLevel of ['trusted', 'reviewed', 'external']) {
+      const graphIdentity = identities.get(trustLevel);
+      const response = await GET(request(
+        `?action=data&graphId=${graphIdentity.documentId}`
+        + `&documentVersion=${encodeURIComponent(graphIdentity.documentVersion)}`
+        + `&trustLevel=${trustLevel}`
+      ));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).trustLevel, trustLevel);
+    }
+
+    const quarantineIdentity = identities.get('quarantined');
+    const forbidden = await GET(request(
+      `?action=data&graphId=${quarantineIdentity.documentId}`
+      + '&trustLevel=quarantined'
+    ));
+    const missing = await GET(request(
+      '?action=data&graphId=trust-matrix-missing&trustLevel=quarantined'
+    ));
+    assert.equal(forbidden.status, 404);
+    assert.deepEqual(await forbidden.json(), await missing.json());
+    const forbiddenStatus = await GET(request(
+      `?action=status&taskId=${quarantinedTaskId}`
+    ));
+    const missingStatus = await GET(request(
+      '?action=status&taskId=trust-matrix-missing'
+    ));
+    assert.equal(forbiddenStatus.status, 404);
+    assert.deepEqual(await forbiddenStatus.json(), await missingStatus.json());
+
+  }
+  configureSingleTenant('owner');
+});
+test('POST stamps server-owned quarantine trust before worker start and hides every pending projection', async t => {
+  await configureGraphRouteStore(t);
+  setTemporaryEnvironment(t, {
+    RAG_MIROFISH_GRAPH_INGEST_TRUST_LEVEL: 'quarantined',
+  });
+  configureSingleTenant('owner');
+
+  const taskManager = getTaskManager();
+  const originalBuild = MiroFishGraphBuilder.prototype.buildGraphAsync;
+  let observedMetadata;
+  MiroFishGraphBuilder.prototype.buildGraphAsync = async (
+    _request,
+    _onProgress,
+    taskMetadata,
+    reservedTaskId
+  ) => {
+    observedMetadata = taskMetadata;
+    return reservedTaskId;
+  };
+  t.after(() => {
+    MiroFishGraphBuilder.prototype.buildGraphAsync = originalBuild;
+  });
+
+  const response = await POST(request('', {
+    method: 'POST',
+    body: JSON.stringify({
+      text: 'quarantined source',
+      graphName: 'quarantine-secret-name',
+      ontology: minimalOntology(),
+    }),
+  }));
+  const body = await response.json();
+  t.after(() => taskManager.deleteTask(body.taskId));
+
+  assert.equal(response.status, 200);
+  assert.equal(observedMetadata.publicationTrustLevel, 'quarantined');
+  assert.equal(
+    taskManager.getTask(body.taskId).metadata.publicationTrustLevel,
+    'quarantined'
+  );
+
+  const forbidden = await GET(request(`?action=status&taskId=${body.taskId}`));
+  const missing = await GET(request('?action=status&taskId=missing-quarantine-task'));
+  assert.equal(forbidden.status, 404);
+  assert.deepEqual(await forbidden.json(), await missing.json());
+
+  const list = await GET(request('?action=list'));
+  assert.equal(list.status, 200);
+  assert.doesNotMatch(
+    JSON.stringify(await list.json()),
+    /quarantine-secret-name/
+  );
+});
+
+test('PATCH activation requires an administrator without revealing graph existence', async t => {
+  const root = await configureGraphRouteStore(t);
+  configureSingleTenant('viewer');
+  t.after(() => configureSingleTenant('owner'));
+
+  const foreign = await PATCH(request('', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      graphId: 'secret-graph',
+      expectedRevision: 0,
+      active: true,
+    }),
+  }));
+  const missing = await PATCH(request('', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      graphId: 'missing-graph',
+      expectedRevision: 0,
+      active: true,
+    }),
+  }));
+
+  assert.equal(root.length > 0, true);
+  assert.equal(foreign.status, 403);
+  assert.deepEqual(await foreign.json(), await missing.json());
+});
+
+test('POST rejects process-local graph control planes in declared multi-instance mode', async t => {
+  configureSingleTenant('owner');
+  const root = await configureGraphRouteStore(t);
+  setTemporaryEnvironment(t, {
+    RAG_MIROFISH_GRAPH_STORE_ROOT: root,
+    RAG_MIROFISH_GRAPH_MULTI_INSTANCE: 'true',
+  });
+  const originalBuild = MiroFishGraphBuilder.prototype.buildGraphAsync;
+  let builderCalls = 0;
+  MiroFishGraphBuilder.prototype.buildGraphAsync = async () => {
+    builderCalls += 1;
+    throw new Error('builder must not run');
+  };
+  t.after(() => {
+    MiroFishGraphBuilder.prototype.buildGraphAsync = originalBuild;
+  });
+
+  const response = await POST(request('', {
+    method: 'POST',
+    body: JSON.stringify({
+      text: 'bounded source',
+      ontology: minimalOntology(),
+    }),
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.code, 'MIROFISH_GRAPH_SHARED_STORE_REQUIRED');
+  assert.equal(builderCalls, 0);
+});
+
 
 test('POST rejects an oversized declared body before JSON parsing', async () => {
   configureSingleTenant('owner');
@@ -941,6 +1243,35 @@ function request(search = '', options = {}) {
     body: options.body,
   });
 }
+
+async function configureGraphRouteStore(t) {
+  const root = await mkdtemp(path.join(tmpdir(), 'mirofish-graph-route-store-'));
+  setTemporaryEnvironment(t, {
+    RAG_MIROFISH_GRAPH_STORE_ROOT: root,
+    RAG_MIROFISH_GRAPH_INGEST_TRUST_LEVEL: 'external',
+    RAG_MIROFISH_GRAPH_ARTIFACT_TTL_MS: undefined,
+    RAG_MIROFISH_GRAPH_MAX_ARTIFACTS: undefined,
+    RAG_MIROFISH_GRAPH_MAX_TOTAL_BYTES: undefined,
+    RAG_MIROFISH_GRAPH_MAX_SCOPE_ARTIFACTS: undefined,
+    RAG_MIROFISH_GRAPH_MAX_SCOPE_BYTES: undefined,
+    RAG_MIROFISH_GRAPH_MAX_TOMBSTONES: undefined,
+    RAG_MIROFISH_GRAPH_STAGING_TTL_MS: undefined,
+    RAG_MIROFISH_GRAPH_MULTI_INSTANCE: undefined,
+    RAG_MIROFISH_GRAPH_REQUIRE_SHARED_CONTROL_PLANE: undefined,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return root;
+}
+
+function setTemporaryEnvironment(t, values) {
+  const snapshot = captureEnvironment(Object.keys(values));
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  t.after(() => restoreEnvironment(snapshot));
+}
+
 
 function configureSingleTenant(role) {
   process.env.RAG_ACCESS_MODE = 'single-tenant-token';

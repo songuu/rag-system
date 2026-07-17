@@ -44,13 +44,11 @@ export function createRetrievalScope(input: {
   };
 }
 
-export function buildScopedMilvusSearchOptions(
-  scope: RagRetrievalScope,
-  input: Omit<MilvusSearchOptions, 'filter' | 'exprValues'> = {}
-): MilvusSearchOptions {
-  if (!scope.enforceIsolation) return input;
+export function buildScopedMilvusFilter(
+  scope: RagRetrievalScope
+): Pick<MilvusSearchOptions, 'filter' | 'exprValues'> {
+  if (!scope.enforceIsolation) return {};
   return markServerDerivedScope({
-    ...input,
     filter: [
       'tenant_id == {tenantId}',
       'corpus_id == {corpusId}',
@@ -61,6 +59,18 @@ export function buildScopedMilvusSearchOptions(
       corpusId: scope.corpusId,
       allowedTrustLevels: [...scope.allowedTrustLevels],
     },
+  });
+}
+
+export function buildScopedMilvusSearchOptions(
+  scope: RagRetrievalScope,
+  input: Omit<MilvusSearchOptions, 'filter' | 'exprValues'> = {}
+): MilvusSearchOptions {
+  if (!scope.enforceIsolation) return input;
+  const scopedFilter = buildScopedMilvusFilter(scope);
+  return markServerDerivedScope({
+    ...input,
+    ...scopedFilter,
   });
 }
 

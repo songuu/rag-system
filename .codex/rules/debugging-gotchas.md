@@ -72,3 +72,16 @@ key from the effective server embedding provider/model/base URL hash and never e
 A provider response can fit under a text-size cap yet amplify into quadratic entity merging, relation
 endpoint scans, or pairwise vector math. Count raw observations, reserve `E² + RE` lookup work before
 the first scan, cap pair/vector operations, and validate community vectors before artifact assignment.
+
+## Standalone Build Success Does Not Prove A Narrow Trace
+
+Turbopack can finish without warnings while route NFT files still include neighboring raw source and
+tests because dynamic file-store paths are traced conservatively. Inspect the affected
+`.next/server/app/**/route.js.nft.json` files directly. Use narrow route/extension-scoped
+`outputFileTracingExcludes` and a postbuild guard; never infer a clean trace from the build log.
+
+## Root-Settled Does Not Prove A Missing Scope Is Safe
+
+A recovery journal can say the root reservation settled after its last asset was deleted, while a
+later scope reclaim removes the ledger. Replaying that journal must require durable evidence that
+no live bundle remains; otherwise fail closed instead of treating a missing scope as empty.

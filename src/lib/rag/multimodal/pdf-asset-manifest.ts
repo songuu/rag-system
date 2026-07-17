@@ -84,7 +84,7 @@ export interface BuildPdfAssetManifestInput {
 }
 
 const SAFE_DOCUMENT_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
-const PAGE_SEPARATOR = '\n\f\n';
+export const PDF_PAGE_SEPARATOR = '\n\f\n';
 
 export function buildPdfAssetManifest(
   input: BuildPdfAssetManifestInput
@@ -138,7 +138,7 @@ export function buildPdfAssetManifest(
           }
         : {}),
     };
-    offset = page.endOffset + (index < pageTexts.length - 1 ? PAGE_SEPARATOR.length : 0);
+    offset = page.endOffset + (index < pageTexts.length - 1 ? PDF_PAGE_SEPARATOR.length : 0);
     return page;
   });
 
@@ -156,6 +156,11 @@ export function buildPdfAssetManifest(
     pages,
     createdAt: (input.now ?? new Date()).toISOString(),
   };
+}
+export function createCanonicalPdfDocumentText(parsed: PdfParseOutput): string {
+  return resolvePageTexts(parsed)
+    .map(normalizePageText)
+    .join(PDF_PAGE_SEPARATOR);
 }
 
 export function assertPdfAssetManifestScope(
@@ -231,7 +236,7 @@ export function assertPdfAssetManifestIntegrity(manifest: PdfAssetManifest): voi
       throw new Error('PDF asset manifest page offsets are inconsistent.');
     }
     expectedStartOffset = page.endOffset
-      + (index < manifest.pages.length - 1 ? PAGE_SEPARATOR.length : 0);
+      + (index < manifest.pages.length - 1 ? PDF_PAGE_SEPARATOR.length : 0);
     const imageFields = [
       page.imageRef,
       page.contentDigest,

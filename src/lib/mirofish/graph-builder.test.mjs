@@ -247,6 +247,128 @@ test('output-budget worker failure keeps its stable code and stores no graphData
   assert.equal(JSON.stringify(task).includes('graphData'), false);
 });
 
+test('durable graph publication completes only after the store commit barrier', async t => {
+  const originalExtract = EntityExtractor.prototype.extract;
+  const publicationEvents = [];
+  let releasePublication;
+  let publishedArtifact;
+  EntityExtractor.prototype.extract = async (_text, documentId) =>
+    createExtractedGraph(documentId, {
+      tenantId: 'forged-tenant',
+      tenant_id: 'forged-tenant',
+      safeLabel: 'retained',
+    });
+  const store = {
+    coordination: 'process',
+    async put(artifact) {
+      publicationEvents.push('put-started');
+      publishedArtifact = artifact;
+      await new Promise(resolve => {
+        releasePublication = resolve;
+      });
+      publicationEvents.push('put-committed');
+      return {
+        identity: {
+          tenantId: artifact.tenantId,
+          corpusId: artifact.corpusId,
+          documentId: artifact.documentId,
+          documentVersion: artifact.documentVersion,
+          trustLevel: artifact.trustLevel,
+        },
+        artifactDigest: `sha256:${'0'.repeat(64)}`,
+        createdAt: '2026-07-16T00:00:00.000Z',
+        nodeCount: artifact.graph.node_count,
+        edgeCount: artifact.graph.edge_count,
+      };
+    },
+    async delete() {
+      return true;
+    },
+  };
+  t.after(() => {
+    EntityExtractor.prototype.extract = originalExtract;
+  });
+
+  const taskId = await new MiroFishGraphBuilder().buildGraphAsync(
+    {
+      text: 'Alice founded Acme.',
+      ontology: { entity_types: [], edge_types: [] },
+      graphName: 'Published graph',
+    },
+    undefined,
+    { publicationTrustLevel: 'trusted' },
+    undefined,
+    {
+      store,
+      tenantId: 'tenant-a',
+      corpusId: 'corpus-a',
+      trustLevel: 'external',
+      graphName: 'Published graph',
+    }
+  );
+  t.after(() => getTaskManager().deleteTask(taskId));
+  await waitForCondition(() => publicationEvents.includes('put-started'));
+
+  assert.notEqual(getTaskManager().getTask(taskId)?.status, 'completed');
+  releasePublication();
+  const task = await waitForTerminalTask(taskId);
+
+  assert.equal(task.status, 'completed');
+  assert.deepEqual(publicationEvents, ['put-started', 'put-committed']);
+  assert.equal(task.metadata.publicationTrustLevel, 'external');
+  assert.equal(task.result.artifactIdentity.tenantId, 'tenant-a');
+  assert.equal(task.result.artifactIdentity.corpusId, 'corpus-a');
+  assert.equal(task.result.artifactIdentity.trustLevel, 'external');
+  assert.match(task.result.artifactIdentity.documentVersion, /^sha256:[a-f0-9]{64}$/);
+  assert.equal('graphData' in task.result, false);
+  assert.equal(JSON.stringify(task.result).includes('Alice founded Acme.'), false);
+  assert.deepEqual(publishedArtifact.graph.passages[0].metadata, {
+    safeLabel: 'retained',
+  });
+});
+
+test('durable graph publication failure is terminal and retains no raw result', async t => {
+  const originalExtract = EntityExtractor.prototype.extract;
+  EntityExtractor.prototype.extract = async (_text, documentId) =>
+    createExtractedGraph(documentId);
+  const store = {
+    coordination: 'process',
+    async put() {
+      throw new Error('simulated durable store outage with private source');
+    },
+    async delete() {
+      return true;
+    },
+  };
+  t.after(() => {
+    EntityExtractor.prototype.extract = originalExtract;
+  });
+
+  const taskId = await new MiroFishGraphBuilder().buildGraphAsync(
+    {
+      text: 'private source',
+      ontology: { entity_types: [], edge_types: [] },
+    },
+    undefined,
+    undefined,
+    undefined,
+    {
+      store,
+      tenantId: 'tenant-a',
+      corpusId: 'corpus-a',
+      trustLevel: 'external',
+    }
+  );
+  t.after(() => getTaskManager().deleteTask(taskId));
+  const task = await waitForTerminalTask(taskId);
+
+  assert.equal(task.status, 'failed');
+  assert.equal(task.error, 'MIROFISH_GRAPH_ARTIFACT_PUBLISH_FAILED');
+  assert.equal(task.result, undefined);
+  assert.equal(JSON.stringify(task).includes('private source'), false);
+});
+
+
 test('MiroFish graph adapter retains source passages and communities', () => {
   const graph = convertKnowledgeGraphToGraphData({
     entities: new Map([['entity-1', {
@@ -314,6 +436,39 @@ test('MiroFish graph adapter retains source passages and communities', () => {
   assert.equal('passages' in publicGraph, false);
   assert.equal(JSON.stringify(publicGraph).includes('Alice is a founder.'), false);
 });
+
+function createExtractedGraph(documentId, chunkMetadata = {}) {
+  return {
+    entities: new Map(),
+    relations: new Map(),
+    communities: new Map(),
+    chunks: new Map([['chunk-1', {
+      id: 'chunk-1',
+      content: 'Alice founded Acme.',
+      index: 0,
+      startChar: 0,
+      endChar: 19,
+      overlap: { previous: null, next: null },
+      metadata: chunkMetadata,
+    }]]),
+    metadata: {
+      documentId,
+      createdAt: new Date('2026-07-16T00:00:00.000Z'),
+      entityCount: 0,
+      relationCount: 0,
+      communityCount: 0,
+    },
+  };
+}
+
+async function waitForCondition(predicate) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (predicate()) return;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  throw new Error('Condition did not become true.');
+}
+
 
 function legacyCacheRecord(artifact, value) {
   return JSON.stringify({

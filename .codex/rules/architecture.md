@@ -161,3 +161,16 @@ predictable counters.
 Treat model output and post-processing work as separate admission planes: reject oversized raw output
 before parsing, then reserve entity/relation aggregation and pairwise vector work before scanning.
 Required-stage budget failures publish one stable terminal code and no partial task result.
+
+## Production Activation Is A Caller-Gate-Fallback Contract
+
+A library seam is not production activation. Prove one real route, ingest, or query caller; the
+server-owned rollout gate (or deliberately server-validated per-request mode); the safe default;
+the dense/text/synchronous fallback; deployment documentation; and a route-level regression.
+
+## Scoped File Stores Need Explicit Lifecycle Transactions
+
+When a root registry allocates bounded scope slots, persist `creating` before the slot is consumed,
+transition to `active` only after the scope ledger is durable, and use `reclaiming` before deletion.
+Recovery must roll back interrupted creation and finish interrupted reclaim. A root-settled journal
+alone does not prove a missing scope is safe; require durable bundle state proving no live asset.

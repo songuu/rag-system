@@ -9,7 +9,7 @@ export type DurableJsonValue =
   | { [key: string]: DurableJsonValue };
 export type DurableJsonObject = { [key: string]: DurableJsonValue };
 
-export const DURABLE_WORKFLOW_CHECKPOINT_VERSION = 'rag-durable-checkpoint-v2' as const;
+export const DURABLE_WORKFLOW_CHECKPOINT_VERSION = 'rag-durable-checkpoint-v3' as const;
 
 export interface DurableWorkflowIdentity {
   threadId: string;
@@ -42,6 +42,7 @@ export interface DurableWorkflowCheckpoint<
 > {
   schemaVersion: typeof DURABLE_WORKFLOW_CHECKPOINT_VERSION;
   checkpointKey: string;
+  generationId: string;
   workflowId: string;
   workflowVersion: string;
   identity: DurableWorkflowIdentity;
@@ -71,13 +72,26 @@ export interface DurableCheckpointStore {
   load(checkpointKey: string): Promise<DurableWorkflowCheckpoint | null>;
   save(
     checkpoint: DurableWorkflowCheckpoint,
-    options: { expectedRevision: number | null }
+    options: {
+      expectedRevision: number | null;
+      expectedGenerationId: string | null;
+    }
   ): Promise<void>;
   /** Optional administrative lifecycle port. Implementations must fence deletes. */
   delete?(
     checkpointKey: string,
-    options: { expectedRevision: number }
+    options: { expectedRevision: number; expectedGenerationId: string }
   ): Promise<boolean>;
+  /** Verifies that a prior revision-fenced delete may safely resume cleanup. */
+  hasDeletionTombstone?(
+    checkpointKey: string,
+    options: { expectedRevision: number; expectedGenerationId: string }
+  ): Promise<boolean>;
+  /** Acknowledges that generation-scoped external result cleanup succeeded. */
+  acknowledgeDeletionCleanup?(
+    checkpointKey: string,
+    options: { expectedRevision: number; expectedGenerationId: string }
+  ): Promise<void>;
 }
 
 export interface DurableWorkflowLeaseRenewal {
@@ -93,7 +107,10 @@ export interface DurableWorkflowStepContext<
   job: Readonly<TJob>;
   state: Readonly<TState>;
   identity: Readonly<DurableWorkflowIdentity>;
+  generationId: string;
   stepExecutionId: string;
+  /** Unique to this lease claim; unlike stepExecutionId it changes on replay. */
+  executionAttemptId: string;
   /** Transient invocation cancellation; never serialized into a checkpoint. */
   signal: AbortSignal;
   /**
@@ -151,6 +168,7 @@ export interface DurableWorkflowResult<
 export interface DurableWorkflowAdapterOptions {
   now?: () => Date;
   ownerIdFactory?: () => string;
+  generationIdFactory?: () => string;
   leaseDurationMs?: number;
   maxSerializedBytes?: number;
   /** Required for process-persistent stores; never serialized. */
@@ -160,10 +178,21 @@ export interface DurableWorkflowAdapterOptions {
 }
 
 export interface DurableWorkflowLeaseFence {
+  expectedGenerationId: string;
   expectedRevision: number;
   leaseOwnerId: string;
 }
 
+
+export interface DurableWorkflowManagementIdentity {
+  threadId: string;
+  scope: RagRetrievalScope;
+}
+
+export interface DurableWorkflowCheckpointFence {
+  expectedGenerationId: string;
+  expectedRevision: number;
+}
 export interface DurableWorkflowLeaseRecoveryResult<
   TJob extends DurableJsonObject = DurableJsonObject,
   TState extends DurableJsonObject = DurableJsonObject,
@@ -188,6 +217,15 @@ export class DurableWorkflowConflictError extends Error {
   }
 }
 
+
+export class DurableWorkflowNotFoundError extends Error {
+  readonly code = 'DURABLE_WORKFLOW_NOT_FOUND';
+
+  constructor() {
+    super('Durable workflow checkpoint does not exist.');
+    this.name = 'DurableWorkflowNotFoundError';
+  }
+}
 export class DurableWorkflowCapacityError extends Error {
   readonly code = 'DURABLE_CHECKPOINT_CAPACITY_EXCEEDED';
 
@@ -338,6 +376,20 @@ export class InMemoryDurableCheckpointStore implements DurableCheckpointStore {
   readonly terminalRetentionMs: number;
   private readonly checkpoints = new Map<string, DurableWorkflowCheckpoint>();
   private readonly terminalSince = new Map<string, number>();
+  private readonly deletionTombstones = new Map<
+    string,
+    {
+      checkpointKey: string;
+      generationId: string;
+      revision: number;
+      deletedAt: number;
+      cleanupAcknowledgedAt?: number;
+    }
+  >();
+  private readonly deletionBarriers = new Map<
+    string,
+    { generationId: string; deletedAt: number }
+  >();
   private readonly now: () => Date;
 
   constructor(
@@ -371,20 +423,50 @@ export class InMemoryDurableCheckpointStore implements DurableCheckpointStore {
   }
 
   async load(checkpointKey: string): Promise<DurableWorkflowCheckpoint | null> {
+    this.pruneDeletionTombstones();
     const checkpoint = this.checkpoints.get(checkpointKey);
     return checkpoint ? cloneDurableJson(checkpoint) : null;
   }
 
   async save(
     checkpoint: DurableWorkflowCheckpoint,
-    options: { expectedRevision: number | null }
+    options: {
+      expectedRevision: number | null;
+      expectedGenerationId: string | null;
+    }
   ): Promise<void> {
     assertDurableWorkflowSerializable(checkpoint, {
       label: 'checkpoint',
       maxBytes: this.maxSerializedBytes,
     });
     const existing = this.checkpoints.get(checkpoint.checkpointKey);
+    const generationId = assertDurableGenerationId(checkpoint.generationId);
     if (options.expectedRevision === null) {
+      if (options.expectedGenerationId !== null) {
+        throw new DurableWorkflowConflictError(
+          'A new checkpoint cannot carry an existing generation fence.'
+        );
+      }
+      this.pruneDeletionTombstones();
+      const barrier = this.deletionBarriers.get(checkpoint.checkpointKey);
+      const nowMs = assertValidDate(
+        this.now(),
+        'checkpoint store clock'
+      ).getTime();
+      if (barrier && nowMs - barrier.deletedAt < this.terminalRetentionMs) {
+        throw new DurableWorkflowConflictError(
+          'Checkpoint identity is protected by a retained deletion tombstone.'
+        );
+      }
+      if (
+        this.deletionTombstones.has(
+          createDeletionTombstoneKey(checkpoint.checkpointKey, generationId)
+        )
+      ) {
+        throw new DurableWorkflowConflictError(
+          'A deleted durable checkpoint generation cannot be reused.'
+        );
+      }
       if (existing) {
         throw new DurableWorkflowConflictError('Checkpoint already exists.');
       }
@@ -400,7 +482,15 @@ export class InMemoryDurableCheckpointStore implements DurableCheckpointStore {
         );
       }
     } else {
-      if (!existing || existing.revision !== options.expectedRevision) {
+      const expectedGenerationId = assertDurableGenerationId(
+        options.expectedGenerationId
+      );
+      if (
+        !existing
+        || existing.generationId !== expectedGenerationId
+        || generationId !== expectedGenerationId
+        || existing.revision !== options.expectedRevision
+      ) {
         throw new DurableWorkflowConflictError();
       }
       if (checkpoint.revision !== options.expectedRevision + 1) {
@@ -438,19 +528,54 @@ export class InMemoryDurableCheckpointStore implements DurableCheckpointStore {
     return removed;
   }
 
+  private pruneDeletionTombstones(): number {
+    const nowMs = assertValidDate(this.now(), 'checkpoint store clock').getTime();
+    let removed = 0;
+    for (const [tombstoneKey, tombstone] of this.deletionTombstones) {
+      if (tombstone.cleanupAcknowledgedAt === undefined) continue;
+      if (nowMs - tombstone.deletedAt < this.terminalRetentionMs) continue;
+      this.deletionTombstones.delete(tombstoneKey);
+      const barrier = this.deletionBarriers.get(tombstone.checkpointKey);
+      if (barrier?.generationId === tombstone.generationId) {
+        this.deletionBarriers.delete(tombstone.checkpointKey);
+      }
+      removed += 1;
+    }
+    return removed;
+  }
+
   /**
    * Explicit lifecycle operation. Only terminal checkpoints may be removed,
    * so an administrator cannot accidentally discard an active workflow.
    */
   async delete(
     checkpointKey: string,
-    options: { expectedRevision: number }
+    options: { expectedRevision: number; expectedGenerationId: string }
   ): Promise<boolean> {
     if (!Number.isInteger(options.expectedRevision) || options.expectedRevision < 0) {
       throw new DurableWorkflowConflictError('Invalid checkpoint delete revision.');
     }
+    const expectedGenerationId = assertDurableGenerationId(
+      options.expectedGenerationId
+    );
     const checkpoint = this.checkpoints.get(checkpointKey);
-    if (!checkpoint) return false;
+    if (checkpoint && checkpoint.generationId !== expectedGenerationId) {
+      throw new DurableWorkflowConflictError();
+    }
+    const tombstoneKey = createDeletionTombstoneKey(
+      checkpointKey,
+      expectedGenerationId
+    );
+    const existingTombstone = this.deletionTombstones.get(tombstoneKey);
+    if (!checkpoint) {
+      if (
+        existingTombstone
+        && existingTombstone.revision !== options.expectedRevision
+      ) {
+        throw new DurableWorkflowConflictError();
+      }
+      return false;
+    }
     if (checkpoint.revision !== options.expectedRevision) {
       throw new DurableWorkflowConflictError();
     }
@@ -459,8 +584,72 @@ export class InMemoryDurableCheckpointStore implements DurableCheckpointStore {
         'Only terminal checkpoints may be deleted by the safe lifecycle port.'
       );
     }
+    this.pruneDeletionTombstones();
+    if (
+      !this.deletionTombstones.has(tombstoneKey)
+      && this.deletionTombstones.size >= this.maxEntries
+    ) {
+      throw new DurableWorkflowCapacityError();
+    }
+    const deletedAt = assertValidDate(
+      this.now(),
+      'checkpoint store clock'
+    ).getTime();
+    this.deletionTombstones.set(tombstoneKey, {
+      checkpointKey,
+      generationId: expectedGenerationId,
+      revision: checkpoint.revision,
+      deletedAt,
+    });
+    this.deletionBarriers.set(checkpointKey, {
+      generationId: expectedGenerationId,
+      deletedAt,
+    });
     this.terminalSince.delete(checkpointKey);
     return this.checkpoints.delete(checkpointKey);
+  }
+
+  async hasDeletionTombstone(
+    checkpointKey: string,
+    options: { expectedRevision: number; expectedGenerationId: string }
+  ): Promise<boolean> {
+    this.pruneDeletionTombstones();
+    const expectedGenerationId = assertDurableGenerationId(
+      options.expectedGenerationId
+    );
+    const tombstone = this.deletionTombstones.get(
+      createDeletionTombstoneKey(checkpointKey, expectedGenerationId)
+    );
+    if (!tombstone) return false;
+    if (tombstone.revision !== options.expectedRevision) {
+      throw new DurableWorkflowConflictError();
+    }
+    return true;
+  }
+
+  async acknowledgeDeletionCleanup(
+    checkpointKey: string,
+    options: { expectedRevision: number; expectedGenerationId: string }
+  ): Promise<void> {
+    const expectedGenerationId = assertDurableGenerationId(
+      options.expectedGenerationId
+    );
+    const tombstoneKey = createDeletionTombstoneKey(
+      checkpointKey,
+      expectedGenerationId
+    );
+    const tombstone = this.deletionTombstones.get(tombstoneKey);
+    if (!tombstone || tombstone.revision !== options.expectedRevision) {
+      throw new DurableWorkflowConflictError();
+    }
+    if (tombstone.cleanupAcknowledgedAt !== undefined) return;
+    this.deletionTombstones.set(tombstoneKey, {
+      ...tombstone,
+      cleanupAcknowledgedAt: assertValidDate(
+        this.now(),
+        'checkpoint store clock'
+      ).getTime(),
+    });
   }
 }
 
@@ -472,6 +661,7 @@ export class DurableRagWorkflowAdapter<
   private readonly store: DurableCheckpointStore;
   private readonly now: () => Date;
   private readonly ownerIdFactory: () => string;
+  private readonly generationIdFactory: () => string;
   private readonly leaseDurationMs: number;
   private readonly maxSerializedBytes: number;
   private readonly integrityKey?: string;
@@ -487,6 +677,7 @@ export class DurableRagWorkflowAdapter<
     this.store = store;
     this.now = options.now ?? (() => new Date());
     this.ownerIdFactory = options.ownerIdFactory ?? randomUUID;
+    this.generationIdFactory = options.generationIdFactory ?? randomUUID;
     this.leaseDurationMs = options.leaseDurationMs ?? 30_000;
     this.maxSerializedBytes = options.maxSerializedBytes ?? 262_144;
     this.integrityKey = options.integrityKey?.trim() || undefined;
@@ -580,11 +771,6 @@ export class DurableRagWorkflowAdapter<
     if (checkpoint.status === 'failed') {
       throw new DurableWorkflowFailedError(checkpoint.identity.threadId);
     }
-    const ownerId = assertSafeIdentifier(
-      this.ownerIdFactory(),
-      'leaseOwnerId',
-      256
-    );
     assertCheckpointLeaseAvailable(
       checkpoint,
       this.now(),
@@ -607,8 +793,14 @@ export class DurableRagWorkflowAdapter<
         throw new DurableWorkflowCancelledError();
       }
       const step = this.definition.steps[checkpoint.nextStepIndex];
+      const ownerId = assertSafeIdentifier(
+        this.ownerIdFactory(),
+        'leaseOwnerId',
+        256
+      );
       const stepExecutionId = createStepExecutionId(
         checkpoint.checkpointKey,
+        checkpoint.generationId,
         checkpoint.idempotencyKey,
         step.id
       );
@@ -706,7 +898,9 @@ export class DurableRagWorkflowAdapter<
             job: cloneDurableJson(checkpoint.job),
             state: cloneDurableJson(checkpoint.state),
             identity: cloneDurableJson(checkpoint.identity),
+            generationId: checkpoint.generationId,
             stepExecutionId,
+            executionAttemptId: ownerId,
             signal,
             renewLease,
           }),
@@ -784,6 +978,72 @@ export class DurableRagWorkflowAdapter<
 
     return this.buildResult(checkpoint, resumed, false, executedStepIds);
   }
+  /**
+   * Integrity-validates a checkpoint and re-authorizes its server-derived
+   * tenant/corpus scope without requiring the original content-bearing job.
+   */
+  async inspectCheckpoint(
+    identity: DurableWorkflowManagementIdentity
+  ): Promise<DurableWorkflowCheckpoint<TJob, TState> | null> {
+    const managementIdentity = normalizeManagementIdentity(identity);
+    const checkpointKey = buildDurableCheckpointKey(
+      this.definition.id,
+      managementIdentity.threadId,
+      managementIdentity.scope.tenantId
+    );
+    const stored = await this.store.load(checkpointKey);
+    if (!stored) return null;
+    const checkpoint = this.validateAndTypeCheckpoint(stored, checkpointKey);
+    if (!matchesManagementIdentity(checkpoint.identity, managementIdentity)) {
+      return null;
+    }
+    validateCheckpointProgress(checkpoint, this.definition.steps);
+    return cloneDurableJson(checkpoint);
+  }
+
+  /**
+   * Revision-fenced administrative cancellation. A racing worker may finish
+   * provider work, but its later checkpoint commit loses the CAS fence.
+   */
+  async cancelCheckpointForManagement(
+    identity: DurableWorkflowManagementIdentity,
+    fence: DurableWorkflowCheckpointFence
+  ): Promise<DurableWorkflowCheckpoint<TJob, TState>> {
+    assertManagementCheckpointFence(fence);
+    const checkpoint = await this.requireManagementCheckpoint(identity);
+    if (
+      checkpoint.generationId !== fence.expectedGenerationId
+      || checkpoint.revision !== fence.expectedRevision
+    ) {
+      throw new DurableWorkflowConflictError();
+    }
+    if (checkpoint.status === 'cancelled') {
+      return cloneDurableJson(checkpoint);
+    }
+    if (checkpoint.status === 'completed' || checkpoint.status === 'failed') {
+      throw new DurableWorkflowLeaseManagementError(
+        'A completed or failed durable workflow cannot be cancelled.'
+      );
+    }
+    return cloneDurableJson(await this.cancelCheckpoint(checkpoint));
+  }
+
+  async releaseExpiredLeaseForManagement(
+    identity: DurableWorkflowManagementIdentity,
+    fence: DurableWorkflowLeaseFence
+  ): Promise<DurableWorkflowLeaseRecoveryResult<TJob, TState>> {
+    assertDurableGenerationId(fence.expectedGenerationId);
+    const checkpoint = await this.requireManagementCheckpoint(identity);
+    return this.releaseExpiredCheckpoint(checkpoint, fence);
+  }
+
+  private async requireManagementCheckpoint(
+    identity: DurableWorkflowManagementIdentity
+  ): Promise<DurableWorkflowCheckpoint<TJob, TState>> {
+    const checkpoint = await this.inspectCheckpoint(identity);
+    if (!checkpoint) throw new DurableWorkflowNotFoundError();
+    return checkpoint;
+  }
 
   /**
    * Explicit management recovery for a crashed owner. Releasing an expired
@@ -793,6 +1053,29 @@ export class DurableRagWorkflowAdapter<
    */
   async releaseExpiredLeaseForRecovery(
     invocation: DurableWorkflowInvocation<TJob>,
+    fence: DurableWorkflowLeaseFence
+  ): Promise<DurableWorkflowLeaseRecoveryResult<TJob, TState>> {
+    const checkpoint = await this.loadCompatibleCheckpoint(invocation);
+    return this.releaseExpiredCheckpoint(checkpoint, fence);
+  }
+
+  private async cancelCheckpoint(
+    checkpoint: DurableWorkflowCheckpoint<TJob, TState>
+  ): Promise<DurableWorkflowCheckpoint<TJob, TState>> {
+    const cancelledCheckpoint: DurableWorkflowCheckpoint<TJob, TState> = {
+      ...checkpoint,
+      status: 'cancelled',
+      lastFailureCode: 'INVOCATION_ABORTED',
+      revision: checkpoint.revision + 1,
+      updatedAt: this.now().toISOString(),
+    };
+    delete cancelledCheckpoint.activeStep;
+    await this.saveCheckpoint(cancelledCheckpoint, checkpoint.revision);
+    return cancelledCheckpoint;
+  }
+
+  private async releaseExpiredCheckpoint(
+    checkpoint: DurableWorkflowCheckpoint<TJob, TState>,
     fence: DurableWorkflowLeaseFence
   ): Promise<DurableWorkflowLeaseRecoveryResult<TJob, TState>> {
     if (!Number.isInteger(fence.expectedRevision) || fence.expectedRevision < 0) {
@@ -805,7 +1088,6 @@ export class DurableRagWorkflowAdapter<
       'leaseOwnerId',
       256
     );
-    const checkpoint = await this.loadCompatibleCheckpoint(invocation);
     const activeStep = checkpoint.activeStep;
     if (checkpoint.status !== 'running' || !activeStep) {
       throw new DurableWorkflowLeaseManagementError(
@@ -813,7 +1095,8 @@ export class DurableRagWorkflowAdapter<
       );
     }
     if (
-      checkpoint.revision !== fence.expectedRevision
+      checkpoint.generationId !== fence.expectedGenerationId
+      || checkpoint.revision !== fence.expectedRevision
       || activeStep.leaseOwnerId !== expectedOwnerId
     ) {
       throw new DurableWorkflowConflictError(
@@ -848,21 +1131,6 @@ export class DurableRagWorkflowAdapter<
     };
   }
 
-  private async cancelCheckpoint(
-    checkpoint: DurableWorkflowCheckpoint<TJob, TState>
-  ): Promise<DurableWorkflowCheckpoint<TJob, TState>> {
-    const cancelledCheckpoint: DurableWorkflowCheckpoint<TJob, TState> = {
-      ...checkpoint,
-      status: 'cancelled',
-      lastFailureCode: 'INVOCATION_ABORTED',
-      revision: checkpoint.revision + 1,
-      updatedAt: this.now().toISOString(),
-    };
-    delete cancelledCheckpoint.activeStep;
-    await this.saveCheckpoint(cancelledCheckpoint, checkpoint.revision);
-    return cancelledCheckpoint;
-  }
-
   private async createCheckpoint(input: {
     checkpointKey: string;
     identity: DurableWorkflowIdentity;
@@ -884,6 +1152,7 @@ export class DurableRagWorkflowAdapter<
     const checkpoint: DurableWorkflowCheckpoint<TJob, TState> = {
       schemaVersion: DURABLE_WORKFLOW_CHECKPOINT_VERSION,
       checkpointKey: input.checkpointKey,
+      generationId: assertDurableGenerationId(this.generationIdFactory()),
       workflowId: this.definition.id,
       workflowVersion: this.definition.version,
       identity: input.identity,
@@ -1004,7 +1273,12 @@ export class DurableRagWorkflowAdapter<
     });
     await this.store.save(
       checkpoint as DurableWorkflowCheckpoint,
-      { expectedRevision }
+      {
+        expectedRevision,
+        expectedGenerationId: expectedRevision === null
+          ? null
+          : checkpoint.generationId,
+      }
     );
   }
 
@@ -1070,6 +1344,13 @@ export function buildDurableCheckpointKey(
   const safeTenantId = assertSafeIdentifier(tenantId, 'tenantId');
   return 'rag-durable/' + safeWorkflowId + '/'
     + sha256(safeTenantId + '\u0000' + safeThreadId);
+}
+
+export function assertDurableGenerationId(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('generationId must be a safe durable generation identifier.');
+  }
+  return assertSafeIdentifier(value, 'generationId', 128);
 }
 
 export function assertDurableWorkflowSerializable(
@@ -1198,6 +1479,59 @@ function validateDefinition<
       throw new Error('Duplicate durable workflow step: ' + id);
     }
     seen.add(id);
+  }
+}
+
+function normalizeManagementIdentity(
+  input: DurableWorkflowManagementIdentity
+): DurableWorkflowManagementIdentity {
+  const allowedTrustLevels = [...new Set(input.scope.allowedTrustLevels)].sort();
+  if (
+    allowedTrustLevels.length === 0
+    || allowedTrustLevels.some(level => (
+      !['trusted', 'reviewed', 'external', 'quarantined'].includes(level)
+    ))
+  ) {
+    throw new DurableWorkflowLeaseManagementError(
+      'Durable workflow management scope is invalid.'
+    );
+  }
+  if (typeof input.scope.enforceIsolation !== 'boolean') {
+    throw new DurableWorkflowLeaseManagementError(
+      'Durable workflow management isolation flag is invalid.'
+    );
+  }
+  return {
+    threadId: assertSafeIdentifier(input.threadId, 'threadId', 256),
+    scope: {
+      tenantId: assertSafeIdentifier(input.scope.tenantId, 'tenantId'),
+      corpusId: assertSafeIdentifier(input.scope.corpusId, 'corpusId'),
+      allowedTrustLevels,
+      enforceIsolation: input.scope.enforceIsolation,
+    },
+  };
+}
+
+function matchesManagementIdentity(
+  checkpoint: DurableWorkflowIdentity,
+  expected: DurableWorkflowManagementIdentity
+): boolean {
+  return checkpoint.threadId === expected.threadId
+    && checkpoint.tenantId === expected.scope.tenantId
+    && checkpoint.corpusId === expected.scope.corpusId
+    && checkpoint.enforceIsolation === expected.scope.enforceIsolation
+    && checkpoint.allowedTrustLevels.join('\u0000')
+      === expected.scope.allowedTrustLevels.join('\u0000');
+}
+
+function assertManagementCheckpointFence(
+  fence: DurableWorkflowCheckpointFence
+): void {
+  assertDurableGenerationId(fence.expectedGenerationId);
+  if (!Number.isInteger(fence.expectedRevision) || fence.expectedRevision < 0) {
+    throw new DurableWorkflowLeaseManagementError(
+      'Durable workflow management requires a valid expected revision.'
+    );
   }
 }
 
@@ -1358,6 +1692,7 @@ function validateCheckpointProgress(
 }
 
 function validateCheckpointShape(checkpoint: DurableWorkflowCheckpoint): void {
+  assertDurableGenerationId(checkpoint.generationId);
   if (
     !['pending', 'running', 'paused', 'completed', 'failed', 'cancelled']
       .includes(checkpoint.status)
@@ -1429,12 +1764,21 @@ function projectDurableRagKernelEnvelope(
 
 function createStepExecutionId(
   checkpointKey: string,
+  generationId: string,
   idempotencyKey: string,
   stepId: string
 ): string {
   return 'rag-step-' + sha256(
-    checkpointKey + '\u0000' + idempotencyKey + '\u0000' + stepId
+    checkpointKey + '\u0000' + generationId + '\u0000'
+      + idempotencyKey + '\u0000' + stepId
   ).slice(0, 32);
+}
+
+function createDeletionTombstoneKey(
+  checkpointKey: string,
+  generationId: string
+): string {
+  return checkpointKey + '\u0000' + generationId;
 }
 
 function fingerprintDurableJson(value: DurableJsonValue): string {

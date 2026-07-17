@@ -1,7 +1,7 @@
 {
   "schemaVersion": "rag-production-policy-contract/v1",
   "suiteId": "production-policy-control-plane",
-  "suiteVersion": "2026-07-15.v1",
+  "suiteVersion": "2026-07-16.v2",
   "cases": [
     {
       "id": "memory-policy-keeps-retrieval-and-generation-boundaries",
@@ -723,7 +723,7 @@
         "checkpointKeyStable": true,
         "tenantIdentitySeparated": true,
         "threadIdentitySeparated": true,
-        "checkpointSchema": "rag-durable-checkpoint-v2",
+        "checkpointSchema": "rag-durable-checkpoint-v3",
         "checkpointStatus": "completed",
         "firstExecutedStepIds": [
           "increment"

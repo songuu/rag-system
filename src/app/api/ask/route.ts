@@ -3,6 +3,7 @@ import { getRagSystem } from '@/lib/rag-instance';
 import { analyzeQuery } from '@/lib/semantic-analyzer';
 import {
   getMilvusInstance,
+  createMilvusHybridRuntimeManifest,
   type MilvusConfig,
   type CollectionStats,
   type MilvusSearchResult,
@@ -32,19 +33,36 @@ import {
   composeEvidenceContextV2,
   createLegacyEvidenceTransform,
   createRagContextDigest,
+  createMilvusHybridLaneHandler,
+  createPdfVisualLaneHandler,
+  getPdfVisualAssetRuntime,
+  isHybridCapabilityUsable,
+  isPdfVisualIntent,
+  resolvePdfMultimodalMode,
+  resolvePdfVisualModel,
+  resolveMilvusHybridRolloutMode,
+  createRoutedMilvusRetrievalPlan,
   createRagCacheIdentity,
   createRagPolicy,
   invokeRagKernelWorkflow,
+  invokePreRouteProviderWithDeadline,
+  isRagPreRouteProviderUnavailableError,
+  MAX_RAG_PRE_ROUTE_PROVIDER_TIMEOUT_MS,
+  readBoundedOrderedCorpus,
   normalizeLegacyPolicyDocuments,
   resolveRagPolicyId,
   throwIfRagRequestAborted,
+  type DurableJsonObject,
   type RagAnswerEnvelope,
   type RagExecutionTransition,
   type RagLaneHandler,
   type RagLaneExecutorResult,
   type RagPolicyContext,
   type RagQueryRequest,
+  type OrderedCorpusSnapshot,
   type RagStorageBackend,
+  type MilvusHybridCapability,
+  type MilvusHybridSearchPort,
 } from '@/lib/rag';
 import { decideRagAbstention } from '@/lib/rag/retrieval/abstention-policy';
 import {
@@ -59,9 +77,12 @@ import {
 import {
   classifyRetrievalQuery,
   routeRetrievalQuery,
+  resolveRetrievalRouterCapabilities,
 } from '@/lib/rag/retrieval/retrieval-router';
 import { createGraphEntityLaneHandler } from '@/lib/rag/retrieval/graph-entity-lane';
-import { FileMiroFishGraphArtifactStore } from '@/lib/mirofish/graph-artifact-store';
+import {
+  getMiroFishGraphArtifactRuntime,
+} from '@/lib/mirofish/graph-artifact-runtime';
 import {
   assertRagResponseTrace,
   attachRagKernelHeaders,
@@ -258,6 +279,31 @@ function createLegacyPolicyTransitions(
 }
 
 type RagFeatureRolloutMode = 'off' | 'shadow' | 'active';
+const RAG_RETRIEVAL_EXECUTION_BUDGET_MS = 30_000;
+const DEFAULT_HYBRID_PROBE_TIMEOUT_MS = 2_000;
+const DEFAULT_ORDERED_CONTEXT_READ_TIMEOUT_MS = 5_000;
+const DEFAULT_HYBRID_SEARCH_TIMEOUT_MS = 5_000;
+
+function resolveRagProviderTimeoutMs(
+  name: string,
+  fallback: number
+): number {
+  const configured = process.env[name];
+  if (configured === undefined || configured.trim() === '') return fallback;
+  const timeoutMs = Number(configured);
+  if (
+    !Number.isSafeInteger(timeoutMs)
+    || timeoutMs < 1
+    || timeoutMs > MAX_RAG_PRE_ROUTE_PROVIDER_TIMEOUT_MS
+    || timeoutMs >= RAG_RETRIEVAL_EXECUTION_BUDGET_MS
+  ) {
+    throw new Error(
+      `${name} must be an integer between 1 and ${MAX_RAG_PRE_ROUTE_PROVIDER_TIMEOUT_MS}ms `
+      + 'and remain below the total retrieval budget.'
+    );
+  }
+  return timeoutMs;
+}
 
 function resolveRagFeatureRolloutMode(
   name: string,
@@ -307,10 +353,10 @@ function publicRagPolicyFailure(error: RagKernelExecutionError, requestId: strin
   };
 }
 
-function resolveServerMiroFishPolicy(
+async function resolveServerMiroFishPolicy(
   question: string,
   scope: RagRetrievalScope
-): Pick<RagQueryRequest, 'serverPolicyId' | 'graphArtifactIdentity'> {
+): Promise<Pick<RagQueryRequest, 'serverPolicyId' | 'graphArtifactIdentity'>> {
   const mode = resolveRagFeatureRolloutMode('RAG_MIROFISH_GRAPH_MODE', 'off');
   if (mode !== 'active') return {};
   const queryKind = classifyRetrievalQuery(question).queryKind;
@@ -318,27 +364,56 @@ function resolveServerMiroFishPolicy(
 
   const documentId = process.env.RAG_MIROFISH_GRAPH_DOCUMENT_ID?.trim();
   const documentVersion = process.env.RAG_MIROFISH_GRAPH_DOCUMENT_VERSION?.trim();
-  const trustValue = process.env.RAG_MIROFISH_GRAPH_TRUST_LEVEL?.trim() || 'reviewed';
-  if (!documentId || !documentVersion) {
-    throw new Error('Active MiroFish graph mode requires a document ID and version.');
+  if (Boolean(documentId) !== Boolean(documentVersion)) {
+    throw new Error(
+      'Pinned MiroFish graph configuration requires both document ID and version.'
+    );
   }
-  if (
-    !['trusted', 'reviewed', 'external', 'quarantined'].includes(trustValue)
-  ) {
-    throw new Error('RAG_MIROFISH_GRAPH_TRUST_LEVEL is invalid.');
+  if (documentId && documentVersion) {
+    const trustValue = process.env.RAG_MIROFISH_GRAPH_TRUST_LEVEL?.trim() || 'reviewed';
+    if (!['trusted', 'reviewed', 'external', 'quarantined'].includes(trustValue)) {
+      throw new Error('RAG_MIROFISH_GRAPH_TRUST_LEVEL is invalid.');
+    }
+    const trustLevel = trustValue as RagTrustLevel;
+    assertMiroFishTrustAllowed(trustLevel, scope);
+    return {
+      serverPolicyId: 'mirofish-research',
+      graphArtifactIdentity: {
+        documentId,
+        documentVersion,
+        trustLevel,
+      },
+    };
   }
-  const trustLevel = trustValue as RagTrustLevel;
-  if (trustLevel === 'quarantined' || !scope.allowedTrustLevels.includes(trustLevel)) {
-    throw new Error('MiroFish graph trust level is outside the retrieval scope.');
+
+  const graphRuntime = getMiroFishGraphArtifactRuntime();
+  const pointer = await graphRuntime.store.getActive(scope);
+  if (!pointer.identity) return {};
+  assertMiroFishTrustAllowed(pointer.identity.trustLevel, scope);
+  const artifact = await graphRuntime.store.get(pointer.identity, scope);
+  if (!artifact) {
+    // Expired or tombstoned pointers are optional retrieval state. Dense
+    // retrieval remains authoritative until an administrator activates a
+    // currently readable version.
+    return {};
   }
   return {
     serverPolicyId: 'mirofish-research',
     graphArtifactIdentity: {
-      documentId,
-      documentVersion,
-      trustLevel,
+      documentId: pointer.identity.documentId,
+      documentVersion: pointer.identity.documentVersion,
+      trustLevel: pointer.identity.trustLevel,
     },
   };
+}
+
+function assertMiroFishTrustAllowed(
+  trustLevel: RagTrustLevel,
+  scope: RagRetrievalScope
+): void {
+  if (trustLevel === 'quarantined' || !scope.allowedTrustLevels.includes(trustLevel)) {
+    throw new Error('MiroFish graph trust level is outside the retrieval scope.');
+  }
 }
 
 /**
@@ -408,6 +483,7 @@ export async function POST(request: NextRequest) {
     throwIfRagRequestAborted(request.signal);
     const {
       question,
+      executionMode,
       topK,
       similarityThreshold,
       llmModel,
@@ -421,7 +497,7 @@ export async function POST(request: NextRequest) {
       enableReranking,
     } = validateAskInput(body);
     const securityContext = await resolveRagSecurityContext(request, {
-      capability: 'query',
+      capability: executionMode === 'durable' ? 'manage-runtime' : 'query',
       requestedCorpusId,
       requestIdFactory: () => requestId,
     });
@@ -463,80 +539,16 @@ export async function POST(request: NextRequest) {
       requestId,
       securityContext,
       retrievalScope,
-      ...resolveServerMiroFishPolicy(question, retrievalScope),
+      ...(await resolveServerMiroFishPolicy(question, retrievalScope)),
       raw: body,
     };
 
-    const kernel = createAskKernel();
-    const policyId = resolveRagPolicyId(ragRequest);
-    const output = await runWithLangSmithRootRun<NextResponse>(
-      {
-        name: 'RAG API Ask',
-        runType: 'chain',
-        route: '/api/ask',
-        policyId,
-        userId,
-        sessionId,
-        fallbackRunId: `ask-${Date.now()}`,
-        inputs: {
-          question: ragRequest.question,
-          topK: ragRequest.topK,
-          similarityThreshold: ragRequest.similarityThreshold,
-          storageBackend,
-          useAgenticRAG,
-          useAdaptiveEntityRAG,
-        },
-        metadata: {
-          llm_model: llmModel,
-          embedding_model: embeddingModel,
-          vector_backend: storageBackend,
-          tenant_id: securityContext.tenantId,
-          corpus_id: securityContext.corpusId,
-          max_retries: maxRetries,
-          enable_reranking: enableReranking,
-        },
-        tags: ['rag', 'api-ask', policyId],
-        output: (response) => ({
-          status: response.status,
-          ok: response.ok,
-          rag_policy: policyId,
-        }),
-      },
-      async (langSmithRun) => {
-        const result = await invokeRagKernelWorkflow(kernel, {
-          request: ragRequest,
-          policyId,
+    const output = executionMode === 'durable'
+      ? await executeDurableAskRequest({ request, ragRequest })
+      : await executeAskKernelResponse({
+          ragRequest,
           signal: request.signal,
-          context: {
-            name: 'RAG API Ask Workflow',
-            route: '/api/ask',
-            userId,
-            sessionId,
-            threadId: langSmithRun.threadId,
-            traceId: langSmithRun.runId,
-            tags: ['api-ask'],
-            metadata: {
-              llm_model: llmModel,
-              embedding_model: embeddingModel,
-              vector_backend: storageBackend,
-              tenant_id: securityContext.tenantId,
-              corpus_id: securityContext.corpusId,
-              max_retries: maxRetries,
-              enable_reranking: enableReranking,
-            },
-          },
         });
-        throwIfRagRequestAborted(request.signal);
-
-        attachRagKernelHeaders(result.output.headers, result.envelope);
-        if (langSmithRun.enabled) {
-          result.output.headers.set('x-langsmith-run-id', langSmithRun.runId);
-          result.output.headers.set('x-langsmith-thread-id', langSmithRun.threadId);
-          result.output.headers.set('x-langsmith-project', langSmithRun.projectName);
-        }
-        return result.output;
-      }
-    );
 
     throwIfRagRequestAborted(request.signal);
     return output;
@@ -583,6 +595,965 @@ export async function POST(request: NextRequest) {
     return response;
   }
 }
+
+export async function GET(request: NextRequest) {
+  const requestId = resolveAskRequestId(request);
+  try {
+    const query = parseDurableAskQuery(request, true);
+    const securityContext = await resolveRagSecurityContext(request, {
+      capability: 'manage-runtime',
+      requestedCorpusId: query.corpusId,
+      requestIdFactory: () => requestId,
+    });
+    const retrievalScope = createRetrievalScope({
+      tenantId: securityContext.tenantId,
+      corpusId: securityContext.corpusId,
+      enforceIsolation: securityContext.enforceIsolation,
+    });
+    const durable = await import('@/lib/rag/core/durable-ask-workflow');
+    if (durable.resolveDurableAskMode() !== 'active') {
+      throw new RequestValidationError(
+        'DURABLE_ASK_DISABLED',
+        'Durable ask execution is not enabled.',
+        409
+      );
+    }
+    const runtimeModule = await import(
+      '@/lib/rag/core/durable-workflow-runtime'
+    );
+    const durableRuntime = runtimeModule.getDurableWorkflowRuntime();
+    const threadId = query.threadId
+      ?? durable.createDurableAskThreadId({
+        integrityKey: durableRuntime.integrityKey,
+        tenantId: securityContext.tenantId,
+        corpusId: securityContext.corpusId,
+        actorId: securityContext.actorId,
+        idempotencyKey: durable.normalizeDurableAskIdempotencyKey(
+          request.headers.get('idempotency-key')
+        ),
+      });
+    const checkpoint = await durable.inspectDurableAsk({
+      threadId,
+      scope: retrievalScope,
+      checkpointStore: durableRuntime.checkpointStore,
+      resultStore: durableRuntime.resultStore,
+      integrityKey: durableRuntime.integrityKey,
+    });
+    if (!checkpoint) {
+      throw new RequestValidationError(
+        'DURABLE_WORKFLOW_NOT_FOUND',
+        'Durable ask workflow was not found.',
+        404
+      );
+    }
+    const responseBody: Record<string, unknown> = {
+      success: true,
+      durable: durable.projectDurableAskCheckpoint(checkpoint),
+    };
+    if (query.includeResult && checkpoint.status === 'completed') {
+      const artifact = await durable.readDurableAskResult({
+        checkpoint,
+        resultStore: durableRuntime.resultStore,
+        scope: retrievalScope,
+      });
+      responseBody.result = {
+        status: artifact.result.status,
+        headers: artifact.result.headers,
+        body: artifact.result.body,
+      };
+    }
+    const response = NextResponse.json(responseBody);
+    attachDurableAskHeaders(response, {
+      threadId,
+      generationId: checkpoint.generationId,
+      status: checkpoint.status,
+      revision: checkpoint.revision,
+      replay: true,
+      resumed: true,
+      provider: durableRuntime.checkpointStore.providerId,
+      processPersistent:
+        durableRuntime.checkpointStore.processPersistent,
+    });
+    return response;
+  } catch (error) {
+    return createDurableAskErrorResponse(error, requestId, request.signal);
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  const requestId = resolveAskRequestId(request);
+  try {
+    const query = parseDurableAskQuery(request, false);
+    const body = await readJsonObjectWithLimit(request, 4 * 1024);
+    const command = validateDurableAskManagementCommand(body);
+    const securityContext = await resolveRagSecurityContext(request, {
+      capability: 'manage-runtime',
+      requestedCorpusId: query.corpusId,
+      requestIdFactory: () => requestId,
+    });
+    const retrievalScope = createRetrievalScope({
+      tenantId: securityContext.tenantId,
+      corpusId: securityContext.corpusId,
+      enforceIsolation: securityContext.enforceIsolation,
+    });
+    const durable = await import('@/lib/rag/core/durable-ask-workflow');
+    if (durable.resolveDurableAskMode() !== 'active') {
+      throw new RequestValidationError(
+        'DURABLE_ASK_DISABLED',
+        'Durable ask execution is not enabled.',
+        409
+      );
+    }
+    const runtimeModule = await import(
+      '@/lib/rag/core/durable-workflow-runtime'
+    );
+    const durableRuntime = runtimeModule.getDurableWorkflowRuntime();
+    if (command.action === 'delete') {
+      const deleted = await durable.deleteDurableAsk({
+        threadId: command.threadId,
+        scope: retrievalScope,
+        expectedRevision: command.expectedRevision,
+        expectedGenerationId: command.expectedGenerationId,
+        checkpointStore: durableRuntime.checkpointStore,
+        resultStore: durableRuntime.resultStore,
+        integrityKey: durableRuntime.integrityKey,
+      });
+      const response = NextResponse.json({
+        success: true,
+        status: 'deleted',
+        deleted: true,
+        checkpointDeleted: deleted.checkpointDeleted,
+        cleanupResumed: deleted.cleanupResumed,
+        resultDeleted: deleted.resultDeleted,
+        resultDeletedCount: deleted.resultDeletedCount,
+        generationId: deleted.generationId,
+        cleanupAcknowledged: deleted.cleanupAcknowledged,
+        ...(deleted.previousCheckpoint
+          ? {
+              previousDurable: {
+                ...durable.projectDurableAskCheckpoint(
+                  deleted.previousCheckpoint
+                ),
+                resultAvailable: false,
+              },
+            }
+          : {}),
+      });
+      attachDurableAskHeaders(response, {
+        threadId: command.threadId,
+        generationId: command.expectedGenerationId,
+        status: 'deleted',
+        revision: command.expectedRevision,
+        replay: false,
+        resumed: deleted.cleanupResumed,
+        provider: durableRuntime.checkpointStore.providerId,
+        processPersistent:
+          durableRuntime.checkpointStore.processPersistent,
+      });
+      return response;
+    }
+    let checkpoint;
+    if (command.action === 'cancel') {
+      checkpoint = await durable.cancelDurableAsk({
+        threadId: command.threadId,
+        scope: retrievalScope,
+        expectedRevision: command.expectedRevision,
+        expectedGenerationId: command.expectedGenerationId,
+        checkpointStore: durableRuntime.checkpointStore,
+        resultStore: durableRuntime.resultStore,
+        integrityKey: durableRuntime.integrityKey,
+      });
+    } else {
+      checkpoint = (await durable.recoverDurableAsk({
+        threadId: command.threadId,
+        scope: retrievalScope,
+        expectedRevision: command.expectedRevision,
+        expectedGenerationId: command.expectedGenerationId,
+        checkpointStore: durableRuntime.checkpointStore,
+        resultStore: durableRuntime.resultStore,
+        integrityKey: durableRuntime.integrityKey,
+      })).checkpoint;
+    }
+    const response = NextResponse.json({
+      success: true,
+      durable: durable.projectDurableAskCheckpoint(checkpoint),
+    });
+    attachDurableAskHeaders(response, {
+      threadId: command.threadId,
+      generationId: checkpoint.generationId,
+      status: checkpoint.status,
+      revision: checkpoint.revision,
+      replay: false,
+      resumed: command.action === 'recover',
+      provider: durableRuntime.checkpointStore.providerId,
+      processPersistent:
+        durableRuntime.checkpointStore.processPersistent,
+    });
+    return response;
+  } catch (error) {
+    return createDurableAskErrorResponse(error, requestId, request.signal);
+  }
+}
+
+function resolveAskRequestId(request: NextRequest): string {
+  const supplied = request.headers.get('x-request-id')?.trim();
+  return supplied
+    && supplied.length <= 128
+    && /^[A-Za-z0-9._:-]+$/.test(supplied)
+    ? supplied
+    : crypto.randomUUID();
+}
+
+function parseDurableAskQuery(
+  request: NextRequest,
+  allowReadOptions: boolean
+): {
+  corpusId?: string;
+  threadId?: string;
+  includeResult: boolean;
+} {
+  const url = new URL(request.url);
+  const allowed = new Set(
+    allowReadOptions
+      ? ['corpusId', 'threadId', 'includeResult']
+      : ['corpusId']
+  );
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.has(key)) {
+      throw new RequestValidationError(
+        'UNKNOWN_FIELDS',
+        'Unknown durable ask query field: ' + key + '.',
+        400
+      );
+    }
+    if (url.searchParams.getAll(key).length !== 1) {
+      throw new RequestValidationError(
+        'DUPLICATE_QUERY_FIELD',
+        'Durable ask query fields must not be repeated.',
+        400
+      );
+    }
+  }
+  const corpusId = optionalDurableIdentifier(
+    url.searchParams.get('corpusId'),
+    'corpusId',
+    128
+  );
+  const threadId = allowReadOptions
+    ? optionalDurableIdentifier(
+        url.searchParams.get('threadId'),
+        'threadId',
+        256
+      )
+    : undefined;
+  const rawIncludeResult = allowReadOptions
+    ? url.searchParams.get('includeResult')
+    : null;
+  if (
+    rawIncludeResult !== null
+    && rawIncludeResult !== 'true'
+    && rawIncludeResult !== 'false'
+  ) {
+    throw new RequestValidationError(
+      'INVALID_BOOLEAN',
+      'includeResult must be true or false.',
+      400
+    );
+  }
+  return {
+    ...(corpusId ? { corpusId } : {}),
+    ...(threadId ? { threadId } : {}),
+    includeResult: rawIncludeResult === 'true',
+  };
+}
+
+function validateDurableAskManagementCommand(
+  body: Record<string, unknown>
+): {
+  action: 'cancel' | 'recover' | 'delete';
+  threadId: string;
+  expectedRevision: number;
+  expectedGenerationId: string;
+} {
+  const allowed = new Set([
+    'action',
+    'threadId',
+    'expectedRevision',
+    'expectedGenerationId',
+  ]);
+  const unknown = Object.keys(body).filter(key => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new RequestValidationError(
+      'UNKNOWN_FIELDS',
+      'Unknown durable ask management fields: '
+        + unknown.sort().join(', ')
+        + '.',
+      400
+    );
+  }
+  if (
+    body.action !== 'cancel'
+    && body.action !== 'recover'
+    && body.action !== 'delete'
+  ) {
+    throw new RequestValidationError(
+      'INVALID_DURABLE_ACTION',
+      'action must be cancel, recover, or delete.',
+      400
+    );
+  }
+  const threadId = optionalDurableIdentifier(
+    typeof body.threadId === 'string' ? body.threadId : null,
+    'threadId',
+    256
+  );
+  if (!threadId) {
+    throw new RequestValidationError(
+      'INVALID_IDENTIFIER',
+      'threadId is required.',
+      400
+    );
+  }
+  const expectedGenerationId = optionalDurableIdentifier(
+    typeof body.expectedGenerationId === 'string'
+      ? body.expectedGenerationId
+      : null,
+    'expectedGenerationId',
+    128
+  );
+  if (!expectedGenerationId) {
+    throw new RequestValidationError(
+      'INVALID_IDENTIFIER',
+      'expectedGenerationId is required.',
+      400
+    );
+  }
+  if (
+    !Number.isInteger(body.expectedRevision)
+    || (body.expectedRevision as number) < 0
+    || (body.expectedRevision as number) > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new RequestValidationError(
+      'INVALID_INTEGER',
+      'expectedRevision must be a non-negative safe integer.',
+      400
+    );
+  }
+  return {
+    action: body.action,
+    threadId,
+    expectedRevision: body.expectedRevision as number,
+    expectedGenerationId,
+  };
+}
+
+function optionalDurableIdentifier(
+  value: string | null,
+  field: string,
+  maxLength: number
+): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (
+    normalized.length > maxLength
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(normalized)
+  ) {
+    throw new RequestValidationError(
+      'INVALID_IDENTIFIER',
+      field + ' contains unsupported characters.',
+      400
+    );
+  }
+  return normalized;
+}
+
+function createDurableAskErrorResponse(
+  error: unknown,
+  requestId: string,
+  signal: AbortSignal
+): NextResponse {
+  const normalized = mapDurableAskExecutionError(error);
+  const mapped = signal.aborted || normalized instanceof RagRequestAbortedError
+    ? {
+        status: 499,
+        body: {
+          error: {
+            code: 'RAG_REQUEST_ABORTED',
+            message: 'RAG 请求已取消',
+          },
+          requestId,
+        },
+      }
+    : normalized instanceof RagSecurityError
+      ? {
+          status: normalized.status,
+          body: {
+            error: {
+              code: normalized.code,
+              message: normalized.message,
+            },
+            requestId: normalized.requestId,
+          },
+        }
+      : publicErrorPayload(
+          normalized,
+          'DURABLE_ASK_INTERNAL_ERROR',
+          'Durable ask operation failed.',
+          requestId
+        );
+  return NextResponse.json({
+    success: false,
+    error: mapped.body.error.message,
+    code: mapped.body.error.code,
+    requestId,
+  }, {
+    status: mapped.status,
+  });
+}
+
+async function executeAskKernelResponse(input: {
+  ragRequest: RagQueryRequest;
+  signal: AbortSignal;
+  traceId?: string;
+  threadId?: string;
+}): Promise<NextResponse> {
+  const securityContext = input.ragRequest.securityContext;
+  if (!securityContext) {
+    throw new Error('Ask workflow requires a server-derived security context.');
+  }
+  const {
+    question,
+    topK,
+    similarityThreshold,
+    llmModel,
+    embeddingModel,
+    storageBackend,
+    useAgenticRAG = false,
+    useAdaptiveEntityRAG = false,
+    maxRetries = 2,
+    enableReranking = true,
+    sessionId,
+  } = input.ragRequest;
+  const userId = securityContext.actorId;
+  const kernel = createAskKernel();
+  const policyId = resolveRagPolicyId(input.ragRequest);
+  return runWithLangSmithRootRun<NextResponse>(
+    {
+      name: 'RAG API Ask',
+      runType: 'chain',
+      route: '/api/ask',
+      policyId,
+      userId,
+      sessionId,
+      fallbackRunId: input.traceId ?? ('ask-' + Date.now()),
+      inputs: {
+        question,
+        topK,
+        similarityThreshold,
+        storageBackend,
+        useAgenticRAG,
+        useAdaptiveEntityRAG,
+      },
+      metadata: {
+        llm_model: llmModel,
+        embedding_model: embeddingModel,
+        vector_backend: storageBackend,
+        tenant_id: securityContext.tenantId,
+        corpus_id: securityContext.corpusId,
+        max_retries: maxRetries,
+        enable_reranking: enableReranking,
+      },
+      tags: ['rag', 'api-ask', policyId],
+      output: (response) => ({
+        status: response.status,
+        ok: response.ok,
+        rag_policy: policyId,
+      }),
+    },
+    async (langSmithRun) => {
+      const result = await invokeRagKernelWorkflow(kernel, {
+        request: input.ragRequest,
+        policyId,
+        signal: input.signal,
+        context: {
+          name: 'RAG API Ask Workflow',
+          route: '/api/ask',
+          userId,
+          sessionId,
+          threadId: input.threadId ?? langSmithRun.threadId,
+          traceId: input.traceId ?? langSmithRun.runId,
+          tags: ['api-ask'],
+          metadata: {
+            llm_model: llmModel,
+            embedding_model: embeddingModel,
+            vector_backend: storageBackend,
+            tenant_id: securityContext.tenantId,
+            corpus_id: securityContext.corpusId,
+            max_retries: maxRetries,
+            enable_reranking: enableReranking,
+          },
+        },
+      });
+      throwIfRagRequestAborted(input.signal);
+      attachRagKernelHeaders(result.output.headers, result.envelope);
+      if (langSmithRun.enabled) {
+        result.output.headers.set('x-langsmith-run-id', langSmithRun.runId);
+        result.output.headers.set(
+          'x-langsmith-thread-id',
+          langSmithRun.threadId
+        );
+        result.output.headers.set(
+          'x-langsmith-project',
+          langSmithRun.projectName
+        );
+      }
+      return result.output;
+    }
+  );
+}
+
+async function executeDurableAskRequest(input: {
+  request: NextRequest;
+  ragRequest: RagQueryRequest;
+}): Promise<NextResponse> {
+  try {
+    const durable = await import('@/lib/rag/core/durable-ask-workflow');
+    if (durable.resolveDurableAskMode() !== 'active') {
+      throw new RequestValidationError(
+        'DURABLE_ASK_DISABLED',
+        'Durable ask execution is not enabled.',
+        409
+      );
+    }
+    const runtimeModule = await import(
+      '@/lib/rag/core/durable-workflow-runtime'
+    );
+    const runtime = runtimeModule.getDurableWorkflowRuntime();
+    const securityContext = input.ragRequest.securityContext;
+    const retrievalScope = input.ragRequest.retrievalScope;
+    if (!securityContext || !retrievalScope) {
+      throw new Error(
+        'Durable ask execution requires server-derived security scope.'
+      );
+    }
+    const idempotencyKey = durable.normalizeDurableAskIdempotencyKey(
+      input.request.headers.get('idempotency-key')
+    );
+    const threadId = durable.createDurableAskThreadId({
+      integrityKey: runtime.integrityKey,
+      tenantId: securityContext.tenantId,
+      corpusId: securityContext.corpusId,
+      actorId: securityContext.actorId,
+      idempotencyKey,
+    });
+    const policyId = resolveRagPolicyId(input.ragRequest);
+    const digests = durable.createDurableAskDigests({
+      integrityKey: runtime.integrityKey,
+      query: input.ragRequest.question,
+      requestProjection: {
+        question: input.ragRequest.question,
+        topK: input.ragRequest.topK,
+        similarityThreshold: input.ragRequest.similarityThreshold,
+        llmModel: input.ragRequest.llmModel,
+        embeddingModel: input.ragRequest.embeddingModel,
+        storageBackend: input.ragRequest.storageBackend,
+        sessionId: input.ragRequest.sessionId ?? null,
+        useAgenticRAG: input.ragRequest.useAgenticRAG === true,
+        useAdaptiveEntityRAG:
+          input.ragRequest.useAdaptiveEntityRAG === true,
+        maxRetries: input.ragRequest.maxRetries ?? 2,
+        enableReranking: input.ragRequest.enableReranking !== false,
+        tenantId: securityContext.tenantId,
+        corpusId: securityContext.corpusId,
+        actorId: securityContext.actorId,
+      },
+      routingProjection: {
+        policyId,
+        orderedContextMode: resolveRagFeatureRolloutMode(
+          'RAG_ORDERED_CONTEXT_MODE',
+          'off'
+        ),
+        hybridMode: resolveMilvusHybridRolloutMode(),
+        pdfVisualMode: resolvePdfMultimodalMode(),
+        miroFishGraphMode: resolveRagFeatureRolloutMode(
+          'RAG_MIROFISH_GRAPH_MODE',
+          'off'
+        ),
+        graphArtifactIdentity: input.ragRequest.graphArtifactIdentity
+          ? {
+              documentId:
+                input.ragRequest.graphArtifactIdentity.documentId,
+              documentVersion:
+                input.ragRequest.graphArtifactIdentity.documentVersion,
+              trustLevel:
+                input.ragRequest.graphArtifactIdentity.trustLevel,
+            }
+          : null,
+      },
+    });
+    const result = await durable.invokeDurableAsk({
+      identity: {
+        threadId,
+        idempotencyKey,
+        scope: retrievalScope,
+        ...digests,
+      },
+      checkpointStore: runtime.checkpointStore,
+      resultStore: runtime.resultStore,
+      integrityKey: runtime.integrityKey,
+      signal: input.request.signal,
+      adapterOptions: {
+        leaseDurationMs: durable.resolveDurableAskLeaseDurationMs(),
+      },
+      async execute({ signal, stepExecutionId }) {
+        const response = await executeAskKernelResponse({
+          ragRequest: input.ragRequest,
+          signal,
+          traceId: stepExecutionId,
+          threadId,
+        });
+        return projectAskResponseForDurable(
+          response,
+          durable.DURABLE_ASK_HTTP_RESULT_VERSION
+        );
+      },
+    });
+    const response = NextResponse.json(
+      result.artifact.result.body,
+      {
+        status: result.artifact.result.status,
+        headers: result.artifact.result.headers,
+      }
+    );
+    attachDurableAskHeaders(response, {
+      threadId,
+      generationId: result.workflow.checkpoint.generationId,
+      status: result.workflow.checkpoint.status,
+      revision: result.workflow.checkpoint.revision,
+      replay: result.workflow.idempotentReplay,
+      resumed: result.workflow.resumed,
+      provider: result.workflow.checkpointProvider,
+      processPersistent: result.workflow.processPersistent,
+    });
+    return response;
+  } catch (error) {
+    throw mapDurableAskExecutionError(error);
+  }
+}
+
+async function projectAskResponseForDurable(
+  response: NextResponse,
+  schemaVersion: 'rag-durable-ask-http-v1'
+): Promise<import(
+  '@/lib/rag/core/durable-ask-workflow'
+).DurableAskStoredHttpResult> {
+  const body = await response.clone().json();
+  if (!isJsonObject(body)) {
+    throw new Error('Ask response must be a JSON object for durable storage.');
+  }
+  const headers: Record<string, string> = {};
+  const replayBody = sanitizeDurableAskReplayValue(body);
+  for (const name of DURABLE_ASK_PERSISTED_HEADERS) {
+    const value = response.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  return {
+    schemaVersion,
+    status: response.status,
+    headers,
+    body: replayBody,
+  };
+}
+
+function attachDurableAskHeaders(
+  response: NextResponse,
+  input: {
+    threadId: string;
+    generationId: string;
+    status: string;
+    revision: number;
+    replay: boolean;
+    resumed: boolean;
+    provider: string;
+    processPersistent: boolean;
+  }
+): void {
+  response.headers.set('x-rag-durable-thread-id', input.threadId);
+  response.headers.set('x-rag-durable-generation-id', input.generationId);
+  response.headers.set('x-rag-durable-status', input.status);
+  response.headers.set('x-rag-durable-revision', String(input.revision));
+  response.headers.set('x-rag-durable-replay', String(input.replay));
+  response.headers.set('x-rag-durable-resumed', String(input.resumed));
+  response.headers.set('x-rag-durable-provider', input.provider);
+  response.headers.set(
+    'x-rag-durable-process-persistent',
+    String(input.processPersistent)
+  );
+}
+
+function mapDurableAskExecutionError(error: unknown): unknown {
+  if (error instanceof RequestValidationError) return error;
+  const code = findDurableAskExecutionErrorCode(error);
+  switch (code) {
+    case 'DURABLE_ASK_IDEMPOTENCY_KEY_INVALID':
+      return new RequestValidationError(
+        'DURABLE_ASK_IDEMPOTENCY_KEY_INVALID',
+        'Durable ask requires a valid Idempotency-Key.',
+        400
+      );
+    case 'DURABLE_WORKFLOW_BUSY':
+      return new RequestValidationError(
+        code,
+        'The durable ask thread is already running.',
+        409
+      );
+    case 'DURABLE_WORKFLOW_CANCELLED':
+    case 'DURABLE_WORKFLOW_FAILED':
+    case 'DURABLE_CHECKPOINT_CONFLICT':
+    case 'DURABLE_WORKFLOW_LEASE_MANAGEMENT_REJECTED':
+    case 'DURABLE_ASK_RESULT_CONFLICT':
+    case 'WORKFLOW_VERSION_MISMATCH':
+    case 'SCOPE_MISMATCH':
+    case 'DOCUMENT_ID_MISMATCH':
+    case 'DOCUMENT_VERSION_MISMATCH':
+    case 'IDEMPOTENCY_KEY_MISMATCH':
+    case 'JOB_FINGERPRINT_MISMATCH':
+      return new RequestValidationError(
+        code,
+        'The durable ask cannot resume from its current checkpoint.',
+        409
+      );
+    case 'DURABLE_WORKFLOW_NOT_FOUND':
+      return new RequestValidationError(
+        code,
+        'Durable ask workflow was not found.',
+        404
+      );
+    case 'DURABLE_WORKFLOW_STEP_FAILED':
+      return new RequestValidationError(
+        'DURABLE_WORKFLOW_PAUSED',
+        'The durable ask paused and can be resumed with the same request.',
+        503
+      );
+    case 'DURABLE_ASK_RESULT_UNAVAILABLE':
+    case 'DURABLE_ASK_RESULT_CAPACITY':
+    case 'DURABLE_ASK_RESULT_INTEGRITY':
+    case 'DURABLE_CHECKPOINT_INTEGRITY':
+    case 'DURABLE_WORKFLOW_CONFIGURATION_INVALID':
+    case 'DURABLE_WORKFLOW_SHARED_CONTROL_PLANE_REQUIRED':
+    case 'DURABLE_CHECKPOINT_SCAN_LIMIT':
+    case 'DURABLE_CHECKPOINT_CAPACITY_EXCEEDED':
+      return new RequestValidationError(
+        code,
+        'Durable ask persistence is unavailable.',
+        503
+      );
+    default:
+      return error;
+  }
+}
+
+function findDurableAskExecutionErrorCode(
+  error: unknown
+): string | undefined {
+  let current = error;
+  let outerCode: string | undefined;
+  const persistenceCodes = new Set([
+    'DURABLE_ASK_RESULT_CAPACITY',
+    'DURABLE_ASK_RESULT_CONFLICT',
+    'DURABLE_ASK_RESULT_INTEGRITY',
+    'DURABLE_CHECKPOINT_CAPACITY_EXCEEDED',
+    'DURABLE_CHECKPOINT_INTEGRITY',
+    'DURABLE_CHECKPOINT_SCAN_LIMIT',
+    'DURABLE_WORKFLOW_CONFIGURATION_INVALID',
+    'DURABLE_WORKFLOW_SHARED_CONTROL_PLANE_REQUIRED',
+  ]);
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (typeof current !== 'object' || current === null) break;
+    const code = 'code' in current && typeof current.code === 'string'
+      ? current.code
+      : undefined;
+    if (!outerCode && code) outerCode = code;
+    if (code && persistenceCodes.has(code)) return code;
+    current = 'cause' in current ? current.cause : undefined;
+  }
+  return outerCode;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function sanitizeDurableAskReplayValue(value: unknown): DurableJsonObject {
+  if (!isJsonObject(value)) {
+    throw new Error('Durable ask replay body must be a JSON object.');
+  }
+  const output = projectDurableAskScalarObject(
+    value,
+    DURABLE_ASK_REPLAY_TOP_LEVEL_KEYS,
+    'response body'
+  );
+  if (typeof output.success !== 'boolean' || typeof output.answer !== 'string') {
+    throw new Error('Durable ask replay body must contain success and answer.');
+  }
+
+  if (value.models !== undefined) {
+    output.models = projectDurableAskScalarObject(
+      value.models,
+      DURABLE_ASK_REPLAY_MODEL_KEYS,
+      'models'
+    );
+  }
+  if (value.evidence !== undefined) {
+    output.evidence = projectDurableAskObjectArray(
+      value.evidence,
+      DURABLE_ASK_REPLAY_EVIDENCE_KEYS,
+      'evidence'
+    );
+  }
+  if (value.laneExecutions !== undefined) {
+    output.laneExecutions = projectDurableAskObjectArray(
+      value.laneExecutions,
+      DURABLE_ASK_REPLAY_LANE_EXECUTION_KEYS,
+      'laneExecutions'
+    );
+  }
+  if (value.execution !== undefined) {
+    if (!isJsonObject(value.execution)) {
+      throw new Error('Durable ask execution must be a JSON object.');
+    }
+    const execution = projectDurableAskScalarObject(
+      value.execution,
+      DURABLE_ASK_REPLAY_EXECUTION_KEYS,
+      'execution'
+    );
+    if (value.execution.budget !== undefined) {
+      execution.budget = projectDurableAskScalarObject(
+        value.execution.budget,
+        DURABLE_ASK_REPLAY_BUDGET_KEYS,
+        'execution budget'
+      );
+    }
+    output.execution = execution;
+  }
+  return output;
+}
+
+function projectDurableAskObjectArray(
+  value: unknown,
+  allowedKeys: readonly string[],
+  label: string
+): DurableJsonObject[] {
+  if (!Array.isArray(value)) {
+    throw new Error('Durable ask ' + label + ' must be an array.');
+  }
+  return value.map((entry, index) => projectDurableAskScalarObject(
+    entry,
+    allowedKeys,
+    label + '[' + index + ']'
+  ));
+}
+
+function projectDurableAskScalarObject(
+  value: unknown,
+  allowedKeys: readonly string[],
+  label: string
+): DurableJsonObject {
+  if (!isJsonObject(value)) {
+    throw new Error('Durable ask ' + label + ' must be a JSON object.');
+  }
+  const output: DurableJsonObject = {};
+  for (const key of allowedKeys) {
+    const item = value[key];
+    if (item === undefined) continue;
+    output[key] = cloneDurableAskScalarValue(item, label + '.' + key);
+  }
+  return output;
+}
+
+function cloneDurableAskScalarValue(
+  value: unknown,
+  label: string
+): DurableJsonObject[string] {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+    || (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  if (
+    Array.isArray(value)
+    && value.every(item => (
+      item === null
+      || typeof item === 'string'
+      || typeof item === 'boolean'
+      || (typeof item === 'number' && Number.isFinite(item))
+    ))
+  ) {
+    return [...value];
+  }
+  throw new Error('Durable ask ' + label + ' is not a replay-safe scalar.');
+}
+
+const DURABLE_ASK_REPLAY_TOP_LEVEL_KEYS = [
+  'success',
+  'answer',
+  'storageBackend',
+  'agenticMode',
+  'adaptiveEntityMode',
+  'traceId',
+  'timestamp',
+] as const;
+
+const DURABLE_ASK_REPLAY_MODEL_KEYS = ['llm', 'embedding'] as const;
+
+const DURABLE_ASK_REPLAY_EVIDENCE_KEYS = [
+  'id',
+  'documentId',
+  'documentVersion',
+  'page',
+  'sectionPath',
+  'startOffset',
+  'endOffset',
+  'retrievalScore',
+  'rerankScore',
+  'trustLevel',
+  'laneId',
+  'score',
+] as const;
+
+const DURABLE_ASK_REPLAY_LANE_EXECUTION_KEYS = [
+  'laneId',
+  'retriever',
+  'status',
+  'retrievedEvidenceIds',
+  'retrievalQuality',
+  'generationUtility',
+  'uncertainty',
+  'latencyMs',
+  'inputTokens',
+  'costUsd',
+  'stopReason',
+  'errorCode',
+] as const;
+
+const DURABLE_ASK_REPLAY_EXECUTION_KEYS = ['stopReason'] as const;
+const DURABLE_ASK_REPLAY_BUDGET_KEYS = [
+  'maxLanes',
+  'maxEvidence',
+  'maxDurationMs',
+] as const;
+
+const DURABLE_ASK_PERSISTED_HEADERS = [
+  'x-rag-policy',
+  'x-rag-trace-id',
+  'x-rag-status',
+  'x-langsmith-run-id',
+  'x-langsmith-thread-id',
+  'x-langsmith-project',
+] as const;
 
 function createAskKernel(): RagKernel<NextResponse> {
   return new RagKernel<NextResponse>([
@@ -774,7 +1745,7 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     request,
     policyId,
     traceId,
-    retrievalPlan,
+    retrievalPlan: baseRetrievalPlan,
   } = policyContext;
   const {
     question,
@@ -789,33 +1760,205 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
   }
 
   let queryEmbedding: number[] = [];
+  let queryEmbeddingPromise: Promise<number[]> | undefined;
   let searchResults: MilvusSearchResult[] = [];
   let stats: CollectionStats | null | undefined;
   let vectorizationTime = 0;
   let searchTime = 0;
+  let orderedReadTime = 0;
+  const milvusConfig = getDefaultMilvusConfig();
+  const orderedContextMode = resolveRagFeatureRolloutMode(
+    'RAG_ORDERED_CONTEXT_MODE',
+    'off'
+  );
+  let orderedSnapshot: OrderedCorpusSnapshot | undefined;
+  const queryKind = classifyRetrievalQuery(question).queryKind;
+  const hybridMode = resolveMilvusHybridRolloutMode();
+  const orderedReadTimeoutMs = orderedContextMode === 'off'
+    ? DEFAULT_ORDERED_CONTEXT_READ_TIMEOUT_MS
+    : resolveRagProviderTimeoutMs(
+        'RAG_ORDERED_CONTEXT_READ_TIMEOUT_MS',
+        DEFAULT_ORDERED_CONTEXT_READ_TIMEOUT_MS
+      );
+  const hybridProbeTimeoutMs = hybridMode === 'off'
+    ? DEFAULT_HYBRID_PROBE_TIMEOUT_MS
+    : resolveRagProviderTimeoutMs('RAG_HYBRID_PROBE_TIMEOUT_MS', DEFAULT_HYBRID_PROBE_TIMEOUT_MS);
+  const hybridSearchTimeoutMs = hybridMode === 'off'
+    ? DEFAULT_HYBRID_SEARCH_TIMEOUT_MS
+    : resolveRagProviderTimeoutMs('RAG_HYBRID_SEARCH_TIMEOUT_MS', DEFAULT_HYBRID_SEARCH_TIMEOUT_MS);
+  let hybridCapability: MilvusHybridCapability | undefined;
+  let hybridPort: MilvusHybridSearchPort | undefined;
+  let hybridCollectionName: string | undefined;
+  if (queryKind === 'identifier' && hybridMode !== 'off') {
+    const hybridConnectionConfig = getMilvusConnectionConfig();
+    const hybridManifest = createMilvusHybridRuntimeManifest({
+      sourceCollectionName: milvusConfig.collectionName || hybridConnectionConfig.defaultCollection,
+      embeddingModel,
+      embeddingDimension: milvusConfig.embeddingDimension || hybridConnectionConfig.defaultDimension,
+    });
+    const nativePort = getMilvusInstance(milvusConfig).createHybridSearchPort(hybridManifest);
+    try {
+      hybridCapability = await invokePreRouteProviderWithDeadline({
+        operationKey: `milvus-hybrid-capability:${hybridManifest.collectionName}`,
+        timeoutMs: hybridProbeTimeoutMs,
+        signal: policyContext.signal,
+        invoke: signal => nativePort.probe({
+          collectionName: hybridManifest.collectionName,
+          signal,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof RagRequestAbortedError) throw error;
+      const reason = isRagPreRouteProviderUnavailableError(error)
+        ? error.code === 'RAG_PRE_ROUTE_PROVIDER_TIMEOUT'
+          ? 'capability_probe_timeout'
+          : 'capability_probe_busy'
+        : 'capability_probe_failed';
+      hybridCapability = {
+        nativeHybridSearch: false,
+        bm25Function: false,
+        schemaCompatible: false,
+        provider: 'milvus-native',
+        reason,
+      };
+    }
+    hybridCollectionName = hybridManifest.collectionName;
+    hybridPort = {
+      probe: async input => {
+        if (input.collectionName !== hybridManifest.collectionName) {
+          throw new Error('Hybrid collection does not match the server manifest.');
+        }
+        return hybridCapability!;
+      },
+      search: request => nativePort.search(request),
+    };
+  }
+  const hybridCapabilityUsable = hybridCapability !== undefined
+    && isHybridCapabilityUsable(hybridCapability);
+  const pdfVisualMode = resolvePdfMultimodalMode();
+  const pdfVisualIntent = isPdfVisualIntent(question);
+  let pdfVisualModel: string | undefined;
+  let pdfVisualHandler: RagLaneHandler | undefined;
+  let pdfVisualCapabilityReason = pdfVisualMode === 'off'
+    ? 'feature_off'
+    : pdfVisualIntent
+      ? 'model_unavailable'
+      : 'text_intent';
+  if (pdfVisualMode !== 'off' && pdfVisualIntent) {
+    pdfVisualModel = resolvePdfVisualModel();
+    if (pdfVisualModel) {
+      try {
+        const pdfVisualRuntime = getPdfVisualAssetRuntime();
+        pdfVisualHandler = createPdfVisualLaneHandler({
+          store: pdfVisualRuntime.store,
+          mode: pdfVisualMode,
+          model: pdfVisualModel,
+        });
+        pdfVisualCapabilityReason = 'ready';
+      } catch (error) {
+        if (
+          error
+          && typeof error === 'object'
+          && 'code' in error
+          && error.code === 'RAG_PDF_VISUAL_SHARED_STORE_REQUIRED'
+        ) {
+          pdfVisualCapabilityReason = 'topology_unavailable';
+        } else {
+          throw error;
+        }
+      }
+    }
+  }
+  const pdfVisualCapabilityUsable = pdfVisualHandler !== undefined;
+
+  if (queryKind === 'global' && orderedContextMode !== 'off') {
+    const orderedReadStartedAt = Date.now();
+    orderedSnapshot = await readBoundedOrderedCorpus({
+      store: getMilvusInstance(milvusConfig),
+      scope: retrievalScope,
+      laneId: 'ordered-context-required',
+      deadlineMs: orderedReadTimeoutMs,
+      providerKey: `milvus-ordered-context:${milvusConfig.collectionName}`,
+      signal: policyContext.signal,
+    });
+    orderedReadTime = Date.now() - orderedReadStartedAt;
+  }
+  const orderedCapabilityUsable = orderedSnapshot !== undefined
+    && orderedSnapshot.reason !== 'schema_unavailable'
+    && orderedSnapshot.reason !== 'provider_unavailable';
+  const retrievalRoute = routeRetrievalQuery({
+    query: question,
+    capabilities: resolveRetrievalRouterCapabilities({
+      hybrid: { mode: hybridMode, usable: hybridCapabilityUsable },
+      orderedContext: {
+        mode: orderedContextMode,
+        usable: orderedCapabilityUsable,
+      },
+    }),
+    ...(orderedSnapshot === undefined ? {} : { corpus: orderedSnapshot.inventory }),
+    orderedContextLimits: { maxDocuments: 6, maxCharacters: 120_000 },
+  });
+  const retrievalPlan = createRoutedMilvusRetrievalPlan(baseRetrievalPlan, retrievalRoute, {
+    hybridMode,
+    hybridUsable: hybridCapabilityUsable,
+    hybridLaneTimeoutMs: hybridSearchTimeoutMs,
+    pdfVisualMode,
+    pdfVisualUsable: pdfVisualCapabilityUsable,
+    pdfVisualIntent,
+  });
+  const orderedEvidenceBudget = retrievalRoute.route === 'ordered-context'
+    ? orderedSnapshot?.evidence.length ?? 0
+    : 0;
+  const textEvidenceBudget = retrievalRoute.route === 'ordered-context'
+    ? orderedEvidenceBudget + (policyId === 'mirofish-research' ? topK : 0)
+    : policyId === 'mirofish-research' ? topK * 2 : topK;
+  const pdfVisualEvidenceBudget =
+    pdfVisualMode === 'active' && pdfVisualCapabilityUsable
+      ? Math.min(topK, 4)
+      : 0;
   const budget = {
     maxLanes: Math.max(1, retrievalPlan.lanes.length),
-    maxEvidence: policyId === 'mirofish-research' ? topK * 2 : topK,
-    maxDurationMs: 30_000,
+    maxEvidence: textEvidenceBudget + pdfVisualEvidenceBudget,
+    maxDurationMs: RAG_RETRIEVAL_EXECUTION_BUDGET_MS,
   };
-  const milvusConfig = getDefaultMilvusConfig();
+  const getQueryEmbedding = async (signal: AbortSignal): Promise<number[]> => {
+    if (!queryEmbeddingPromise) {
+      const embeddingStartedAt = Date.now();
+      const embeddings = getEmbeddingModel(embeddingModel);
+      queryEmbeddingPromise = embeddings.embedQuery(question).then(value => {
+        queryEmbedding = value;
+        vectorizationTime = Date.now() - embeddingStartedAt;
+        return value;
+      });
+    }
+    const embedding = await queryEmbeddingPromise;
+    assertLaneNotAborted(signal);
+    return embedding;
+  };
+
   const laneHandlers: RagLaneHandler[] = [
     {
       type: 'dense-vector',
       retriever: 'milvus-dense-v1',
-      async execute({ lane, signal }) {
+      async execute({ lane, signal, priorEvidence }) {
         assertLaneNotAborted(signal);
+        if (
+          retrievalRoute.route === 'hybrid'
+          && priorEvidence.some(item => item.laneId === 'hybrid-primary')
+        ) {
+          return {
+            evidence: [],
+            stopReason: 'sufficient',
+            metadata: { skippedBecauseHybridSufficient: true },
+          };
+        }
         const milvus = getMilvusInstance(milvusConfig);
         await milvus.connect();
         assertLaneNotAborted(signal);
         await milvus.initializeCollection();
         assertLaneNotAborted(signal);
 
-        const embeddingStartedAt = Date.now();
-        const embeddings = getEmbeddingModel(embeddingModel);
-        queryEmbedding = await embeddings.embedQuery(question);
-        assertLaneNotAborted(signal);
-        vectorizationTime = Date.now() - embeddingStartedAt;
+        queryEmbedding = await getQueryEmbedding(signal);
 
         const searchStartedAt = Date.now();
         searchResults = await milvus.search(
@@ -847,14 +1990,51 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       },
     },
   ];
+  if (hybridPort && hybridCollectionName && hybridCapabilityUsable) {
+    const activeHybridPort = hybridPort;
+    const activeHybridCollection = hybridCollectionName;
+    laneHandlers.push(createMilvusHybridLaneHandler({
+      port: activeHybridPort,
+      collectionName: activeHybridCollection,
+      mode: hybridMode,
+      embedQuery: ({ signal }) => getQueryEmbedding(signal),
+    }));
+  }
+
+  if (orderedSnapshot?.usable) {
+    laneHandlers.push({
+      type: 'ordered-context',
+      retriever: 'milvus-ordered-corpus-v1',
+      async execute({ lane, signal }) {
+        assertLaneNotAborted(signal);
+        searchResults = orderedSnapshot.searchResults;
+        searchTime = orderedReadTime;
+        const evidence = orderedSnapshot.evidence.map(item => ({
+          ...item,
+          laneId: lane.id,
+          metadata: { ...item.metadata },
+        }));
+        return {
+          evidence,
+          stopReason: evidence.length > 0 ? 'sufficient' : 'no_gain',
+          metadata: {
+            readerVersion: orderedSnapshot.version,
+            inventory: orderedSnapshot.inventory,
+            readTime: orderedReadTime,
+          },
+        };
+      },
+    });
+  }
   if (policyId === 'mirofish-research' && request.graphArtifactIdentity) {
     laneHandlers.push(createGraphEntityLaneHandler({
-      store: new FileMiroFishGraphArtifactStore(
-        process.env.RAG_MIROFISH_GRAPH_STORE_ROOT?.trim() || undefined
-      ),
+      store: getMiroFishGraphArtifactRuntime().store,
       defaultMaxHops: 2,
       maxEvidence: topK,
     }));
+  }
+  if (pdfVisualHandler) {
+    laneHandlers.push(pdfVisualHandler);
   }
   const laneExecutor = new RagLaneExecutor(laneHandlers);
 
@@ -864,41 +2044,56 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     signal: policyContext.signal,
     budget,
   });
-  const orderedContextMode = resolveRagFeatureRolloutMode(
-    'RAG_ORDERED_CONTEXT_MODE',
-    'off'
-  );
-  const retrievalRoute = routeRetrievalQuery({
-    query: question,
-    capabilities: {
-      // Native hybrid is not declared active until a probed port is registered.
-      hybridActive: false,
-      // A dense topK result is not a bounded corpus reader. Keep this false
-      // until an ordered reader port proves full-corpus coverage.
-      orderedContextActive: false,
-    },
-  });
   const abstentionMode = resolveRagFeatureRolloutMode(
     'RAG_ABSTENTION_MODE',
     'shadow'
   );
   const denseLaneId = retrievalPlan.lanes.find(lane => lane.type === 'dense-vector')?.id;
-  if (!denseLaneId) throw new Error('milvus-2step plan is missing its dense lane.');
+  const orderedLaneId = retrievalPlan.lanes.find(lane => lane.type === 'ordered-context')?.id;
+  if (!denseLaneId && !orderedLaneId) {
+    throw new Error('milvus-2step plan is missing its primary retrieval lane.');
+  }
   const graphLaneId = retrievalPlan.lanes.find(lane => lane.type === 'graph-entity')?.id;
-  const laneKinds: Record<string, 'dense' | 'graph'> = {
-    [denseLaneId]: 'dense',
+  const hybridLaneId = retrievalPlan.lanes.find(lane => lane.type === 'sparse-bm25')?.id;
+  const visualLaneId = retrievalPlan.lanes.find(lane => lane.type === 'visual-page')?.id;
+  const laneKinds: Record<string, 'dense' | 'ordered' | 'hybrid' | 'graph' | 'visual'> = {
+    ...(denseLaneId ? { [denseLaneId]: 'dense' as const } : {}),
+    ...(orderedLaneId ? { [orderedLaneId]: 'ordered' as const } : {}),
+    ...(hybridLaneId ? { [hybridLaneId]: 'hybrid' as const } : {}),
     ...(graphLaneId ? { [graphLaneId]: 'graph' as const } : {}),
+    ...(visualLaneId ? { [visualLaneId]: 'visual' as const } : {}),
   };
   const calibrationLanes: Record<
     string,
-    { minimumScore: number; scoreField: 'retrieval' }
+    { minimumScore: number; scoreField: 'retrieval'; allowMissingScore?: boolean }
   > = {
-    [denseLaneId]: {
-      minimumScore: resolveDenseAbstentionThreshold(similarityThreshold),
-      scoreField: 'retrieval',
-    },
+    ...(denseLaneId ? {
+      [denseLaneId]: {
+        minimumScore: resolveDenseAbstentionThreshold(similarityThreshold),
+        scoreField: 'retrieval' as const,
+      },
+    } : {}),
+    ...(orderedLaneId ? {
+      [orderedLaneId]: {
+        minimumScore: 0,
+        scoreField: 'retrieval' as const,
+        allowMissingScore: true,
+      },
+    } : {}),
+    ...(hybridLaneId
+      ? { [hybridLaneId]: { minimumScore: 0, scoreField: 'retrieval' as const } }
+      : {}),
     ...(graphLaneId
       ? { [graphLaneId]: { minimumScore: 0, scoreField: 'retrieval' as const } }
+      : {}),
+    ...(visualLaneId
+      ? {
+          [visualLaneId]: {
+            minimumScore: 0,
+            scoreField: 'retrieval' as const,
+            allowMissingScore: true,
+          },
+        }
       : {}),
   };
   const abstention = decideRagAbstention({
@@ -906,9 +2101,14 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     evidence: laneResult.evidence,
     laneKinds,
     calibration: {
-      version: graphLaneId
-        ? 'milvus-dense-graph-calibration-v1'
-        : 'milvus-dense-calibration-v1',
+      version: [
+        'milvus',
+        orderedLaneId ? 'ordered' : 'dense',
+        graphLaneId ? 'graph' : undefined,
+        hybridLaneId ? 'hybrid' : undefined,
+        visualLaneId ? 'visual' : undefined,
+        'calibration-v1',
+      ].filter(Boolean).join('-'),
       lanes: calibrationLanes,
     },
     minimumDistinctDocuments: resolveMinimumDistinctDocuments(retrievalRoute.queryKind),
@@ -942,9 +2142,12 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     embeddingModel,
     policyId,
     fusionVersion: [
-      policyId === 'mirofish-research' ? 'dense-graph-optional-v1' : 'dense-only-v1',
+      (orderedLaneId ? 'ordered' : 'dense')
+        + (policyId === 'mirofish-research' ? '-graph-optional-v1' : '-only-v1'),
       retrievalRoute.version,
       retrievalRoute.route,
+      `hybrid:${hybridMode}:${hybridCollectionName ?? 'none'}:${hybridCapabilityUsable}`,
+      `pdf-visual:${pdfVisualMode}:${pdfVisualModel ?? 'none'}:${pdfVisualCapabilityUsable}:pdf-asset-manifest-v1`,
       `abstention:${abstentionMode}:${abstention.calibrationVersion}`,
     ].join(':'),
   };
@@ -1029,13 +2232,43 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       queryEmbedding: queryEmbedding.slice(0, 10),
       threshold: similarityThreshold,
       topK,
-      totalDocuments: retrievalScope.enforceIsolation
-        ? searchResults.length
-        : stats?.rowCount || 0,
+      totalDocuments: retrievalRoute.route === 'ordered-context'
+        ? orderedSnapshot?.inventory.documentCount ?? 0
+        : retrievalScope.enforceIsolation
+          ? searchResults.length
+          : stats?.rowCount || 0,
       searchTime,
       vectorizationTime,
       llmTime,
       retrievalRoute,
+      hybrid: {
+        requestedMode: hybridMode,
+        probed: hybridCapability !== undefined,
+        usable: hybridCapabilityUsable,
+        active: retrievalRoute.route === 'hybrid',
+        collectionName: hybridCollectionName,
+        capability: hybridCapability && {
+          nativeHybridSearch: hybridCapability.nativeHybridSearch,
+          bm25Function: hybridCapability.bm25Function,
+          schemaCompatible: hybridCapability.schemaCompatible,
+          provider: hybridCapability.provider,
+          serverVersion: hybridCapability.serverVersion,
+          reason: hybridCapability.reason,
+        },
+      },
+      pdfVisual: {
+        requestedMode: pdfVisualMode,
+        requestedVisual: pdfVisualIntent,
+        usable: pdfVisualCapabilityUsable,
+        active: pdfVisualMode === 'active' && pdfVisualCapabilityUsable,
+        capabilityReason: pdfVisualCapabilityReason,
+        evidenceCount: visualLaneId
+          ? laneResult.evidence.filter(item => item.laneId === visualLaneId).length
+          : 0,
+        diagnostics: visualLaneId
+          ? laneResult.laneExecutions.find(item => item.laneId === visualLaneId)?.metadata
+          : undefined,
+      },
       contextPacking: {
         version: contextPack.version,
         order: contextPack.order,
@@ -1046,6 +2279,10 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
         requestedRolloutMode: orderedContextMode,
         active: retrievalRoute.route === 'ordered-context',
         activationReason: retrievalRoute.reason,
+        readerVersion: orderedSnapshot?.version,
+        readerReason: orderedSnapshot?.reason,
+        readerInventory: orderedSnapshot?.inventory,
+        orderedReadTime,
       },
       abstention: {
         mode: abstentionMode,

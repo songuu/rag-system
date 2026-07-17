@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from 'crypto';
-import { mkdir, open, rename, unlink, writeFile } from 'fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { link, mkdir, open, opendir, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'path';
 import type {
   RagRetrievalScope,
@@ -18,6 +18,25 @@ export const MIROFISH_GRAPH_ARTIFACT_LIMITS = Object.freeze({
   maxPassageCharacters: 10_000_000,
   maxSourceChunkReferences: 100_000,
   maxCommunityReferences: 100_000,
+  maxDescriptorBytes: 8 * 1024,
+  maxListEntries: 1_000,
+  maxTtlMs: 365 * 24 * 60 * 60 * 1000,
+  maxGcEntries: 100,
+  defaultMaxArtifacts: 1_000,
+  hardMaxArtifacts: 10_000,
+  defaultMaxTotalBytes: 2 * 1024 * 1024 * 1024,
+  hardMaxTotalBytes: 128 * 1024 * 1024 * 1024,
+  defaultMaxScopeArtifacts: 200,
+  defaultMaxScopeBytes: 512 * 1024 * 1024,
+  maxActiveRevisionFiles: 32,
+  retainedActiveRevisionFiles: 8,
+  defaultMaxTombstones: 10_000,
+  hardMaxTombstones: 100_000,
+  defaultStagingReservationTtlMs: 15 * 60 * 1000,
+  minStagingReservationTtlMs: 60 * 1000,
+  maxStagingReservationTtlMs: 24 * 60 * 60 * 1000,
+  maxStagingReconciliationsPerPass: 100,
+  maxMaintenanceScanEntries: 300_000,
 });
 
 export interface MiroFishGraphArtifactIdentity {
@@ -36,12 +55,83 @@ export interface MiroFishGraphArtifact extends MiroFishGraphArtifactIdentity {
   };
 }
 
+export interface MiroFishGraphArtifactDescriptor {
+  identity: MiroFishGraphArtifactIdentity;
+  artifactDigest: string;
+  createdAt: string;
+  graphName?: string;
+  expiresAt?: string;
+  nodeCount: number;
+  edgeCount: number;
+}
+
+interface MiroFishGraphQuotaReservation {
+  identity: MiroFishGraphArtifactIdentity;
+  artifactBytes: number;
+  reservedAt: string;
+}
+
+export interface MiroFishGraphActivePointer {
+  scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>;
+  identity: MiroFishGraphArtifactIdentity | null;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface MiroFishGraphArtifactLifecycleOptions {
+  graphName?: string;
+  ttlMs?: number;
+}
+
+export interface MiroFishGraphArtifactListOptions {
+  limit?: number;
+}
+
 export interface MiroFishGraphArtifactStore {
-  put(artifact: MiroFishGraphArtifact): Promise<void>;
+  readonly coordination: 'process' | 'shared';
+  put(
+    artifact: MiroFishGraphArtifact,
+    options?: MiroFishGraphArtifactLifecycleOptions
+  ): Promise<MiroFishGraphArtifactDescriptor>;
   get(
     identity: MiroFishGraphArtifactIdentity,
     scope: RagRetrievalScope
   ): Promise<MiroFishGraphArtifact | null>;
+  list(
+    scope: RagRetrievalScope,
+    options?: MiroFishGraphArtifactListOptions
+  ): Promise<MiroFishGraphArtifactDescriptor[]>;
+  delete(
+    identity: MiroFishGraphArtifactIdentity,
+    scope: RagRetrievalScope
+  ): Promise<boolean>;
+  getActive(scope: RagRetrievalScope): Promise<MiroFishGraphActivePointer>;
+  compareAndSetActive(
+    scope: RagRetrievalScope,
+    identity: MiroFishGraphArtifactIdentity | null,
+    expectedRevision: number
+  ): Promise<MiroFishGraphActivePointer>;
+  gcExpired(
+    scope: RagRetrievalScope,
+    options?: MiroFishGraphArtifactListOptions
+  ): Promise<number>;
+}
+
+export type MiroFishGraphStoreErrorCode =
+  | 'MIROFISH_GRAPH_ARTIFACT_CONFLICT'
+  | 'MIROFISH_GRAPH_ACTIVE_REVISION_CONFLICT'
+  | 'MIROFISH_GRAPH_ARTIFACT_ACTIVE'
+  | 'MIROFISH_GRAPH_ARTIFACT_CAPACITY'
+  | 'MIROFISH_GRAPH_SHARED_STORE_REQUIRED';
+
+export class MiroFishGraphStoreError extends Error {
+  readonly code: MiroFishGraphStoreErrorCode;
+
+  constructor(code: MiroFishGraphStoreErrorCode, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'MiroFishGraphStoreError';
+    this.code = code;
+  }
 }
 
 /**
@@ -171,11 +261,49 @@ export function createMiroFishGraphArtifact(input: {
  * the same port without weakening the exact scope + version lookup contract.
  */
 export class InMemoryMiroFishGraphArtifactStore implements MiroFishGraphArtifactStore {
-  private readonly artifacts = new Map<string, MiroFishGraphArtifact>();
+  readonly coordination = 'process' as const;
+  private readonly artifacts = new Map<
+    string,
+    { artifact: MiroFishGraphArtifact; descriptor: MiroFishGraphArtifactDescriptor }
+  >();
+  private readonly tombstones = new Set<string>();
+  private readonly activePointers = new Map<string, MiroFishGraphActivePointer>();
+  private readonly now: () => number;
+  private readonly maxTombstones: number;
 
-  async put(artifact: MiroFishGraphArtifact): Promise<void> {
+  constructor(options: { now?: () => number; maxTombstones?: number } = {}) {
+    this.now = options.now ?? Date.now;
+    this.maxTombstones = options.maxTombstones
+      ?? MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultMaxTombstones;
+    assertGraphCapacityLimit(
+      this.maxTombstones,
+      1,
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxTombstones,
+      'tombstone count'
+    );
+  }
+
+  async put(
+    artifact: MiroFishGraphArtifact,
+    options: MiroFishGraphArtifactLifecycleOptions = {}
+  ): Promise<MiroFishGraphArtifactDescriptor> {
     assertGraphArtifact(artifact);
-    this.artifacts.set(createArtifactKey(artifact), clone(artifact));
+    const normalized = clone(artifact);
+    const key = createArtifactKey(normalized);
+    if (this.tombstones.has(key)) {
+      throw graphStoreConflict('A tombstoned graph artifact identity cannot be reused.');
+    }
+    const descriptor = createArtifactDescriptor(normalized, options, this.now());
+    const existing = this.artifacts.get(key);
+    if (existing) {
+      if (existing.descriptor.artifactDigest !== descriptor.artifactDigest) {
+        throw graphStoreConflict('Graph artifact identity already contains different content.');
+      }
+      return clone(existing.descriptor);
+    }
+    assertGraphTombstoneCapacity(this.tombstones.size, this.maxTombstones);
+    this.artifacts.set(key, { artifact: normalized, descriptor });
+    return clone(descriptor);
   }
 
   async get(
@@ -183,54 +311,323 @@ export class InMemoryMiroFishGraphArtifactStore implements MiroFishGraphArtifact
     scope: RagRetrievalScope
   ): Promise<MiroFishGraphArtifact | null> {
     const normalized = normalizeIdentity(identity);
+    return this.readAvailableArtifact(normalized, scope);
+  }
+
+  private readAvailableArtifact(
+    normalized: MiroFishGraphArtifactIdentity,
+    scope: RagRetrievalScope
+  ): MiroFishGraphArtifact | null {
     assertIdentityWithinScope(normalized, scope);
-    const artifact = this.artifacts.get(createArtifactKey(normalized));
-    if (!artifact) return null;
-    assertArtifactAllowed(artifact, normalized, scope);
-    return clone(artifact);
+    const key = createArtifactKey(normalized);
+    if (this.tombstones.has(key)) return null;
+    const entry = this.artifacts.get(key);
+    if (!entry || isDescriptorExpired(entry.descriptor, this.now())) return null;
+    assertArtifactAllowed(entry.artifact, normalized, scope);
+    return clone(entry.artifact);
+  }
+
+  async list(
+    scope: RagRetrievalScope,
+    options: MiroFishGraphArtifactListOptions = {}
+  ): Promise<MiroFishGraphArtifactDescriptor[]> {
+    const limit = resolveGraphListLimit(options.limit);
+    return [...this.artifacts.values()]
+      .map(entry => entry.descriptor)
+      .filter(descriptor =>
+        descriptor.identity.tenantId === scope.tenantId
+        && descriptor.identity.corpusId === scope.corpusId
+        && scope.allowedTrustLevels.includes(descriptor.identity.trustLevel)
+        && !this.tombstones.has(createArtifactKey(descriptor.identity))
+        && !isDescriptorExpired(descriptor, this.now())
+      )
+      .sort(compareGraphDescriptors)
+      .slice(0, limit)
+      .map(clone);
+  }
+
+  async delete(
+    identity: MiroFishGraphArtifactIdentity,
+    scope: RagRetrievalScope
+  ): Promise<boolean> {
+    const normalized = normalizeIdentity(identity);
+    assertManagementIdentityWithinScope(normalized, scope);
+    // Keep management mutations synchronous until their state transition is
+    // committed. Awaiting an already-resolved helper here would still yield a
+    // microtask and let CAS activation race past the delete fence.
+    const active = this.readActivePointer(scope);
+    if (active.identity && sameArtifactIdentity(active.identity, normalized)) {
+      throw new MiroFishGraphStoreError(
+        'MIROFISH_GRAPH_ARTIFACT_ACTIVE',
+        'Active graph artifacts must be deactivated before deletion.'
+      );
+    }
+    const key = createArtifactKey(normalized);
+    if (!this.artifacts.has(key) || this.tombstones.has(key)) return false;
+    assertGraphTombstoneCapacity(this.tombstones.size, this.maxTombstones);
+    this.tombstones.add(key);
+    this.artifacts.delete(key);
+    return true;
+  }
+
+  async getActive(scope: RagRetrievalScope): Promise<MiroFishGraphActivePointer> {
+    return this.readActivePointer(scope);
+  }
+
+  private readActivePointer(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+  ): MiroFishGraphActivePointer {
+    const key = createScopeKey(scope);
+    return clone(this.activePointers.get(key) ?? createEmptyActivePointer(scope));
+  }
+
+  async compareAndSetActive(
+    scope: RagRetrievalScope,
+    identity: MiroFishGraphArtifactIdentity | null,
+    expectedRevision: number
+  ): Promise<MiroFishGraphActivePointer> {
+    assertActiveRevision(expectedRevision);
+    const current = this.readActivePointer(scope);
+    if (current.revision !== expectedRevision) {
+      throw activeRevisionConflict();
+    }
+    let normalizedIdentity: MiroFishGraphArtifactIdentity | null = null;
+    if (identity) {
+      normalizedIdentity = normalizeIdentity(identity);
+      assertManagementIdentityWithinScope(normalizedIdentity, scope);
+      if (normalizedIdentity.trustLevel === 'quarantined') {
+        throw new Error('Quarantined graph artifacts cannot be activated.');
+      }
+      const artifact = this.readAvailableArtifact(normalizedIdentity, scope);
+      if (!artifact) {
+        throw new Error('Graph artifact is not available for activation.');
+      }
+    }
+    const pointer: MiroFishGraphActivePointer = {
+      scope: normalizeScopeIdentity(scope),
+      identity: normalizedIdentity,
+      revision: current.revision + 1,
+      updatedAt: new Date(this.now()).toISOString(),
+    };
+    this.activePointers.set(createScopeKey(scope), pointer);
+    return clone(pointer);
+  }
+
+  async gcExpired(
+    scope: RagRetrievalScope,
+    options: MiroFishGraphArtifactListOptions = {}
+  ): Promise<number> {
+    const limit = Math.min(
+      resolveGraphListLimit(options.limit),
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.maxGcEntries
+    );
+    const expired = [...this.artifacts.values()]
+      .map(entry => entry.descriptor)
+      .filter(descriptor =>
+        descriptor.identity.tenantId === scope.tenantId
+        && descriptor.identity.corpusId === scope.corpusId
+        && isDescriptorExpired(descriptor, this.now())
+      )
+      .sort(compareGraphDescriptors)
+      .slice(0, limit);
+    let deleted = 0;
+    for (const descriptor of expired) {
+      const active = await this.getActive(scope);
+      if (active.identity && sameArtifactIdentity(active.identity, descriptor.identity)) {
+        await this.compareAndSetActive(scope, null, active.revision);
+      }
+      if (await this.delete(descriptor.identity, scope)) deleted += 1;
+    }
+    return deleted;
   }
 }
 
 /** Durable local adapter. Keys are hashed before path construction to prevent path traversal. */
 export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStore {
+  readonly coordination = 'process' as const;
   private readonly rootDir: string;
   private readonly maxFileBytes: number;
+  private readonly maxArtifacts: number;
+  private readonly maxTotalBytes: number;
+  private readonly maxScopeArtifacts: number;
+  private readonly maxScopeBytes: number;
+  private readonly maxTombstones: number;
+  private readonly stagingReservationTtlMs: number;
+  private readonly cleanupFile: (file: string) => Promise<void>;
+  private readonly now: () => number;
 
   constructor(
     rootDir = path.join(process.cwd(), 'uploads', 'mirofish-graph-artifacts-v2'),
-    options: { maxFileBytes?: number } = {}
+    options: {
+      maxFileBytes?: number;
+      maxArtifacts?: number;
+      maxTotalBytes?: number;
+      maxScopeArtifacts?: number;
+      maxScopeBytes?: number;
+      maxTombstones?: number;
+      stagingReservationTtlMs?: number;
+      cleanupFile?: (file: string) => Promise<void>;
+      now?: () => number;
+    } = {}
   ) {
     this.rootDir = path.resolve(rootDir);
     this.maxFileBytes = options.maxFileBytes ?? MIROFISH_GRAPH_ARTIFACT_LIMITS.maxFileBytes;
+    this.maxArtifacts = options.maxArtifacts
+      ?? MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultMaxArtifacts;
+    this.maxTotalBytes = options.maxTotalBytes
+      ?? MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultMaxTotalBytes;
+    this.maxScopeArtifacts = options.maxScopeArtifacts
+      ?? Math.min(
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultMaxScopeArtifacts,
+        this.maxArtifacts
+      );
+    this.maxScopeBytes = options.maxScopeBytes
+      ?? Math.min(
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultMaxScopeBytes,
+        this.maxTotalBytes
+      );
+    this.maxTombstones = options.maxTombstones
+      ?? MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultMaxTombstones;
+    this.stagingReservationTtlMs = options.stagingReservationTtlMs
+      ?? MIROFISH_GRAPH_ARTIFACT_LIMITS.defaultStagingReservationTtlMs;
+    this.cleanupFile = options.cleanupFile ?? safeUnlink;
+    this.now = options.now ?? Date.now;
     if (!Number.isInteger(this.maxFileBytes) || this.maxFileBytes < 1
       || this.maxFileBytes > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxFileBytes) {
       throw new Error('Graph artifact file limit is outside the allowed range.');
     }
+    assertGraphCapacityLimit(
+      this.maxArtifacts,
+      1,
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxArtifacts,
+      'artifact count'
+    );
+    assertGraphCapacityLimit(
+      this.maxTotalBytes,
+      1,
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxTotalBytes,
+      'total byte'
+    );
+    assertGraphCapacityLimit(
+      this.maxScopeArtifacts,
+      1,
+      Math.min(this.maxArtifacts, MIROFISH_GRAPH_ARTIFACT_LIMITS.maxListEntries),
+      'scope artifact count'
+    );
+    assertGraphCapacityLimit(
+      this.maxScopeBytes,
+      1,
+      this.maxTotalBytes,
+      'scope byte'
+    );
+    assertGraphCapacityLimit(
+      this.maxTombstones,
+      this.maxArtifacts,
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxTombstones,
+      'tombstone count'
+    );
+    assertGraphCapacityLimit(
+      this.stagingReservationTtlMs,
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.minStagingReservationTtlMs,
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.maxStagingReservationTtlMs,
+      'staging reservation TTL'
+    );
   }
 
-  async put(artifact: MiroFishGraphArtifact): Promise<void> {
+  async put(
+    artifact: MiroFishGraphArtifact,
+    options: MiroFishGraphArtifactLifecycleOptions = {}
+  ): Promise<MiroFishGraphArtifactDescriptor> {
     assertGraphArtifact(artifact);
-    const file = this.getArtifactFile(artifact);
-    const serialized = JSON.stringify(artifact, null, 2);
-    if (Buffer.byteLength(serialized, 'utf8') > this.maxFileBytes) {
+    const normalized = clone(artifact);
+    const descriptor = createArtifactDescriptor(normalized, options, this.now());
+    const artifactFile = this.getArtifactFile(normalized);
+    const descriptorFile = this.getDescriptorFile(normalized);
+    const serialized = JSON.stringify(normalized, null, 2);
+    const artifactBytes = Buffer.byteLength(serialized, 'utf8');
+    if (artifactBytes > this.maxFileBytes) {
       throw new Error('Graph artifact exceeds the configured file byte limit.');
     }
-    await mkdir(path.dirname(file), { recursive: true });
-    const temporaryFile = `${file}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+
+    const writerKey = createGraphWriterKey(this.rootDir, normalized);
+    retainActiveGraphWriter(writerKey);
     try {
-      await writeFile(temporaryFile, serialized, { encoding: 'utf-8', flag: 'wx' });
-      await rename(temporaryFile, file);
-    } catch (error) {
-      try {
-        await unlink(temporaryFile);
-      } catch (cleanupError) {
-        if (!isNodeError(cleanupError) || cleanupError.code !== 'ENOENT') {
-          throw new Error('Graph artifact store could not clean up a temporary file.', {
-            cause: cleanupError,
-          });
+      return await withFileGraphStoreLock(this.getRootLockKey(), async () => {
+        if (await fileExists(this.getTombstoneFile(normalized))) {
+          throw graphStoreConflict('A tombstoned graph artifact identity cannot be reused.');
         }
+        await this.reconcileStaleStaging();
+
+      let reservationCreated = false;
+      let artifactCreated = false;
+      try {
+        reservationCreated = await this.reserveCapacity(normalized, artifactBytes);
+        artifactCreated = await this.publishImmutableFile(artifactFile, serialized);
+        if (!artifactCreated) {
+          const existing = JSON.parse(
+            await readBoundedArtifactFile(artifactFile, this.maxFileBytes)
+          ) as MiroFishGraphArtifact;
+          assertGraphArtifact(existing);
+          if (createArtifactDigest(existing) !== descriptor.artifactDigest) {
+            throw graphStoreConflict(
+              'Graph artifact identity already contains different content.'
+            );
+          }
+        }
+
+        const existingDescriptor = await readOptionalGraphDescriptor(descriptorFile);
+        if (existingDescriptor) {
+          if (
+            !sameArtifactIdentity(existingDescriptor.identity, normalized)
+            || existingDescriptor.artifactDigest !== descriptor.artifactDigest
+          ) {
+            throw graphStoreConflict('Graph artifact catalog contains conflicting content.');
+          }
+          return clone(existingDescriptor);
+        }
+
+        const descriptorCreated = await this.publishImmutableFile(
+          descriptorFile,
+          JSON.stringify(descriptor, null, 2)
+        );
+        if (!descriptorCreated) {
+          const racedDescriptor = await readOptionalGraphDescriptor(descriptorFile);
+          if (
+            !racedDescriptor
+            || !sameArtifactIdentity(racedDescriptor.identity, normalized)
+            || racedDescriptor.artifactDigest !== descriptor.artifactDigest
+          ) {
+            throw graphStoreConflict('Graph artifact catalog publication conflicted.');
+          }
+          return clone(racedDescriptor);
+        }
+        return clone(descriptor);
+      } catch (error) {
+        let committedDescriptor: MiroFishGraphArtifactDescriptor | null = null;
+        try {
+          committedDescriptor = await readOptionalGraphDescriptor(descriptorFile);
+        } catch {
+          // The original publication error remains authoritative.
+        }
+        if (
+          committedDescriptor
+          && sameArtifactIdentity(committedDescriptor.identity, normalized)
+          && committedDescriptor.artifactDigest === descriptor.artifactDigest
+        ) {
+          return clone(committedDescriptor);
+        }
+
+        // Only remove files this invocation won. A pre-existing artifact may be a
+        // concurrent winner and must never be unlinked by a failed descriptor publish.
+        if (artifactCreated) await safeUnlink(artifactFile);
+        if (reservationCreated) {
+          await safeUnlink(this.getQuotaReservationFile(normalized));
+        }
+        throw error;
       }
-      throw error;
+      });
+    } finally {
+      releaseActiveGraphWriter(writerKey);
     }
   }
 
@@ -241,11 +638,23 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
     const normalized = normalizeIdentity(identity);
     assertIdentityWithinScope(normalized, scope);
     try {
-      const file = this.getArtifactFile(normalized);
+      if (await fileExists(this.getTombstoneFile(normalized))) return null;
+      const descriptor = await readOptionalGraphDescriptor(
+        this.getDescriptorFile(normalized)
+      );
+      if (!descriptor) return null;
+      assertManagementIdentityWithinScope(descriptor.identity, scope);
+      if (!sameArtifactIdentity(descriptor.identity, normalized)) {
+        throw new Error('Graph artifact descriptor identity does not match its path.');
+      }
+      if (isDescriptorExpired(descriptor, this.now())) return null;
       const value = JSON.parse(
-        await readBoundedArtifactFile(file, this.maxFileBytes)
+        await readBoundedArtifactFile(this.getArtifactFile(normalized), this.maxFileBytes)
       ) as MiroFishGraphArtifact;
       assertArtifactAllowed(value, normalized, scope);
+      if (descriptor.artifactDigest !== createArtifactDigest(value)) {
+        throw new Error('Graph artifact digest does not match its catalog descriptor.');
+      }
       return clone(value);
     } catch (error) {
       if (isNodeError(error) && error.code === 'ENOENT') return null;
@@ -255,14 +664,508 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
     }
   }
 
+  async list(
+    scope: RagRetrievalScope,
+    options: MiroFishGraphArtifactListOptions = {}
+  ): Promise<MiroFishGraphArtifactDescriptor[]> {
+    return this.readDescriptors(scope, {
+      limit: resolveGraphListLimit(options.limit),
+      includeExpired: false,
+    });
+  }
+
+  async delete(
+    identity: MiroFishGraphArtifactIdentity,
+    scope: RagRetrievalScope
+  ): Promise<boolean> {
+    const normalized = normalizeIdentity(identity);
+    assertManagementIdentityWithinScope(normalized, scope);
+    return withFileGraphStoreLock(this.getRootLockKey(), () =>
+      withFileGraphStoreLock(this.getLockKey(normalized), async () => {
+        const active = await this.getActive(scope);
+        if (active.identity && sameArtifactIdentity(active.identity, normalized)) {
+          throw new MiroFishGraphStoreError(
+            'MIROFISH_GRAPH_ARTIFACT_ACTIVE',
+            'Active graph artifacts must be deactivated before deletion.'
+          );
+        }
+        const artifactFile = this.getArtifactFile(normalized);
+        const descriptorFile = this.getDescriptorFile(normalized);
+        const quotaFile = this.getQuotaReservationFile(normalized);
+        const tombstoneFile = this.getTombstoneFile(normalized);
+        const hasRetainedFiles = await fileExists(artifactFile)
+          || await fileExists(descriptorFile)
+          || await fileExists(quotaFile);
+        const hasTombstone = await fileExists(tombstoneFile);
+        if (!hasRetainedFiles && !hasTombstone) return false;
+
+        if (!hasTombstone) {
+          await this.assertTombstoneCapacityAvailable();
+          const tombstone = JSON.stringify({
+            identity: normalized,
+            deletedAt: new Date(this.now()).toISOString(),
+          });
+          await this.publishImmutableFile(tombstoneFile, tombstone);
+        }
+        // A tombstone is the durable delete intent. Retrying after a partial
+        // cleanup must continue releasing bytes and the capacity reservation.
+        await safeUnlink(descriptorFile);
+        await safeUnlink(artifactFile);
+        await safeUnlink(quotaFile);
+        return hasRetainedFiles;
+      })
+    );
+  }
+  async getActive(scope: RagRetrievalScope): Promise<MiroFishGraphActivePointer> {
+    const directory = this.getActiveDirectory(scope);
+    let entries: string[];
+    try {
+      entries = await readdir(directory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') {
+        return createEmptyActivePointer(scope);
+      }
+      throw error;
+    }
+    const revisionFiles = entries.filter(entry => /^\d{16}\.json$/.test(entry));
+    if (revisionFiles.length > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxActiveRevisionFiles) {
+      throw new Error('Graph active pointer history exceeds the bounded scan limit.');
+    }
+    revisionFiles.sort().reverse();
+    if (revisionFiles.length === 0) return createEmptyActivePointer(scope);
+    const pointer = await readGraphActivePointer(
+      path.join(directory, revisionFiles[0])
+    );
+    const expectedScope = normalizeScopeIdentity(scope);
+    if (
+      pointer.scope.tenantId !== expectedScope.tenantId
+      || pointer.scope.corpusId !== expectedScope.corpusId
+    ) {
+      throw new Error('Graph active pointer scope does not match its catalog path.');
+    }
+    if (pointer.identity) {
+      assertManagementIdentityWithinScope(pointer.identity, scope);
+    }
+    return pointer;
+  }
+
+  async compareAndSetActive(
+    scope: RagRetrievalScope,
+    identity: MiroFishGraphArtifactIdentity | null,
+    expectedRevision: number
+  ): Promise<MiroFishGraphActivePointer> {
+    assertActiveRevision(expectedRevision);
+    return withFileGraphStoreLock(this.getLockKey(scope), async () => {
+      const current = await this.getActive(scope);
+      if (current.revision !== expectedRevision) {
+        throw activeRevisionConflict();
+      }
+      let normalizedIdentity: MiroFishGraphArtifactIdentity | null = null;
+      if (identity) {
+        normalizedIdentity = normalizeIdentity(identity);
+        assertManagementIdentityWithinScope(normalizedIdentity, scope);
+        if (normalizedIdentity.trustLevel === 'quarantined') {
+          throw new Error('Quarantined graph artifacts cannot be activated.');
+        }
+        const artifact = await this.get(normalizedIdentity, scope);
+        if (!artifact) {
+          throw new Error('Graph artifact is not available for activation.');
+        }
+      }
+      const pointer: MiroFishGraphActivePointer = {
+        scope: normalizeScopeIdentity(scope),
+        identity: normalizedIdentity,
+        revision: current.revision + 1,
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      const created = await this.publishImmutableFile(
+        this.getActiveFile(scope, pointer.revision),
+        JSON.stringify(pointer, null, 2)
+      );
+      if (!created) throw activeRevisionConflict();
+      try {
+        await this.compactActiveRevisions(scope);
+      } catch {
+        // The revision file is already the committed pointer.
+      }
+      return clone(pointer);
+    });
+  }
+
+  async gcExpired(
+    scope: RagRetrievalScope,
+    options: MiroFishGraphArtifactListOptions = {}
+  ): Promise<number> {
+    const limit = Math.min(
+      resolveGraphListLimit(options.limit),
+      MIROFISH_GRAPH_ARTIFACT_LIMITS.maxGcEntries
+    );
+    const descriptors = await this.readDescriptors(scope, {
+      limit: MIROFISH_GRAPH_ARTIFACT_LIMITS.maxListEntries,
+      includeExpired: true,
+    });
+    const expired = descriptors
+      .filter(descriptor => isDescriptorExpired(descriptor, this.now()))
+      .slice(0, limit);
+    let deleted = 0;
+    for (const descriptor of expired) {
+      const active = await this.getActive(scope);
+      if (active.identity && sameArtifactIdentity(active.identity, descriptor.identity)) {
+        await this.compareAndSetActive(scope, null, active.revision);
+      }
+      if (await this.delete(descriptor.identity, scope)) deleted += 1;
+    }
+    return deleted;
+  }
+
+  private async readDescriptors(
+    scope: RagRetrievalScope,
+    options: { limit: number; includeExpired: boolean }
+  ): Promise<MiroFishGraphArtifactDescriptor[]> {
+    const directory = this.getCatalogDirectory(scope);
+    let entries: string[];
+    try {
+      entries = await readdir(directory);
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') return [];
+      throw error;
+    }
+    if (entries.length > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxListEntries) {
+      throw new Error('Graph artifact catalog exceeds the bounded scan limit.');
+    }
+    const descriptors: MiroFishGraphArtifactDescriptor[] = [];
+    for (const entry of entries.filter(value => value.endsWith('.json'))) {
+      const descriptor = await readOptionalGraphDescriptor(path.join(directory, entry));
+      if (!descriptor) continue;
+      assertManagementIdentityWithinScope(descriptor.identity, scope);
+      if (await fileExists(this.getTombstoneFile(descriptor.identity))) continue;
+      if (!scope.allowedTrustLevels.includes(descriptor.identity.trustLevel)) continue;
+      if (!options.includeExpired && isDescriptorExpired(descriptor, this.now())) continue;
+      descriptors.push(descriptor);
+    }
+    return descriptors.sort(compareGraphDescriptors).slice(0, options.limit).map(clone);
+  }
+
+  private async compactActiveRevisions(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+  ): Promise<void> {
+    const directory = this.getActiveDirectory(scope);
+    const entries = (await readdir(directory))
+      .filter(entry => /^\d{16}\.json$/.test(entry))
+      .sort()
+      .reverse();
+    for (
+      const entry of entries.slice(
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.retainedActiveRevisionFiles
+      )
+    ) {
+      await bestEffortCleanupFile(path.join(directory, entry), this.cleanupFile);
+    }
+  }
+
+
+  private publishImmutableFile(
+    file: string,
+    serialized: string
+  ): Promise<boolean> {
+    return publishImmutableFile(file, serialized, {
+      now: this.now,
+      cleanupFile: this.cleanupFile,
+    });
+  }
+
+  private async assertTombstoneCapacityAvailable(): Promise<void> {
+    assertGraphTombstoneCapacity(
+      await this.countTombstones(),
+      this.maxTombstones
+    );
+  }
+
+  private async countTombstones(): Promise<number> {
+    let scopeEntries;
+    try {
+      scopeEntries = await readdir(
+        path.join(this.rootDir, 'tombstones'),
+        { withFileTypes: true }
+      );
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') return 0;
+      throw error;
+    }
+
+    const scopeDirectories = scopeEntries.filter(entry =>
+      /^[a-f0-9]{64}$/.test(entry.name)
+    );
+    if (scopeDirectories.length > MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxTombstones) {
+      throw graphStoreCapacity('Graph tombstone catalog exceeds its hard scan limit.');
+    }
+
+    let tombstoneCount = 0;
+    for (const scopeEntry of scopeDirectories) {
+      let entries;
+      try {
+        entries = await readdir(
+          path.join(this.rootDir, 'tombstones', scopeEntry.name),
+          { withFileTypes: true }
+        );
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'ENOENT') continue;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
+        tombstoneCount += 1;
+        if (
+          tombstoneCount
+          > MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxTombstones
+        ) {
+          throw graphStoreCapacity(
+            'Graph tombstone catalog exceeds its hard scan limit.'
+          );
+        }
+      }
+    }
+    return tombstoneCount;
+  }
+
+  private async reconcileStaleStaging(): Promise<void> {
+    const reservations = await this.readQuotaReservations();
+    let reconciled = 0;
+    for (const reservation of reservations) {
+      if (
+        reconciled
+        >= MIROFISH_GRAPH_ARTIFACT_LIMITS.maxStagingReconciliationsPerPass
+      ) {
+        break;
+      }
+      const ageMs = this.now() - Date.parse(reservation.reservedAt);
+      if (!Number.isFinite(ageMs) || ageMs < this.stagingReservationTtlMs) {
+        continue;
+      }
+      const writerKey = createGraphWriterKey(this.rootDir, reservation.identity);
+      if (isActiveGraphWriter(writerKey)) continue;
+      if (await fileExists(this.getDescriptorFile(reservation.identity))) continue;
+
+      try {
+        // Reservation removal is last: a partial cleanup remains fail-closed and
+        // is retried on the next bounded reconciliation pass.
+        await safeUnlink(this.getArtifactFile(reservation.identity));
+        await safeUnlink(this.getQuotaReservationFile(reservation.identity));
+        reconciled += 1;
+      } catch {
+        // A retained reservation continues to account for capacity.
+      }
+    }
+    await this.reconcileStaleTemporaryFiles();
+  }
+
+  private async reconcileStaleTemporaryFiles(): Promise<void> {
+    const pending = [{ directory: this.rootDir, depth: 0 }];
+    let scannedEntries = 0;
+    let reconciled = 0;
+
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current) break;
+      let directoryHandle: Awaited<ReturnType<typeof opendir>>;
+      try {
+        directoryHandle = await opendir(current.directory);
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'ENOENT') continue;
+        throw error;
+      }
+
+      for await (const entry of directoryHandle) {
+        scannedEntries += 1;
+        if (
+          scannedEntries
+          > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxMaintenanceScanEntries
+        ) {
+          throw graphStoreCapacity(
+            'Graph artifact maintenance scan exceeds its hard limit.'
+          );
+        }
+        const entryPath = path.join(current.directory, entry.name);
+        if (entry.isDirectory()) {
+          if (current.depth < 4) {
+            pending.push({ directory: entryPath, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (!entry.isFile() || !entry.name.endsWith('.tmp')) continue;
+        const resolvedPath = path.resolve(entryPath);
+        if (activeGraphTemporaryFiles.has(resolvedPath)) continue;
+
+        let fileStat;
+        try {
+          fileStat = await stat(resolvedPath);
+        } catch (error) {
+          if (isNodeError(error) && error.code === 'ENOENT') continue;
+          throw error;
+        }
+        const ageMs = this.now() - fileStat.mtimeMs;
+        if (!Number.isFinite(ageMs) || ageMs < this.stagingReservationTtlMs) {
+          continue;
+        }
+        await bestEffortCleanupFile(resolvedPath, safeUnlink);
+        reconciled += 1;
+        if (
+          reconciled
+          >= MIROFISH_GRAPH_ARTIFACT_LIMITS.maxStagingReconciliationsPerPass
+        ) {
+          return;
+        }
+      }
+    }
+  }
+
+  private async reserveCapacity(
+    identity: MiroFishGraphArtifactIdentity,
+    artifactBytes: number
+  ): Promise<boolean> {
+    const reservationFile = this.getQuotaReservationFile(identity);
+    const existing = await readOptionalGraphQuotaReservation(reservationFile);
+    if (existing) {
+      assertMatchingQuotaReservation(existing, identity, artifactBytes);
+      return false;
+    }
+
+    await this.assertTombstoneCapacityAvailable();
+    const reservations = await this.readQuotaReservations();
+    const scopeReservations = reservations.filter(reservation =>
+      reservation.identity.tenantId === identity.tenantId
+      && reservation.identity.corpusId === identity.corpusId
+    );
+    const totalBytes = reservations.reduce(
+      (total, reservation) => total + reservation.artifactBytes,
+      0
+    );
+    const scopeBytes = scopeReservations.reduce(
+      (total, reservation) => total + reservation.artifactBytes,
+      0
+    );
+    if (
+      reservations.length + 1 > this.maxArtifacts
+      || totalBytes + artifactBytes > this.maxTotalBytes
+      || scopeReservations.length + 1 > this.maxScopeArtifacts
+      || scopeBytes + artifactBytes > this.maxScopeBytes
+    ) {
+      throw new MiroFishGraphStoreError(
+        'MIROFISH_GRAPH_ARTIFACT_CAPACITY',
+        'Graph artifact storage capacity is exhausted.'
+      );
+    }
+
+    const reservation: MiroFishGraphQuotaReservation = {
+      identity: normalizeIdentity(identity),
+      artifactBytes,
+      reservedAt: new Date(this.now()).toISOString(),
+    };
+    const created = await this.publishImmutableFile(
+      reservationFile,
+      JSON.stringify(reservation, null, 2)
+    );
+    if (!created) {
+      const raced = await readOptionalGraphQuotaReservation(reservationFile);
+      if (!raced) {
+        throw graphStoreConflict('Graph artifact capacity reservation conflicted.');
+      }
+      assertMatchingQuotaReservation(raced, identity, artifactBytes);
+    }
+    return created;
+  }
+
+  private async readQuotaReservations(): Promise<MiroFishGraphQuotaReservation[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.getQuotaReservationDirectory());
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'ENOENT') return [];
+      throw error;
+    }
+    const reservationFiles = entries.filter(entry => entry.endsWith('.json'));
+    if (reservationFiles.length > MIROFISH_GRAPH_ARTIFACT_LIMITS.hardMaxArtifacts) {
+      throw new MiroFishGraphStoreError(
+        'MIROFISH_GRAPH_ARTIFACT_CAPACITY',
+        'Graph artifact capacity index exceeds its hard scan limit.'
+      );
+    }
+    const reservations: MiroFishGraphQuotaReservation[] = [];
+    for (const entry of reservationFiles) {
+      const reservation = await readOptionalGraphQuotaReservation(
+        path.join(this.getQuotaReservationDirectory(), entry)
+      );
+      if (reservation) reservations.push(reservation);
+    }
+    return reservations;
+  }
+
+  private getQuotaReservationDirectory(): string {
+    return path.join(this.rootDir, 'quota', 'entries');
+  }
+
+  private getQuotaReservationFile(identity: MiroFishGraphArtifactIdentity): string {
+    return path.join(
+      this.getQuotaReservationDirectory(),
+      `${createIdentityDigest(identity)}.json`
+    );
+  }
+
+  private getRootLockKey(): string {
+    return `${this.rootDir}:root`;
+  }
+
   private getArtifactFile(identity: MiroFishGraphArtifactIdentity): string {
-    const digest = createHash('sha256')
-      .update(createArtifactKey(identity))
-      .digest('hex');
+    const digest = createIdentityDigest(identity);
     return path.join(this.rootDir, digest.slice(0, 2), `${digest}.json`);
   }
-}
 
+  private getCatalogDirectory(scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>): string {
+    return path.join(this.rootDir, 'index', createScopeDigest(scope));
+  }
+
+  private getDescriptorFile(identity: MiroFishGraphArtifactIdentity): string {
+    return path.join(
+      this.getCatalogDirectory(identity),
+      `${createIdentityDigest(identity)}.json`
+    );
+  }
+
+  private getTombstoneDirectory(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+  ): string {
+    return path.join(this.rootDir, 'tombstones', createScopeDigest(scope));
+  }
+
+  private getTombstoneFile(identity: MiroFishGraphArtifactIdentity): string {
+    return path.join(
+      this.getTombstoneDirectory(identity),
+      `${createIdentityDigest(identity)}.json`
+    );
+  }
+
+  private getActiveDirectory(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+  ): string {
+    return path.join(this.rootDir, 'active', createScopeDigest(scope));
+  }
+
+  private getActiveFile(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>,
+    revision: number
+  ): string {
+    return path.join(
+      this.getActiveDirectory(scope),
+      `${String(revision).padStart(16, '0')}.json`
+    );
+  }
+
+  private getLockKey(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+  ): string {
+    return `${this.rootDir}:${createScopeDigest(scope)}`;
+  }
+}
 export function assertArtifactAllowed(
   artifact: MiroFishGraphArtifact,
   identity: MiroFishGraphArtifactIdentity,
@@ -446,7 +1349,29 @@ function bindPassageToIdentity(
       throw new Error(`Graph passage ${field} conflicts with its artifact identity.`);
     }
   }
-  return { ...clone(passage), ...fields };
+  const boundPassage = clone(passage);
+  if (boundPassage.metadata) {
+    const sanitizedMetadata = { ...boundPassage.metadata };
+    for (const key of [
+      'tenantId',
+      'tenant_id',
+      'corpusId',
+      'corpus_id',
+      'documentId',
+      'document_id',
+      'documentVersion',
+      'document_version',
+      'trustLevel',
+      'trust_level',
+      'ragScope',
+      'actorId',
+      'userId',
+    ]) {
+      delete sanitizedMetadata[key];
+    }
+    boundPassage.metadata = sanitizedMetadata;
+  }
+  return { ...boundPassage, ...fields };
 }
 
 function assertPassageShape(
@@ -612,6 +1537,486 @@ function addUniqueId(
   if (collection instanceof Map) collection.set(id, value);
   else collection.add(id);
 }
+
+const fileGraphStoreLocks = new Map<string, Promise<void>>();
+const activeGraphWriters = new Map<string, number>();
+const activeGraphTemporaryFiles = new Set<string>();
+function createGraphWriterKey(
+  rootDir: string,
+  identity: MiroFishGraphArtifactIdentity
+): string {
+  return `${path.resolve(rootDir)}:${createIdentityDigest(identity)}`;
+}
+
+function retainActiveGraphWriter(key: string): void {
+  activeGraphWriters.set(key, (activeGraphWriters.get(key) ?? 0) + 1);
+}
+
+function releaseActiveGraphWriter(key: string): void {
+  const remaining = (activeGraphWriters.get(key) ?? 1) - 1;
+  if (remaining <= 0) activeGraphWriters.delete(key);
+  else activeGraphWriters.set(key, remaining);
+}
+
+function isActiveGraphWriter(key: string): boolean {
+  return (activeGraphWriters.get(key) ?? 0) > 0;
+}
+
+
+export function createMiroFishGraphDocumentVersion(graph: GraphData): string {
+  assertMiroFishGraphDataResourceLimits(graph);
+  return `sha256:${createHash('sha256').update(stableStringify(graph)).digest('hex')}`;
+}
+
+function createArtifactDescriptor(
+  artifact: MiroFishGraphArtifact,
+  options: MiroFishGraphArtifactLifecycleOptions,
+  now: number
+): MiroFishGraphArtifactDescriptor {
+  if (!Number.isFinite(now)) {
+    throw new Error('Graph artifact clock returned an invalid timestamp.');
+  }
+  if (
+    options.graphName !== undefined
+    && (
+      !options.graphName.trim()
+      || options.graphName.length > 200
+      || /[\u0000-\u001f\u007f]/.test(options.graphName)
+    )
+  ) {
+    throw new Error('Graph artifact name is invalid.');
+  }
+  let expiresAt: string | undefined;
+  if (options.ttlMs !== undefined) {
+    if (
+      !Number.isInteger(options.ttlMs)
+      || options.ttlMs < 1
+      || options.ttlMs > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxTtlMs
+    ) {
+      throw new Error('Graph artifact TTL is outside the allowed range.');
+    }
+    expiresAt = new Date(now + options.ttlMs).toISOString();
+  }
+  return {
+    identity: normalizeIdentity(artifact),
+    artifactDigest: createArtifactDigest(artifact),
+    createdAt: new Date(now).toISOString(),
+    ...(options.graphName ? { graphName: options.graphName } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+    nodeCount: artifact.graph.node_count,
+    edgeCount: artifact.graph.edge_count,
+  };
+}
+
+function createArtifactDigest(artifact: MiroFishGraphArtifact): string {
+  return `sha256:${createHash('sha256')
+    .update(stableStringify(artifact))
+    .digest('hex')}`;
+}
+
+function assertGraphDescriptor(value: unknown): asserts value is MiroFishGraphArtifactDescriptor {
+  if (!isRecord(value) || !isRecord(value.identity)) {
+    throw new Error('Graph artifact descriptor is malformed.');
+  }
+  const identity = normalizeIdentity(
+    value.identity as unknown as MiroFishGraphArtifactIdentity
+  );
+  if (
+    typeof value.artifactDigest !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(value.artifactDigest)
+    || typeof value.createdAt !== 'string'
+    || !Number.isFinite(Date.parse(value.createdAt))
+    || (value.graphName !== undefined && (
+      typeof value.graphName !== 'string'
+      || value.graphName.length > 200
+      || /[\u0000-\u001f\u007f]/.test(value.graphName)
+    ))
+    || typeof value.nodeCount !== 'number'
+    || !Number.isInteger(value.nodeCount)
+    || value.nodeCount < 0
+    || value.nodeCount > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxNodes
+    || typeof value.edgeCount !== 'number'
+    || !Number.isInteger(value.edgeCount)
+    || value.edgeCount < 0
+    || value.edgeCount > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxEdges
+  ) {
+    throw new Error('Graph artifact descriptor is malformed.');
+  }
+  if (
+    value.expiresAt !== undefined
+    && (
+      typeof value.expiresAt !== 'string'
+      || !Number.isFinite(Date.parse(value.expiresAt))
+      || Date.parse(value.expiresAt) <= Date.parse(value.createdAt)
+    )
+  ) {
+    throw new Error('Graph artifact descriptor expiry is malformed.');
+  }
+  value.identity = identity;
+}
+
+function assertGraphActivePointer(value: unknown): asserts value is MiroFishGraphActivePointer {
+  if (
+    !isRecord(value)
+    || !isRecord(value.scope)
+    || typeof value.scope.tenantId !== 'string'
+    || typeof value.scope.corpusId !== 'string'
+    || !Number.isSafeInteger(value.revision)
+    || (value.revision as number) < 1
+    || typeof value.updatedAt !== 'string'
+    || !Number.isFinite(Date.parse(value.updatedAt))
+    || (value.identity !== null && !isRecord(value.identity))
+  ) {
+    throw new Error('Graph active pointer is malformed.');
+  }
+  value.scope = normalizeScopeIdentity(
+    value.scope as unknown as Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+  );
+  if (value.identity) {
+    value.identity = normalizeIdentity(
+      value.identity as unknown as MiroFishGraphArtifactIdentity
+    );
+  }
+}
+
+function assertGraphCapacityLimit(
+  value: number,
+  minimum: number,
+  maximum: number,
+  label: string
+): void {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`Graph artifact ${label} capacity is outside the allowed range.`);
+  }
+}
+function assertGraphTombstoneCapacity(
+  tombstoneCount: number,
+  maximum: number
+): void {
+  if (!Number.isSafeInteger(tombstoneCount) || tombstoneCount >= maximum) {
+    throw graphStoreCapacity('Graph tombstone catalog capacity is exhausted.');
+  }
+}
+
+function graphStoreCapacity(message: string): MiroFishGraphStoreError {
+  return new MiroFishGraphStoreError(
+    'MIROFISH_GRAPH_ARTIFACT_CAPACITY',
+    message
+  );
+}
+
+
+function assertMatchingQuotaReservation(
+  reservation: MiroFishGraphQuotaReservation,
+  identity: MiroFishGraphArtifactIdentity,
+  artifactBytes: number
+): void {
+  if (
+    !sameArtifactIdentity(reservation.identity, identity)
+    || reservation.artifactBytes !== artifactBytes
+  ) {
+    throw graphStoreConflict('Graph artifact capacity reservation contains conflicting data.');
+  }
+}
+
+async function readOptionalGraphQuotaReservation(
+  file: string
+): Promise<MiroFishGraphQuotaReservation | null> {
+  try {
+    const value = JSON.parse(
+      await readBoundedArtifactFile(
+        file,
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.maxDescriptorBytes
+      )
+    ) as unknown;
+    if (
+      !isRecord(value)
+      || !isRecord(value.identity)
+      || !Number.isSafeInteger(value.artifactBytes)
+      || (value.artifactBytes as number) < 1
+      || (value.artifactBytes as number) > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxFileBytes
+      || typeof value.reservedAt !== 'string'
+      || !Number.isFinite(Date.parse(value.reservedAt))
+    ) {
+      throw new Error('Graph artifact capacity reservation is malformed.');
+    }
+    return {
+      identity: normalizeIdentity(
+        value.identity as unknown as MiroFishGraphArtifactIdentity
+      ),
+      artifactBytes: value.artifactBytes as number,
+      reservedAt: value.reservedAt,
+    };
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return null;
+    throw new Error('Graph artifact capacity index contains an invalid reservation.', {
+      cause: error,
+    });
+  }
+}
+async function readOptionalGraphDescriptor(
+  file: string
+): Promise<MiroFishGraphArtifactDescriptor | null> {
+  try {
+    const value = JSON.parse(
+      await readBoundedArtifactFile(
+        file,
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.maxDescriptorBytes
+      )
+    ) as unknown;
+    assertGraphDescriptor(value);
+    return clone(value);
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return null;
+    throw new Error('Graph artifact catalog contains an invalid descriptor.', {
+      cause: error,
+    });
+  }
+}
+
+async function readGraphActivePointer(file: string): Promise<MiroFishGraphActivePointer> {
+  try {
+    const value = JSON.parse(
+      await readBoundedArtifactFile(
+        file,
+        MIROFISH_GRAPH_ARTIFACT_LIMITS.maxDescriptorBytes
+      )
+    ) as unknown;
+    assertGraphActivePointer(value);
+    return clone(value);
+  } catch (error) {
+    throw new Error('Graph artifact catalog contains an invalid active pointer.', {
+      cause: error,
+    });
+  }
+}
+
+async function publishImmutableFile(
+  file: string,
+  serialized: string,
+  options: {
+    now?: () => number;
+    cleanupFile?: (file: string) => Promise<void>;
+  } = {}
+): Promise<boolean> {
+  await mkdir(path.dirname(file), { recursive: true });
+  const timestamp = options.now?.() ?? Date.now();
+  const temporaryFile = path.resolve(
+    `${file}.${process.pid}.${timestamp}.${randomUUID()}.tmp`
+  );
+  activeGraphTemporaryFiles.add(temporaryFile);
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporaryFile, 'wx');
+    await handle.writeFile(serialized, { encoding: 'utf8' });
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    try {
+      await link(temporaryFile, file);
+      return true;
+    } catch (error) {
+      if (isNodeError(error) && error.code === 'EEXIST') return false;
+      throw error;
+    }
+  } finally {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        // The original publication error remains authoritative.
+      }
+    }
+    await bestEffortCleanupFile(
+      temporaryFile,
+      options.cleanupFile ?? safeUnlink
+    );
+    activeGraphTemporaryFiles.delete(temporaryFile);
+  }
+}
+
+async function bestEffortCleanupFile(
+  file: string,
+  cleanupFile: (file: string) => Promise<void>
+): Promise<void> {
+  try {
+    await cleanupFile(file);
+  } catch {
+    // Cleanup is reconciled lazily; it cannot reverse an immutable commit.
+  }
+}
+
+
+async function fileExists(file: string): Promise<boolean> {
+  try {
+    const handle = await open(file, 'r');
+    await handle.close();
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === 'ENOENT') return false;
+    if (isNodeError(error) && ['EISDIR', 'EPERM', 'EACCES'].includes(error.code ?? '')) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+async function safeUnlink(file: string): Promise<void> {
+  try {
+    await unlink(file);
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== 'ENOENT') throw error;
+  }
+}
+
+async function withFileGraphStoreLock<T>(
+  key: string,
+  operation: () => Promise<T>
+): Promise<T> {
+  const previous = fileGraphStoreLocks.get(key) ?? Promise.resolve();
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  fileGraphStoreLocks.set(key, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release?.();
+    if (fileGraphStoreLocks.get(key) === tail) {
+      fileGraphStoreLocks.delete(key);
+    }
+  }
+}
+
+function createEmptyActivePointer(
+  scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+): MiroFishGraphActivePointer {
+  return {
+    scope: normalizeScopeIdentity(scope),
+    identity: null,
+    revision: 0,
+    updatedAt: new Date(0).toISOString(),
+  };
+}
+
+function normalizeScopeIdentity(
+  scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+): Pick<RagRetrievalScope, 'tenantId' | 'corpusId'> {
+  const normalized = createRetrievalScope({
+    tenantId: scope.tenantId,
+    corpusId: scope.corpusId,
+    allowedTrustLevels: ['trusted'],
+    enforceIsolation: true,
+  });
+  return {
+    tenantId: normalized.tenantId,
+    corpusId: normalized.corpusId,
+  };
+}
+
+function createScopeKey(
+  scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+): string {
+  const normalized = normalizeScopeIdentity(scope);
+  return JSON.stringify([normalized.tenantId, normalized.corpusId]);
+}
+
+function createScopeDigest(
+  scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+): string {
+  return createHash('sha256').update(createScopeKey(scope)).digest('hex');
+}
+
+function createIdentityDigest(identity: MiroFishGraphArtifactIdentity): string {
+  return createHash('sha256').update(createArtifactKey(normalizeIdentity(identity))).digest('hex');
+}
+
+function assertManagementIdentityWithinScope(
+  identity: MiroFishGraphArtifactIdentity,
+  scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>
+): void {
+  const normalizedScope = normalizeScopeIdentity(scope);
+  if (identity.tenantId !== normalizedScope.tenantId) {
+    throw new Error('Graph artifact tenant scope mismatch.');
+  }
+  if (identity.corpusId !== normalizedScope.corpusId) {
+    throw new Error('Graph artifact corpus scope mismatch.');
+  }
+}
+
+function sameArtifactIdentity(
+  left: MiroFishGraphArtifactIdentity,
+  right: MiroFishGraphArtifactIdentity
+): boolean {
+  return createArtifactKey(normalizeIdentity(left)) === createArtifactKey(normalizeIdentity(right));
+}
+
+function isDescriptorExpired(
+  descriptor: MiroFishGraphArtifactDescriptor,
+  now: number
+): boolean {
+  return descriptor.expiresAt !== undefined && Date.parse(descriptor.expiresAt) <= now;
+}
+
+function compareGraphDescriptors(
+  left: MiroFishGraphArtifactDescriptor,
+  right: MiroFishGraphArtifactDescriptor
+): number {
+  return Date.parse(right.createdAt) - Date.parse(left.createdAt)
+    || createArtifactKey(right.identity).localeCompare(createArtifactKey(left.identity));
+}
+
+function resolveGraphListLimit(value: number | undefined): number {
+  if (value === undefined) return 100;
+  if (
+    !Number.isInteger(value)
+    || value < 1
+    || value > MIROFISH_GRAPH_ARTIFACT_LIMITS.maxListEntries
+  ) {
+    throw new Error('Graph artifact list limit is outside the allowed range.');
+  }
+  return value;
+}
+
+function assertActiveRevision(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Graph active pointer revision must be a non-negative safe integer.');
+  }
+}
+
+function activeRevisionConflict(): MiroFishGraphStoreError {
+  return new MiroFishGraphStoreError(
+    'MIROFISH_GRAPH_ACTIVE_REVISION_CONFLICT',
+    'Graph active pointer revision is stale.'
+  );
+}
+
+function graphStoreConflict(message: string): MiroFishGraphStoreError {
+  return new MiroFishGraphStoreError('MIROFISH_GRAPH_ARTIFACT_CONFLICT', message);
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortCanonicalValue(value));
+}
+
+function sortCanonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(item => sortCanonicalValue(item));
+  }
+  if (isRecord(value)) {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .filter(key => value[key] !== undefined)
+        .map(key => [key, sortCanonicalValue(value[key])])
+    );
+  }
+  return value;
+}
+
 
 async function readBoundedArtifactFile(
   file: string,

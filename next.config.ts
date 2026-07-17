@@ -8,6 +8,16 @@
  */
 import type { NextConfig } from "next";
 
+const rawStandaloneSourceExtensions = [
+  'js', 'jsx', 'cjs', 'mjs', 'ts', 'tsx', 'cts', 'mts',
+] as const;
+
+function excludeRawStandaloneSources(...directories: string[]): string[] {
+  return directories.flatMap(directory => rawStandaloneSourceExtensions.map(
+    extension => `${directory}/**/*.${extension}`
+  ));
+}
+
 const isStaticExport = process.env.STATIC_EXPORT === 'true';
 
 const nextConfig: NextConfig = {
@@ -31,6 +41,25 @@ const nextConfig: NextConfig = {
 
   // 排除某些原生模块，确保 pdf-parse 正常工作
   serverExternalPackages: ['pdf-parse', '@llamaindex/liteparse', '@napi-rs/canvas', 'pdfjs-dist', 'canvas'],
+
+  // File-backed runtime stores use dynamic paths. Next's file tracer can
+  // conservatively collect the stores' neighboring source and test files as
+  // assets even though the compiled route chunks already contain the code.
+  // Keep these route-scoped and extension-scoped so real runtime assets and
+  // external mounted store roots remain available.
+  outputFileTracingExcludes: {
+    '/api/ask': excludeRawStandaloneSources(
+      'src/lib/rag/core',
+      'src/lib/rag/multimodal',
+      'src/lib/mirofish'
+    ),
+    '/api/pipeline': excludeRawStandaloneSources(
+      'src/lib/rag/multimodal'
+    ),
+    '/api/mirofish/graph': excludeRawStandaloneSources(
+      'src/lib/mirofish'
+    ),
+  },
   
   // Turbopack 配置（Next.js 16+ 默认使用 Turbopack）
   turbopack: {},

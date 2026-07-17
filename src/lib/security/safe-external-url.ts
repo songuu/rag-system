@@ -740,7 +740,24 @@ function isPublicIpv6(address: string): boolean {
   if (words[0] === 0x2001 && words[1] === 0x0db8) return false; // documentation
   if (words[0] === 0x2002) return false; // 6to4 can tunnel an unsafe IPv4 target
   if (words[0] === 0x3fff && (words[1] & 0xf000) === 0) return false; // documentation
+  if (hasPrivateIsatapIpv4Target(words)) return false;
   return true;
+}
+
+function hasPrivateIsatapIpv4Target(words: readonly number[]): boolean {
+  // ISATAP embeds an IPv4 destination in the interface identifier. A globally
+  // routed IPv6 prefix must not make an embedded private IPv4 target SSRF-safe.
+  if ((words[4] !== 0 && words[4] !== 0x0200) || words[5] !== 0x5efe) {
+    return false;
+  }
+
+  const embeddedIpv4 = [
+    words[6] >>> 8,
+    words[6] & 0xff,
+    words[7] >>> 8,
+    words[7] & 0xff,
+  ].join('.');
+  return !isPublicIpv4(embeddedIpv4);
 }
 
 function parseIpv6(address: string): number[] | undefined {

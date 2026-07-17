@@ -73,3 +73,10 @@ entries even when records are invalid. A byte/character cap alone does not bound
 reserve worst-case aggregation lookups before fuzzy-name scans, cap entity-pair comparisons and
 `pairs × embedding dimensions`, validate finite bounded vectors, and yield after deterministic batches.
 Apply the same vector validation to community embeddings before attaching them to an artifact.
+
+## File Store Maintenance Uses Bounded Ledgers
+
+Quota checks and normal writes must use root/scope ledgers plus durable reservations, not enumerate
+every bundle. Put hard caps on ledger bytes, scope registry entries, in-flight publications, GC
+entries/bytes/duration, invalid debris, and recovery shards. Serialize GC/rebuild cursors so two
+maintenance passes cannot amplify the same root scan.

@@ -18,7 +18,16 @@ import { createLLMFromOverride } from './model-override';
 import {
   purgeMiroFishLegacyGraphCache,
 } from './artifact-cache';
-import { assertMiroFishGraphDataResourceLimits } from './graph-artifact-store';
+import {
+  createRetrievalScope,
+  type RagTrustLevel,
+} from '../security/retrieval-scope';
+import {
+  assertMiroFishGraphDataResourceLimits,
+  createMiroFishGraphArtifact,
+  createMiroFishGraphDocumentVersion,
+  type MiroFishGraphArtifactStore,
+} from './graph-artifact-store';
 import {
   MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT,
   MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS,
@@ -72,6 +81,28 @@ const MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE =
   'MIROFISH_GRAPH_ARTIFACT_LIMIT_EXCEEDED';
 const MIROFISH_GRAPH_OUTPUT_BUDGET_LIMIT_CODE =
   'MIROFISH_GRAPH_OUTPUT_BUDGET_EXCEEDED';
+
+const MIROFISH_GRAPH_ARTIFACT_PUBLISH_CODE =
+  'MIROFISH_GRAPH_ARTIFACT_PUBLISH_FAILED';
+
+export interface MiroFishGraphPublicationContext {
+  store: MiroFishGraphArtifactStore;
+  tenantId: string;
+  corpusId: string;
+  trustLevel: RagTrustLevel;
+  ttlMs?: number;
+  graphName?: string;
+}
+
+export class MiroFishGraphArtifactPublishError extends Error {
+  readonly code = MIROFISH_GRAPH_ARTIFACT_PUBLISH_CODE;
+
+  constructor(cause?: unknown) {
+    super('MiroFish graph artifact publication failed.', { cause });
+    this.name = 'MiroFishGraphArtifactPublishError';
+  }
+}
+
 
 export class MiroFishGraphArtifactLimitError extends Error {
   readonly code = MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE;
@@ -231,7 +262,8 @@ export class MiroFishGraphBuilder {
     request: GraphBuildRequest,
     onProgress?: (progress: ExtractionProgress) => void,
     taskMetadata?: Record<string, unknown>,
-    reservedTaskId?: string
+    reservedTaskId?: string,
+    publication?: MiroFishGraphPublicationContext
   ): Promise<string> {
     const { text, ontology, graphName, chunkSize, chunkOverlap } = request;
     const normalizedOntology = normalizeMiroFishGraphOntology(ontology);
@@ -256,6 +288,9 @@ export class MiroFishGraphBuilder {
       chunkOverlap: this.config.chunkOverlap,
       textLength: text.length,
       ...taskMetadata,
+      ...(publication
+        ? { publicationTrustLevel: publication.trustLevel }
+        : {}),
     };
     let taskId: string;
     if (reservedTaskId !== undefined) {
@@ -272,7 +307,7 @@ export class MiroFishGraphBuilder {
       taskId = taskManager.createTask('graph_build', metadata);
     }
     // 在后台执行构建
-    this.buildGraphWorker(taskId, text, onProgress).catch(error => {
+    this.buildGraphWorker(taskId, text, onProgress, publication).catch(error => {
       console.error(
         `[MiroFishGraphBuilder] taskId=${taskId} build failed`,
         createStableErrorLog(error)
@@ -284,7 +319,11 @@ export class MiroFishGraphBuilder {
           taskId,
           error instanceof EntityExtractionOutputBudgetError
             ? MIROFISH_GRAPH_OUTPUT_BUDGET_LIMIT_CODE
-            : 'MIROFISH_GRAPH_BUILD_FAILED'
+            : error instanceof MiroFishGraphArtifactPublishError
+              ? MIROFISH_GRAPH_ARTIFACT_PUBLISH_CODE
+              : error instanceof MiroFishGraphArtifactLimitError
+                ? MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE
+                : 'MIROFISH_GRAPH_BUILD_FAILED'
         );
       }
     });
@@ -298,7 +337,8 @@ export class MiroFishGraphBuilder {
   private async buildGraphWorker(
     taskId: string,
     text: string,
-    onProgress?: (progress: ExtractionProgress) => void
+    onProgress?: (progress: ExtractionProgress) => void,
+    publication?: MiroFishGraphPublicationContext
   ): Promise<void> {
     const taskManager = getTaskManager();
     const reportProgress = (progress: ExtractionProgress) => {
@@ -363,7 +403,13 @@ export class MiroFishGraphBuilder {
     // Complete only after the same hard resource budget used by durable graph
     // artifacts accepts the result. Oversized provider output is never retained
     // in TaskManager, even transiently.
-    this.completeGraphTask(taskId, documentId, graphData, filteredData);
+    await this.completeGraphTask(
+      taskId,
+      documentId,
+      graphData,
+      filteredData,
+      publication
+    );
 
     reportProgress({
       stage: 'completed',
@@ -373,12 +419,13 @@ export class MiroFishGraphBuilder {
     });
   }
 
-  private completeGraphTask(
+  private async completeGraphTask(
     taskId: string,
     documentId: string,
     graphData: GraphData,
-    filteredData: GraphData
-  ): void {
+    filteredData: GraphData,
+    publication?: MiroFishGraphPublicationContext
+  ): Promise<void> {
     const taskManager = getTaskManager();
     try {
       if (filteredData.graph_id !== documentId) {
@@ -390,13 +437,71 @@ export class MiroFishGraphBuilder {
       throw new MiroFishGraphArtifactLimitError(error);
     }
 
-    taskManager.completeTask(taskId, {
+    if (!publication) {
+      // Direct library callers keep the pre-E5 compatibility result. HTTP
+      // callers always inject publication and therefore never retain passages
+      // in the process-local task catalog.
+      taskManager.completeTask(taskId, {
+        graphId: documentId,
+        graphData: filteredData,
+        originalEntityCount: graphData.node_count,
+        filteredEntityCount: filteredData.node_count,
+        cache_status: 'disabled',
+      });
+      return;
+    }
+
+    const identity = {
+      tenantId: publication.tenantId,
+      corpusId: publication.corpusId,
+      documentId,
+      documentVersion: createMiroFishGraphDocumentVersion(filteredData),
+      trustLevel: publication.trustLevel,
+    } as const;
+    let descriptor;
+    try {
+      const artifact = createMiroFishGraphArtifact({
+        identity,
+        graph: filteredData,
+      });
+      descriptor = await publication.store.put(artifact, {
+        ...(publication.ttlMs === undefined ? {} : { ttlMs: publication.ttlMs }),
+        ...(publication.graphName ? { graphName: publication.graphName } : {}),
+      });
+    } catch (error) {
+      throw new MiroFishGraphArtifactPublishError(error);
+    }
+
+    const completed = taskManager.completeTask(taskId, {
       graphId: documentId,
-      graphData: filteredData,
+      documentVersion: identity.documentVersion,
+      trustLevel: identity.trustLevel,
+      artifactIdentity: identity,
+      artifactDigest: descriptor.artifactDigest,
+      nodeCount: descriptor.nodeCount,
+      edgeCount: descriptor.edgeCount,
       originalEntityCount: graphData.node_count,
       filteredEntityCount: filteredData.node_count,
       cache_status: 'disabled',
     });
+    if (!completed) {
+      try {
+        await publication.store.delete(
+          identity,
+          createRetrievalScope({
+            tenantId: identity.tenantId,
+            corpusId: identity.corpusId,
+            allowedTrustLevels: [identity.trustLevel],
+            enforceIsolation: true,
+          })
+        );
+      } catch (error) {
+        throw new MiroFishGraphArtifactPublishError(error);
+      }
+      throw new MiroFishGraphArtifactPublishError(
+        new Error('Graph task disappeared before publication could be committed.')
+      );
+    }
   }
 
   /**

@@ -9,9 +9,13 @@
 import {
   MilvusClient,
   DataType,
+  FunctionType,
   MetricType,
+  RANKER_TYPE,
   ConsistencyLevelEnum,
+  type HybridSearchReq,
   type InsertReq,
+  type QueryReq,
   type SearchSimpleReq,
 } from '@zilliz/milvus2-sdk-node';
 import {
@@ -20,10 +24,19 @@ import {
   getMilvusProvider,
 } from './milvus-config';
 import {
+  buildScopedMilvusFilter,
   getDocumentSecurityFields,
   isServerDerivedScope,
   isTenantIsolationRequired,
+  type RagRetrievalScope,
 } from './security/retrieval-scope';
+import type {
+  MilvusHybridCapability,
+  MilvusHybridHit,
+  MilvusHybridSearchPort,
+  MilvusHybridSearchRequest,
+} from './rag/retrieval/hybrid-policy';
+
 
 export type MilvusIndexType = 'AUTOINDEX' | 'IVF_FLAT' | 'IVF_SQ8' | 'IVF_PQ' | 'HNSW' | 'ANNOY' | 'FLAT';
 export type MilvusMetricType = 'L2' | 'IP' | 'COSINE';
@@ -37,7 +50,10 @@ export type MilvusSearchOutputField =
   | 'tenant_id'
   | 'corpus_id'
   | 'document_id'
-  | 'trust_level';
+  | 'trust_level'
+  | 'document_version'
+  | 'chunk_index'
+  | 'total_chunks';
 
 export interface MilvusSearchOptions {
   threshold?: number;
@@ -90,6 +106,20 @@ type MilvusHit = {
   corpus_id?: string;
   document_id?: string;
   trust_level?: string;
+};
+
+export type MilvusQueryRow = Record<string, unknown> & {
+  id?: string;
+  content?: string;
+  source?: string;
+  metadata_json?: string;
+  tenant_id?: string;
+  corpus_id?: string;
+  document_id?: string;
+  trust_level?: string;
+  document_version?: string;
+  chunk_index?: number;
+  total_chunks?: number;
 };
 
 // Milvus 配置接口（保持向后兼容）
@@ -146,15 +176,46 @@ export function getScopedSearchFields(
   ];
 }
 
-/**
- * Legacy compatibility flag for Milvus hybrid rollout.
- *
- * New callers use the off/shadow/active policy and an injected capability-checked
- * native search port. This boolean remains for older planning code and can only
- * opt that code into the safe shadow path; it does not activate evidence by itself.
- */
-export function isMilvusHybridEnabled(): boolean {
-  return process.env.MILVUS_HYBRID_ENABLED === 'true';
+export function getOrderedDocumentFields(
+  metadata: Record<string, unknown> | undefined
+): {
+  document_version: string;
+  chunk_index: number;
+  total_chunks: number;
+} {
+  const versionCandidate = [
+    metadata?.documentVersion,
+    metadata?.document_version,
+    metadata?.sourceHash,
+    metadata?.source_hash,
+  ].find(value => typeof value === 'string' && value.trim()) as string | undefined;
+  const documentVersion = versionCandidate?.trim() || 'unversioned';
+  if (documentVersion.length > 256 || /[\u0000-\u001f]/u.test(documentVersion)) {
+    throw new Error('Milvus documentVersion is outside the safe scalar bounds.');
+  }
+
+  const chunkCandidate = metadata?.chunkIndex ?? metadata?.chunk_index ?? 0;
+  const totalCandidate = metadata?.totalChunks ?? metadata?.total_chunks ?? 1;
+  if (
+    typeof chunkCandidate !== 'number'
+    || !Number.isSafeInteger(chunkCandidate)
+    || chunkCandidate < 0
+  ) {
+    throw new Error('Milvus chunkIndex must be a non-negative safe integer.');
+  }
+  if (
+    typeof totalCandidate !== 'number'
+    || !Number.isSafeInteger(totalCandidate)
+    || totalCandidate < 1
+    || chunkCandidate >= totalCandidate
+  ) {
+    throw new Error('Milvus totalChunks must contain the current chunk index.');
+  }
+  return {
+    document_version: documentVersion,
+    chunk_index: chunkCandidate,
+    total_chunks: totalCandidate,
+  };
 }
 
 // 文档接口
@@ -163,6 +224,75 @@ export interface MilvusDocument {
   content: string;
   embedding: number[];
   metadata: MilvusMetadata;
+}
+
+export const MILVUS_HYBRID_SCHEMA_VERSION = 'milvus-native-hybrid-schema/v1' as const;
+
+export interface MilvusHybridRuntimeManifest {
+  version: typeof MILVUS_HYBRID_SCHEMA_VERSION;
+  collectionName: string;
+  sourceCollectionName: string;
+  corpusVersion: string;
+  embeddingModel: string;
+  embeddingDimension: number;
+  rawTextField: 'content';
+  denseVectorField: 'embedding';
+  bm25OutputField: 'bm25_sparse';
+  fusion: 'rrf' | 'weighted';
+}
+
+export class MilvusHybridProviderUnavailableError extends Error {
+  readonly code = 'MILVUS_HYBRID_PROVIDER_UNAVAILABLE';
+
+  constructor() {
+    super('Milvus hybrid provider is unavailable.');
+    this.name = 'MilvusHybridProviderUnavailableError';
+  }
+}
+
+export class MilvusHybridEvidenceIntegrityError extends Error {
+  readonly code = 'MILVUS_HYBRID_EVIDENCE_INTEGRITY';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'MilvusHybridEvidenceIntegrityError';
+  }
+}
+
+const MILVUS_HYBRID_CAPABILITY_CACHE_TTL_MS = 30_000;
+
+export function createMilvusHybridRuntimeManifest(input: {
+  sourceCollectionName: string;
+  embeddingModel: string;
+  embeddingDimension: number;
+  env?: Record<string, string | undefined>;
+}): MilvusHybridRuntimeManifest {
+  const env = input.env ?? process.env;
+  const sourceCollectionName = safeMilvusIdentifier(
+    input.sourceCollectionName,
+    'sourceCollectionName'
+  );
+  const requestedCollection = env.MILVUS_HYBRID_COLLECTION_NAME?.trim()
+    || sourceCollectionName + '_hybrid_v1';
+  if (!Number.isInteger(input.embeddingDimension) || input.embeddingDimension < 1) {
+    throw new Error('Milvus hybrid embeddingDimension must be a positive integer.');
+  }
+  const fusion = env.MILVUS_HYBRID_FUSION?.trim().toLowerCase() || 'rrf';
+  if (fusion !== 'rrf' && fusion !== 'weighted') {
+    throw new Error('MILVUS_HYBRID_FUSION must be rrf or weighted.');
+  }
+  return {
+    version: MILVUS_HYBRID_SCHEMA_VERSION,
+    collectionName: safeMilvusIdentifier(requestedCollection, 'collectionName'),
+    sourceCollectionName,
+    corpusVersion: env.RAG_CORPUS_VERSION?.trim() || 'live-corpus-v1',
+    embeddingModel: requiredMilvusHybridValue(input.embeddingModel, 'embeddingModel'),
+    embeddingDimension: input.embeddingDimension,
+    rawTextField: 'content',
+    denseVectorField: 'embedding',
+    bm25OutputField: 'bm25_sparse',
+    fusion,
+  };
 }
 
 // 搜索结果接口
@@ -327,6 +457,14 @@ export class MilvusVectorStore {
   private isConnected: boolean = false;
   private isInitialized: boolean = false;
   private supportsTenantIsolation: boolean = false;
+  private supportsOrderedContext: boolean = false;
+  private readonly hybridCapabilityCache = new Map<
+    string,
+    { expiresAt: number; capability: MilvusHybridCapability }
+  >();
+  private readonly hybridCapabilityProbes = new Map<
+    string, Promise<MilvusHybridCapability>
+  >();
 
   constructor(config: MilvusConfig = {}) {
     const defaultConfig = getDefaultConfig();
@@ -343,6 +481,11 @@ export class MilvusVectorStore {
   /** Whether the active collection has scalar tenant/corpus/trust fields. */
   hasTenantIsolationSchema(): boolean {
     return this.supportsTenantIsolation;
+  }
+
+  /** Whether the active collection can prove a complete deterministic chunk order. */
+  hasOrderedContextSchema(): boolean {
+    return this.supportsOrderedContext;
   }
 
   private debugLog(message: string, ...args: unknown[]): void {
@@ -440,6 +583,7 @@ export class MilvusVectorStore {
   async checkSchemaCompatibility(): Promise<{
     compatible: boolean;
     supportsTenantIsolation?: boolean;
+    supportsOrderedContext?: boolean;
     reason?: string;
     existingSchema?: unknown;
   }> {
@@ -450,7 +594,8 @@ export class MilvusVectorStore {
       const hasCollection = await client.hasCollection({ collection_name: collectionName });
       if (!hasCollection.value) {
         this.supportsTenantIsolation = true;
-        return { compatible: true, supportsTenantIsolation: true }; // 集合不存在，可以创建
+        this.supportsOrderedContext = true;
+        return { compatible: true, supportsTenantIsolation: true, supportsOrderedContext: true };
       }
 
       // 获取集合信息
@@ -460,8 +605,11 @@ export class MilvusVectorStore {
       // 检查必需字段
       const requiredFields = ['id', 'content', 'embedding', 'source', 'metadata_json', 'created_at'];
       const isolationFields = ['tenant_id', 'corpus_id', 'document_id', 'trust_level'];
+      const orderedFields = ['document_version', 'chunk_index', 'total_chunks'];
       const existingFieldNames = fields.map((field) => field.name);
       const supportsTenantIsolation = isolationFields.every((field) => existingFieldNames.includes(field));
+      const supportsOrderedContext = orderedFields.every((field) => existingFieldNames.includes(field));
+      this.supportsOrderedContext = supportsOrderedContext;
       this.supportsTenantIsolation = supportsTenantIsolation;
 
       if (isTenantIsolationRequired() && !supportsTenantIsolation) {
@@ -523,18 +671,19 @@ export class MilvusVectorStore {
         }
       }
 
-      return { compatible: true, supportsTenantIsolation };
+      return { compatible: true, supportsTenantIsolation, supportsOrderedContext };
     } catch (error) {
       console.warn('[Milvus] Schema compatibility check failed:', error);
       this.supportsTenantIsolation = false;
       if (isTenantIsolationRequired()) {
+      this.supportsOrderedContext = false;
         return {
           compatible: false,
           supportsTenantIsolation: false,
           reason: '无法验证集合的租户隔离 Schema，已按 fail-closed 策略拒绝访问',
         };
       }
-      return { compatible: true, supportsTenantIsolation: false };
+      return { compatible: true, supportsTenantIsolation: false, supportsOrderedContext: false };
     }
   }
 
@@ -562,6 +711,7 @@ export class MilvusVectorStore {
     this.supportsTenantIsolation = false;
 
     // 创建新集合
+    this.supportsOrderedContext = false;
     await this.initializeCollection();
     console.log(`[Milvus] Collection '${collectionName}' recreated successfully`);
   }
@@ -683,6 +833,22 @@ export class MilvusVectorStore {
             description: 'Content trust boundary',
             data_type: DataType.VarChar,
             max_length: 32,
+          },
+          {
+            name: 'document_version',
+            description: 'Stable source document version',
+            data_type: DataType.VarChar,
+            max_length: 256,
+          },
+          {
+            name: 'chunk_index',
+            description: 'Zero-based chunk order within a document',
+            data_type: DataType.Int64,
+          },
+          {
+            name: 'total_chunks',
+            description: 'Expected chunk count for the document version',
+            data_type: DataType.Int64,
           }
         ],
       });
@@ -696,6 +862,7 @@ export class MilvusVectorStore {
       await this.loadCollection();
 
       this.supportsTenantIsolation = true;
+      this.supportsOrderedContext = true;
       this.isInitialized = true;
       console.log(`[Milvus] Collection '${collectionName}' initialized successfully`);
     } catch (error) {
@@ -835,10 +1002,14 @@ export class MilvusVectorStore {
         metadata_json: JSON.stringify(doc.metadata || {}).substring(0, 65000),
         created_at: Date.now(),
       };
-      if (!this.supportsTenantIsolation) return base;
+      const orderedFields = this.supportsOrderedContext
+        ? getOrderedDocumentFields(doc.metadata)
+        : {};
+      if (!this.supportsTenantIsolation) return { ...base, ...orderedFields };
 
       return {
         ...base,
+        ...orderedFields,
         ...getDocumentSecurityFields(doc.metadata, {
           tenantId: process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
           corpusId: process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
@@ -886,6 +1057,491 @@ export class MilvusVectorStore {
 
     // 返回所有文档的 ID
     return data.map(d => d.id);
+  }
+  async probeHybridCollection(input: {
+    collectionName: string;
+    signal?: AbortSignal;
+  }): Promise<MilvusHybridCapability> {
+    assertMilvusHybridNotAborted(input.signal);
+    const collectionName = safeMilvusIdentifier(input.collectionName, 'collectionName');
+    const cached = this.hybridCapabilityCache.get(collectionName);
+    if (cached && cached.expiresAt > Date.now()) {
+      return { ...cached.capability };
+    }
+    if (cached) this.hybridCapabilityCache.delete(collectionName);
+    let probe = this.hybridCapabilityProbes.get(collectionName);
+    if (!probe) {
+      probe = this.performHybridCollectionProbe(collectionName);
+      this.hybridCapabilityProbes.set(collectionName, probe);
+      void probe.then(
+        () => this.hybridCapabilityProbes.delete(collectionName),
+        () => this.hybridCapabilityProbes.delete(collectionName)
+      );
+    }
+    const capability = await probe;
+    assertMilvusHybridNotAborted(input.signal);
+    this.hybridCapabilityCache.set(collectionName, {
+      expiresAt: Date.now() + MILVUS_HYBRID_CAPABILITY_CACHE_TTL_MS,
+      capability: { ...capability },
+    });
+    return { ...capability };
+  }
+
+  private async performHybridCollectionProbe(
+    collectionName: string
+  ): Promise<MilvusHybridCapability> {
+    try {
+      const client = await this.ensureConnected();
+      const exists = await client.hasCollection({ collection_name: collectionName });
+      if (!exists.value) {
+        return {
+          nativeHybridSearch: typeof client.hybridSearch === 'function',
+          bm25Function: false,
+          schemaCompatible: false,
+          provider: getMilvusProvider(),
+          reason: 'collection_missing',
+        };
+      }
+      const description = await client.describeCollection({ collection_name: collectionName });
+      const fields = (description.schema?.fields ?? []) as Array<MilvusField & Record<string, unknown>>;
+      const fieldNames = new Set(fields.map(field => field.name));
+      const requiredScalars = [
+        'id',
+        'content',
+        'source',
+        'metadata_json',
+        'tenant_id',
+        'corpus_id',
+        'document_id',
+        'document_version',
+        'trust_level',
+        'chunk_index',
+        'total_chunks',
+      ];
+      const rawText = fields.find(field => field.name === 'content');
+      const dense = fields.find(field => field.name === 'embedding');
+      const sparse = fields.find(field => field.name === 'bm25_sparse');
+      const functions = [
+        ...(description.schema?.functions ?? []),
+        ...(description.functions ?? []),
+      ];
+      const bm25Function = functions.some(fn =>
+        isBm25Function(fn, 'content', 'bm25_sparse')
+      );
+      const schemaCompatible =
+        requiredScalars.every(field => fieldNames.has(field))
+        && isMilvusFieldType(rawText, DataType.VarChar, 'VarChar')
+        && isAnalyzerEnabled(rawText)
+        && isMilvusFieldType(dense, DataType.FloatVector, 'FloatVector')
+        && readMilvusFieldDimension(dense) === this.config.embeddingDimension
+        && isMilvusFieldType(sparse, DataType.SparseFloatVector, 'SparseFloatVector')
+        && Boolean(sparse?.is_function_output);
+      let serverVersion: string | undefined;
+      try {
+        serverVersion = (await client.getVersion()).version;
+      } catch {
+        serverVersion = undefined;
+      }
+      return {
+        nativeHybridSearch: typeof client.hybridSearch === 'function',
+        bm25Function,
+        schemaCompatible,
+        provider: getMilvusProvider(),
+        ...(serverVersion ? { serverVersion } : {}),
+        ...(!schemaCompatible
+          ? { reason: 'shadow_schema_incompatible' }
+          : !bm25Function
+            ? { reason: 'bm25_function_missing' }
+            : {}),
+      };
+    } catch {
+      return {
+        nativeHybridSearch: false,
+        bm25Function: false,
+        schemaCompatible: false,
+        provider: getMilvusProvider(),
+        reason: 'capability_probe_failed',
+      };
+    }
+  }
+
+  private invalidateHybridCapabilityCache(collectionName: string): void {
+    this.hybridCapabilityCache.delete(collectionName);
+    this.hybridCapabilityProbes.delete(collectionName);
+  }
+
+  async initializeHybridCollection(manifest: MilvusHybridRuntimeManifest): Promise<void> {
+    assertHybridManifestMatchesStore(manifest, this.config);
+    this.invalidateHybridCapabilityCache(manifest.collectionName);
+    const client = await this.ensureConnected();
+    const exists = await client.hasCollection({ collection_name: manifest.collectionName });
+    if (exists.value) {
+      const capability = await this.probeHybridCollection({
+        collectionName: manifest.collectionName,
+      });
+      if (
+        !capability.nativeHybridSearch
+        || !capability.bm25Function
+        || !capability.schemaCompatible
+      ) {
+        throw new Error('Existing Milvus hybrid shadow collection is incompatible.');
+      }
+      return;
+    }
+
+    await client.createCollection({
+      collection_name: manifest.collectionName,
+      description: manifest.version,
+      properties: {
+        rag_schema_version: manifest.version,
+        rag_source_collection: manifest.sourceCollectionName,
+        rag_corpus_version: manifest.corpusVersion,
+        rag_embedding_model: manifest.embeddingModel,
+      },
+      fields: [
+        {
+          name: 'id',
+          description: 'Primary key',
+          data_type: DataType.VarChar,
+          is_primary_key: true,
+          max_length: 256,
+        },
+        {
+          name: 'content',
+          description: 'Raw source passage used by BM25 and generation',
+          data_type: DataType.VarChar,
+          max_length: 65535,
+          enable_analyzer: true,
+          enable_match: true,
+        },
+        {
+          name: 'embedding',
+          description: 'Dense embedding; contextual text is never persisted here',
+          data_type: DataType.FloatVector,
+          dim: manifest.embeddingDimension,
+        },
+        {
+          name: 'bm25_sparse',
+          description: 'Server-generated BM25 sparse vector',
+          data_type: DataType.SparseFloatVector,
+          is_function_output: true,
+        },
+        { name: 'source', data_type: DataType.VarChar, max_length: 1024 },
+        { name: 'metadata_json', data_type: DataType.VarChar, max_length: 65535 },
+        { name: 'created_at', data_type: DataType.Int64 },
+        { name: 'tenant_id', data_type: DataType.VarChar, max_length: 128 },
+        { name: 'corpus_id', data_type: DataType.VarChar, max_length: 128 },
+        { name: 'document_id', data_type: DataType.VarChar, max_length: 256 },
+        { name: 'document_version', data_type: DataType.VarChar, max_length: 256 },
+        { name: 'trust_level', data_type: DataType.VarChar, max_length: 32 },
+        { name: 'chunk_index', data_type: DataType.Int64 },
+        { name: 'total_chunks', data_type: DataType.Int64 },
+        { name: 'start_offset', data_type: DataType.Int64, nullable: true },
+        { name: 'end_offset', data_type: DataType.Int64, nullable: true },
+      ],
+      functions: [{
+        name: 'bm25_fn',
+        description: 'Generate BM25 sparse vectors from raw source passages',
+        type: FunctionType.BM25,
+        input_field_names: ['content'],
+        output_field_names: ['bm25_sparse'],
+        params: {},
+      }],
+    });
+    await client.createIndex({
+      collection_name: manifest.collectionName,
+      field_name: 'embedding',
+      index_type: 'AUTOINDEX',
+      metric_type: 'COSINE',
+      params: {},
+    });
+    await client.createIndex({
+      collection_name: manifest.collectionName,
+      field_name: 'bm25_sparse',
+      index_type: 'SPARSE_INVERTED_INDEX',
+      metric_type: 'BM25',
+      params: {},
+    });
+    await client.loadCollection({ collection_name: manifest.collectionName });
+    this.invalidateHybridCapabilityCache(manifest.collectionName);
+  }
+
+  async insertHybridDocuments(
+    manifest: MilvusHybridRuntimeManifest,
+    documents: MilvusDocument[]
+  ): Promise<string[]> {
+    assertHybridManifestMatchesStore(manifest, this.config);
+    if (
+      isTenantIsolationRequired()
+      && documents.some(document => !isServerDerivedScope(document.metadata))
+    ) {
+      throw new Error('Milvus hybrid insertion requires authenticated server-derived scope.');
+    }
+    await this.initializeHybridCollection(manifest);
+    const client = await this.ensureConnected();
+    const data = documents.map((document, index) => {
+      if (
+        !Array.isArray(document.embedding)
+        || document.embedding.length !== manifest.embeddingDimension
+        || document.embedding.some(value => !Number.isFinite(value))
+      ) {
+        throw new Error('Hybrid document embedding is invalid at index ' + index + '.');
+      }
+      const security = getDocumentSecurityFields(document.metadata, {
+        tenantId: process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
+        corpusId: process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
+        trustLevel: 'external',
+      });
+      const ordered = getOrderedDocumentFields(document.metadata);
+      const startOffset = optionalMilvusHybridInteger(
+        document.metadata.startOffset ?? document.metadata.start_offset,
+        'startOffset'
+      );
+      const endOffset = optionalMilvusHybridInteger(
+        document.metadata.endOffset ?? document.metadata.end_offset,
+        'endOffset'
+      );
+      return {
+        id: document.id,
+        content: document.content.substring(0, 65000),
+        embedding: document.embedding,
+        source: String(document.metadata.source || 'unknown').substring(0, 1024),
+        metadata_json: JSON.stringify(document.metadata || {}).substring(0, 65000),
+        created_at: Date.now(),
+        ...security,
+        ...ordered,
+        ...(startOffset === undefined ? {} : { start_offset: startOffset }),
+        ...(endOffset === undefined ? {} : { end_offset: endOffset }),
+      };
+    });
+    const result = await client.insert({
+      collection_name: manifest.collectionName,
+      data,
+    });
+    if (result.status.error_code !== 'Success') {
+      throw new Error('Hybrid shadow insert failed: ' + result.status.reason);
+    }
+    if (this.config.flushOnInsert) {
+      await client.flushSync({ collection_names: [manifest.collectionName] });
+    }
+    return data.map(row => row.id);
+  }
+
+  /**
+   * Delete an exact set of dense rows inside an authenticated tenant/corpus/trust scope.
+   * This is intentionally separate from the legacy global delete port so compensation
+   * can never widen into a cross-tenant mutation.
+   */
+  async deleteScopedDocuments(
+    ids: string[],
+    scope: RagRetrievalScope
+  ): Promise<void> {
+    if (!this.supportsTenantIsolation) {
+      throw new Error('Active Milvus collection does not support scoped document deletion.');
+    }
+    await this.deleteScopedCollectionDocuments(this.config.collectionName, ids, scope);
+  }
+
+  /**
+   * Best-effort counterpart for a hybrid write whose RPC may have committed before
+   * reporting failure (for example, a later flush failure). A missing collection is
+   * already equivalent to a successful compensation.
+   */
+  async deleteScopedHybridDocuments(
+    manifest: MilvusHybridRuntimeManifest,
+    ids: string[],
+    scope: RagRetrievalScope
+  ): Promise<void> {
+    assertHybridManifestMatchesStore(manifest, this.config);
+    const client = await this.ensureConnected();
+    const exists = await client.hasCollection({ collection_name: manifest.collectionName });
+    if (!exists.value) return;
+    await this.deleteScopedCollectionDocuments(manifest.collectionName, ids, scope, client);
+  }
+
+  private async deleteScopedCollectionDocuments(
+    collectionName: string,
+    ids: string[],
+    scope: RagRetrievalScope,
+    connectedClient?: MilvusClient
+  ): Promise<void> {
+    if (scope.enforceIsolation !== true) {
+      throw new Error('Scoped Milvus deletion requires enforced tenant isolation.');
+    }
+    const normalizedIds = normalizeScopedMilvusDeleteIds(ids);
+    const scoped = buildScopedMilvusFilter(scope);
+    if (!scoped.filter || !scoped.exprValues || !isServerDerivedScope(scoped)) {
+      throw new Error('Scoped Milvus deletion requires a server-derived exact scope.');
+    }
+    const client = connectedClient ?? await this.ensureConnected();
+    const result = await client.delete({
+      collection_name: safeMilvusIdentifier(collectionName, 'collectionName'),
+      filter: scoped.filter + ' && id in {documentIds}',
+      exprValues: {
+        ...scoped.exprValues,
+        documentIds: normalizedIds,
+      },
+    });
+    if (result.status.error_code !== 'Success') {
+      throw new Error('Scoped Milvus compensation delete failed.');
+    }
+    if (this.config.flushOnInsert) {
+      await client.flushSync({ collection_names: [collectionName] });
+    }
+  }
+
+  createHybridSearchPort(
+    manifest: MilvusHybridRuntimeManifest
+  ): MilvusHybridSearchPort {
+    assertHybridManifestMatchesStore(manifest, this.config);
+    return {
+      probe: input => {
+        assertRequestedHybridCollection(input.collectionName, manifest.collectionName);
+        return this.probeHybridCollection(input);
+      },
+      search: request => {
+        assertRequestedHybridCollection(request.collectionName, manifest.collectionName);
+        return this.searchHybridCollection(request, manifest);
+      },
+    };
+  }
+
+  async searchHybridCollection(
+    request: MilvusHybridSearchRequest,
+    manifest: MilvusHybridRuntimeManifest
+  ): Promise<MilvusHybridHit[]> {
+    assertHybridManifestMatchesStore(manifest, this.config);
+    assertRequestedHybridCollection(request.collectionName, manifest.collectionName);
+    assertMilvusHybridNotAborted(request.signal);
+    const scoped = buildScopedMilvusFilter(request.scope);
+    const client = await this.ensureConnected();
+    const rerank = request.fusion === 'weighted'
+      ? { strategy: RANKER_TYPE.WEIGHTED, params: { weights: [0.5, 0.5] } }
+      : { strategy: RANKER_TYPE.RRF, params: { k: 60 } };
+    try {
+      const result = await client.hybridSearch({
+        collection_name: manifest.collectionName,
+        data: [
+          {
+            anns_field: manifest.denseVectorField,
+            data: request.denseEmbedding,
+            expr: scoped.filter,
+            exprValues: scoped.exprValues,
+            params: buildMilvusSearchParams(this.config.indexType),
+          },
+          {
+            anns_field: manifest.bm25OutputField,
+            data: request.query,
+            expr: scoped.filter,
+            exprValues: scoped.exprValues,
+            params: {},
+          },
+        ],
+        output_fields: [
+          'id',
+          'content',
+          'source',
+          'metadata_json',
+          'tenant_id',
+          'corpus_id',
+          'document_id',
+          'document_version',
+          'trust_level',
+          'chunk_index',
+          'total_chunks',
+          'start_offset',
+          'end_offset',
+        ],
+        limit: request.topK,
+        rerank,
+        consistency_level: normalizeMilvusConsistencyLevel(this.config.consistencyLevel),
+      } as HybridSearchReq);
+      assertMilvusHybridNotAborted(request.signal);
+      if (result.status.error_code !== 'Success') {
+        throw new MilvusHybridProviderUnavailableError();
+      }
+
+      // Native fused output does not prove lexical membership. Query BM25 alone
+      // and retain only fused candidates that have a bounded lexical match.
+      const lexical = await client.search({
+        collection_name: manifest.collectionName,
+        data: [request.query],
+        anns_field: manifest.bm25OutputField,
+        limit: Math.min(100, Math.max(request.topK, request.topK * 2)),
+        output_fields: ['id'],
+        filter: scoped.filter,
+        exprValues: scoped.exprValues,
+        params: {},
+        consistency_level: normalizeMilvusConsistencyLevel(this.config.consistencyLevel),
+      } as SearchSimpleReq);
+      assertMilvusHybridNotAborted(request.signal);
+      if (lexical.status.error_code !== 'Success') {
+        throw new MilvusHybridProviderUnavailableError();
+      }
+      const lexicalIds = new Set(
+        flattenMilvusHits(lexical.results).map(hit => String(hit.id ?? ''))
+      );
+      return flattenMilvusHits(result.results)
+        .filter(hit => lexicalIds.has(String(hit.id ?? '')))
+        .map(hit => adaptNativeHybridHit(hit, request.scope));
+    } catch (error) {
+      if (request.signal?.aborted) throw createMilvusHybridAbortError();
+      if (error instanceof MilvusHybridEvidenceIntegrityError) throw error;
+      if (error instanceof MilvusHybridProviderUnavailableError) throw error;
+      throw new MilvusHybridProviderUnavailableError();
+    }
+  }
+
+
+  /** Read a single bounded snapshot using the server-owned retrieval scope. */
+  async queryOrderedCorpusRows(
+    scope: RagRetrievalScope,
+    maxChunks: number = 256
+  ): Promise<MilvusQueryRow[]> {
+    if (!Number.isSafeInteger(maxChunks) || maxChunks < 1 || maxChunks > 512) {
+      throw new Error('Milvus ordered corpus maxChunks must be between 1 and 512.');
+    }
+    if (!this.isInitialized) {
+      await this.initializeCollection();
+    }
+    if (!this.supportsOrderedContext) {
+      throw new Error('Milvus ordered context scalar schema is unavailable.');
+    }
+
+    const scopedFilter = buildScopedMilvusFilter(scope);
+    if (isTenantIsolationRequired() && !isServerDerivedScope(scopedFilter)) {
+      throw new Error('Milvus ordered corpus query requires a server-derived scope.');
+    }
+    const client = await this.ensureConnected();
+    const result = await client.query({
+      collection_name: this.config.collectionName,
+      output_fields: [
+        'id',
+        'content',
+        'source',
+        'metadata_json',
+        'tenant_id',
+        'corpus_id',
+        'document_id',
+        'trust_level',
+        'document_version',
+        'chunk_index',
+        'total_chunks',
+      ],
+      limit: maxChunks + 1,
+      filter: scopedFilter.filter,
+      exprValues: scopedFilter.exprValues,
+      consistency_level: normalizeMilvusConsistencyLevel(this.config.consistencyLevel),
+      order_by_fields: [
+        { field: 'document_id', order: 'asc' },
+        { field: 'document_version', order: 'asc' },
+        { field: 'chunk_index', order: 'asc' },
+      ],
+    } as QueryReq);
+    if (result.status.error_code !== 'Success') {
+      throw new Error('Ordered corpus query failed: ' + result.status.reason);
+    }
+    return Array.isArray(result.data) ? result.data as MilvusQueryRow[] : [];
   }
 
   /**
@@ -1237,6 +1893,253 @@ export class MilvusVectorStore {
   isReady(): boolean {
     return this.isConnected && this.isInitialized;
   }
+}
+
+function safeMilvusIdentifier(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,254}$/.test(normalized)) {
+    throw new Error('Milvus hybrid ' + field + ' must be a safe identifier.');
+  }
+  return normalized;
+}
+
+function normalizeScopedMilvusDeleteIds(ids: string[]): string[] {
+  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 4_096) {
+    throw new Error('Scoped Milvus deletion requires between 1 and 4096 document IDs.');
+  }
+  const normalized = ids.map((id, index) => {
+    if (
+      typeof id !== 'string'
+      || !id.trim()
+      || id.length > 256
+      || /[\u0000-\u001f]/.test(id)
+    ) {
+      throw new Error('Scoped Milvus deletion received an invalid document ID at index ' + index + '.');
+    }
+    return id.trim();
+  });
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error('Scoped Milvus deletion requires unique document IDs.');
+  }
+  return normalized;
+}
+
+function requiredMilvusHybridValue(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error('Milvus hybrid ' + field + ' is required.');
+  return normalized;
+}
+
+function assertHybridManifestMatchesStore(
+  manifest: MilvusHybridRuntimeManifest,
+  config: Required<MilvusConfig>
+): void {
+  safeMilvusIdentifier(manifest.collectionName, 'collectionName');
+  if (manifest.sourceCollectionName !== config.collectionName) {
+    throw new Error('Milvus hybrid manifest source collection does not match the active store.');
+  }
+  if (manifest.embeddingDimension !== config.embeddingDimension) {
+    throw new Error('Milvus hybrid manifest embedding dimension does not match the active store.');
+  }
+}
+
+function assertRequestedHybridCollection(actual: string, expected: string): void {
+  if (actual !== expected) {
+    throw new Error('Milvus hybrid request collection does not match the server manifest.');
+  }
+}
+
+function isMilvusFieldType(
+  field: (MilvusField & Record<string, unknown>) | undefined,
+  expected: DataType,
+  name: string
+): boolean {
+  if (!field) return false;
+  const candidates = [field.data_type, field.dataType].map(value => String(value).toLowerCase());
+  return candidates.includes(String(expected).toLowerCase())
+    || candidates.includes(name.toLowerCase());
+}
+
+function readMilvusFieldDimension(
+  field: (MilvusField & Record<string, unknown>) | undefined
+): number | null {
+  if (!field) return null;
+  const direct = Number(field.dim);
+  if (Number.isSafeInteger(direct) && direct > 0) return direct;
+  if (!Array.isArray(field.type_params)) return null;
+  for (const item of field.type_params) {
+    if (!item || typeof item !== 'object') continue;
+    const entry = item as { key?: unknown; value?: unknown };
+    if (String(entry.key).toLowerCase() !== 'dim') continue;
+    const value = Number(entry.value);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return null;
+}
+
+function isAnalyzerEnabled(
+  field: (MilvusField & Record<string, unknown>) | undefined
+): boolean {
+  if (!field) return false;
+  if (field.enable_analyzer === true || field.enable_analyzer === 'true') return true;
+  if (!Array.isArray(field.type_params)) return false;
+  return field.type_params.some(item => {
+    if (!item || typeof item !== 'object') return false;
+    const entry = item as { key?: unknown; value?: unknown };
+    return String(entry.key).toLowerCase() === 'enable_analyzer'
+      && String(entry.value).toLowerCase() === 'true';
+  });
+}
+
+function isBm25Function(
+  fn: { type?: unknown; input_field_names?: string[]; output_field_names?: string[] },
+  inputField: string,
+  outputField: string
+): boolean {
+  const type = String(fn.type).toLowerCase();
+  const bm25 = Number(fn.type) === Number(FunctionType.BM25) || type === 'bm25';
+  return bm25
+    && fn.input_field_names?.length === 1
+    && fn.input_field_names[0] === inputField
+    && fn.output_field_names?.length === 1
+    && fn.output_field_names[0] === outputField;
+}
+
+function optionalMilvusHybridInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error('Milvus hybrid ' + field + ' must be a non-negative integer.');
+  }
+  return value as number;
+}
+
+function assertMilvusHybridNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw createMilvusHybridAbortError();
+}
+
+function createMilvusHybridAbortError(): Error {
+  const error = new Error('Milvus hybrid request was aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function flattenMilvusHits(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  if (value.length > 0 && Array.isArray(value[0])) {
+    return (value[0] as unknown[]).filter(isRecord);
+  }
+  return value.filter(isRecord);
+}
+
+function adaptNativeHybridHit(
+  hit: Record<string, unknown>,
+  scope: RagRetrievalScope
+): MilvusHybridHit {
+  const id = requiredNativeHybridString(hit.id, 'id');
+  const content = requiredNativeHybridString(hit.content, 'content');
+  const tenantId = requiredNativeHybridString(hit.tenant_id, 'tenant_id');
+  const corpusId = requiredNativeHybridString(hit.corpus_id, 'corpus_id');
+  const documentId = requiredNativeHybridString(hit.document_id, 'document_id');
+  const documentVersion = requiredNativeHybridString(hit.document_version, 'document_version');
+  const trustLevel = requiredNativeHybridString(hit.trust_level, 'trust_level');
+  if (tenantId !== scope.tenantId || corpusId !== scope.corpusId) {
+    throw new MilvusHybridEvidenceIntegrityError(
+      'Milvus hybrid hit scope does not match the authenticated scope.'
+    );
+  }
+  const metadata = parseNativeHybridMetadata(hit.metadata_json);
+  assertNativeHybridAlias(metadata, ['tenantId', 'tenant_id'], tenantId);
+  assertNativeHybridAlias(metadata, ['corpusId', 'corpus_id'], corpusId);
+  assertNativeHybridAlias(metadata, ['documentId', 'document_id'], documentId);
+  assertNativeHybridAlias(metadata, ['documentVersion', 'document_version'], documentVersion);
+  assertNativeHybridAlias(metadata, ['trustLevel', 'trust_level'], trustLevel);
+  const score = Number(hit.score ?? hit.distance);
+  if (!Number.isFinite(score)) {
+    throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid hit score is invalid.');
+  }
+  const chunkIndex = optionalMilvusHybridInteger(hit.chunk_index, 'chunk_index');
+  const totalChunks = optionalMilvusHybridInteger(hit.total_chunks, 'total_chunks');
+  const startOffset = optionalMilvusHybridInteger(hit.start_offset, 'start_offset');
+  const endOffset = optionalMilvusHybridInteger(hit.end_offset, 'end_offset');
+  if ((startOffset === undefined) !== (endOffset === undefined)) {
+    throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid hit span is incomplete.');
+  }
+  if (startOffset !== undefined && endOffset !== undefined && endOffset <= startOffset) {
+    throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid hit span is invalid.');
+  }
+  return {
+    id,
+    score,
+    content,
+    source: typeof hit.source === 'string' ? hit.source : undefined,
+    metadata: {
+      ...metadata,
+      tenantId,
+      tenant_id: tenantId,
+      corpusId,
+      corpus_id: corpusId,
+      documentId,
+      document_id: documentId,
+      documentVersion,
+      document_version: documentVersion,
+      trustLevel,
+      trust_level: trustLevel,
+      lexicalMatch: true,
+      ...(chunkIndex === undefined ? {} : { chunkIndex, chunk_index: chunkIndex }),
+      ...(totalChunks === undefined ? {} : { totalChunks, total_chunks: totalChunks }),
+      ...(startOffset === undefined
+        ? {}
+        : {
+            startOffset,
+            start_offset: startOffset,
+            endOffset,
+            end_offset: endOffset,
+          }),
+    },
+  };
+}
+
+function parseNativeHybridMetadata(value: unknown): Record<string, unknown> {
+  if (value === undefined || value === null || value === '') return {};
+  if (typeof value !== 'string' || value.length > 65_000) {
+    throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid metadata is invalid.');
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!isRecord(parsed)) {
+      throw new Error('metadata must be an object');
+    }
+    return parsed;
+  } catch {
+    throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid metadata is malformed.');
+  }
+}
+
+function assertNativeHybridAlias(
+  metadata: Record<string, unknown>,
+  aliases: readonly string[],
+  authoritative: string
+): void {
+  for (const alias of aliases) {
+    if (metadata[alias] !== undefined && metadata[alias] !== authoritative) {
+      throw new MilvusHybridEvidenceIntegrityError(
+        'Milvus hybrid metadata contains conflicting ' + alias + '.'
+      );
+    }
+  }
+}
+
+function requiredNativeHybridString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new MilvusHybridEvidenceIntegrityError(
+      'Milvus hybrid hit ' + field + ' is required.'
+    );
+  }
+  return value.trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 // 全局实例缓存 - 按集合名称缓存不同的实例

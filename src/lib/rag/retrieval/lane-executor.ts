@@ -120,6 +120,9 @@ export class RagLaneExecutor {
   }): Promise<RagLaneExecutorResult> {
     throwIfRagRequestAborted(input.signal);
     validateBudget(input.budget);
+    for (const lane of input.plan.lanes) {
+      validateLaneExecutionBudget(lane);
+    }
     const startedAt = this.now();
     const transitions: RagExecutionTransition[] = [
       transition('planned', 'retrieving', startedAt, 'lane_execution_started'),
@@ -130,7 +133,8 @@ export class RagLaneExecutor {
     let executedLanes = 0;
     let stopReason: RagStopReason | undefined;
 
-    for (const lane of input.plan.lanes) {
+    for (let laneIndex = 0; laneIndex < input.plan.lanes.length; laneIndex += 1) {
+      const lane = input.plan.lanes[laneIndex];
       throwIfRagRequestAborted(input.signal);
       if (this.now() - startedAt >= input.budget.maxDurationMs) {
         stopReason = 'budget';
@@ -141,6 +145,9 @@ export class RagLaneExecutor {
         break;
       }
 
+      const hasRequiredLaneRemaining = input.plan.lanes
+        .slice(laneIndex + 1)
+        .some(candidate => candidate.required);
       const handler = this.handlers.get(lane.type);
       if (!handler) {
         if (lane.required) {
@@ -185,6 +192,11 @@ export class RagLaneExecutor {
       try {
         const remainingDurationMs =
           input.budget.maxDurationMs - (this.now() - startedAt);
+        const laneDurationMs = resolveLaneDurationMs(
+          lane,
+          remainingDurationMs,
+          hasRequiredLaneRemaining
+        );
         const result = await executeLaneWithDeadline(
           signal =>
             handler.execute({
@@ -194,7 +206,7 @@ export class RagLaneExecutor {
               priorEvidence: evidence,
               signal,
             }),
-          remainingDurationMs,
+          laneDurationMs,
           lane.id,
           handler.retriever,
           input.signal
@@ -302,6 +314,9 @@ export class RagLaneExecutor {
           );
         }
         if (timedOut) {
+          if (hasRequiredLaneRemaining) {
+            continue;
+          }
           stopReason = 'budget';
           break;
         }
@@ -520,6 +535,44 @@ function applyEvidenceTransform(
   });
 }
 
+function validateLaneExecutionBudget(lane: RagRetrievalLane): void {
+  const budget = lane.executionBudget;
+  if (!budget) return;
+  if (!Number.isSafeInteger(budget.maxDurationMs) || budget.maxDurationMs < 1) {
+    throw new Error('RAG lane execution budget maxDurationMs must be a positive integer.');
+  }
+  if (
+    budget.reserveForRequiredMs !== undefined
+    && (
+      !Number.isSafeInteger(budget.reserveForRequiredMs)
+      || budget.reserveForRequiredMs < 0
+    )
+  ) {
+    throw new Error(
+      'RAG lane execution budget reserveForRequiredMs must be a non-negative integer.'
+    );
+  }
+}
+
+function resolveLaneDurationMs(
+  lane: RagRetrievalLane,
+  remainingDurationMs: number,
+  hasRequiredLaneRemaining: boolean
+): number {
+  const executionBudget = lane.executionBudget;
+  const requiredReserveMs = hasRequiredLaneRemaining
+    ? executionBudget?.reserveForRequiredMs ?? 0
+    : 0;
+  const durationBeforeRequiredReserve = Math.max(
+    0,
+    remainingDurationMs - requiredReserveMs
+  );
+  return Math.min(
+    remainingDurationMs,
+    executionBudget?.maxDurationMs ?? remainingDurationMs,
+    durationBeforeRequiredReserve
+  );
+}
 function validateBudget(budget: RagExecutionBudget): void {
   if (!Number.isInteger(budget.maxLanes) || budget.maxLanes < 1) {
     throw new Error('RAG lane budget maxLanes must be a positive integer.');

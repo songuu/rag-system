@@ -1,5 +1,5 @@
 import type { RagEvidence, RagStopReason } from '../core/types';
-import type { RagRetrievalScope } from '../../security/retrieval-scope';
+import type { RagRetrievalScope, RagTrustLevel } from '../../security/retrieval-scope';
 import {
   assertPdfAssetManifestScope,
   sha256Hex,
@@ -61,13 +61,24 @@ const VISUAL_INTENT_ZH = /(?:图表|表格|图像|图片|插图|截图|流程图
 const VISUAL_INTENT_EN = /\b(?:chart|table|figure|diagram|image|illustration|screenshot|visual)\b/i;
 const PAGE_REFERENCE = /(?:第\s*(\d{1,5})\s*页|page\s*#?\s*(\d{1,5}))/gi;
 
+export function resolvePdfMultimodalMode(
+  env: Record<string, string | undefined> = process.env
+): PdfMultimodalMode {
+  const value = env.RAG_PDF_VISUAL_MODE?.trim().toLowerCase() || 'off';
+  if (value === 'off' || value === 'shadow' || value === 'active') return value;
+  throw new Error('Unsupported RAG_PDF_VISUAL_MODE: ' + value);
+}
+
+export function isPdfVisualIntent(query: string): boolean {
+  return VISUAL_INTENT_ZH.test(query) || VISUAL_INTENT_EN.test(query);
+}
+
 export function routePdfModality(input: RoutePdfModalityInput): PdfModalityDecision {
   assertPdfAssetManifestScope(input.manifest, input.scope);
   if (!['off', 'shadow', 'active'].includes(input.mode)) {
     throw new Error('Unsupported PDF multimodal mode.');
   }
-  const requestedVisual = VISUAL_INTENT_ZH.test(input.query)
-    || VISUAL_INTENT_EN.test(input.query);
+  const requestedVisual = isPdfVisualIntent(input.query);
   const capability = input.capability ?? { available: false };
   const maxVisualPages = input.maxVisualPages ?? 4;
   if (!Number.isInteger(maxVisualPages) || maxVisualPages < 1 || maxVisualPages > 20) {
@@ -141,6 +152,7 @@ export interface PdfVisualPageRequest {
   sourceHash: string;
   documentId: string;
   documentVersion: string;
+  trustLevel: RagTrustLevel;
   query: string;
   pages: Array<{
     pageNumber: number;
@@ -164,6 +176,14 @@ export interface PdfVisualPageAnalysis {
 export interface PdfVisualAnalyzer {
   readonly id: string;
   analyze(request: PdfVisualPageRequest): Promise<readonly PdfVisualPageAnalysis[]>;
+}
+
+/** Integrity/scope failures must not be downgraded by the optional visual lane. */
+export class PdfVisualAnalyzerIntegrityError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = 'PdfVisualAnalyzerIntegrityError';
+  }
 }
 
 export interface PdfVisualPageHandlerResult {
@@ -333,6 +353,7 @@ export class OptionalPdfVisualPageHandler {
       sourceHash: input.manifest.sourceHash,
       documentId: input.manifest.documentId,
       documentVersion: input.manifest.documentVersion,
+      trustLevel: input.manifest.trustLevel,
       query: input.query,
       pages: selectedPages.map(page => ({
         pageNumber: page.pageNumber,
@@ -348,7 +369,7 @@ export class OptionalPdfVisualPageHandler {
     void operation.then(reservation.release, reservation.release);
     const operationOutcome = operation.then(
       (analyses): VisualAnalyzerOutcome => ({ kind: 'completed', analyses }),
-      (): VisualAnalyzerOutcome => ({ kind: 'failed' })
+      (error): VisualAnalyzerOutcome => ({ kind: 'failed', error })
     );
 
     const outcome = await Promise.race([
@@ -367,6 +388,9 @@ export class OptionalPdfVisualPageHandler {
       return createVisualAnalyzerFallback(analyzer.id, 'VISUAL_ANALYZER_TIMEOUT');
     }
     if (outcome.kind === 'failed') {
+      if (outcome.error instanceof PdfVisualAnalyzerIntegrityError) {
+        throw outcome.error;
+      }
       return createVisualAnalyzerFallback(analyzer.id, 'VISUAL_ANALYZER_FAILED');
     }
 
@@ -403,7 +427,7 @@ export class OptionalPdfVisualPageHandler {
 
 type VisualAnalyzerOutcome =
   | { kind: 'completed'; analyses: readonly PdfVisualPageAnalysis[] }
-  | { kind: 'failed' }
+  | { kind: 'failed'; error: unknown }
   | { kind: 'timeout' }
   | { kind: 'aborted' };
 

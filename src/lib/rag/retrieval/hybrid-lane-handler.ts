@@ -1,6 +1,10 @@
 import type { RagEvidence } from '../core/types';
 import type { RagTrustLevel } from '../../security/retrieval-scope';
-import type { RagLaneHandler, RagLaneHandlerContext } from './lane-executor';
+import {
+  RagLaneEvidenceValidationError,
+  type RagLaneHandler,
+  type RagLaneHandlerContext,
+} from './lane-executor';
 import {
   MILVUS_HYBRID_POLICY_VERSION,
   isHybridCapabilityUsable,
@@ -10,6 +14,10 @@ import {
   type MilvusHybridRolloutMode,
   type MilvusHybridSearchPort,
 } from './hybrid-policy';
+import {
+  MilvusHybridEvidenceIntegrityError,
+  MilvusHybridProviderUnavailableError,
+} from '../../milvus-client';
 
 export interface MilvusHybridLaneHandlerOptions {
   port: MilvusHybridSearchPort;
@@ -60,23 +68,52 @@ export function createMilvusHybridLaneHandler(
         embeddingModel: context.request.embeddingModel,
         signal: context.signal,
       });
-      const response = await milvusHybridSearch(
-        {
-          collectionName,
-          query: context.plan.query,
-          denseEmbedding,
-          topK: context.plan.top_k,
-          scope,
-          signal: context.signal,
-        },
-        { port: options.port, mode }
-      );
-      for (const shadowHit of response.shadowHits) {
-        assertHybridHitScope(shadowHit, context);
+      let response: Awaited<ReturnType<typeof milvusHybridSearch>>;
+      try {
+        response = await milvusHybridSearch(
+          {
+            collectionName,
+            query: context.plan.query,
+            denseEmbedding,
+            topK: context.plan.top_k,
+            scope,
+            signal: context.signal,
+          },
+          { port: options.port, mode }
+        );
+      } catch (error) {
+        if (error instanceof MilvusHybridProviderUnavailableError) {
+          return {
+            evidence: [],
+            stopReason: 'capability_unavailable',
+            metadata: {
+              hybridPolicyVersion: MILVUS_HYBRID_POLICY_VERSION,
+              mode,
+              participatesInGeneration: false,
+              providerUnavailable: true,
+            },
+          };
+        }
+        if (isHybridEvidenceValidationFailure(error)) {
+          throw new RagLaneEvidenceValidationError(
+            error instanceof Error ? error.message : 'Hybrid evidence is invalid.'
+          );
+        }
+        throw error;
       }
-      const evidence = response.participatesInGeneration
-        ? response.hits.map(hit => adaptHybridHitToEvidence(hit, context))
-        : [];
+      let evidence: RagEvidence[];
+      try {
+        for (const shadowHit of response.shadowHits) {
+          assertHybridHitScope(shadowHit, context);
+        }
+        evidence = response.participatesInGeneration
+          ? response.hits.map(hit => adaptHybridHitToEvidence(hit, context))
+          : [];
+      } catch (error) {
+        throw new RagLaneEvidenceValidationError(
+          error instanceof Error ? error.message : 'Hybrid evidence is invalid.'
+        );
+      }
       const capabilityUsable = response.capability
         ? isHybridCapabilityUsable(response.capability)
         : false;
@@ -104,10 +141,19 @@ export function createMilvusHybridLaneHandler(
   };
 }
 
+function isHybridEvidenceValidationFailure(error: unknown): boolean {
+  if (error instanceof MilvusHybridEvidenceIntegrityError) return true;
+  const message = error instanceof Error ? error.message : '';
+  return /Hybrid hit|conflicting (?:content|metadata|tenant|corpus|document|trust|start|end)|provenance/.test(
+    message
+  );
+}
+
 function adaptHybridHitToEvidence(
   hit: MilvusHybridHit,
   context: RagLaneHandlerContext
 ): RagEvidence {
+
   const { tenantId, corpusId, trustLevel } = assertHybridHitScope(hit, context);
   const metadata = hit.metadata ?? {};
   const documentId = requiredString(

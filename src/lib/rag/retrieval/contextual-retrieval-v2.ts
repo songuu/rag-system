@@ -79,6 +79,7 @@ export interface ContextualizedChunkV2 {
   participatesInDenseIndex: boolean;
   errorCode?:
     | 'CONTEXTUALIZER_FAILED'
+    | 'CONTEXTUALIZER_EMPTY'
     | 'CONTEXTUALIZER_TIMEOUT'
     | 'CONTEXTUALIZER_BUSY';
 }
@@ -323,9 +324,16 @@ export async function contextualizeChunksV2(
             },
           });
           assertNotAborted(options.signal);
+          const normalizedContext = truncateWithoutSplittingSurrogate(
+            context.trim(),
+            maxPerChunk
+          );
           generated[index] = {
-            context: truncateWithoutSplittingSurrogate(context.trim(), maxPerChunk),
-            failed: false,
+            context: normalizedContext,
+            failed: normalizedContext.length === 0,
+            ...(normalizedContext.length === 0
+              ? { errorCode: 'CONTEXTUALIZER_EMPTY' as const }
+              : {}),
           };
         } catch (error) {
           if (options.signal?.aborted) throw abortError();

@@ -110,11 +110,11 @@ export class TaskManager {
   /**
    * 完成任务
    */
-  completeTask(taskId: string, result: Record<string, unknown>): void {
+  completeTask(taskId: string, result: Record<string, unknown>): boolean {
     const task = this.tasks.get(taskId);
     if (!task) {
       console.warn(`[TaskManager] Task ${taskId} not found`);
-      return;
+      return false;
     }
 
     task.status = 'completed';
@@ -124,6 +124,7 @@ export class TaskManager {
     task.updated_at = Date.now();
 
     this.tasks.set(taskId, task);
+    return true;
   }
 
   /**

@@ -162,11 +162,17 @@ for (const url of [
   'https://[2001:db8::1]/',
   'https://[2002:7f00:1::]/',
   'https://[3fff::1]/',
+  'https://[2606:4700:0:1:0:5efe:c0a8:101]/',
+  'https://[2606:4700:0:1:200:5efe:a00:1]/',
 ]) {
   test(`rejects non-public or transition IPv6 URL ${url}`, async () => {
     await expectCode(validateExternalUrl(url), 'PRIVATE_ADDRESS');
   });
 }
+
+test('allows a global ISATAP address only when its embedded IPv4 target is public', () => {
+  assert.equal(isPublicIpAddress('2606:4700:0:1:0:5efe:101:101'), true);
+});
 
 test('accepts public IPv4 and IPv6 literals without invoking DNS', async () => {
   let resolverCalls = 0;

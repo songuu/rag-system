@@ -19,6 +19,7 @@ const {
   buildDurableCheckpointKey,
   createDurableRagKernelStep,
   DurableRagWorkflowAdapter,
+  DurableWorkflowNotFoundError,
   DurableWorkflowCapacityError,
   DurableWorkflowBusyError,
   DurableWorkflowCancelledError,
@@ -55,6 +56,7 @@ test('durable adapter checkpoints each step and completed replay is idempotent',
   assert.equal(result.idempotentReplay, false);
   assert.equal(result.processPersistent, false);
   assert.deepEqual(calls.map(call => call.step), ['add', 'double']);
+  assert.notEqual(calls[0].executionAttemptId, calls[1].executionAttemptId);
 
   const replay = await adapter.invoke(invocation);
   assert.equal(replay.resumed, true);
@@ -126,12 +128,14 @@ test('in-memory lifecycle deletion is revision-fenced and terminal-only', async 
     .invoke(createInvocation('delete-terminal'));
   await assert.rejects(
     () => store.delete(completed.checkpoint.checkpointKey, {
+      expectedGenerationId: completed.checkpoint.generationId,
       expectedRevision: completed.checkpoint.revision - 1,
     }),
     error => error instanceof DurableWorkflowConflictError
   );
   assert.equal(
     await store.delete(completed.checkpoint.checkpointKey, {
+      expectedGenerationId: completed.checkpoint.generationId,
       expectedRevision: completed.checkpoint.revision,
     }),
     true
@@ -170,11 +174,89 @@ test('in-memory lifecycle deletion is revision-fenced and terminal-only', async 
   );
   const running = await store.load(activeKey);
   await assert.rejects(
-    () => store.delete(activeKey, { expectedRevision: running.revision }),
+    () => store.delete(activeKey, {
+      expectedGenerationId: running.generationId,
+      expectedRevision: running.revision,
+    }),
     error => error instanceof DurableWorkflowLeaseManagementError
   );
   releaseStep();
   await activeRun;
+});
+
+test('in-memory generations permanently fence reuse while expired unacked deletion barriers allow a new generation', async () => {
+  let nowMs = Date.parse('2026-07-15T00:00:00.000Z');
+  const store = new InMemoryDurableCheckpointStore(
+    'generation-memory-store',
+    1_048_576,
+    8,
+    {
+      terminalRetentionMs: 1_000,
+      now: () => new Date(nowMs),
+    }
+  );
+  const callsA = [];
+  const generationA = 'generation-a';
+  const first = await createMathWorkflow(
+    store,
+    callsA,
+    'v1',
+    TEST_INTEGRITY_KEY,
+    () => generationA
+  ).invoke(createInvocation('generation-reuse'));
+  assert.equal(first.checkpoint.generationId, generationA);
+  assert.ok(callsA.every(call => call.generationId === generationA));
+  assert.equal(await store.delete(first.checkpoint.checkpointKey, {
+    expectedGenerationId: generationA,
+    expectedRevision: first.checkpoint.revision,
+  }), true);
+
+  await assert.rejects(
+    () => createMathWorkflow(
+      store,
+      [],
+      'v1',
+      TEST_INTEGRITY_KEY,
+      () => 'generation-b'
+    ).invoke(createInvocation('generation-reuse')),
+    error => error instanceof DurableWorkflowConflictError
+  );
+  nowMs += 1_001;
+  await assert.rejects(
+    () => createMathWorkflow(
+      store,
+      [],
+      'v1',
+      TEST_INTEGRITY_KEY,
+      () => generationA
+    ).invoke(createInvocation('generation-reuse')),
+    error => error instanceof DurableWorkflowConflictError
+  );
+
+  const callsB = [];
+  const generationB = 'generation-b';
+  const second = await createMathWorkflow(
+    store,
+    callsB,
+    'v1',
+    TEST_INTEGRITY_KEY,
+    () => generationB
+  ).invoke(createInvocation('generation-reuse'));
+  assert.equal(second.checkpoint.generationId, generationB);
+  assert.equal(second.checkpoint.revision, first.checkpoint.revision);
+  assert.ok(callsB.every(call => call.generationId === generationB));
+  assert.notEqual(callsA[0].executionId, callsB[0].executionId);
+  await assert.rejects(
+    () => store.delete(second.checkpoint.checkpointKey, {
+      expectedGenerationId: generationA,
+      expectedRevision: first.checkpoint.revision,
+    }),
+    error => error instanceof DurableWorkflowConflictError
+  );
+  assert.equal(await store.hasDeletionTombstone(first.checkpoint.checkpointKey, {
+    expectedGenerationId: generationA,
+    expectedRevision: first.checkpoint.revision,
+  }), true);
 });
 
 test('resume revalidates workflow version, scope, document version, and job identity', async () => {
@@ -1112,6 +1194,7 @@ test('explicit management recovery releases only an expired fenced lease', async
   const entered = new Promise(resolve => { firstEntered = resolve; });
   const release = new Promise(resolve => { releaseFirst = resolve; });
   const executionIds = [];
+  const executionAttemptIds = [];
   const adapter = new DurableRagWorkflowAdapter({
     id: 'managed-recovery-workflow',
     version: 'v1',
@@ -1123,6 +1206,7 @@ test('explicit management recovery releases only an expired fenced lease', async
       async execute(context) {
         calls += 1;
         executionIds.push(context.stepExecutionId);
+        executionAttemptIds.push(context.executionAttemptId);
         if (calls === 1) {
           firstEntered();
           await release;
@@ -1148,6 +1232,15 @@ test('explicit management recovery releases only an expired fenced lease', async
   const running = await store.load(checkpointKey);
   await assert.rejects(
     () => adapter.releaseExpiredLeaseForRecovery(invocation, {
+      expectedGenerationId: 'stale-generation',
+      expectedRevision: running.revision,
+      leaseOwnerId: running.activeStep.leaseOwnerId,
+    }),
+    error => error instanceof DurableWorkflowConflictError
+  );
+  await assert.rejects(
+    () => adapter.releaseExpiredLeaseForRecovery(invocation, {
+      expectedGenerationId: running.generationId,
       expectedRevision: running.revision,
       leaseOwnerId: running.activeStep.leaseOwnerId,
     }),
@@ -1161,12 +1254,17 @@ test('explicit management recovery releases only an expired fenced lease', async
   );
   await assert.rejects(
     () => adapter.releaseExpiredLeaseForRecovery(invocation, {
+      expectedGenerationId: running.generationId,
       expectedRevision: running.revision + 1,
       leaseOwnerId: running.activeStep.leaseOwnerId,
     }),
     error => error instanceof DurableWorkflowConflictError
   );
-  const recovered = await adapter.releaseExpiredLeaseForRecovery(invocation, {
+  const recovered = await adapter.releaseExpiredLeaseForManagement({
+    threadId: invocation.threadId,
+    scope,
+  }, {
+    expectedGenerationId: running.generationId,
     expectedRevision: running.revision,
     leaseOwnerId: running.activeStep.leaseOwnerId,
   });
@@ -1179,6 +1277,7 @@ test('explicit management recovery releases only an expired fenced lease', async
   assert.equal(resumed.checkpoint.status, 'completed');
   assert.equal(calls, 2);
   assert.equal(executionIds[0], executionIds[1]);
+  assert.notEqual(executionAttemptIds[0], executionAttemptIds[1]);
   releaseFirst();
   assert.ok(await firstOutcome instanceof DurableWorkflowConflictError);
 });
@@ -1227,11 +1326,123 @@ test('explicit expired-lease takeover is at-least-once with a stable execution I
   await assert.rejects(first, /checkpoint revision conflict/i);
 });
 
+test('management inspection revalidates integrity and exact server scope', async () => {
+  const store = new InMemoryDurableCheckpointStore();
+  const adapter = createMathWorkflow(store, []);
+  const invocation = createInvocation('management-inspect');
+  const completed = await adapter.invoke(invocation);
+
+  const inspected = await adapter.inspectCheckpoint({
+    threadId: invocation.threadId,
+    scope,
+  });
+  assert.equal(inspected.status, 'completed');
+  assert.equal(inspected.revision, completed.checkpoint.revision);
+  assert.deepEqual(inspected.state, { value: 8 });
+
+  assert.equal(await adapter.inspectCheckpoint({
+    threadId: invocation.threadId,
+    scope: { ...scope, corpusId: 'corpus-foreign' },
+  }), null);
+  await assert.rejects(
+    () => adapter.cancelCheckpointForManagement({
+      threadId: invocation.threadId,
+      scope: { ...scope, corpusId: 'corpus-foreign' },
+    }, {
+      expectedGenerationId: completed.checkpoint.generationId,
+      expectedRevision: completed.checkpoint.revision,
+    }),
+    error => error instanceof DurableWorkflowNotFoundError
+  );
+  await assert.rejects(
+    () => adapter.cancelCheckpointForManagement({
+      threadId: invocation.threadId,
+      scope,
+    }, {
+      expectedGenerationId: completed.checkpoint.generationId,
+      expectedRevision: completed.checkpoint.revision,
+    }),
+    error => error instanceof DurableWorkflowLeaseManagementError
+  );
+});
+
+test('management cancellation is revision-fenced and late work cannot commit', async () => {
+  const store = new InMemoryDurableCheckpointStore();
+  let enteredStep;
+  let releaseStep;
+  const entered = new Promise(resolve => { enteredStep = resolve; });
+  const release = new Promise(resolve => { releaseStep = resolve; });
+  const adapter = new DurableRagWorkflowAdapter({
+    id: 'management-cancel-workflow',
+    version: 'v1',
+    projectJobForCheckpoint(job) { return { requestDigest: job.requestDigest }; },
+    projectStateForCheckpoint(state) { return { resultArtifactId: state.resultArtifactId }; },
+    createInitialState() { return { resultArtifactId: null }; },
+    steps: [{
+      id: 'execute-ask',
+      async execute() {
+        enteredStep();
+        await release;
+        return { resultArtifactId: 'sha256:late-result' };
+      },
+    }],
+  }, store);
+  const invocation = {
+    ...createInvocation('management-cancel'),
+    job: { requestDigest: 'sha256:request-a' },
+  };
+  const runningOutcome = adapter.invoke(invocation).catch(error => error);
+  await entered;
+
+  const running = await adapter.inspectCheckpoint({
+    threadId: invocation.threadId,
+    scope,
+  });
+  assert.equal(running.status, 'running');
+  await assert.rejects(
+    () => adapter.cancelCheckpointForManagement({
+      threadId: invocation.threadId,
+      scope,
+    }, {
+      expectedGenerationId: 'stale-generation',
+      expectedRevision: running.revision,
+    }),
+    error => error instanceof DurableWorkflowConflictError
+  );
+  const cancelled = await adapter.cancelCheckpointForManagement({
+    threadId: invocation.threadId,
+    scope,
+  }, {
+    expectedGenerationId: running.generationId,
+    expectedRevision: running.revision,
+  });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.activeStep, undefined);
+
+  await assert.rejects(
+    () => adapter.cancelCheckpointForManagement({
+      threadId: invocation.threadId,
+      scope,
+    }, {
+      expectedGenerationId: running.generationId,
+      expectedRevision: running.revision,
+    }),
+    error => error instanceof DurableWorkflowConflictError
+  );
+  releaseStep();
+  assert.ok(await runningOutcome instanceof DurableWorkflowConflictError);
+  await assert.rejects(
+    () => adapter.invoke(invocation),
+    error => error instanceof DurableWorkflowCancelledError
+  );
+});
+
 function createMathWorkflow(
   store,
   calls,
   version = 'v1',
-  integrityKey = TEST_INTEGRITY_KEY
+  integrityKey = TEST_INTEGRITY_KEY,
+  generationIdFactory
 ) {
   return new DurableRagWorkflowAdapter({
     id: 'math-workflow',
@@ -1245,14 +1456,24 @@ function createMathWorkflow(
       {
         id: 'add',
         async execute(context) {
-          calls.push({ step: 'add', executionId: context.stepExecutionId });
+          calls.push({
+            step: 'add',
+            generationId: context.generationId,
+            executionId: context.stepExecutionId,
+            executionAttemptId: context.executionAttemptId,
+          });
           return { value: context.state.value + context.job.amount };
         },
       },
       {
         id: 'double',
         async execute(context) {
-          calls.push({ step: 'double', executionId: context.stepExecutionId });
+          calls.push({
+            step: 'double',
+            generationId: context.generationId,
+            executionId: context.stepExecutionId,
+            executionAttemptId: context.executionAttemptId,
+          });
           return { value: context.state.value * 2 };
         },
       },
@@ -1260,6 +1481,7 @@ function createMathWorkflow(
   }, store, {
     now: () => new Date('2026-07-15T00:00:00.000Z'),
     integrityKey,
+    ...(generationIdFactory ? { generationIdFactory } : {}),
   });
 }
 

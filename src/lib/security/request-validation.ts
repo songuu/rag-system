@@ -17,6 +17,7 @@ export type SupportedStorageBackend = 'memory' | 'milvus';
 export interface ValidatedAskInput {
   question: string;
   topK: number;
+  executionMode: 'sync' | 'durable';
   similarityThreshold: number;
   llmModel: string;
   embeddingModel: string;
@@ -117,6 +118,7 @@ export function validateAskInput(
     'embeddingModel',
     'storageBackend',
     'sessionId',
+    'executionMode',
     'corpusId',
     'useAgenticRAG',
     'useAdaptiveEntityRAG',
@@ -129,6 +131,12 @@ export function validateAskInput(
 
   const question = requiredString(raw.question, 'question', REQUEST_LIMITS.questionCharacters);
   const topK = boundedInteger(raw.topK, 'topK', 1, 50, 3);
+  const executionMode = optionalEnum(
+    raw.executionMode,
+    'executionMode',
+    ['sync', 'durable'] as const,
+    'sync'
+  );
   const similarityThreshold = boundedNumber(
     raw.similarityThreshold,
     'similarityThreshold',
@@ -169,6 +177,7 @@ export function validateAskInput(
   return {
     question,
     topK,
+    executionMode,
     similarityThreshold,
     llmModel,
     embeddingModel,

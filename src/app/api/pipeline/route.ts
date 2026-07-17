@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { 
   DocumentPipeline, 
+  MilvusHybridIngestOperationalError,
+  MilvusHybridIngestReconciliationRequiredError,
   loadDocument, 
   splitDocument, 
   DataSourceType 
@@ -118,6 +120,7 @@ export async function POST(request: NextRequest) {
         const result = await pipeline.processDocument(text, {
           filename: sourceName,
           metadata: scopeMetadata,
+          signal: request.signal,
         });
         
         return NextResponse.json({
@@ -146,7 +149,10 @@ export async function POST(request: NextRequest) {
           milvusConfig: getMilvusConfig(),
         });
         
-        const result = await pipeline.processDocument(url, { metadata: scopeMetadata });
+        const result = await pipeline.processDocument(url, {
+          metadata: scopeMetadata,
+          signal: request.signal,
+        });
         
         return NextResponse.json({
           success: true,
@@ -177,6 +183,7 @@ export async function POST(request: NextRequest) {
         const result = await pipeline.processDocument(videoUrl, {
           type: 'youtube',
           metadata: scopeMetadata,
+          signal: request.signal,
         });
         
         return NextResponse.json({
@@ -243,6 +250,7 @@ export async function POST(request: NextRequest) {
                 ? validateSourceName(item.source, 'document')
                 : undefined,
             metadata: scopeMetadata,
+            signal: request.signal,
           };
         });
         
@@ -315,6 +323,15 @@ function mapPipelineError(
       body: {
         error: { code: error.code, message: error.message },
         requestId: error.requestId,
+      },
+    };
+  }
+  if (error instanceof MilvusHybridIngestOperationalError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
       },
     };
   }
@@ -410,6 +427,7 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           type,
           filename,
           metadata: scopeMetadata,
+          signal: request.signal,
         });
         
         results.push({
@@ -417,7 +435,8 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           ...result,
           success: true,
         });
-      } catch {
+      } catch (error) {
+        if (error instanceof MilvusHybridIngestReconciliationRequiredError) throw error;
         results.push({
           filename,
           success: false,
