@@ -62,13 +62,17 @@ jobs:
           corepack prepare pnpm@$(node -p "require('./package.json').packageManager.split('@')[1]") --activate
 
       - name: Get pnpm store directory
+        id: pnpm-store
         shell: bash
-        run: echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+        run: |
+          store_path="$(pnpm store path --silent)"
+          test -n "$store_path"
+          echo "path=$store_path" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
-          path: ${{ env.STORE_PATH }}
+          path: ${{ steps.pnpm-store.outputs.path }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
