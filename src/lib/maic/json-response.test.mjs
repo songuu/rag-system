@@ -63,3 +63,19 @@ test('continues past an invalid balanced candidate to a later valid payload', ()
 test('returns null when no valid JSON payload exists', () => {
   assert.equal(parseMaicJsonResponse('No structured payload was generated.'), null);
 });
+
+test('prefers the final payload after the unpaired reasoning close regression from OpenMAIC #750', () => {
+  const response = [
+    'reasoning draft {"scene":{"title":"draft"}} </think>',
+    '```json',
+    '{"scene":{"title":"Upstream #750","content":"keep <think>literal</think>"}}',
+    '```',
+  ].join('\n');
+
+  assert.deepEqual(parseMaicJsonResponse(response), {
+    scene: {
+      title: 'Upstream #750',
+      content: 'keep <think>literal</think>',
+    },
+  });
+});

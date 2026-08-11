@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import ModelManagementPanel from './ModelManagementPanel';
 interface ParameterControlsProps {
   topK: number;
@@ -15,7 +15,27 @@ interface ParameterControlsProps {
   onToggle: () => void;
 }
 
+interface RuntimeModelOption {
+  name: string;
+  displayName?: string;
+  sizeFormatted?: string;
+  tag?: string;
+}
+
+interface AvailableModelsResponse {
+  success: boolean;
+  llmModels: RuntimeModelOption[];
+  embeddingModels: RuntimeModelOption[];
+  error?: string;
+  status?: {
+    ready?: boolean;
+    hasRecommendedLLM?: boolean;
+    hasRecommendedEmbedding?: boolean;
+  };
+}
+
 export default function ParameterControls({
+
   topK,
   threshold,
   llmModel,
@@ -28,24 +48,30 @@ export default function ParameterControls({
   onToggle
 }: ParameterControlsProps) {
   const [activeTab, setActiveTab] = useState<'retrieval' | 'model' | 'manage'>('retrieval');
-  const [availableModels, setAvailableModels] = useState<any>(null);
+  const [availableModels, setAvailableModels] = useState<AvailableModelsResponse | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
-
-  // 加载可用模型
-  useEffect(() => {
-    if (activeTab === 'model' || activeTab === 'manage') {
-      loadAvailableModels();
-    }
-  }, [activeTab]);
 
   const loadAvailableModels = async () => {
     setLoadingModels(true);
     try {
-      const response = await fetch('/api/ollama/models');
-      const data = await response.json();
+      const response = await fetch('/api/ollama/models', {
+        signal: AbortSignal.timeout(5_000),
+      });
+      const data = await response.json() as AvailableModelsResponse;
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '模型列表加载失败');
+      }
       setAvailableModels(data);
     } catch (error) {
       console.error('Failed to load models:', error);
+      setAvailableModels({
+        success: false,
+        llmModels: [],
+        embeddingModels: [],
+        error: error instanceof DOMException && error.name === 'TimeoutError'
+          ? '模型列表加载超过 5 秒，请检查模型服务'
+          : error instanceof Error ? error.message : '模型列表加载失败',
+      });
     } finally {
       setLoadingModels(false);
     }
@@ -78,8 +104,11 @@ export default function ParameterControls({
           >
             检索参数
           </button>
-          {/* <button
-            onClick={() => setActiveTab('model')}
+          <button
+            onClick={() => {
+              setActiveTab('model');
+              void loadAvailableModels();
+            }}
             className={`px-3 py-1 text-xs rounded-md transition-colors ${
               activeTab === 'model' 
                 ? 'bg-blue-600 text-white' 
@@ -97,7 +126,7 @@ export default function ParameterControls({
             }`}
           >
             🔧 模型管理
-          </button> */}
+          </button>
         </div>
         <button 
           onClick={onToggle}

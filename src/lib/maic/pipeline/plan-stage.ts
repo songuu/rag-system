@@ -7,6 +7,7 @@
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { parseMaicJsonResponse } from '../json-response';
+import { getMaicStageRoute } from '../model-routes';
 import type {
   SlidePage,
   KnowledgeNode,
@@ -110,7 +111,7 @@ export async function generateLectureScript(
   onPage?: (index: number) => void,
   language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<ScriptEntry[]> {
-  const concurrency = resolveMaicLlmConcurrency();
+  const concurrency = resolveMaicLlmConcurrency(getMaicStageRoute('script')?.provider);
   return mapPagesWithOrderedCallbacks(
     pages,
     concurrency,
@@ -181,7 +182,7 @@ export async function generateSlideFocusPlans(
   onPage?: (index: number) => void,
   language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<SlideFocusPlan[]> {
-  const concurrency = resolveMaicLlmConcurrency();
+  const concurrency = resolveMaicLlmConcurrency(getMaicStageRoute('focus')?.provider);
   return mapPagesWithOrderedCallbacks(
     pages,
     concurrency,

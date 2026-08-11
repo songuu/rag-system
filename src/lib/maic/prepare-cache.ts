@@ -16,7 +16,7 @@ import { getConfigSummary } from '../model-config';
 import { getMaicModelRoutesSnapshot } from './model-routes';
 import type { CoursePrepared, SlidePage } from './types';
 
-const CACHE_VERSION = 'maic-prepared-v2';
+const CACHE_VERSION = 'maic-prepared-v3';
 const PREPARE_TEMPERATURE = 0.3;
 const CACHE_DIR = 'uploads/maic-cache';
 
@@ -39,6 +39,10 @@ type MaicPrepareModelSignature = {
   llm_model: string;
   base_url: string;
   temperature: number;
+  request_policy: {
+    timeout_ms: number;
+    max_retries: number;
+  };
   stage_routes?: Record<string, string>;
 };
 
@@ -76,6 +80,10 @@ export function getMaicPrepareCacheIdentity(input: {
     llm_model: summary.llmModel,
     base_url: summary.baseUrl,
     temperature: PREPARE_TEMPERATURE,
+    request_policy: {
+      timeout_ms: summary.requestPolicy.timeoutMs,
+      max_retries: summary.requestPolicy.maxRetries,
+    },
   };
   const stageRoutes = getMaicModelRoutesSnapshot();
   if (Object.keys(stageRoutes).length > 0) {

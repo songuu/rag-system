@@ -7,6 +7,10 @@ interface LLMConfig {
   provider: string;
   model: string;
   reasoningModel: string;
+  fastModel: string;
+  rerankerModel: string;
+  requestPolicy: { timeoutMs: number; maxRetries: number };
+  reasoningRequestPolicy: { timeoutMs: number; maxRetries: number };
   baseUrl: string;
   hasApiKey: boolean;
 }
@@ -231,6 +235,23 @@ export function ModelConfigPanel() {
                   {config.llm?.reasoningModel || '-'}
                 </div>
               </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">快速模型</div>
+                <div className="text-slate-200 font-mono text-sm truncate" title={config.llm?.fastModel}>
+                  {config.llm?.fastModel || '-'}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-500 mb-1">重排模型</div>
+                <div className="text-slate-200 font-mono text-sm truncate" title={config.llm?.rerankerModel}>
+                  {config.llm?.rerankerModel || '-'}
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 rounded border border-slate-700 bg-slate-950/60 px-3 py-2 text-xs text-slate-400">
+              普通单次调用 {Math.round((config.llm?.requestPolicy?.timeoutMs || 0) / 1000)} 秒，
+              最多重试 {config.llm?.requestPolicy?.maxRetries ?? 0} 次；深度推理单次{' '}
+              {Math.round((config.llm?.reasoningRequestPolicy?.timeoutMs || 0) / 1000)} 秒。
             </div>
             <div className="mt-2 flex items-center justify-between">
               <div className="text-xs text-slate-500">

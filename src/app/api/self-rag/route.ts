@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createModelRequestTimeoutFetch } from '@/lib/model-config';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { getRagSystem } from '@/lib/rag-instance';
 import type { SimilaritySearchResult } from '@/lib/rag-system';
 
+const boundedModelFetch = createModelRequestTimeoutFetch(30_000);
 // Ollama 配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 const LLM_MODEL = 'llama3.1';
@@ -46,7 +48,7 @@ interface GenerationSegment {
 
 // 调用 LLM
 async function callLLM(prompt: string, temperature: number = 0.3): Promise<string> {
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+  const response = await boundedModelFetch(`${OLLAMA_BASE_URL}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

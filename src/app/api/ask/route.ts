@@ -23,6 +23,11 @@ import {
   createLLM, 
   createEmbedding,
 } from '@/lib/model-config';
+import {
+  RAG_AGENTIC_EXECUTION_BUDGET_MS,
+  RAG_GENERATION_EXECUTION_BUDGET_MS,
+  RAG_RETRIEVAL_EXECUTION_BUDGET_MS,
+} from '@/lib/rag/core/request-budgets';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import {
   RagKernel,
@@ -279,7 +284,6 @@ function createLegacyPolicyTransitions(
 }
 
 type RagFeatureRolloutMode = 'off' | 'shadow' | 'active';
-const RAG_RETRIEVAL_EXECUTION_BUDGET_MS = 30_000;
 const DEFAULT_HYBRID_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_ORDERED_CONTEXT_READ_TIMEOUT_MS = 5_000;
 const DEFAULT_HYBRID_SEARCH_TIMEOUT_MS = 5_000;
@@ -2176,7 +2180,7 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     const llmStartedAt = Date.now();
     const response = await invokeGenerationWithDeadline({
       modelKey: `answer:${llmModel}`,
-      timeoutMs: 30_000,
+      timeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
       signal: policyContext.signal,
       invoke: signal => llm.invoke(prompt, { signal }),
     });
@@ -2480,7 +2484,7 @@ async function handleAgenticQuery(
       budget: {
         maxLanes: retrievalPlan.lanes.length,
         maxEvidence: topK,
-        maxDurationMs: 45_000,
+        maxDurationMs: RAG_AGENTIC_EXECUTION_BUDGET_MS,
       },
     });
     const completed = result ?? await executeLegacy(policyContext.signal);
@@ -2731,7 +2735,7 @@ async function handleAdaptiveEntityQuery(
       budget: {
         maxLanes: retrievalPlan.lanes.length,
         maxEvidence: topK,
-        maxDurationMs: 45_000,
+        maxDurationMs: RAG_AGENTIC_EXECUTION_BUDGET_MS,
       },
     });
     const completed = result ?? await executeLegacy(policyContext.signal);

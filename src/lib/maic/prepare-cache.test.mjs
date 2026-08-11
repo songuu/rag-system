@@ -19,6 +19,7 @@ const {
   createMaicSourceHash,
   getMaicPrepareCacheIdentity,
 } = await import('./prepare-cache.ts');
+const { getModelFactory } = await import('../model-config.ts');
 const { getMaicStageRoute } = await import('./model-routes.ts');
 
 test('MAIC source hash preserves slide page boundaries', () => {
@@ -123,6 +124,43 @@ test('MAIC prepare cache identity changes when per-stage model routes change', (
     assert.deepEqual(routed.model_signature.stage_routes, { script: 'ollama:qwen3.7-max' });
   } finally {
     restoreEnv('MAIC_MODEL_ROUTES', previous);
+  }
+});
+
+
+test('MAIC prepare cache identity changes with the effective request policy', () => {
+  const previousTimeout = process.env.MODEL_REQUEST_TIMEOUT_MS;
+  const previousRetries = process.env.MODEL_MAX_RETRIES;
+  const factory = getModelFactory();
+  const input = {
+    sourceText: 'request policy sensitive content',
+    pages: [{
+      index: 0,
+      raw_text: 'request policy sensitive content',
+      description: '',
+      key_points: [],
+    }],
+  };
+
+  try {
+    process.env.MODEL_REQUEST_TIMEOUT_MS = '10000';
+    process.env.MODEL_MAX_RETRIES = '0';
+    factory.reloadConfig();
+    const first = getMaicPrepareCacheIdentity(input);
+
+    process.env.MODEL_REQUEST_TIMEOUT_MS = '20000';
+    factory.reloadConfig();
+    const second = getMaicPrepareCacheIdentity(input);
+
+    assert.notEqual(first.cache_key, second.cache_key);
+    assert.deepEqual(first.model_signature.request_policy, {
+      timeout_ms: 10_000,
+      max_retries: 0,
+    });
+  } finally {
+    restoreEnv('MODEL_REQUEST_TIMEOUT_MS', previousTimeout);
+    restoreEnv('MODEL_MAX_RETRIES', previousRetries);
+    factory.reloadConfig();
   }
 });
 

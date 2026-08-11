@@ -38,8 +38,17 @@ const legacyGraphCacheCleanupByDirectory = new Map<
 
 type MiroFishCacheArtifact = 'ontology' | 'profile' | 'profile_batch' | 'graph';
 
+const MIROFISH_ALGORITHM_REVISIONS: Partial<Record<MiroFishCacheArtifact, string>> = {
+  // WHY: parser/sampling and structured profile coercion change cached output semantics
+  // without changing the provider contract. Keep graph extraction on its existing key.
+  ontology: 'ontology-generation-v2',
+  profile: 'profile-generation-v2',
+  profile_batch: 'profile-generation-v2',
+};
+
 interface MiroFishModelSignature {
   artifact: MiroFishCacheArtifact;
+  algorithm_revision?: string;
   provider: string;
   model_name: string;
   base_url: string;
@@ -260,9 +269,11 @@ function buildModelSignature(
   temperature: number,
   modelOverride?: ModelOverride
 ): MiroFishModelSignature {
+  const algorithmRevision = MIROFISH_ALGORITHM_REVISIONS[artifact];
   if (modelOverride) {
     return {
       artifact,
+      ...(algorithmRevision ? { algorithm_revision: algorithmRevision } : {}),
       provider: modelOverride.provider,
       model_name: modelOverride.modelName,
       base_url: modelOverride.baseUrl ?? '',
@@ -273,6 +284,7 @@ function buildModelSignature(
   const summary = getConfigSummary();
   return {
     artifact,
+    ...(algorithmRevision ? { algorithm_revision: algorithmRevision } : {}),
     provider: summary.provider,
     model_name: summary.llmModel,
     base_url: summary.baseUrl,

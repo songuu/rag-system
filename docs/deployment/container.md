@@ -24,9 +24,14 @@ Copy-Item .env.container.example .env.container
 2. 如果使用默认 local 模式，先确保宿主机 Ollama 正在运行，并已准备模型：
 
 ```powershell
+ollama pull qwen2.5:0.5b
 ollama pull llama3.1
 ollama pull nomic-embed-text
 ```
+
+`qwen2.5:0.5b` 默认承担 Agentic 的分析、改写和重排等高频任务。切换到云 provider 时不要保留
+Ollama 专用的 `FAST_LLM_MODEL` / `RERANKER_MODEL` 覆盖；省略它们会按当前 provider
+解析轻量默认模型。
 
 3. 启动 app + Milvus：
 
@@ -65,7 +70,7 @@ docker compose --env-file .env.container -f docker-compose.yml -f docker-compose
 
 | 类别 | 变量 |
 |------|------|
-| LLM | `MODEL_PROVIDER`, `OPENAI_API_KEY`, `CUSTOM_API_KEY`, `CUSTOM_BASE_URL`, `OLLAMA_BASE_URL` |
+| LLM | `MODEL_PROVIDER`, `FAST_LLM_MODEL`, `RERANKER_MODEL`, `MODEL_REQUEST_TIMEOUT_MS`, `MODEL_MAX_RETRIES`, `REASONING_REQUEST_TIMEOUT_MS`, `REASONING_MAX_RETRIES`, provider keys/base URLs |
 | Embedding | `EMBEDDING_PROVIDER`, `SILICONFLOW_API_KEY`, `OPENAI_EMBEDDING_MODEL`, `CUSTOM_EMBEDDING_DIMENSION` |
 | Milvus/Zilliz | `MILVUS_PROVIDER`, `MILVUS_LOCAL_ADDRESS`, `MILVUS_ZILLIZ_ENDPOINT`, `MILVUS_ZILLIZ_TOKEN`, `MILVUS_DEFAULT_DIMENSION` |
 | API 安全边界 | `RAG_ACCESS_MODE`, `RAG_SINGLE_TENANT_TOKEN`, `RAG_TENANT_ISOLATION_REQUIRED`, `RAG_ALLOWED_LLM_MODELS`, `RAG_ALLOWED_EMBEDDING_MODELS` |

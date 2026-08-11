@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  getModelFactory,
-  getConfigSummary,
-  ModelProvider,
-  ModelType,
-  DynamicModelEntry,
-} from '@/lib/model-config';
+import { getModelFactory, getConfigSummary } from '@/lib/model-config';
+import type { ModelProvider, ModelType } from '@/lib/model-config';
 import {
   getEmbeddingConfigSummary,
   validateEmbeddingConfig,
@@ -34,6 +29,10 @@ export async function GET() {
           provider: summary.provider,
           model: summary.llmModel,
           reasoningModel: summary.reasoningModel,
+          fastModel: summary.fastLlmModel,
+          rerankerModel: summary.rerankerModel,
+          requestPolicy: summary.requestPolicy,
+          reasoningRequestPolicy: summary.reasoningRequestPolicy,
           baseUrl: summary.baseUrl,
           hasApiKey: summary.hasApiKey,
         },

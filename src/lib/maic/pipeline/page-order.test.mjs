@@ -201,13 +201,16 @@ test('mapPagesWithOrderedCallbacks clamps concurrency above page count', async (
   assert.deepEqual(order, [0, 1]);
 });
 
-test('resolveMaicLlmConcurrency: default 4 when env unset', () => {
-  const prev = process.env.MAIC_LLM_CONCURRENCY;
+test('resolveMaicLlmConcurrency uses provider-aware safe defaults', () => {
+  const previous = process.env.MAIC_LLM_CONCURRENCY;
   delete process.env.MAIC_LLM_CONCURRENCY;
   try {
-    assert.equal(resolveMaicLlmConcurrency(), 4);
+    assert.equal(resolveMaicLlmConcurrency('ollama'), 1);
+    assert.equal(resolveMaicLlmConcurrency('lemonade'), 1);
+    assert.equal(resolveMaicLlmConcurrency('openai'), 4);
   } finally {
-    if (prev !== undefined) process.env.MAIC_LLM_CONCURRENCY = prev;
+    if (previous === undefined) delete process.env.MAIC_LLM_CONCURRENCY;
+    else process.env.MAIC_LLM_CONCURRENCY = previous;
   }
 });
 
@@ -221,7 +224,7 @@ test('resolveMaicLlmConcurrency: clamps to [1, 16]', () => {
     process.env.MAIC_LLM_CONCURRENCY = '8';
     assert.equal(resolveMaicLlmConcurrency(), 8);
     process.env.MAIC_LLM_CONCURRENCY = 'not-a-number';
-    assert.equal(resolveMaicLlmConcurrency(), 4);
+    assert.equal(resolveMaicLlmConcurrency('openai'), 4);
   } finally {
     if (prev === undefined) delete process.env.MAIC_LLM_CONCURRENCY;
     else process.env.MAIC_LLM_CONCURRENCY = prev;

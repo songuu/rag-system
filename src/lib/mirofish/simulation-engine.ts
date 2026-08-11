@@ -6,6 +6,7 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
 import { buildRoundContext, selectPostingAgents } from './simulation-context';
 import type {
@@ -25,6 +26,18 @@ interface AgentDecision {
   sentiment: 'positive' | 'neutral' | 'negative';
   topics: string[];
 }
+
+const CONTENT_REQUIRED_ACTIONS = new Set<AgentActionType>(['post', 'comment', 'quote', 'debate']);
+const TARGET_REQUIRED_ACTIONS = new Set<AgentActionType>([
+  'comment',
+  'like',
+  'repost',
+  'follow',
+  'debate',
+  'quote',
+  'upvote',
+  'downvote',
+]);
 
 const AGENT_DECISION_PROMPT = `你是一个社交媒体用户模拟器。你需要扮演一个特定的角色，在社交媒体上做出行为。
 
@@ -212,37 +225,57 @@ export class SimulationEngine {
 
   /** 解析 LLM 决策 */
   private parseDecision(response: string): AgentDecision {
-    const cleaned = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    const data = parseMiroFishJsonObjectResponse(response);
+    const action = this.validateAction(data.action);
+    const sentiment = this.validateSentiment(data.sentiment);
 
-    if (!jsonMatch) {
-      throw new Error('无法解析Agent决策');
+    if (typeof data.content !== 'string') {
+      throw new Error('Invalid simulation decision: content must be a string.');
+    }
+    if (CONTENT_REQUIRED_ACTIONS.has(action) && data.content.trim().length === 0) {
+      throw new Error('Invalid simulation decision: content is required for this action.');
     }
 
-    try {
-      const data = JSON.parse(jsonMatch[0]);
-      return {
-        action: this.validateAction(data.action),
-        content: String(data.content || ''),
-        target_id: data.target_id || undefined,
-        sentiment: this.validateSentiment(data.sentiment),
-        topics: Array.isArray(data.topics) ? data.topics.map(String) : [],
-      };
-    } catch {
-      throw new Error('JSON解析失败');
+    if (!Array.isArray(data.topics) || !data.topics.every((topic): topic is string => typeof topic === 'string')) {
+      throw new Error('Invalid simulation decision: topics must be a string array.');
     }
+
+    let targetId: string | undefined;
+    if (data.target_id !== undefined && data.target_id !== null) {
+      if (typeof data.target_id !== 'string') {
+        throw new Error('Invalid simulation decision: target_id must be a string or null.');
+      }
+      targetId = data.target_id.trim() || undefined;
+    }
+    if (TARGET_REQUIRED_ACTIONS.has(action) && targetId === undefined) {
+      throw new Error('Invalid simulation decision: target_id is required for this action.');
+    }
+
+    return {
+      action,
+      content: data.content,
+      target_id: targetId,
+      sentiment,
+      topics: data.topics,
+    };
   }
 
   /** 验证动作类型 */
-  private validateAction(action: string): AgentActionType {
+  private validateAction(action: unknown): AgentActionType {
     const valid: AgentActionType[] = ['post', 'comment', 'like', 'repost', 'quote', 'follow', 'debate', 'upvote', 'downvote'];
-    return valid.includes(action as AgentActionType) ? (action as AgentActionType) : 'post';
+    if (typeof action !== 'string' || !valid.includes(action as AgentActionType)) {
+      throw new Error('Invalid simulation decision: unsupported action.');
+    }
+    return action as AgentActionType;
   }
 
   /** 验证情感 */
-  private validateSentiment(sentiment: string): 'positive' | 'neutral' | 'negative' {
+  private validateSentiment(sentiment: unknown): 'positive' | 'neutral' | 'negative' {
     const valid = ['positive', 'neutral', 'negative'];
-    return valid.includes(sentiment) ? (sentiment as 'positive' | 'neutral' | 'negative') : 'neutral';
+    if (typeof sentiment !== 'string' || !valid.includes(sentiment)) {
+      throw new Error('Invalid simulation decision: unsupported sentiment.');
+    }
+    return sentiment as 'positive' | 'neutral' | 'negative';
   }
 
   /** 选择活跃 Agent */

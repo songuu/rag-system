@@ -8,6 +8,7 @@
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { parseMaicJsonResponse } from '../json-response';
+import { getMaicStageRoute } from '../model-routes';
 import type { SlidePage, KnowledgeNode, CourseGenerationLanguage } from '../types';
 import { mapPagesWithOrderedCallbacks, resolveMaicLlmConcurrency } from './page-order';
 
@@ -62,7 +63,7 @@ export async function describePages(
   onPage?: (index: number) => void,
   language: CourseGenerationLanguage = 'zh-CN'
 ): Promise<SlidePage[]> {
-  const concurrency = resolveMaicLlmConcurrency();
+  const concurrency = resolveMaicLlmConcurrency(getMaicStageRoute('describe')?.provider);
   return mapPagesWithOrderedCallbacks(
     pages,
     concurrency,
@@ -81,12 +82,11 @@ export async function describePages(
           description: parsed?.description ?? page.raw_text.slice(0, 200),
           key_points: Array.isArray(parsed?.key_points) ? parsed.key_points : [],
         };
-      } catch {
-        return {
-          ...page,
-          description: page.raw_text.slice(0, 200),
-          key_points: [],
-        };
+      } catch (error) {
+        throw new Error(
+          `MAIC describe model request failed for page ${page.index}.`,
+          { cause: error }
+        );
       }
     },
     onPage

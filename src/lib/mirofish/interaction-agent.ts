@@ -7,6 +7,7 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
 import type {
   EntityProfile,
@@ -14,6 +15,8 @@ import type {
   InterviewResponse,
   ModelOverride,
 } from './types';
+
+const SAFE_INTERVIEW_ANSWER = '抱歉，我现在无法回答这个问题。';
 
 const INTERVIEW_PROMPT = `你正在扮演以下角色接受采访。请严格按照人设回答。
 
@@ -87,14 +90,17 @@ export class InteractionAgent {
       ]);
 
       const data = this.parseResponse(response.content as string);
+      if (typeof data.answer !== 'string' || data.answer.trim().length === 0) {
+        throw new Error('Invalid interview response.');
+      }
 
       return {
         agent_id: profile.entity_id,
         agent_name: profile.entity_name,
         question,
-        answer: String(data.answer || response.content),
+        answer: data.answer,
         sentiment: this.validateSentiment(String(data.sentiment || 'neutral')),
-        confidence: typeof data.confidence === 'number' ? data.confidence : 0.5,
+        confidence: normalizeConfidence(data.confidence),
         timestamp: new Date().toISOString(),
       };
     } catch {
@@ -102,7 +108,7 @@ export class InteractionAgent {
         agent_id: profile.entity_id,
         agent_name: profile.entity_name,
         question,
-        answer: '抱歉，我现在无法回答这个问题。',
+        answer: SAFE_INTERVIEW_ANSWER,
         sentiment: 'neutral',
         confidence: 0,
         timestamp: new Date().toISOString(),
@@ -126,18 +132,7 @@ export class InteractionAgent {
 
   /** 解析响应 */
   private parseResponse(response: string): Record<string, unknown> {
-    const cleaned = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) {
-      return { answer: response, sentiment: 'neutral', confidence: 0.5 };
-    }
-
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      return { answer: response, sentiment: 'neutral', confidence: 0.5 };
-    }
+    return parseMiroFishJsonObjectResponse(response);
   }
 
   /** 验证情感 */
@@ -145,6 +140,15 @@ export class InteractionAgent {
     const valid = ['positive', 'neutral', 'negative'];
     return valid.includes(sentiment) ? sentiment : 'neutral';
   }
+}
+
+function normalizeConfidence(value: unknown): number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && value >= 0
+    && value <= 1
+    ? value
+    : 0.5;
 }
 
 export function getInteractionAgent(modelOverride?: ModelOverride): InteractionAgent {

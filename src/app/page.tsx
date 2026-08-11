@@ -22,6 +22,8 @@ import AdaptiveEntityWorkflowPanel from '@/components/AdaptiveEntityWorkflowPane
 import SuggestedQuestions from '@/components/SuggestedQuestions';
 import ConversationExpansionWorkflow from '@/components/ConversationExpansionWorkflow';
 import { ModelConfigPanel } from '@/components/ModelConfigPanel';
+import { RAG_CLIENT_REQUEST_TIMEOUT_MS } from '@/lib/rag/core/request-budgets';
+const ASK_SLOW_HINT_MS = 8_000;
 
 interface Message {
   id: string;
@@ -80,6 +82,7 @@ export default function HomePage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isRequestSlow, setIsRequestSlow] = useState(false);
   const [topK, setTopK] = useState(3);
   const [threshold, setThreshold] = useState(0.0);
   const [llmModel, setLlmModel] = useState('llama3.1');
@@ -149,6 +152,13 @@ export default function HomePage() {
   const [showExpansionWorkflow, setShowExpansionWorkflow] = useState(true);
 
   const socketRef = useRef<Socket | null>(null);
+  const askAbortControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    askAbortControllerRef.current?.abort(
+      new DOMException('页面已关闭', 'AbortError')
+    );
+  }, []);
 
   // 初始化 WebSocket
   useEffect(() => {
@@ -793,6 +803,10 @@ export default function HomePage() {
   const handleSuggestionClick = (question: string) => {
     setInput(question);
   };
+  const handleCancelRequest = () => {
+    askAbortControllerRef.current?.abort(new DOMException('用户已取消请求', 'AbortError'));
+  };
+
 
   // 提交问题
   const handleSubmit = async (e: React.FormEvent) => {
@@ -813,14 +827,23 @@ export default function HomePage() {
     setShowQueryAnalysis(false);
     setShowQueryProcessing(true);
 
-    await saveMessageToDB({
-      id: userMessageId,
-      type: 'user',
-      content: input.trim(),
-      timestamp: new Date()
-    });
-
+    const requestController = new AbortController();
+    const requestTimeoutSignal = AbortSignal.timeout(RAG_CLIENT_REQUEST_TIMEOUT_MS);
+    const requestSignal = AbortSignal.any([
+      requestController.signal,
+      requestTimeoutSignal,
+    ]);
+    askAbortControllerRef.current = requestController;
+    setIsRequestSlow(false);
+    const slowHintTimer = window.setTimeout(() => setIsRequestSlow(true), ASK_SLOW_HINT_MS);
     try {
+      await saveMessageToDB({
+        id: userMessageId,
+        type: 'user',
+        content: input.trim(),
+        timestamp: new Date()
+      });
+
       // 清空之前的 Agentic RAG 状态
       if (useAgenticRAG) {
         setAgenticWorkflow(null);
@@ -848,6 +871,7 @@ export default function HomePage() {
         headers: {
           'Content-Type': 'application/json',
         },
+        signal: requestSignal,
         body: JSON.stringify({
           question: input.trim(),
           topK,
@@ -1110,14 +1134,24 @@ export default function HomePage() {
       }
     } catch (error) {
       console.error('Error:', error);
+      const failureMessage = requestTimeoutSignal.aborted
+        ? `请求超过 ${RAG_CLIENT_REQUEST_TIMEOUT_MS / 1000} 秒，已自动停止。建议切换到“模型选择”中的轻量模型后重试。`
+        : requestController.signal.aborted
+          ? '请求已取消。'
+          : `抱歉，处理您的问题时出现了错误：${error instanceof Error ? error.message : '未知错误'}`;
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
-        content: `抱歉，处理您的问题时出现了错误：${error instanceof Error ? error.message : '未知错误'}`,
+        content: failureMessage,
         timestamp: new Date()
       };
       setMessages(prev => [...prev, errorMessage]);
     } finally {
+      window.clearTimeout(slowHintTimer);
+      if (askAbortControllerRef.current === requestController) {
+        askAbortControllerRef.current = null;
+      }
+      setIsRequestSlow(false);
       setIsLoading(false);
       setInput('');
       setShowQueryProcessing(false);
@@ -1422,7 +1456,12 @@ export default function HomePage() {
                     <div className="bg-gray-100 rounded-lg px-4 py-2">
                       <div className="flex items-center space-x-2">
                         <div className="typing-indicator"></div>
-                        <span className="text-sm text-gray-600">AI 正在思考...</span>
+                        <span className="text-sm text-gray-600">
+                          {isRequestSlow ? '当前模型响应较慢，可取消后切换轻量模型' : 'AI 正在思考...'}
+                        </span>
+                        <button type="button" onClick={handleCancelRequest} className="text-xs text-red-600 hover:text-red-800">
+                          取消
+                        </button>
                       </div>
                     </div>
                   </div>

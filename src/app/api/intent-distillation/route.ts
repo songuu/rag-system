@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as fs from 'fs';
 import * as path from 'path';
+import { createModelRequestTimeoutFetch } from '@/lib/model-config';
 
+const boundedModelFetch = createModelRequestTimeoutFetch(30_000);
 // Ollama 配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 const LLM_MODEL = 'llama3.1';
@@ -26,7 +28,7 @@ function loadCentroids(): Record<string, any> {
 // 获取向量
 async function getEmbedding(text: string): Promise<number[]> {
   try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/embeddings`, {
+    const response = await boundedModelFetch(`${OLLAMA_BASE_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -130,7 +132,7 @@ async function expandQueryKeywords(query: string, domainContext: any): Promise<{
 }`;
 
   try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    const response = await boundedModelFetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -217,7 +219,7 @@ async function analyzeIntentWithLLM(query: string, domainContext: any): Promise<
 }`;
 
   try {
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
+    const response = await boundedModelFetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

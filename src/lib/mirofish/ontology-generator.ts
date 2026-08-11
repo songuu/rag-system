@@ -6,7 +6,9 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
+import { sliceWithoutSplittingSurrogate } from './utf16';
 import {
   ONTOLOGY_CONSTANTS,
   type Ontology,
@@ -22,6 +24,28 @@ const ONTOLOGY_OLLAMA_OPTIONS = {
   format: 'json',
   num_ctx: 32768,
 };
+
+export function sampleOntologyText(text: string): string {
+  const maxLength = ONTOLOGY_CONSTANTS.MAX_TEXT_LENGTH;
+  if (text.length <= maxLength) return text;
+
+  const separator = `\n\n...(原文共${text.length}字，已按首/中/尾等距采样；中间内容省略)...\n\n`;
+  const contentBudget = maxLength - (separator.length * 2);
+  const baseSampleLength = Math.floor(contentBudget / 3);
+  const remainder = contentBudget % 3;
+  const headLength = baseSampleLength + (remainder > 0 ? 1 : 0);
+  const middleLength = baseSampleLength + (remainder > 1 ? 1 : 0);
+  const tailLength = baseSampleLength;
+  const middleStart = Math.floor((text.length - middleLength) / 2);
+
+  return [
+    sliceWithoutSplittingSurrogate(text, 0, headLength),
+    separator,
+    sliceWithoutSplittingSurrogate(text, middleStart, middleStart + middleLength),
+    separator,
+    sliceWithoutSplittingSurrogate(text, text.length - tailLength, text.length),
+  ].join('');
+}
 
 // 本体生成的系统提示词
 const ONTOLOGY_SYSTEM_PROMPT = `你是一个专业的知识图谱本体设计专家。你的任务是分析给定的文本内容和模拟需求，设计适合**社交媒体舆论模拟**的实体和关系类型定义。
@@ -216,14 +240,7 @@ export class OntologyGenerator {
     additionalContext?: string
   ): string {
     // 合并文本
-    let combinedText = texts.join('\n\n---\n\n');
-    const originalLength = combinedText.length;
-
-    // 如果文本超过限制，截断
-    if (combinedText.length > ONTOLOGY_CONSTANTS.MAX_TEXT_LENGTH) {
-      combinedText = combinedText.substring(0, ONTOLOGY_CONSTANTS.MAX_TEXT_LENGTH);
-      combinedText += `\n\n...(原文共${originalLength}字，已截取前${ONTOLOGY_CONSTANTS.MAX_TEXT_LENGTH}字用于本体分析)...`;
-    }
+    const combinedText = sampleOntologyText(texts.join('\n\n---\n\n'));
 
     let message = `## 模拟需求\n\n${simulationRequirement}\n\n## 文档内容\n\n${combinedText}`;
 
@@ -249,48 +266,7 @@ export class OntologyGenerator {
    * 解析 LLM 返回的 JSON
    */
   private parseJsonResponse(response: string): Partial<Ontology> {
-    // 移除代码块标记
-    let cleaned = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
-
-    // 尝试提取 JSON 对象
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('无法从响应中提取 JSON');
-    }
-
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      // 尝试修复常见的 JSON 问题
-      cleaned = this.fixJsonIssues(jsonMatch[0]);
-      try {
-        return JSON.parse(cleaned);
-      } catch {
-        throw new Error('无法解析 JSON 响应');
-      }
-    }
-  }
-
-  /**
-   * 修复常见 JSON 问题
-   */
-  private fixJsonIssues(jsonStr: string): string {
-    let fixed = jsonStr;
-
-    // 修复尾随逗号
-    fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-
-    // 修复缺少逗号
-    fixed = fixed.replace(/}(\s*){/g, '},$1{');
-    fixed = fixed.replace(/](\s*)\[/g, '],$1[');
-
-    // 修复属性名没有引号
-    fixed = fixed.replace(/(\{|\,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
-
-    // 修复中文冒号
-    fixed = fixed.replace(/：/g, ':');
-
-    return fixed;
+    return parseMiroFishJsonObjectResponse(response) as Partial<Ontology>;
   }
 
   /**
@@ -513,23 +489,30 @@ function normalizeAttributes(attributes: unknown): OntologyAttribute[] {
   if (!Array.isArray(attributes)) return [];
   const usedAttributeNames = new Set<string>();
   return attributes
-    .filter((attribute): attribute is Partial<OntologyAttribute> => (
-      !!attribute && typeof attribute === 'object'
+    .filter((attribute): attribute is string | Partial<OntologyAttribute> => (
+      typeof attribute === 'string'
+      || (!!attribute && typeof attribute === 'object')
     ))
-    .map((attribute, index) => ({
-      name: makeUniqueName(
-        normalizeAttributeName(
-          typeof attribute.name === 'string' ? attribute.name : `field_${index + 1}`
+    .map((attribute, index) => {
+      const rawAttribute = typeof attribute === 'string'
+        ? { name: attribute }
+        : attribute;
+
+      return {
+        name: makeUniqueName(
+          normalizeAttributeName(
+            typeof rawAttribute.name === 'string' ? rawAttribute.name : `field_${index + 1}`
+          ),
+          usedAttributeNames
         ),
-        usedAttributeNames
-      ),
-      type: typeof attribute.type === 'string' && attribute.type.trim()
-        ? attribute.type.trim()
-        : 'text',
-      description: typeof attribute.description === 'string'
-        ? attribute.description.trim()
-        : '',
-    }));
+        type: typeof rawAttribute.type === 'string' && rawAttribute.type.trim()
+          ? rawAttribute.type.trim()
+          : 'text',
+        description: typeof rawAttribute.description === 'string'
+          ? rawAttribute.description.trim()
+          : '',
+      };
+    });
 }
 
 function resolveEntityTypeName(name: string, entityNameMap: Map<string, string>): string {

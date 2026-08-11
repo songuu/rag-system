@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import type { ModelOverride } from '@/lib/mirofish/types';
+import { categorizeModelName } from '@/lib/model-catalog';
 
 interface ModelSelectorProps {
   value: ModelOverride | null;
@@ -40,6 +41,9 @@ export default function ModelSelector({ value, onChange, onSave }: ModelSelector
       baseUrl: DEFAULT_BASE_URLS.ollama,
     }
   );
+  const hasHighLatencyRisk = categorizeModelName(draft.modelName) === 'reasoning'
+    || /(?:32b|70b|72b|405b|reasoner)/i.test(draft.modelName);
+
 
   const handleProviderChange = (provider: ModelOverride['provider']) => {
     setDraft({
@@ -149,6 +153,11 @@ export default function ModelSelector({ value, onChange, onSave }: ModelSelector
                 placeholder={DEFAULT_MODELS[draft.provider]}
                 className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
               />
+              {hasHighLatencyRisk && (
+                <p className="mt-2 text-xs text-amber-300">
+                  当前模型偏重。图谱、画像和报告会多次调用，可能触发运行时请求上限；建议改用轻量对话模型。
+                </p>
+              )}
             </div>
 
             {/* Base URL */}

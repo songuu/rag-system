@@ -1,19 +1,29 @@
 const MAIC_LLM_CONCURRENCY_MIN = 1;
 const MAIC_LLM_CONCURRENCY_MAX = 16;
-const MAIC_LLM_CONCURRENCY_DEFAULT = 4;
+const MAIC_LOCAL_LLM_CONCURRENCY_DEFAULT = 1;
+const MAIC_REMOTE_LLM_CONCURRENCY_DEFAULT = 4;
+const LOCAL_MODEL_PROVIDERS = new Set(['ollama', 'lemonade']);
 
 // MAIC_LLM_CONCURRENCY 控制 describe/script/focus 三阶段每阶段 LLM 并发上限。
 // 阶段间已并行 (script ∥ focus ∥ questions), 全局峰值 ≈ 2*concurrency + 1。
-// 默认 4 与历史行为一致; clamp 到 [1, 16] 防止 provider 限流。
-export function resolveMaicLlmConcurrency(): number {
+// 本地模型默认 1，避免同一 GPU 被峰值 9 个请求压出长尾；远程 provider 默认 4。
+export function resolveMaicLlmConcurrency(provider?: string): number {
+  const defaultConcurrency = resolveDefaultConcurrency(provider);
   const raw = process.env.MAIC_LLM_CONCURRENCY;
-  if (!raw) return MAIC_LLM_CONCURRENCY_DEFAULT;
+  if (!raw) return defaultConcurrency;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return MAIC_LLM_CONCURRENCY_DEFAULT;
+  if (!Number.isFinite(parsed)) return defaultConcurrency;
   return Math.max(
     MAIC_LLM_CONCURRENCY_MIN,
     Math.min(MAIC_LLM_CONCURRENCY_MAX, parsed)
   );
+}
+
+function resolveDefaultConcurrency(provider?: string): number {
+  const effectiveProvider = provider || process.env.MODEL_PROVIDER || 'ollama';
+  return LOCAL_MODEL_PROVIDERS.has(effectiveProvider.toLowerCase())
+    ? MAIC_LOCAL_LLM_CONCURRENCY_DEFAULT
+    : MAIC_REMOTE_LLM_CONCURRENCY_DEFAULT;
 }
 
 export async function mapPagesWithOrderedCallbacks<TPage extends { index: number }, TResult>(

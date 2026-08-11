@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import { getConfigSummary, getCurrentProvider, getReasoningProvider } from '@/lib/model-config';
+import {
+  createModelRequestTimeoutFetch,
+  getConfigSummary,
+  getCurrentProvider,
+  getReasoningProvider,
+} from '@/lib/model-config';
 import { getEmbeddingConfigSummary, getEmbeddingProvider } from '@/lib/embedding-config';
 import {
   OPENMAIC_LATEST_MODEL_NOTES,
@@ -248,8 +253,9 @@ function generateConfiguredOllamaFallbackModels(config: ProviderConfig) {
 }
 
 // GET: 获取模型列表（统一处理所有提供商）
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const fetchWithDeadline = createModelRequestTimeoutFetch(5_000);
     // 获取当前提供商配置
     const providerConfig = getProviderConfig();
 
@@ -267,9 +273,10 @@ export async function GET() {
     // 如果需要加载 Ollama 模型（任何一个提供商使用 Ollama）
     if (providerConfig.needsOllamaModels) {
       try {
-        const statusResponse = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
+        const statusResponse = await fetchWithDeadline(`${OLLAMA_BASE_URL}/api/tags`, {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json' },
+          signal: request.signal,
         });
 
         if (statusResponse.ok) {

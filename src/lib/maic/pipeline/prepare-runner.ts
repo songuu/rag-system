@@ -184,45 +184,14 @@ class PrepareRunner {
       });
     });
 
-    // 3. 阶段图重排:
-    //   - script 仅依赖 described         → 立即开始
-    //   - tree → questions / focus        → tree 完成后, questions 和 focus 也并行
-    //   三条支路同时跑, wall time = max(script, tree+max(questions, focus))。
-    const scriptPromise = generateLectureScript(scriptLlm, described, idx => {
-      emit({
-        type: 'prepare:script',
-        data: {
-          page_index: idx,
-          total_pages: described.length,
-          progress: (idx + 1) / described.length,
-        },
-      });
+    const { script, tree, questions, focusPlans } = await runPrepareDependencyGraph({
+      described,
+      scriptLlm,
+      treeLlm,
+      questionsLlm,
+      focusLlm,
+      emit,
     });
-
-    emit({ type: 'prepare:tree', data: { message: '正在构建知识树' } });
-    const treePromise = buildKnowledgeTree(treeLlm, described).then(tree => {
-      emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
-      emit({ type: 'prepare:focus', data: { message: '解析 PPT 重点悬停策略' } });
-      const questionsP = generateActiveQuestions(questionsLlm, tree);
-      const focusP = generateSlideFocusPlans(focusLlm, described, tree, idx => {
-        emit({
-          type: 'prepare:focus',
-          data: {
-            page_index: idx,
-            total_pages: described.length,
-            progress: (idx + 1) / described.length,
-          },
-        });
-      });
-      return Promise.all([questionsP, focusP]).then(([questions, focusPlans]) => ({
-        tree,
-        questions,
-        focusPlans,
-      }));
-    });
-
-    const [script, treeBundle] = await Promise.all([scriptPromise, treePromise]);
-    const { tree, questions, focusPlans } = treeBundle;
 
     emit({ type: 'prepare:scenes', data: { message: '生成 OpenMAIC 场景与动作' } });
     const { stage, scenes } = buildCourseStage(described, tree, questions, { focusPlans });
@@ -250,6 +219,64 @@ class PrepareRunner {
       data: { course_id: courseId, message: '课程准备完成', progress: 1 },
     });
   }
+}
+
+interface PrepareDependencyGraphInput {
+  described: SlidePage[];
+  scriptLlm: BaseChatModel;
+  treeLlm: BaseChatModel;
+  questionsLlm: BaseChatModel;
+  focusLlm: BaseChatModel;
+  emit: (event: PrepareEvent) => void;
+}
+
+/** Run the post-describe preparation branches using their production dependency graph. */
+export async function runPrepareDependencyGraph(input: PrepareDependencyGraphInput) {
+  const {
+    described,
+    scriptLlm,
+    treeLlm,
+    questionsLlm,
+    focusLlm,
+    emit,
+  } = input;
+
+  // script only depends on described pages, while questions/focus wait for the tree.
+  const scriptPromise = generateLectureScript(scriptLlm, described, idx => {
+    emit({
+      type: 'prepare:script',
+      data: {
+        page_index: idx,
+        total_pages: described.length,
+        progress: (idx + 1) / described.length,
+      },
+    });
+  });
+
+  emit({ type: 'prepare:tree', data: { message: '正在构建知识树' } });
+  const treePromise = buildKnowledgeTree(treeLlm, described).then(tree => {
+    emit({ type: 'prepare:questions', data: { message: '生成课堂主动提问' } });
+    emit({ type: 'prepare:focus', data: { message: '解析 PPT 重点悬停策略' } });
+    const questionsPromise = generateActiveQuestions(questionsLlm, tree);
+    const focusPromise = generateSlideFocusPlans(focusLlm, described, tree, idx => {
+      emit({
+        type: 'prepare:focus',
+        data: {
+          page_index: idx,
+          total_pages: described.length,
+          progress: (idx + 1) / described.length,
+        },
+      });
+    });
+    return Promise.all([questionsPromise, focusPromise]).then(([questions, focusPlans]) => ({
+      tree,
+      questions,
+      focusPlans,
+    }));
+  });
+
+  const [script, treeBundle] = await Promise.all([scriptPromise, treePromise]);
+  return { script, ...treeBundle };
 }
 
 

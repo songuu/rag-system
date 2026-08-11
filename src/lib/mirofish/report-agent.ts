@@ -5,6 +5,7 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
 import type {
   ReportInfo,
@@ -14,6 +15,18 @@ import type {
   TimelineEntry,
   ModelOverride,
 } from './types';
+
+const SAFE_REPORT_TITLE = '模拟分析报告';
+const SAFE_REPORT_SUMMARY = '报告生成结果无法解析。';
+const SAFE_REPORT_SECTION_TITLE = '分析内容';
+const SAFE_REPORT_SECTION_CONTENT = '模型未返回可用的结构化报告。';
+
+interface ParsedReportResponse {
+  title: string;
+  summary: string;
+  sections: ReportSection[];
+  key_findings: string[];
+}
 
 const REPORT_SYSTEM_PROMPT = `你是一个专业的社会舆论分析师。你的任务是根据社交媒体模拟数据，生成一份结构化的分析报告。
 
@@ -75,24 +88,14 @@ export class ReportAgent {
       negative: entry.stats.sentiment_distribution.negative,
     }));
 
-    const title = String(reportData.title || '模拟分析报告');
-    const summary = String(reportData.summary || '');
-    const rawSections = Array.isArray(reportData.sections) ? reportData.sections : [];
-    const rawFindings = Array.isArray(reportData.key_findings) ? reportData.key_findings : [];
-
     return {
       simulation_id: simulationInfo.simulation_id,
       project_id: simulationInfo.project_id,
       status: 'completed' as const,
-      title,
-      summary,
-      sections: rawSections.map((s: Record<string, unknown>, i: number) => ({
-        index: i,
-        title: String(s.title || ''),
-        content: String(s.content || ''),
-        type: this.validateSectionType(String(s.type || 'overview')),
-      })),
-      key_findings: rawFindings.map(String),
+      title: reportData.title,
+      summary: reportData.summary,
+      sections: reportData.sections,
+      key_findings: reportData.key_findings,
       sentiment_trend: sentimentTrend,
       generated_at: new Date().toISOString(),
     };
@@ -205,38 +208,50 @@ ${timeline.map(t =>
   }
 
   /** 解析报告响应 */
-  private parseReportResponse(response: string): Record<string, unknown> {
-    const cleaned = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) {
-      return {
-        title: '模拟分析报告',
-        summary: response.substring(0, 200),
-        sections: [{
-          index: 0,
-          title: '分析内容',
-          content: response,
-          type: 'overview',
-        }],
-        key_findings: [],
-      };
-    }
-
+  private parseReportResponse(response: string): ParsedReportResponse {
     try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
+      const reportData = parseMiroFishJsonObjectResponse(response);
+      if (
+        !isNonEmptyString(reportData.title)
+        || !isNonEmptyString(reportData.summary)
+        || !Array.isArray(reportData.sections)
+        || reportData.sections.length === 0
+        || !Array.isArray(reportData.key_findings)
+      ) {
+        throw new Error('Invalid report response schema.');
+      }
+
+      const sections = reportData.sections.map((section, index): ReportSection => {
+        if (
+          !isRecord(section)
+          || !isNonEmptyString(section.title)
+          || !isNonEmptyString(section.content)
+          || typeof section.type !== 'string'
+          || this.validateSectionType(section.type) !== section.type
+        ) {
+          throw new Error('Invalid report section schema.');
+        }
+
+        return {
+          index,
+          title: section.title,
+          content: section.content,
+          type: this.validateSectionType(section.type),
+        };
+      });
+
+      if (!reportData.key_findings.every(isNonEmptyString)) {
+        throw new Error('Invalid report findings schema.');
+      }
+
       return {
-        title: '模拟分析报告',
-        summary: '报告解析失败，请查看原始内容。',
-        sections: [{
-          index: 0,
-          title: '原始分析',
-          content: response,
-          type: 'overview',
-        }],
-        key_findings: [],
+        title: reportData.title,
+        summary: reportData.summary,
+        sections,
+        key_findings: reportData.key_findings,
       };
+    } catch {
+      return createSafeReportResponse();
     }
   }
 
@@ -253,4 +268,26 @@ ${timeline.map(t =>
 
 export function getReportAgent(modelOverride?: ModelOverride): ReportAgent {
   return new ReportAgent(modelOverride);
+}
+
+function createSafeReportResponse(): ParsedReportResponse {
+  return {
+    title: SAFE_REPORT_TITLE,
+    summary: SAFE_REPORT_SUMMARY,
+    sections: [{
+      index: 0,
+      title: SAFE_REPORT_SECTION_TITLE,
+      content: SAFE_REPORT_SECTION_CONTENT,
+      type: 'overview',
+    }],
+    key_findings: [],
+  };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

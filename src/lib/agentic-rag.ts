@@ -27,11 +27,9 @@ import { getMilvusConnectionConfig } from './milvus-config';
 import {
   createLLM,
   createEmbedding,
-  createReasoningModel,
   getModelDimension,
   selectModelByDimension,
   getModelFactory,
-  isOllamaProvider,
   ModelConfig,
 } from './model-config';
 import { getEmbeddingProvider, getEmbeddingConfigSummary } from './embedding-config';
@@ -624,13 +622,14 @@ export class AgenticRAGSystem {
       enableSemanticCache,
     };
 
-    const actualLlmModel = llmModel || (isOllamaProvider() ? envConfig.OLLAMA_LLM_MODEL : envConfig.OPENAI_LLM_MODEL);
-    const actualFastModel = fastLlmModel || (isOllamaProvider() ? envConfig.OLLAMA_LLM_MODEL : 'gpt-4o-mini');
-    const actualRerankerModel = rerankerModel || (factory.getReasoningProvider() === 'ollama' ? envConfig.OLLAMA_REASONING_MODEL : envConfig.OPENAI_REASONING_MODEL);
+    const actualLlmModel = llmModel || factory.getConfigSummary().llmModel;
+    const actualFastModel = fastLlmModel || envConfig.FAST_LLM_MODEL;
+    const actualRerankerModel = rerankerModel || envConfig.RERANKER_MODEL;
 
-    this.llm = createLLM(actualLlmModel, { temperature: 0, ...modelConfig });
-    this.fastLlm = createLLM(actualFastModel, { temperature: 0, ...modelConfig });
-    this.rerankerLlm = createReasoningModel(actualRerankerModel, { temperature: 0.1, ...modelConfig });
+    this.llm = createLLM(actualLlmModel, { ...modelConfig, temperature: 0 });
+    this.fastLlm = createLLM(actualFastModel, { ...modelConfig, temperature: 0 });
+    // Retrieval grading is latency-sensitive classification, not deep reasoning.
+    this.rerankerLlm = createLLM(actualRerankerModel, { ...modelConfig, temperature: 0.1 });
 
     const embeddingConfig = getEmbeddingConfigSummary();
     const actualEmbeddingModel = embeddingModel || embeddingConfig.model;

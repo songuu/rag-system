@@ -49,6 +49,10 @@ export interface ModelConfig {
   baseUrl?: string;
   temperature?: number;
   maxTokens?: number;
+  /** Per-provider request deadline. Provider-specific options cannot loosen it. */
+  requestTimeoutMs?: number;
+  /** Transport retries. Workflow/business retries remain caller-owned. */
+  maxRetries?: number;
   /** 模型维度 (仅 embedding 模型) */
   dimension?: number;
   /** 额外配置 */
@@ -62,6 +66,16 @@ export interface EnvConfig {
 
   // 推理模型提供商（独立于 LLM）
   REASONING_PROVIDER: ModelProvider;
+  // Latency-sensitive task routing
+  FAST_LLM_MODEL: string;
+  RERANKER_MODEL: string;
+
+  // Provider request budgets
+  MODEL_REQUEST_TIMEOUT_MS: number;
+  MODEL_MAX_RETRIES: number;
+  REASONING_REQUEST_TIMEOUT_MS: number;
+  REASONING_MAX_RETRIES: number;
+
 
   // Ollama 配置
   OLLAMA_BASE_URL: string;
@@ -134,6 +148,8 @@ export const MODEL_DIMENSIONS: Record<string, number> = ALL_EMBEDDING_DIMENSIONS
 const DEFAULT_OLLAMA_CONFIG = {
   llm: DEFAULT_RUNTIME_MODELS.llm,
   embedding: DEFAULT_RUNTIME_MODELS.embedding,
+  fastLlm: DEFAULT_RUNTIME_MODELS.fastLlm,
+  reranker: DEFAULT_RUNTIME_MODELS.reranker,
   reasoning: DEFAULT_RUNTIME_MODELS.reasoning,
 };
 
@@ -155,6 +171,102 @@ const DEFAULT_LEMONADE_CONFIG = {
 
 // ==================== 环境变量解析 ====================
 
+const MODEL_REQUEST_TIMEOUT_DEFAULT_MS = 30_000;
+const REASONING_REQUEST_TIMEOUT_DEFAULT_MS = 90_000;
+const MODEL_REQUEST_TIMEOUT_MIN_MS = 1_000;
+const MODEL_REQUEST_TIMEOUT_MAX_MS = 300_000;
+const MODEL_REQUEST_TOTAL_BUDGET_MAX_MS = 300_000;
+const MODEL_MAX_RETRIES_DEFAULT = 0;
+const MODEL_MAX_RETRIES_LIMIT = 5;
+
+export interface ModelRequestPolicy {
+  timeoutMs: number;
+  maxRetries: number;
+}
+
+function readBoundedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const candidate = value === undefined || value === null || value === ''
+    ? fallback
+    : value;
+  const parsed = typeof candidate === 'number' ? candidate : Number(candidate);
+  const safeValue = Number.isSafeInteger(parsed)
+    ? parsed
+    : Number.isSafeInteger(fallback) ? fallback : minimum;
+  return Math.max(minimum, Math.min(maximum, safeValue));
+}
+
+export function resolveModelRequestPolicy(
+  options: Partial<ModelConfig> = {},
+  defaults: ModelRequestPolicy = {
+    timeoutMs: MODEL_REQUEST_TIMEOUT_DEFAULT_MS,
+    maxRetries: MODEL_MAX_RETRIES_DEFAULT,
+  }
+): ModelRequestPolicy {
+  const timeoutMs = readBoundedInteger(
+    options.requestTimeoutMs,
+    defaults.timeoutMs,
+    MODEL_REQUEST_TIMEOUT_MIN_MS,
+    MODEL_REQUEST_TIMEOUT_MAX_MS
+  );
+  const requestedRetries = readBoundedInteger(
+    options.maxRetries,
+    defaults.maxRetries,
+    0,
+    MODEL_MAX_RETRIES_LIMIT
+  );
+  // LangChain applies timeout per transport attempt. Cap retries so one
+  // logical model call cannot exceed the global five-minute transport budget.
+  const retriesWithinTotalBudget = Math.max(
+    0,
+    Math.floor(MODEL_REQUEST_TOTAL_BUDGET_MAX_MS / timeoutMs) - 1
+  );
+  return {
+    timeoutMs,
+    maxRetries: Math.min(requestedRetries, retriesWithinTotalBudget),
+  };
+}
+
+/**
+ * Ollama supports fetch injection but no constructor-level request timeout.
+ * The timeout signal stays attached while the response body streams, so it
+ * bounds slow token streams as well as response headers.
+ */
+export function createModelRequestTimeoutFetch(
+  timeoutMs: number,
+  fetchImplementation: typeof fetch = globalThis.fetch
+): typeof fetch {
+  const policy = resolveModelRequestPolicy({ requestTimeoutMs: timeoutMs });
+  return ((input: RequestInfo | URL, init?: RequestInit) => {
+    const timeoutSignal = AbortSignal.timeout(policy.timeoutMs);
+    const signal = init?.signal
+      ? AbortSignal.any([init.signal, timeoutSignal])
+      : timeoutSignal;
+    return fetchImplementation(input, { ...init, signal });
+  }) as typeof fetch;
+}
+
+function resolveDefaultFastModel(provider: ModelProvider): string {
+  switch (provider) {
+    case 'ollama':
+      return DEFAULT_OLLAMA_CONFIG.fastLlm;
+    case 'openai':
+      return DEFAULT_OPENAI_CONFIG.llm;
+    case 'openrouter':
+      return DEFAULT_OPENROUTER_CONFIG.llm;
+    case 'lemonade':
+      return DEFAULT_LEMONADE_CONFIG.llm;
+    case 'custom':
+      return process.env.CUSTOM_LLM_MODEL || 'default';
+    case 'azure':
+      return process.env.AZURE_OPENAI_LLM_DEPLOYMENT || '';
+  }
+}
+
 /**
  * 从环境变量读取配置
  */
@@ -164,6 +276,43 @@ export function loadEnvConfig(): EnvConfig {
 
   // 推理模型提供商：独立配置，默认跟随 LLM 提供商
   const reasoningProvider = (process.env.REASONING_PROVIDER as ModelProvider) || llmProvider;
+  const fastLlmModel = process.env.FAST_LLM_MODEL || resolveDefaultFastModel(llmProvider);
+  const modelRequestTimeoutMs = readBoundedInteger(
+    process.env.MODEL_REQUEST_TIMEOUT_MS,
+    MODEL_REQUEST_TIMEOUT_DEFAULT_MS,
+    MODEL_REQUEST_TIMEOUT_MIN_MS,
+    MODEL_REQUEST_TIMEOUT_MAX_MS
+  );
+  const modelMaxRetries = readBoundedInteger(
+    process.env.MODEL_MAX_RETRIES,
+    MODEL_MAX_RETRIES_DEFAULT,
+    0,
+    MODEL_MAX_RETRIES_LIMIT
+  );
+  const reasoningRequestTimeoutMs = readBoundedInteger(
+    process.env.REASONING_REQUEST_TIMEOUT_MS,
+    REASONING_REQUEST_TIMEOUT_DEFAULT_MS,
+    MODEL_REQUEST_TIMEOUT_MIN_MS,
+    MODEL_REQUEST_TIMEOUT_MAX_MS
+  );
+  const reasoningMaxRetries = readBoundedInteger(
+    process.env.REASONING_MAX_RETRIES,
+    MODEL_MAX_RETRIES_DEFAULT,
+    0,
+    MODEL_MAX_RETRIES_LIMIT
+  );
+  const modelRequestPolicy = resolveModelRequestPolicy({
+    requestTimeoutMs: modelRequestTimeoutMs,
+    maxRetries: modelMaxRetries,
+  });
+  const reasoningRequestPolicy = resolveModelRequestPolicy(
+    {
+      requestTimeoutMs: reasoningRequestTimeoutMs,
+      maxRetries: reasoningMaxRetries,
+    },
+    { timeoutMs: REASONING_REQUEST_TIMEOUT_DEFAULT_MS, maxRetries: MODEL_MAX_RETRIES_DEFAULT }
+  );
+
 
   return {
     // 主开关
@@ -171,6 +320,13 @@ export function loadEnvConfig(): EnvConfig {
 
     // 推理模型提供商（独立）
     REASONING_PROVIDER: reasoningProvider,
+    FAST_LLM_MODEL: fastLlmModel,
+    RERANKER_MODEL: process.env.RERANKER_MODEL || fastLlmModel,
+    MODEL_REQUEST_TIMEOUT_MS: modelRequestPolicy.timeoutMs,
+    MODEL_MAX_RETRIES: modelRequestPolicy.maxRetries,
+    REASONING_REQUEST_TIMEOUT_MS: reasoningRequestPolicy.timeoutMs,
+    REASONING_MAX_RETRIES: reasoningRequestPolicy.maxRetries,
+
 
     // Ollama
     OLLAMA_BASE_URL: process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
@@ -409,16 +565,26 @@ export class ModelFactory {
   private createOllamaLLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOllama {
     const actualModel = modelName || this.envConfig.OLLAMA_LLM_MODEL;
     const extra = (options.options || {}) as Record<string, unknown>;
+    const requestPolicy = resolveModelRequestPolicy(options, {
+      timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
+      maxRetries: this.envConfig.MODEL_MAX_RETRIES,
+    });
     // 提供合理的默认 num_ctx，避免上下文不足导致 prompt 截断重算
-    const numCtx = typeof extra.num_ctx === 'number' ? extra.num_ctx : 8192;
+    const numCtx = typeof extra.num_ctx === 'number'
+      ? extra.num_ctx
+      : typeof extra.numCtx === 'number'
+        ? extra.numCtx
+        : 8192;
     console.log(`[ModelFactory] 创建 Ollama LLM: ${actualModel} (num_ctx=${numCtx}${extra.format ? `, format=${extra.format}` : ''})`);
 
     return new ChatOllama({
+      ...extra,
       baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL,
       model: actualModel,
       temperature: options.temperature ?? 0.7,
       numCtx,
-      ...extra,
+      maxRetries: 0,
+      fetch: createModelRequestTimeoutFetch(requestPolicy.timeoutMs),
     });
   }
 
@@ -426,6 +592,10 @@ export class ModelFactory {
     const actualModel = modelName || this.envConfig.OPENAI_LLM_MODEL;
     const apiKey = options.apiKey || this.envConfig.OPENAI_API_KEY;
     const baseURL = options.baseUrl || this.envConfig.OPENAI_BASE_URL;
+    const requestPolicy = resolveModelRequestPolicy(options, {
+      timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
+      maxRetries: this.envConfig.MODEL_MAX_RETRIES,
+    });
 
     if (!apiKey) {
       throw new Error('OpenAI API Key 未配置。请设置 OPENAI_API_KEY 环境变量。');
@@ -434,12 +604,14 @@ export class ModelFactory {
     console.log(`[ModelFactory] 创建 OpenAI LLM: ${actualModel}`);
 
     return new ChatOpenAI({
+      ...options.options,
       apiKey,
       modelName: actualModel,
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
       configuration: baseURL ? { baseURL } : undefined,
-      ...options.options,
+      timeout: requestPolicy.timeoutMs,
+      maxRetries: requestPolicy.maxRetries,
     });
   }
 
@@ -447,6 +619,10 @@ export class ModelFactory {
     const deployment = modelName || this.envConfig.AZURE_OPENAI_LLM_DEPLOYMENT;
     const apiKey = options.apiKey || this.envConfig.AZURE_OPENAI_API_KEY;
     const endpoint = options.baseUrl || this.envConfig.AZURE_OPENAI_ENDPOINT;
+    const requestPolicy = resolveModelRequestPolicy(options, {
+      timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
+      maxRetries: this.envConfig.MODEL_MAX_RETRIES,
+    });
 
     if (!apiKey || !endpoint || !deployment) {
       throw new Error(
@@ -457,12 +633,14 @@ export class ModelFactory {
     console.log(`[ModelFactory] 创建 Azure OpenAI LLM: ${deployment}`);
 
     return new AzureChatOpenAI({
+      ...options.options,
       azureOpenAIApiKey: apiKey,
       azureOpenAIEndpoint: endpoint,
       azureOpenAIApiDeploymentName: deployment,
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
-      ...options.options,
+      timeout: requestPolicy.timeoutMs,
+      maxRetries: requestPolicy.maxRetries,
     });
   }
 
@@ -470,6 +648,10 @@ export class ModelFactory {
     const actualModel = modelName || this.envConfig.CUSTOM_LLM_MODEL || 'default';
     const apiKey = options.apiKey || this.envConfig.CUSTOM_API_KEY;
     const baseUrl = options.baseUrl || this.envConfig.CUSTOM_BASE_URL;
+    const requestPolicy = resolveModelRequestPolicy(options, {
+      timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
+      maxRetries: this.envConfig.MODEL_MAX_RETRIES,
+    });
 
     if (!apiKey || !baseUrl) {
       throw new Error('自定义 API 配置不完整。请设置 CUSTOM_API_KEY 和 CUSTOM_BASE_URL。');
@@ -480,14 +662,16 @@ export class ModelFactory {
 
     // 使用 OpenAI 兼容 API
     return new ChatOpenAI({
-      apiKey: apiKey,
+      ...options.options,
+      apiKey,
       model: actualModel,
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
       configuration: {
         baseURL: baseUrl,
       },
-      ...options.options,
+      timeout: requestPolicy.timeoutMs,
+      maxRetries: requestPolicy.maxRetries,
     });
   }
 
@@ -510,6 +694,8 @@ export class ModelFactory {
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
       options: options.options,
+      requestTimeoutMs: options.requestTimeoutMs,
+      maxRetries: options.maxRetries,
     });
   }
 
@@ -528,6 +714,8 @@ export class ModelFactory {
       temperature: options.temperature ?? 0.7,
       maxTokens: options.maxTokens,
       options: options.options,
+      requestTimeoutMs: options.requestTimeoutMs,
+      maxRetries: options.maxRetries,
     });
   }
 
@@ -539,6 +727,8 @@ export class ModelFactory {
     temperature,
     maxTokens,
     options,
+    requestTimeoutMs,
+    maxRetries,
   }: {
     label: string;
     modelName: string;
@@ -547,12 +737,22 @@ export class ModelFactory {
     temperature: number;
     maxTokens?: number;
     options?: Record<string, unknown>;
+    requestTimeoutMs?: number;
+    maxRetries?: number;
   }): ChatOpenAI {
     if (!baseUrl) {
       throw new Error(`${label} Base URL 未配置。`);
     }
 
+    const requestPolicy = resolveModelRequestPolicy(
+      { requestTimeoutMs, maxRetries },
+      {
+        timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
+        maxRetries: this.envConfig.MODEL_MAX_RETRIES,
+      }
+    );
     return new ChatOpenAI({
+      ...options,
       apiKey,
       model: modelName,
       temperature,
@@ -560,7 +760,8 @@ export class ModelFactory {
       configuration: {
         baseURL: baseUrl,
       },
-      ...options,
+      timeout: requestPolicy.timeoutMs,
+      maxRetries: requestPolicy.maxRetries,
     });
   }
 
@@ -615,10 +816,16 @@ export class ModelFactory {
       return this.cache.reasoning.get(cacheKey)!;
     }
 
+    const requestPolicy = resolveModelRequestPolicy(options, {
+      timeoutMs: this.envConfig.REASONING_REQUEST_TIMEOUT_MS,
+      maxRetries: this.envConfig.REASONING_MAX_RETRIES,
+    });
     // 推理模型通常需要更低的 temperature
     const reasoningOptions = {
       ...options,
       temperature: options.temperature ?? 0,
+      requestTimeoutMs: requestPolicy.timeoutMs,
+      maxRetries: requestPolicy.maxRetries,
     };
 
     let model: BaseChatModel;
@@ -627,12 +834,7 @@ export class ModelFactory {
       case 'ollama':
         const ollamaModel = modelName || this.envConfig.OLLAMA_REASONING_MODEL;
         console.log(`[ModelFactory] 创建 Ollama 推理模型: ${ollamaModel}`);
-        model = new ChatOllama({
-          baseUrl: reasoningOptions.baseUrl || this.envConfig.OLLAMA_BASE_URL,
-          model: ollamaModel,
-          temperature: reasoningOptions.temperature,
-          ...reasoningOptions.options,
-        });
+        model = this.createOllamaLLM(ollamaModel, reasoningOptions);
         break;
 
       case 'openai':
@@ -667,6 +869,8 @@ export class ModelFactory {
           configuration: {
             baseURL: baseUrl,
           },
+          timeout: requestPolicy.timeoutMs,
+          maxRetries: requestPolicy.maxRetries,
         });
         break;
 
@@ -688,6 +892,8 @@ export class ModelFactory {
           temperature: reasoningOptions.temperature,
           maxTokens: reasoningOptions.maxTokens,
           options: reasoningOptions.options,
+          requestTimeoutMs: requestPolicy.timeoutMs,
+          maxRetries: requestPolicy.maxRetries,
         });
         break;
       }
@@ -706,6 +912,8 @@ export class ModelFactory {
           temperature: reasoningOptions.temperature,
           maxTokens: reasoningOptions.maxTokens,
           options: reasoningOptions.options,
+          requestTimeoutMs: requestPolicy.timeoutMs,
+          maxRetries: requestPolicy.maxRetries,
         });
         break;
       }
@@ -752,6 +960,10 @@ export class ModelFactory {
   getConfigSummary(): {
     provider: ModelProvider;
     llmModel: string;
+    fastLlmModel: string;
+    rerankerModel: string;
+    requestPolicy: ModelRequestPolicy;
+    reasoningRequestPolicy: ModelRequestPolicy;
     embeddingModel: string;
     embeddingProvider: EmbeddingProvider;
     reasoningModel: string;
@@ -844,6 +1056,16 @@ export class ModelFactory {
     return {
       provider,
       llmModel,
+      fastLlmModel: this.envConfig.FAST_LLM_MODEL,
+      rerankerModel: this.envConfig.RERANKER_MODEL,
+      requestPolicy: {
+        timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
+        maxRetries: provider === 'ollama' ? 0 : this.envConfig.MODEL_MAX_RETRIES,
+      },
+      reasoningRequestPolicy: {
+        timeoutMs: this.envConfig.REASONING_REQUEST_TIMEOUT_MS,
+        maxRetries: reasoningProvider === 'ollama' ? 0 : this.envConfig.REASONING_MAX_RETRIES,
+      },
       baseUrl,
       hasApiKey,
       embeddingModel: embeddingConfig.model,

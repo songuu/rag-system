@@ -67,7 +67,9 @@ export default function ModelManagementPanel({
     setError(null);
     
     try {
-      const response = await fetch('/api/ollama/models');
+      const response = await fetch('/api/ollama/models', {
+        signal: AbortSignal.timeout(5_000),
+      });
       const data = await response.json();
       
       if (!data.success) {
@@ -77,7 +79,9 @@ export default function ModelManagementPanel({
         setModelData(data);
       }
     } catch (err) {
-      setError('无法连接到服务器');
+      setError(err instanceof DOMException && err.name === 'TimeoutError'
+        ? '模型列表加载超过 5 秒，请检查模型服务'
+        : '无法连接到服务器');
     } finally {
       setIsLoading(false);
     }

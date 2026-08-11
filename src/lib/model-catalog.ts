@@ -88,6 +88,8 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     model: 'Gemma-4-26B-A4B-it-GGUF',
     displayName: 'Gemma 4 26B A4B IT GGUF',
     category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'chat_template_kwargs.enable_thinking',
     status: 'supported',
   },
   {
@@ -97,7 +99,7 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'reasoning',
     supportsThinking: true,
     thinkingControl: 'thinking.level',
-    status: 'supported',
+    status: 'documented',
   },
   {
     provider: 'tencent-hunyuan',
@@ -115,7 +117,7 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'reasoning',
     supportsThinking: true,
     thinkingControl: 'thinking.type',
-    status: 'supported',
+    status: 'documented',
   },
   {
     provider: 'xiaomi',
@@ -124,7 +126,7 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'reasoning',
     supportsThinking: true,
     thinkingControl: 'thinking.type',
-    status: 'supported',
+    status: 'documented',
   },
   {
     provider: 'xiaomi',
@@ -133,7 +135,7 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'reasoning',
     supportsThinking: true,
     thinkingControl: 'thinking.type',
-    status: 'supported',
+    status: 'documented',
   },
   {
     provider: 'xiaomi',
@@ -142,7 +144,7 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'reasoning',
     supportsThinking: true,
     thinkingControl: 'thinking.type',
-    status: 'supported',
+    status: 'documented',
   },
   {
     provider: 'xiaomi',
@@ -151,7 +153,7 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     category: 'reasoning',
     supportsThinking: true,
     thinkingControl: 'thinking.type',
-    status: 'supported',
+    status: 'documented',
   },
   {
     provider: 'openai',
@@ -258,6 +260,87 @@ export const OPENMAIC_LATEST_MODEL_NOTES: OpenMaicLatestModelNote[] = [
     thinkingControl: 'fixed',
     status: 'documented',
   },
+  {
+    provider: 'anthropic',
+    model: 'claude-opus-5',
+    displayName: 'Claude Opus 5',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'effort',
+    status: 'documented',
+  },
+  {
+    provider: 'anthropic',
+    model: 'claude-sonnet-5',
+    displayName: 'Claude Sonnet 5',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'effort',
+    status: 'documented',
+  },
+  {
+    provider: 'anthropic',
+    model: 'claude-fable-5',
+    displayName: 'Claude Fable 5',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'effort',
+    status: 'documented',
+  },
+  {
+    provider: 'google',
+    model: 'gemini-3.6-flash',
+    displayName: 'Gemini 3.6 Flash',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'thinking.level',
+    status: 'documented',
+  },
+  {
+    provider: 'google',
+    model: 'gemini-3.5-flash-lite',
+    displayName: 'Gemini 3.5 Flash Lite',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'thinking.level',
+    status: 'documented',
+  },
+  {
+    provider: 'kimi',
+    model: 'kimi-k3',
+    displayName: 'Kimi K3',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'reasoning_effort',
+    status: 'documented',
+  },
+  {
+    provider: 'grok',
+    model: 'grok-4.5',
+    displayName: 'Grok 4.5',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'reasoning_effort',
+    status: 'documented',
+  },
+  {
+    provider: 'grok',
+    model: 'grok-4.3',
+    displayName: 'Grok 4.3',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'reasoning_effort',
+    status: 'documented',
+  },
+  {
+    provider: 'grok',
+    model: 'grok-build-0.1',
+    displayName: 'Grok Build 0.1',
+    category: 'reasoning',
+    supportsThinking: true,
+    thinkingControl: 'fixed',
+    status: 'documented',
+  },
 ];
 
 export const MODEL_CATEGORIES: Record<Exclude<ModelCategory, 'unknown'>, ModelCategoryConfig> = {
@@ -273,10 +356,19 @@ export const MODEL_CATEGORIES: Record<Exclude<ModelCategory, 'unknown'>, ModelCa
       'gpt-5',
       'gpt-oss',
       'claude-opus-4',
+      'claude-opus-5',
+      'claude-sonnet-5',
+      'claude-fable-5',
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
       'minimax-m3',
       'qwen3.7',
       'glm-5.2',
       'kimi-k2.7',
+      'kimi-k3',
+      'grok-4.5',
+      'grok-4.3',
+      'grok-build-0.1',
       'claude-haiku-4-5',
       'reasoning',
       'hy3',
@@ -465,12 +557,35 @@ export const RECOMMENDED_MODELS: {
   ],
 };
 
+function isEmbeddingModelName(nameLower: string): boolean {
+  const embeddingCategory = MODEL_CATEGORIES.embedding;
+  return !!(
+    embeddingCategory.include?.some(pattern => nameLower.includes(pattern))
+    || embeddingCategory.patterns.some(pattern => nameLower.includes(pattern))
+  );
+}
+
 export function categorizeModelName(modelName: string): ModelCategory {
   const nameLower = modelName.toLowerCase();
 
+  // Embedding markers must win before exact metadata or family heuristics so
+  // variants such as a reasoning base name with an `-embed` suffix stay embeddings.
+  if (isEmbeddingModelName(nameLower)) {
+    return 'embedding';
+  }
+
+  // Exact catalog metadata is stronger than heuristic family patterns.
+  if (
+    OPENMAIC_LATEST_MODEL_NOTES.some(
+      item => item.category === 'reasoning' && item.model.toLowerCase() === nameLower
+    )
+  ) {
+    return 'reasoning';
+  }
+
   if (
     MODEL_CATEGORIES.reasoning.include?.some(
-      pattern => nameLower.includes(pattern) && !nameLower.includes('embedding')
+      pattern => nameLower.includes(pattern)
     )
   ) {
     return 'reasoning';
@@ -478,18 +593,10 @@ export function categorizeModelName(modelName: string): ModelCategory {
 
   if (
     MODEL_CATEGORIES.reasoning.patterns.some(
-      pattern => nameLower.includes(pattern) && !nameLower.includes('embedding')
+      pattern => nameLower.includes(pattern)
     )
   ) {
     return 'reasoning';
-  }
-
-  if (MODEL_CATEGORIES.embedding.include?.some(pattern => nameLower.includes(pattern))) {
-    return 'embedding';
-  }
-
-  if (MODEL_CATEGORIES.embedding.patterns.some(pattern => nameLower.includes(pattern))) {
-    return 'embedding';
   }
 
   if (MODEL_CATEGORIES.llm.exclude?.some(pattern => nameLower.includes(pattern))) {
@@ -511,6 +618,7 @@ export function getModelCapabilityProfile(
   supportsThinking: boolean;
   thinkingControl?: string;
   openMaicLatest: boolean;
+  status?: OpenMaicLatestModelNote['status'];
 } {
   const providerLower = provider.toLowerCase();
   const modelLower = modelName.toLowerCase();
@@ -523,6 +631,7 @@ export function getModelCapabilityProfile(
       supportsThinking: !!latest.supportsThinking,
       thinkingControl: latest.thinkingControl,
       openMaicLatest: true,
+      status: latest.status,
     };
   }
 

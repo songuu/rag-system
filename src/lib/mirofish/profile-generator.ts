@@ -5,7 +5,9 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
+import { truncateWithoutSplittingSurrogate } from './utf16';
 import type {
   BehavioralAnchors,
   EntityProfile,
@@ -14,6 +16,20 @@ import type {
   ProfileBatchGenerateRequest,
   ModelOverride,
 } from './types';
+
+const PROFILE_SCALAR_MAX_CHARS = 4_096;
+const PROFILE_LIST_MAX_ITEMS = 32;
+const PROFILE_LIST_ITEM_MAX_CHARS = 1_024;
+const PROFILE_STRUCTURED_TEXT_MAX_DEPTH = 32;
+const PROFILE_COERCION_DEPTH_EXCEEDED = Symbol('profile-coercion-depth-exceeded');
+const PROFILE_STRUCTURED_TEXT_KEYS = [
+  'text',
+  'value',
+  'description',
+  'content',
+  'summary',
+  'name',
+] as const;
 
 /** 人设生成系统提示词 */
 const PROFILE_SYSTEM_PROMPT = `你是一个社交媒体人设生成专家。你的任务是根据给定的实体信息，生成适合在社交媒体模拟中使用的人设档案。
@@ -206,44 +222,7 @@ export class ProfileGenerator {
    * 解析 LLM 返回的人设数据
    */
   private parseProfileResponse(response: string): Record<string, unknown> {
-    // 移除代码块标记
-    let cleaned = response.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
-
-    // 尝试提取 JSON 对象
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error('无法从响应中提取 JSON');
-    }
-
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      // 尝试修复
-      cleaned = this.fixJsonIssues(jsonMatch[0]);
-      try {
-        return JSON.parse(cleaned);
-      } catch {
-        throw new Error('无法解析 JSON 响应');
-      }
-    }
-  }
-
-  /**
-   * 修复常见 JSON 问题
-   */
-  private fixJsonIssues(jsonStr: string): string {
-    let fixed = jsonStr;
-
-    // 修复尾随逗号
-    fixed = fixed.replace(/,(\s*[}\]])/g, '$1');
-
-    // 修复缺少逗号
-    fixed = fixed.replace(/}(\s*){/g, '},$1{');
-
-    // 修复中文冒号
-    fixed = fixed.replace(/：/g, ':');
-
-    return fixed;
+    return parseMiroFishJsonObjectResponse(response);
   }
 
   /**
@@ -260,31 +239,29 @@ export class ProfileGenerator {
       entity_type: entity.type,
 
       // 基本信息
-      full_name: String(data.full_name || entity.name),
+      full_name: coerceProfileScalar(data.full_name) || coerceProfileScalar(entity.name),
       age: typeof data.age === 'number' ? data.age : undefined,
-      gender: String(data.gender || ''),
-      occupation: String(data.occupation || ''),
-      position: data.position ? String(data.position) : undefined,
+      gender: coerceProfileScalar(data.gender),
+      occupation: coerceProfileScalar(data.occupation),
+      position: coerceProfileScalar(data.position) || undefined,
 
       // 性格特点
-      personality_traits: Array.isArray(data.personality_traits)
-        ? data.personality_traits.map(String)
-        : [],
-      speaking_style: String(data.speaking_style || ''),
+      personality_traits: coerceProfileList(data.personality_traits),
+      speaking_style: coerceProfileScalar(data.speaking_style),
 
       // 社交媒体
-      social_media_style: String(data.social_media_style || ''),
-      typical_posts: Array.isArray(data.typical_posts)
-        ? data.typical_posts.map(String)
-        : [],
+      social_media_style: coerceProfileScalar(data.social_media_style),
+      typical_posts: coerceProfileList(data.typical_posts),
       behavioral_anchors: this.parseBehavioralAnchors(data.behavioral_anchors),
 
       // 观点倾向
       viewpoints: this.parseViewpoints(data.viewpoints),
 
       // 背景信息
-      background: String(data.background || entity.description),
-      expertise: Array.isArray(data.expertise) ? data.expertise.map(String) : undefined,
+      background: coerceProfileScalar(data.background) || coerceProfileScalar(entity.description),
+      expertise: isProfileListValue(data.expertise)
+        ? coerceProfileList(data.expertise)
+        : undefined,
 
       // 元数据
       generated_at: new Date().toISOString(),
@@ -359,10 +336,142 @@ export class ProfileGenerator {
     }
 
     const result: Record<string, string> = {};
-    for (const [key, value] of Object.entries(viewpoints)) {
-      result[key] = String(value);
+    let entries: [string, unknown][];
+    try {
+      entries = Object.entries(viewpoints).slice(0, PROFILE_LIST_MAX_ITEMS);
+    } catch {
+      return {};
+    }
+
+    const usedKeys = new Set<string>();
+    for (const [key, value] of entries) {
+      const uniqueKey = createUniqueViewpointKey(key, usedKeys);
+      usedKeys.add(uniqueKey);
+      Object.defineProperty(result, uniqueKey, {
+        value: coerceProfileScalar(value, PROFILE_LIST_ITEM_MAX_CHARS),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return result;
+  }
+}
+
+function createUniqueViewpointKey(key: string, usedKeys: Set<string>): string {
+  const boundedKey = truncateWithoutSplittingSurrogate(
+    key,
+    PROFILE_LIST_ITEM_MAX_CHARS,
+  );
+  if (!usedKeys.has(boundedKey)) {
+    return boundedKey;
+  }
+
+  for (
+    let duplicateIndex = 2;
+    duplicateIndex <= PROFILE_LIST_MAX_ITEMS + 1;
+    duplicateIndex += 1
+  ) {
+    const suffix = `#${duplicateIndex}`;
+    const candidate = `${truncateWithoutSplittingSurrogate(
+      boundedKey,
+      PROFILE_LIST_ITEM_MAX_CHARS - suffix.length,
+    )}${suffix}`;
+    if (!usedKeys.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error('[ProfileGenerator] 无法在观点数量上限内生成唯一话题键');
+}
+
+function coerceProfileScalar(
+  value: unknown,
+  maxChars = PROFILE_SCALAR_MAX_CHARS,
+): string {
+  const text = tryCoerceProfileText(value, new Set<object>(), 0);
+  return truncateWithoutSplittingSurrogate(
+    text === PROFILE_COERCION_DEPTH_EXCEEDED ? '' : (text ?? ''),
+    maxChars,
+  );
+}
+
+function coerceProfileList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return isProfileListValue(value)
+      ? [coerceProfileScalar(value, PROFILE_LIST_ITEM_MAX_CHARS)]
+      : [];
+  }
+
+  let itemCount: number;
+  try {
+    itemCount = Math.min(value.length, PROFILE_LIST_MAX_ITEMS);
+  } catch {
+    return [];
+  }
+
+  const result: string[] = [];
+  for (let index = 0; index < itemCount; index += 1) {
+    let item: unknown;
+    try {
+      item = value[index];
+    } catch {
+      item = undefined;
+    }
+    result.push(coerceProfileScalar(item, PROFILE_LIST_ITEM_MAX_CHARS));
+  }
+  return result;
+}
+
+function isProfileListValue(value: unknown): value is string | object {
+  return typeof value === 'string' || (!!value && typeof value === 'object');
+}
+
+function tryCoerceProfileText(
+  value: unknown,
+  seen: Set<object>,
+  depth: number,
+): string | null | typeof PROFILE_COERCION_DEPTH_EXCEEDED {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  if (typeof value !== 'object') return null;
+  if (seen.has(value)) return null;
+  if (depth >= PROFILE_STRUCTURED_TEXT_MAX_DEPTH) {
+    return PROFILE_COERCION_DEPTH_EXCEEDED;
+  }
+
+  seen.add(value);
+  try {
+    for (const key of PROFILE_STRUCTURED_TEXT_KEYS) {
+      let hasKey: boolean;
+      let candidate: unknown;
+      try {
+        hasKey = Object.prototype.hasOwnProperty.call(value, key);
+        candidate = hasKey ? (value as Record<string, unknown>)[key] : undefined;
+      } catch {
+        continue;
+      }
+
+      if (!hasKey) continue;
+      const coercedCandidate = tryCoerceProfileText(candidate, seen, depth + 1);
+      if (coercedCandidate === PROFILE_COERCION_DEPTH_EXCEEDED) {
+        return PROFILE_COERCION_DEPTH_EXCEEDED;
+      }
+      if (coercedCandidate !== null) return coercedCandidate;
+    }
+
+    try {
+      const serialized = JSON.stringify(value);
+      return typeof serialized === 'string' ? serialized : null;
+    } catch {
+      return null;
+    }
+  } finally {
+    seen.delete(value);
   }
 }
 

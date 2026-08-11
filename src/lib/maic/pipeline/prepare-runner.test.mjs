@@ -15,12 +15,8 @@ registerHooks({
   },
 });
 
-const { describePages, buildKnowledgeTree } = await import('./read-stage.ts');
-const {
-  generateLectureScript,
-  generateActiveQuestions,
-  generateSlideFocusPlans,
-} = await import('./plan-stage.ts');
+const { describePages } = await import('./read-stage.ts');
+const { runPrepareDependencyGraph } = await import('./prepare-runner.ts');
 
 // Test 验证 prepare-runner 的依赖图重排:
 //   describe → Promise.all([script, tree → Promise.all([questions, focus])])
@@ -95,28 +91,18 @@ function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }
 
-// 复制 prepare-runner.ts 里 describe 之后的依赖图编排, 验证并发结构。
-// runner 内部用的就是这个 Promise.all 结构, 这里直接重现以避开 createLLM mock 的复杂性。
-async function runDependencyGraph(llm, described) {
-  const scriptPromise = generateLectureScript(llm, described);
-  const treePromise = buildKnowledgeTree(llm, described).then(async tree => {
-    const [questions, focusPlans] = await Promise.all([
-      generateActiveQuestions(llm, tree),
-      generateSlideFocusPlans(llm, described, tree),
-    ]);
-    return { tree, questions, focusPlans };
+test('runner dependency graph: script and focus execute concurrently after describe gate', async t => {
+  const previousConcurrency = process.env.MAIC_LLM_CONCURRENCY;
+  process.env.MAIC_LLM_CONCURRENCY = '4';
+  t.after(() => {
+    if (previousConcurrency === undefined) {
+      delete process.env.MAIC_LLM_CONCURRENCY;
+    } else {
+      process.env.MAIC_LLM_CONCURRENCY = previousConcurrency;
+    }
   });
-  const [script, treeBundle] = await Promise.all([scriptPromise, treePromise]);
-  return { script, ...treeBundle };
-}
 
-test('runner dependency graph: script and focus execute concurrently after describe gate', async () => {
-  // 30ms describe / 30ms tree / 80ms script per page / 80ms focus per page。
-  // 串行模型: describe + tree + 4*script + 4*focus = 30 + 30 + 320 + 320 = 700ms (concurrency=1 等价)
-  // 当前实现 (concurrency=4): describe 30ms (4 并发→30ms), tree 30ms, 然后 script 80ms ∥ focus 80ms ∥ questions ≪ 80ms
-  //   并行 wall time ≈ describe(30) + max(script(80), tree(30) + max(focus(80), questions(5))) ≈ 30 + max(80, 110) = 140ms
-  // 阶段串行 (旧逻辑): describe(30) + tree(30) + script(80) + questions(5) + focus(80) ≈ 225ms
-  // 阈值 180ms: 落两者之间, 失败 = 退回串行。
+  // 显式 concurrency=4，直接用调用时间窗口验证依赖图，不用易受 CI 负载影响的墙钟门槛。
   const llm = makeTrackedLLM({ describe: 30, script: 80, focus: 80, tree: 30, questions: 5 });
   const pagesRaw = Array.from({ length: 4 }, (_, index) => ({
     index,
@@ -125,26 +111,35 @@ test('runner dependency graph: script and focus execute concurrently after descr
     key_points: [],
   }));
 
-  const startedAt = Date.now();
   const described = await describePages(llm, pagesRaw);
-  const result = await runDependencyGraph(llm, described);
-  const elapsedMs = Date.now() - startedAt;
+  const result = await runPrepareDependencyGraph({
+    described,
+    scriptLlm: llm,
+    treeLlm: llm,
+    questionsLlm: llm,
+    focusLlm: llm,
+    emit: () => {},
+  });
 
   assert.equal(result.script.length, 4, 'script generated for all pages');
   assert.equal(result.focusPlans.length, 4, 'focus plans generated for all pages');
   assert.equal(result.questions.length, 6, 'questions generated');
   assert.equal(result.tree.title, 'mock 课程', 'tree built');
 
-  // 验证 wall time 接近并行 (< 200ms) 而不是阶段串行 (~225ms+)。
-  assert.ok(
-    elapsedMs < 200,
-    `parallel dependency graph should complete < 200ms (serial would be ~225ms), got ${elapsedMs}ms`
-  );
-
   // 关键并发不变量: 至少一对 (script, focus) 调用的时间窗口存在重叠。
   const scriptCalls = llm.calls.filter(c => c.kind === 'script');
   const focusCalls = llm.calls.filter(c => c.kind === 'focus');
+  const treeCall = llm.calls.find(c => c.kind === 'tree');
   assert.ok(scriptCalls.length > 0 && focusCalls.length > 0);
+  assert.ok(treeCall, 'tree invoked');
+  assert.ok(
+    scriptCalls.some(call => call.startedAt < treeCall.finishedAt),
+    'script branch must begin before the tree branch finishes'
+  );
+  assert.ok(
+    focusCalls.every(call => call.startedAt >= treeCall.finishedAt),
+    'focus branch must wait for the tree dependency'
+  );
   const overlaps = scriptCalls.some(s =>
     focusCalls.some(f => s.startedAt < f.finishedAt && f.startedAt < s.finishedAt)
   );
@@ -163,12 +158,29 @@ test('runner dependency graph: questions runs in parallel with focus after tree'
     key_points: [],
   }));
   const described = await describePages(llm, pagesRaw);
-  await runDependencyGraph(llm, described);
+  await runPrepareDependencyGraph({
+    described,
+    scriptLlm: llm,
+    treeLlm: llm,
+    questionsLlm: llm,
+    focusLlm: llm,
+    emit: () => {},
+  });
 
   const questionsCall = llm.calls.find(c => c.kind === 'questions');
   const focusCalls = llm.calls.filter(c => c.kind === 'focus');
+  const treeCall = llm.calls.find(c => c.kind === 'tree');
   assert.ok(questionsCall, 'questions invoked');
   assert.ok(focusCalls.length > 0, 'focus invoked');
+  assert.ok(treeCall, 'tree invoked');
+  assert.ok(
+    questionsCall.startedAt >= treeCall.finishedAt,
+    'questions branch must wait for the tree dependency'
+  );
+  assert.ok(
+    focusCalls.every(call => call.startedAt >= treeCall.finishedAt),
+    'focus branch must wait for the tree dependency'
+  );
 
   const overlaps = focusCalls.some(
     f => questionsCall.startedAt < f.finishedAt && f.startedAt < questionsCall.finishedAt
