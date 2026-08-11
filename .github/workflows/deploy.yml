@@ -83,8 +83,14 @@ jobs:
       - name: Generate articles data
         run: node scripts/generate-articles.mjs
 
-      - name: Remove API routes (not needed for static export)
-        run: rm -rf src/app/api
+      - name: Remove runtime-only routes (not needed for static export)
+        run: |
+          rm -rf src/app/api
+          # These pages require IDs created by the API at runtime. GitHub Pages
+          # cannot generate or serve their dynamic paths in a static export.
+          rm -rf src/app/maic/classroom
+          rm -rf src/app/maic/prepare
+          rm -rf src/app/mirofish/console
 
       - name: Build with Next.js
         run: pnpm run build
