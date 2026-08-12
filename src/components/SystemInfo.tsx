@@ -85,7 +85,7 @@ export default function SystemInfo({
 
     setLoadingModels(true);
     try {
-      const response = await fetch('/api/ollama/models');
+      const response = await fetch('/rag-api/ollama/models');
       const data = await response.json();
       setAvailableModels({
         ...data,

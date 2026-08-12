@@ -44,7 +44,7 @@ export default function ObservabilityPage() {
   const loadTraces = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/traces');
+      const response = await fetch('/rag-api/traces');
       const data = await response.json();
       
       if (data.success) {
@@ -64,7 +64,7 @@ export default function ObservabilityPage() {
     }
 
     try {
-      const response = await fetch('/api/traces', {
+      const response = await fetch('/rag-api/traces', {
         method: 'DELETE'
       });
       
@@ -86,7 +86,7 @@ export default function ObservabilityPage() {
 
   const addFeedback = async (traceId: string, isPositive: boolean) => {
     try {
-      await fetch(`/api/traces/${traceId}/feedback`, {
+      await fetch(`/rag-api/traces/${traceId}/feedback`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

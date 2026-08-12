@@ -208,7 +208,7 @@ export default function MiroFishProcessPage() {
     setCurrentStep(0);
 
     try {
-      const response = await fetch('/api/mirofish/ontology', {
+      const response = await fetch('/rag-api/mirofish/ontology', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -246,7 +246,7 @@ export default function MiroFishProcessPage() {
     setCurrentStep(1);
 
     try {
-      const response = await fetch('/api/mirofish/graph', {
+      const response = await fetch('/rag-api/mirofish/graph', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

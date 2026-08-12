@@ -121,7 +121,7 @@ export default function EntityExtractionPage() {
     setProgress({ stage: 'init', current: 0, total: 100, message: '正在初始化...' });
 
     try {
-      const response = await fetch('/api/entity-extraction', {
+      const response = await fetch('/rag-api/entity-extraction', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -148,7 +148,7 @@ export default function EntityExtractionPage() {
   const pollExtractionStatus = async () => {
     const poll = async () => {
       try {
-        const response = await fetch('/api/entity-extraction?action=status');
+        const response = await fetch('/rag-api/entity-extraction?action=status');
         const data = await response.json();
 
         if (data.success) {
@@ -184,7 +184,7 @@ export default function EntityExtractionPage() {
   // 加载已有图谱
   const loadGraph = async () => {
     try {
-      const response = await fetch('/api/entity-extraction?action=graph');
+      const response = await fetch('/rag-api/entity-extraction?action=graph');
       const data = await response.json();
 
       if (data.success && data.hasGraph) {

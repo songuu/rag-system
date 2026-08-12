@@ -106,7 +106,7 @@ export default function AgenticRAGPage() {
 
     try {
       // 先读取统一配置快照,不要把模型选择器绑定到 Ollama 在线状态。
-      const configResponse = await fetch('/api/model-config');
+      const configResponse = await fetch('/rag-api/model-config');
       const configData = await configResponse.json();
 
       if (configData.config?.llm?.model) {
@@ -162,7 +162,7 @@ export default function AgenticRAGPage() {
       }
       
       // 加载本地 Ollama 模型
-      const response = await fetch('/api/ollama/models');
+      const response = await fetch('/rag-api/ollama/models');
       const data = await response.json();
 
       if (data.providerConfig?.embedding) {
@@ -250,7 +250,7 @@ export default function AgenticRAGPage() {
     setResult(null);
 
     try {
-      const response = await fetch('/api/agentic-rag', {
+      const response = await fetch('/rag-api/agentic-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -85,7 +85,7 @@ export default function GraphRagPage() {
     setProgress({ progress: 0, message: '正在创建构建任务...' });
 
     try {
-      const response = await fetch('/api/mirofish/graph', {
+      const response = await fetch('/rag-api/mirofish/graph', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -115,7 +115,7 @@ export default function GraphRagPage() {
     const pollStatus = async () => {
       try {
         const response = await fetch(
-          `/api/mirofish/graph?action=status&taskId=${currentTaskId}`
+          `/rag-api/mirofish/graph?action=status&taskId=${currentTaskId}`
         );
         const data = await response.json();
 
@@ -127,7 +127,7 @@ export default function GraphRagPage() {
 
           if (data.status === 'completed' && data.graphId) {
             const graphResponse = await fetch(
-              `/api/mirofish/graph?action=data&graphId=${data.graphId}`
+              `/rag-api/mirofish/graph?action=data&graphId=${data.graphId}`
             );
             const graphResult = await graphResponse.json();
 

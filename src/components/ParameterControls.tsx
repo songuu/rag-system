@@ -54,7 +54,7 @@ export default function ParameterControls({
   const loadAvailableModels = async () => {
     setLoadingModels(true);
     try {
-      const response = await fetch('/api/ollama/models', {
+      const response = await fetch('/rag-api/ollama/models', {
         signal: AbortSignal.timeout(5_000),
       });
       const data = await response.json() as AvailableModelsResponse;

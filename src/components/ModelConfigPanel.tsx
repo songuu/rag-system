@@ -65,7 +65,7 @@ export function ModelConfigPanel() {
   const fetchConfig = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/model-config');
+      const response = await fetch('/rag-api/model-config');
       const data: ModelConfigResponse = await response.json();
       
       if (data.success) {
@@ -88,7 +88,7 @@ export function ModelConfigPanel() {
 
   const handleReloadConfig = async () => {
     try {
-      const response = await fetch('/api/model-config', {
+      const response = await fetch('/rag-api/model-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reload' }),

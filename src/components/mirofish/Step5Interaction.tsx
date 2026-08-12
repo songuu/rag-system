@@ -121,7 +121,7 @@ export default function Step5Interaction({ simulationId, reportId, agents, model
     setChatLoading(true);
 
     try {
-      const response = await fetch('/api/mirofish/interaction/chat', {
+      const response = await fetch('/rag-api/mirofish/interaction/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,7 +153,7 @@ export default function Step5Interaction({ simulationId, reportId, agents, model
     setInterviewLoading(true);
 
     try {
-      const response = await fetch('/api/mirofish/interaction/interview', {
+      const response = await fetch('/rag-api/mirofish/interaction/interview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -99,7 +99,7 @@ export default function Step2EnvSetup({
         const node = graphNodes.find(n => n.uuid === id);
         return { id, name: node?.name || '', type: node?.labels[0] || 'Person', description: node?.summary || '' };
       });
-      const response = await fetch('/api/mirofish/profile', {
+      const response = await fetch('/rag-api/mirofish/profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entities, simulationContext: simulationRequirement, modelOverride: modelOverride || undefined }),
@@ -128,7 +128,7 @@ export default function Step2EnvSetup({
     try {
       const selectedEntityIds = selectedEntities.length > 0 ? selectedEntities : undefined;
 
-      const prepareResponse = await fetch('/api/mirofish/simulation/prepare', {
+      const prepareResponse = await fetch('/rag-api/mirofish/simulation/prepare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -146,7 +146,7 @@ export default function Step2EnvSetup({
       const prepared = prepareData.data;
       onProfilesGenerated(prepared.profiles || profiles);
 
-      const response = await fetch('/api/mirofish/simulation', {
+      const response = await fetch('/rag-api/mirofish/simulation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

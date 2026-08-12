@@ -94,7 +94,7 @@ export default function SelfRAGVisualization({ onQuerySelect }: SelfRAGVisualiza
     setActiveStep(null);
 
     try {
-      const response = await fetch('/api/self-rag', {
+      const response = await fetch('/rag-api/self-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query })

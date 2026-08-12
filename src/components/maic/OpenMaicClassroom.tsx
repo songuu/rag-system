@@ -182,7 +182,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
     let cancelled = false;
     async function loadCourse(): Promise<void> {
       try {
-        const response = await fetch(`/api/maic/courses/${courseId}`);
+        const response = await fetch(`/rag-api/maic/courses/${courseId}`);
         const json = await response.json();
         if (!cancelled && json.success) {
           setCourse(json.data as Course);
@@ -199,7 +199,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
 
   useEffect(() => {
     if (!courseId || !courseReady) return;
-    const eventSource = new EventSource(`/api/maic/classroom/${courseId}`);
+    const eventSource = new EventSource(`/rag-api/maic/classroom/${courseId}`);
     eventSource.onopen = () => setConnected(true);
     eventSource.onerror = () => setConnected(false);
     eventSource.onmessage = event => {
@@ -314,7 +314,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
 
   const postClassroom = useCallback(
     async (payload: Record<string, unknown>) => {
-      await fetch(`/api/maic/classroom/${courseId}/message`, {
+      await fetch(`/rag-api/maic/classroom/${courseId}/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

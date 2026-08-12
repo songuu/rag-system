@@ -66,8 +66,8 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
     try {
       // 并行加载文件列表和向量状态
       const [filesRes, statsRes] = await Promise.all([
-        fetch('/api/reasoning-rag/files'),
-        fetch('/api/reasoning-rag/vectorize')
+        fetch('/rag-api/reasoning-rag/files'),
+        fetch('/rag-api/reasoning-rag/vectorize')
       ]);
 
       const filesData = await filesRes.json();
@@ -140,7 +140,7 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
       const formData = new FormData();
       selectedFiles.forEach(file => formData.append('files', file));
 
-      const response = await fetch('/api/reasoning-rag/files', {
+      const response = await fetch('/rag-api/reasoning-rag/files', {
         method: 'POST',
         body: formData
       });
@@ -171,7 +171,7 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
     setError(null);
 
     try {
-      const response = await fetch('/api/reasoning-rag/vectorize', {
+      const response = await fetch('/rag-api/reasoning-rag/vectorize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -203,7 +203,7 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
     if (!confirm(`确定要删除文件 ${filename} 吗？`)) return;
 
     try {
-      const response = await fetch(`/api/reasoning-rag/files?filename=${encodeURIComponent(filename)}`, {
+      const response = await fetch(`/rag-api/reasoning-rag/files?filename=${encodeURIComponent(filename)}`, {
         method: 'DELETE'
       });
 
@@ -224,7 +224,7 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
     if (!confirm('确定要清空所有向量数据吗？此操作不可撤销。')) return;
 
     try {
-      const response = await fetch('/api/reasoning-rag/vectorize', {
+      const response = await fetch('/rag-api/reasoning-rag/vectorize', {
         method: 'DELETE'
       });
 

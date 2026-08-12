@@ -48,7 +48,7 @@ export default function Step4Report({
     setError(null);
 
     try {
-      const response = await fetch('/api/mirofish/report', {
+      const response = await fetch('/rag-api/mirofish/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ simulation_id: simulationId, project_id: projectId, modelOverride: modelOverride || undefined }),
@@ -70,7 +70,7 @@ export default function Step4Report({
 
     const poll = async () => {
       try {
-        const response = await fetch(`/api/mirofish/report/${reportId}`);
+        const response = await fetch(`/rag-api/mirofish/report/${reportId}`);
         const data = await response.json();
 
         if (data.success && data.report) {
@@ -92,7 +92,7 @@ export default function Step4Report({
   // 下载 Markdown
   const downloadReport = () => {
     if (!reportId) return;
-    window.open(`/api/mirofish/report/${reportId}?action=download`, '_blank');
+    window.open(`/rag-api/mirofish/report/${reportId}?action=download`, '_blank');
   };
 
   const toggleSection = (title: string) => {

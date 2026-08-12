@@ -625,7 +625,7 @@ export default function ReasoningRAGPage() {
       setModelSuggestion(null);
       
       // 使用统一的模型 API，自动处理所有提供商
-      const ollamaRes = await fetch('/api/ollama/models');
+      const ollamaRes = await fetch('/rag-api/ollama/models');
       const ollamaData = await ollamaRes.json();
       
       // 从 providerConfig 获取提供商配置
@@ -793,7 +793,7 @@ export default function ReasoningRAGPage() {
       abortControllerRef.current = new AbortController();
       
       // 使用流式 API
-      const response = await fetch('/api/reasoning-rag/stream', {
+      const response = await fetch('/rag-api/reasoning-rag/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -105,7 +105,7 @@ export default function ContextManagementPage() {
   // 加载会话列表
   const loadSessions = useCallback(async () => {
     try {
-      const res = await fetch('/api/context-management?action=sessions');
+      const res = await fetch('/rag-api/context-management?action=sessions');
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -122,7 +122,7 @@ export default function ContextManagementPage() {
   // 加载单个会话
   const loadSession = useCallback(async (sessionId: string) => {
     try {
-      const res = await fetch(`/api/context-management?action=session&sessionId=${sessionId}`);
+      const res = await fetch(`/rag-api/context-management?action=session&sessionId=${sessionId}`);
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -140,7 +140,7 @@ export default function ContextManagementPage() {
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
     try {
-      const res = await fetch('/api/ollama/models');
+      const res = await fetch('/rag-api/ollama/models');
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -185,7 +185,7 @@ export default function ContextManagementPage() {
   // 创建新会话
   const handleCreateSession = async () => {
     try {
-      const res = await fetch('/api/context-management', {
+      const res = await fetch('/rag-api/context-management', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'create-session' }),
@@ -215,7 +215,7 @@ export default function ContextManagementPage() {
     if (!confirm('确定要删除这个会话吗？')) return;
     
     try {
-      const res = await fetch(`/api/context-management?sessionId=${sessionId}`, {
+      const res = await fetch(`/rag-api/context-management?sessionId=${sessionId}`, {
         method: 'DELETE',
       });
       if (!res.ok) {
@@ -278,7 +278,7 @@ export default function ContextManagementPage() {
       } : null);
       
       try {
-        const res = await fetch('/api/context-management', {
+        const res = await fetch('/rag-api/context-management', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -408,7 +408,7 @@ export default function ContextManagementPage() {
     
     // 非流式模式
     try {
-      const res = await fetch('/api/context-management', {
+      const res = await fetch('/rag-api/context-management', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -460,7 +460,7 @@ export default function ContextManagementPage() {
     if (!currentSessionId) return;
     
     try {
-      const res = await fetch('/api/context-management', {
+      const res = await fetch('/rag-api/context-management', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

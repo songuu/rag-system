@@ -110,7 +110,7 @@ export default function MiroFishConsolePage() {
   useEffect(() => {
     const fetchProject = async () => {
       try {
-        const response = await fetch(`/api/mirofish/project/${projectId}`);
+        const response = await fetch(`/rag-api/mirofish/project/${projectId}`);
         const data = await response.json();
         if (data.success && data.project) {
           setProject(data.project);
@@ -136,7 +136,7 @@ export default function MiroFishConsolePage() {
 
   const updateProject = useCallback(async (updates: Record<string, unknown>) => {
     try {
-      await fetch(`/api/mirofish/project/${projectId}`, {
+      await fetch(`/rag-api/mirofish/project/${projectId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -147,7 +147,7 @@ export default function MiroFishConsolePage() {
   }, [projectId]);
 
   const saveModelConfig = useCallback(async (override: ModelOverride | null) => {
-    const response = await fetch(`/api/mirofish/project/${projectId}`, {
+    const response = await fetch(`/rag-api/mirofish/project/${projectId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_config: override }),

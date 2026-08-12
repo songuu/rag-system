@@ -62,7 +62,7 @@ export default function IntentDistillationPanel({ query, onQuerySelect }: Intent
     setError(null);
 
     try {
-      const response = await fetch('/api/intent-distillation', {
+      const response = await fetch('/rag-api/intent-distillation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, includeRewrite: true })

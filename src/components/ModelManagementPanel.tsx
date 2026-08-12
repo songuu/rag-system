@@ -67,7 +67,7 @@ export default function ModelManagementPanel({
     setError(null);
     
     try {
-      const response = await fetch('/api/ollama/models', {
+      const response = await fetch('/rag-api/ollama/models', {
         signal: AbortSignal.timeout(5_000),
       });
       const data = await response.json();

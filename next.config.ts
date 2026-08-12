@@ -19,6 +19,12 @@ function excludeRawStandaloneSources(...directories: string[]): string[] {
 }
 
 const isStaticExport = process.env.STATIC_EXPORT === 'true';
+const configuredRagBasePath = process.env.RAG_BASE_PATH?.replace(/\/+$/, '');
+const ragBasePath = configuredRagBasePath || (isStaticExport ? '/rag-system' : '');
+
+if (ragBasePath && (!ragBasePath.startsWith('/') || ragBasePath === '/')) {
+  throw new Error('RAG_BASE_PATH must be a non-root absolute path.');
+}
 
 const nextConfig: NextConfig = {
   /* config options here */
@@ -27,7 +33,7 @@ const nextConfig: NextConfig = {
     images: {
       unoptimized: true,   // GitHub Pages 不支持 Next.js 默认的图片优化
     },
-    basePath: '/rag-system',
+    basePath: ragBasePath,
   } : {
     output: 'standalone',  // 容器部署使用 Next.js standalone server 产物
     images: {
@@ -35,9 +41,21 @@ const nextConfig: NextConfig = {
     },
   }),
 
+  // The songuu.top root is a gateway. Deploying RAG below /rag-system keeps
+  // its Next assets and routes separate from the other hosted applications.
+  ...(!isStaticExport && ragBasePath ? { basePath: ragBasePath } : {}),
+
   env: {
-    NEXT_PUBLIC_BASE_PATH: isStaticExport ? '/rag-system' : '',
+    NEXT_PUBLIC_BASE_PATH: ragBasePath,
   },
+
+  // Local development still uses the historical /api routes. Production
+  // requests go through the host's isolated /rag-api prefix instead.
+  ...(!isStaticExport && !ragBasePath ? {
+    async rewrites() {
+      return [{ source: '/rag-api/:path*', destination: '/api/:path*' }];
+    },
+  } : {}),
 
   // 排除某些原生模块，确保 pdf-parse 正常工作
   serverExternalPackages: ['pdf-parse', '@llamaindex/liteparse', '@napi-rs/canvas', 'pdfjs-dist', 'canvas'],

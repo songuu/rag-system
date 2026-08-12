@@ -18,7 +18,7 @@ export function UploadDropzone({ onUploaded }: Props) {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('title', file.name.replace(/\.[^.]+$/, ''));
-      const resp = await fetch('/api/maic/upload', { method: 'POST', body: fd });
+      const resp = await fetch('/rag-api/maic/upload', { method: 'POST', body: fd });
       const json = await resp.json();
       if (!json.success) throw new Error(json.error || 'upload failed');
       onUploaded(json.data.course_id);

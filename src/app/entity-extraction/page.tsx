@@ -126,7 +126,7 @@ export default function EntityExtractionPage() {
   // 加载可用文件
   const loadFiles = useCallback(async () => {
     try {
-      const response = await fetch('/api/entity-extraction?action=files');
+      const response = await fetch('/rag-api/entity-extraction?action=files');
       const data = await response.json();
       if (data.success) {
         setFiles(data.files || []);
@@ -139,7 +139,7 @@ export default function EntityExtractionPage() {
   // 加载模型列表
   const loadModels = useCallback(async () => {
     try {
-      const response = await fetch('/api/ollama/models');
+      const response = await fetch('/rag-api/ollama/models');
       if (!response.ok) {
         console.error('Ollama API 请求失败:', response.status);
         return;
@@ -170,7 +170,7 @@ export default function EntityExtractionPage() {
   // 加载已有图谱
   const loadExistingGraph = useCallback(async () => {
     try {
-      const response = await fetch('/api/entity-extraction?action=graph');
+      const response = await fetch('/rag-api/entity-extraction?action=graph');
       const data = await response.json();
       if (data.success && data.hasGraph) {
         setGraph(data.graph);
@@ -193,7 +193,7 @@ export default function EntityExtractionPage() {
 
     const pollStatus = async () => {
       try {
-        const response = await fetch('/api/entity-extraction?action=status');
+        const response = await fetch('/rag-api/entity-extraction?action=status');
         const data = await response.json();
         if (data.success) {
           if (data.progress) {
@@ -235,7 +235,7 @@ export default function EntityExtractionPage() {
         body.text = customText;
       }
 
-      const response = await fetch('/api/entity-extraction', {
+      const response = await fetch('/rag-api/entity-extraction', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -262,7 +262,7 @@ export default function EntityExtractionPage() {
     if (!confirm('确定要清除当前知识图谱吗？')) return;
 
     try {
-      await fetch('/api/entity-extraction', { method: 'DELETE' });
+      await fetch('/rag-api/entity-extraction', { method: 'DELETE' });
       setGraph(null);
     } catch (error) {
       console.error('清除图谱失败:', error);

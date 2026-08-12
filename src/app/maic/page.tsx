@@ -25,7 +25,7 @@ export default function MaicHomePage() {
 
   const loadCourses = useCallback(async () => {
     try {
-      const resp = await fetch('/api/maic/courses');
+      const resp = await fetch('/rag-api/maic/courses');
       const json = await resp.json();
       if (json.success) setCourses(json.data as CourseSummary[]);
     } finally {
@@ -41,7 +41,7 @@ export default function MaicHomePage() {
 
   async function handleDelete(id: string): Promise<void> {
     if (!confirm('确定删除?')) return;
-    await fetch(`/api/maic/courses/${id}`, { method: 'DELETE' });
+    await fetch(`/rag-api/maic/courses/${id}`, { method: 'DELETE' });
     void loadCourses();
   }
 

@@ -47,9 +47,9 @@ export default function PreparePage() {
     let cancelled = false;
 
     async function start(): Promise<void> {
-      await fetch(`/api/maic/prepare/${courseId}`, { method: 'POST' });
+      await fetch(`/rag-api/maic/prepare/${courseId}`, { method: 'POST' });
       if (cancelled) return;
-      const es = new EventSource(`/api/maic/prepare/${courseId}`);
+      const es = new EventSource(`/rag-api/maic/prepare/${courseId}`);
       esRef.current = es;
       es.onmessage = ev => {
         try {

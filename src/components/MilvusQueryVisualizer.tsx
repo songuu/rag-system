@@ -88,7 +88,7 @@ export default function MilvusQueryVisualizer({
   // 检查 Milvus 状态
   const checkMilvusStatus = useCallback(async () => {
     try {
-      const statusRes = await fetch('/api/milvus?action=status');
+      const statusRes = await fetch('/rag-api/milvus?action=status');
       const statusData = await statusRes.json();
       console.log('statusData', statusData);
       if (statusData.success) {
@@ -99,7 +99,7 @@ export default function MilvusQueryVisualizer({
         });
       }
 
-      const syncRes = await fetch('/api/milvus/sync');
+      const syncRes = await fetch('/rag-api/milvus/sync');
       const syncData = await syncRes.json();
       if (syncData.success) {
         setSyncStatus({
@@ -124,7 +124,7 @@ export default function MilvusQueryVisualizer({
     setIsSyncing(true);
     setSyncMessage(null);
     try {
-      const response = await fetch('/api/milvus/sync', {
+      const response = await fetch('/rag-api/milvus/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -207,7 +207,7 @@ export default function MilvusQueryVisualizer({
         }
       }, 400);
 
-      const response = await fetch('/api/milvus', {
+      const response = await fetch('/rag-api/milvus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

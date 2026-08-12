@@ -80,7 +80,7 @@ export default function DomainVectorsPage() {
   const checkOllamaStatus = useCallback(async () => {
     setOllamaStatus(prev => ({ ...prev, status: 'checking' }));
     try {
-      const response = await fetch('/api/domain-vectors?action=check-ollama');
+      const response = await fetch('/rag-api/domain-vectors?action=check-ollama');
       const data = await response.json();
       if (data.success) {
         setOllamaStatus({
@@ -99,7 +99,7 @@ export default function DomainVectorsPage() {
   // 加载领域配置
   const loadDomainConfig = useCallback(async () => {
     try {
-      const response = await fetch('/api/domain-vectors?action=config');
+      const response = await fetch('/rag-api/domain-vectors?action=config');
       const data = await response.json();
       if (data.success) {
         setDomainConfig(data.domains);
@@ -112,7 +112,7 @@ export default function DomainVectorsPage() {
   // 加载已保存的质心
   const loadCentroids = useCallback(async () => {
     try {
-      const response = await fetch('/api/domain-vectors?action=centroids');
+      const response = await fetch('/rag-api/domain-vectors?action=centroids');
       const data = await response.json();
       if (data.success && data.centroids) {
         setCentroids(data.centroids);
@@ -141,7 +141,7 @@ export default function DomainVectorsPage() {
   const generateSeeds = async (domain: string) => {
     setIsGenerating(prev => ({ ...prev, [domain]: true }));
     try {
-      const response = await fetch('/api/domain-vectors', {
+      const response = await fetch('/rag-api/domain-vectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'generate-seeds', domain })
@@ -170,7 +170,7 @@ export default function DomainVectorsPage() {
 
     setIsCalculating(prev => ({ ...prev, [domain]: true }));
     try {
-      const response = await fetch('/api/domain-vectors', {
+      const response = await fetch('/rag-api/domain-vectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'calculate-centroid', domain, seedWords: words })
@@ -212,7 +212,7 @@ export default function DomainVectorsPage() {
     });
 
     try {
-      const response = await fetch('/api/domain-vectors', {
+      const response = await fetch('/rag-api/domain-vectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'calculate-all', domains: domainsWithSeeds })
@@ -248,7 +248,7 @@ export default function DomainVectorsPage() {
     showNotification('info', '正在测试查询...');
 
     try {
-      const response = await fetch('/api/domain-vectors', {
+      const response = await fetch('/rag-api/domain-vectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'test-query', query: testQuery, showDetails })
@@ -294,7 +294,7 @@ export default function DomainVectorsPage() {
     }
 
     try {
-      const response = await fetch('/api/domain-vectors', {
+      const response = await fetch('/rag-api/domain-vectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -325,7 +325,7 @@ export default function DomainVectorsPage() {
     if (!confirm(`确定要删除领域 "${domainId}" 吗？`)) return;
 
     try {
-      const response = await fetch('/api/domain-vectors', {
+      const response = await fetch('/rag-api/domain-vectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'delete-domain', domainId })

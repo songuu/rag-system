@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
-import { io, Socket } from 'socket.io-client';
 import { dbManager, type ConversationMessage } from '@/lib/indexeddb';
 import ChatMessage from '@/components/ChatMessage';
 import QueryAnalysis from '@/components/QueryAnalysis';
@@ -151,7 +150,6 @@ export default function HomePage() {
   const [lastAiResponse, setLastAiResponse] = useState<string>('');
   const [showExpansionWorkflow, setShowExpansionWorkflow] = useState(true);
 
-  const socketRef = useRef<Socket | null>(null);
   const askAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => {
@@ -160,63 +158,10 @@ export default function HomePage() {
     );
   }, []);
 
-  // 初始化 WebSocket
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      socketRef.current = io();
-
-      socketRef.current.on('connect', () => {
-        showToast('实时监控连接成功', 'success');
-      });
-
-      socketRef.current.on('disconnect', () => {
-        showToast('实时监控连接断开', 'warning');
-      });
-
-      socketRef.current.on('vectorization-progress', (progress: any) => {
-        setShowVectorization(true);
-        setVectorizationDetails(progress);
-        if (progress.current && progress.total) {
-          setVectorizationProgress((progress.current / progress.total) * 100);
-        } else if (progress.progress) {
-          setVectorizationProgress(progress.progress);
-        }
-        setVectorizationStatus(progress.status || progress.message || '处理中...');
-      });
-
-      socketRef.current.on('query-vectorization-progress', (progress: any) => {
-        setShowQueryProcessing(true);
-        setQueryProcessingStatus(progress.status || progress.message || '处理中...');
-        if (progress.tokenization) {
-          setQueryAnalysis((prev: any) => ({
-            ...prev,
-            tokenization: progress.tokenization
-          }));
-        }
-        if (progress.embedding) {
-          setQueryAnalysis((prev: any) => ({
-            ...prev,
-            embedding: progress.embedding
-          }));
-        }
-      });
-
-      socketRef.current.on('retrieval-details', (details: any) => {
-        setRetrievalDetails(details);
-      });
-
-      return () => {
-        if (socketRef.current) {
-          socketRef.current.disconnect();
-        }
-      };
-    }
-  }, []);
-
   // 检查系统健康状态
   const checkSystemHealth = async () => {
     try {
-      const response = await fetch('/api/health');
+      const response = await fetch('/rag-api/health');
       const data = await response.json();
       if (data.success) {
         setSystemStatus('运行中');
@@ -245,7 +190,7 @@ export default function HomePage() {
   // 检查 Milvus 状态
   const checkMilvusStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/milvus?action=status');
+      const response = await fetch('/rag-api/milvus?action=status');
       const data = await response.json();
       if (data.success) {
         setMilvusConnected(data.connected);
@@ -273,7 +218,7 @@ export default function HomePage() {
 
       // 检查是否需要同步
       try {
-        const syncCheckRes = await fetch('/api/milvus/sync');
+        const syncCheckRes = await fetch('/rag-api/milvus/sync');
         const syncCheck = await syncCheckRes.json();
 
         if (syncCheck.success && syncCheck.needsSync) {
@@ -293,7 +238,7 @@ export default function HomePage() {
   // 加载文件列表
   const loadFilesList = async () => {
     try {
-      const response = await fetch('/api/files');
+      const response = await fetch('/rag-api/files');
       const data = await response.json();
       if (data.success) {
         setFiles(data.files || []);
@@ -308,7 +253,7 @@ export default function HomePage() {
     if (!confirm(`确定要删除文件 "${filename}" 吗？`)) return;
 
     try {
-      const response = await fetch(`/api/files/${encodeURIComponent(filename)}`, {
+      const response = await fetch(`/rag-api/files/${encodeURIComponent(filename)}`, {
         method: 'DELETE'
       });
       const data = await response.json();
@@ -338,7 +283,7 @@ export default function HomePage() {
         formData.append('files', file);
       });
 
-      const response = await fetch('/api/upload', {
+      const response = await fetch('/rag-api/upload', {
         method: 'POST',
         body: formData
       });
@@ -354,7 +299,7 @@ export default function HomePage() {
         if (storageBackend === 'milvus' && milvusConnected) {
           showToast('正在同步到 Milvus...', 'info');
           try {
-            const syncResponse = await fetch('/api/milvus/sync', {
+            const syncResponse = await fetch('/rag-api/milvus/sync', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -388,7 +333,7 @@ export default function HomePage() {
     if (!confirm('确定要重新初始化系统吗？这将重新加载所有文档。')) return;
 
     try {
-      const response = await fetch('/api/reinitialize', { method: 'POST' });
+      const response = await fetch('/rag-api/reinitialize', { method: 'POST' });
       const data = await response.json();
       if (data.success) {
         showToast('系统重新初始化成功', 'success');
@@ -420,7 +365,7 @@ export default function HomePage() {
       setEmbeddingModel(newEmbeddingModel);
 
       // 调用重新初始化 API（使用新模型）
-      const response = await fetch('/api/reinitialize', {
+      const response = await fetch('/rag-api/reinitialize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -762,7 +707,7 @@ export default function HomePage() {
     setSuggestionProcessingTime(0);
 
     try {
-      const response = await fetch('/api/conversation-expansion', {
+      const response = await fetch('/rag-api/conversation-expansion', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -866,7 +811,7 @@ export default function HomePage() {
         setShowAdaptiveEntityPanel(true);
       }
 
-      const response = await fetch('/api/ask', {
+      const response = await fetch('/rag-api/ask', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

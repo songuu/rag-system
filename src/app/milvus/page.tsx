@@ -184,7 +184,7 @@ export default function MilvusPage() {
     setLoadingModels(true);
     try {
       // 首先获取统一模型配置，确定使用哪个提供商
-      const configResponse = await fetch('/api/model-config');
+      const configResponse = await fetch('/rag-api/model-config');
       const configData = await configResponse.json();
       
       if (configData.config?.embedding) {
@@ -206,7 +206,7 @@ export default function MilvusPage() {
       }
       
       // Ollama 提供商：从本地加载模型列表
-      const response = await fetch('/api/ollama/models');
+      const response = await fetch('/rag-api/ollama/models');
       const data = await response.json();
 
       if (data.providerConfig?.embedding) {
@@ -236,7 +236,7 @@ export default function MilvusPage() {
   // 加载状态
   const loadStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/milvus?action=status');
+      const response = await fetch('/rag-api/milvus?action=status');
       const data = await response.json();
 
       if (data.success) {
@@ -267,7 +267,7 @@ export default function MilvusPage() {
   const handleConnect = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/milvus', {
+      const response = await fetch('/rag-api/milvus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -299,7 +299,7 @@ export default function MilvusPage() {
   const handleDisconnect = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/milvus', {
+      const response = await fetch('/rag-api/milvus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'disconnect' }),
@@ -414,7 +414,7 @@ export default function MilvusPage() {
     setSearchResults([]);
 
     try {
-      const response = await fetch('/api/milvus', {
+      const response = await fetch('/rag-api/milvus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -468,7 +468,7 @@ export default function MilvusPage() {
     setImportResults([]);
 
     try {
-      const response = await fetch('/api/pipeline', {
+      const response = await fetch('/rag-api/pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -512,7 +512,7 @@ export default function MilvusPage() {
     try {
       const isYouTube = importUrl.includes('youtube.com') || importUrl.includes('youtu.be');
 
-      const response = await fetch('/api/pipeline', {
+      const response = await fetch('/rag-api/pipeline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -559,7 +559,7 @@ export default function MilvusPage() {
       formData.append('chunkOverlap', String(chunkOverlap));
       formData.append('embeddingModel', selectedEmbeddingModel);
 
-      const response = await fetch('/api/pipeline', {
+      const response = await fetch('/rag-api/pipeline', {
         method: 'POST',
         body: formData,
       });
@@ -592,7 +592,7 @@ export default function MilvusPage() {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/milvus', {
+      const response = await fetch('/rag-api/milvus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'clear' }),
@@ -617,7 +617,7 @@ export default function MilvusPage() {
   const loadVectorSpace = async () => {
     setLoadingVisualize(true);
     try {
-      const response = await fetch('/api/milvus/visualize', {
+      const response = await fetch('/rag-api/milvus/visualize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'vector-space', sampleSize: 100 }),
@@ -644,7 +644,7 @@ export default function MilvusPage() {
 
     setLoadingVisualize(true);
     try {
-      const response = await fetch('/api/milvus/visualize', {
+      const response = await fetch('/rag-api/milvus/visualize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'similarity-distribution', query: visualizeQuery, topK: 50 }),
@@ -675,7 +675,7 @@ export default function MilvusPage() {
 
     setLoadingVisualize(true);
     try {
-      const response = await fetch('/api/milvus/visualize', {
+      const response = await fetch('/rag-api/milvus/visualize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'query-path', query: visualizeQuery, topK: 10 }),

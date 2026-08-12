@@ -64,7 +64,7 @@ export default function OntologyPage() {
         ? [...texts, customText]
         : texts;
 
-      const response = await fetch('/api/mirofish/ontology', {
+      const response = await fetch('/rag-api/mirofish/ontology', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

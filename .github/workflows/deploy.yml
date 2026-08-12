@@ -1,112 +1,202 @@
-name: Deploy Next.js site to Pages
+name: Deploy RAG System to songuu.top
 
 on:
   push:
     branches: ["master"]
+  workflow_dispatch:
+
+concurrency:
+  group: rag-system-production
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
-
+# Server deployment: build a Linux standalone artifact, atomically switch the
+# host release symlink, then verify the isolated /rag-system gateway path.
+# Required secret: RAG_SYSTEM_SSH_PRIVATE_KEY.
+# Optional secrets: RAG_SYSTEM_DEPLOY_HOST, RAG_SYSTEM_DEPLOY_USER,
+# RAG_SYSTEM_DOMAIN. Runtime model/vector credentials remain only on the host.
 jobs:
-  validate:
+  build-and-deploy:
+    name: Build and deploy (server application)
     runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    env:
+      NODE_VERSION: "24"
+      PNPM_VERSION: "11.1.3"
+      DEPLOY_HOST: ${{ secrets.RAG_SYSTEM_DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.RAG_SYSTEM_DEPLOY_USER }}
+      DOMAIN: ${{ secrets.RAG_SYSTEM_DOMAIN }}
+      SSH_PRIVATE_KEY: ${{ secrets.RAG_SYSTEM_SSH_PRIVATE_KEY }}
+
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v6
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup pnpm via Corepack
+      - name: Set deployment defaults
         run: |
-          corepack enable
-          corepack prepare pnpm@$(node -p "require('./package.json').packageManager.split('@')[1]") --activate
+          set -euo pipefail
+          {
+            echo "DEPLOY_HOST=${DEPLOY_HOST:-47.253.230.197}"
+            echo "DEPLOY_USER=${DEPLOY_USER:-root}"
+            echo "DOMAIN=${DOMAIN:-songuu.top}"
+            echo "BASE_PATH=/rag-system"
+            echo "RELEASE_ROOT=/opt/rag-system/releases"
+            echo "CURRENT_LINK=/opt/rag-system/current"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate deployment secret
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY}" ]; then
+            echo "::error::Missing required GitHub secret RAG_SYSTEM_SSH_PRIVATE_KEY"
+            exit 1
+          fi
+
+      - name: Enable pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run RAG security, kernel, and evaluation gates
-        run: pnpm test
-
-      - name: Type-check
-        run: pnpm exec tsc --noEmit --incremental false
-
-      - name: Build full server application with API routes
-        run: pnpm build
-
-  build:
-    runs-on: ubuntu-latest
-    needs: validate
-    env:
-      STATIC_EXPORT: 'true'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup pnpm via Corepack
+      - name: Run RAG quality gates
         run: |
-          corepack enable
-          corepack prepare pnpm@$(node -p "require('./package.json').packageManager.split('@')[1]") --activate
+          set -euo pipefail
+          pnpm test
+          pnpm exec tsc --noEmit --incremental false
 
-      - name: Get pnpm store directory
-        id: pnpm-store
-        shell: bash
+      - name: Build Linux production image
         run: |
-          store_path="$(pnpm store path --silent)"
-          test -n "$store_path"
-          echo "path=$store_path" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          unset STATIC_EXPORT
+          image="rag-system:${GITHUB_SHA}"
+          docker build --progress=plain \
+            --build-arg RAG_BASE_PATH="${BASE_PATH}" \
+            --tag "${image}" \
+            .
+          echo "IMAGE=${image}" >> "$GITHUB_ENV"
 
-      - name: Setup pnpm cache
-        uses: actions/cache@v5
-        with:
-          path: ${{ steps.pnpm-store.outputs.path }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
-
-      - name: Generate articles data
-        run: node scripts/generate-articles.mjs
-
-      - name: Remove runtime-only routes (not needed for static export)
+      - name: Package standalone release
         run: |
-          rm -rf src/app/api
-          # These pages require IDs created by the API at runtime. GitHub Pages
-          # cannot generate or serve their dynamic paths in a static export.
-          rm -rf src/app/maic/classroom
-          rm -rf src/app/maic/prepare
-          rm -rf src/app/mirofish/console
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/rag-system-${GITHUB_SHA}.tgz"
+          entries="${RUNNER_TEMP}/rag-system-${GITHUB_SHA}.entries"
+          docker run --rm --entrypoint sh "${IMAGE}" \
+            -c 'tar -C /app -czf - server.js .next public node_modules' > "${archive}"
+          tar -tzf "${archive}" > "${entries}"
+          grep -qx 'server.js' "${entries}"
+          grep -q '^\.next/static/' "${entries}"
+          grep -q '^node_modules/\.pnpm/onnxruntime-node@1\.14\.0/' "${entries}"
+          sha256sum "${archive}"
+          {
+            echo "ARCHIVE=${archive}"
+            echo "REMOTE_DIR=/tmp/rag-system-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "REMOTE_ARCHIVE=/tmp/rag-system-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/rag-system-${GITHUB_SHA}.tgz"
+            echo "RELEASE_NAME=rag-system-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          } >> "$GITHUB_ENV"
 
-      - name: Build with Next.js
-        run: pnpm run build
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > ~/.ssh/rag_system_deploy_key
+          chmod 600 ~/.ssh/rag_system_deploy_key
+          ssh-keyscan -T 10 -H "${DEPLOY_HOST}" >> ~/.ssh/known_hosts
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: ./out
+      - name: Upload release and host scripts
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "mkdir -p '${REMOTE_DIR}'"
+          scp -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            "${ARCHIVE}" \
+            deploy/songuu/run-rag-system.sh \
+            deploy/songuu/release-host.sh \
+            deploy/songuu/patch-nginx.py \
+            deploy/songuu/apply-nginx.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/"
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Remote atomic release and gateway verification
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "REMOTE_DIR='${REMOTE_DIR}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' RELEASE_NAME='${RELEASE_NAME}' DOMAIN='${DOMAIN}' BASE_PATH='${BASE_PATH}' bash -s" <<'REMOTE_SCRIPT'
+          set -euo pipefail
+          case "${REMOTE_DIR}" in
+            /tmp/rag-system-*) ;;
+            *) echo "Unsafe release directory: ${REMOTE_DIR}" >&2; exit 2 ;;
+          esac
+          case "${REMOTE_ARCHIVE}" in
+            "${REMOTE_DIR}"/*.tgz) ;;
+            *) echo "Unsafe release archive: ${REMOTE_ARCHIVE}" >&2; exit 2 ;;
+          esac
+
+          runner='/opt/rag-system/shared/run-rag-system.sh'
+          runner_stage="${runner}.next.$$"
+          tr -d '\r' < "${REMOTE_DIR}/run-rag-system.sh" > "${runner_stage}"
+          chmod 700 "${runner_stage}"
+          bash -n "${runner_stage}"
+          if [ -f "${runner}" ] && cmp -s "${runner_stage}" "${runner}"; then
+            rm -f "${runner_stage}"
+          else
+            if [ -f "${runner}" ]; then
+              cp -a "${runner}" "${runner}.bak.$(date +%Y%m%d%H%M%S)"
+            fi
+            mv -f "${runner_stage}" "${runner}"
+          fi
+
+          for script in release-host.sh patch-nginx.py apply-nginx.sh; do
+            tr -d '\r' < "${REMOTE_DIR}/${script}" > "${REMOTE_DIR}/${script}.normalized"
+            mv -f "${REMOTE_DIR}/${script}.normalized" "${REMOTE_DIR}/${script}"
+          done
+          chmod 700 "${REMOTE_DIR}/release-host.sh" "${REMOTE_DIR}/apply-nginx.sh"
+          bash -n "${REMOTE_DIR}/release-host.sh"
+          bash -n "${REMOTE_DIR}/apply-nginx.sh"
+          python3 -m py_compile "${REMOTE_DIR}/patch-nginx.py"
+
+          "${REMOTE_DIR}/release-host.sh" \
+            "${REMOTE_ARCHIVE}" \
+            "${RELEASE_NAME}"
+
+          page_locations="$(grep -c 'location \^~ /rag-system/' /etc/nginx/conf.d/default.conf || true)"
+          api_locations="$(grep -c 'location \^~ /rag-api/' /etc/nginx/conf.d/default.conf || true)"
+          if [ "${page_locations}" = "0" ] && [ "${api_locations}" = "0" ]; then
+            "${REMOTE_DIR}/apply-nginx.sh" "${REMOTE_DIR}/patch-nginx.py"
+          elif [ "${page_locations}" != "1" ] || [ "${api_locations}" != "1" ]; then
+            echo 'RAG Nginx locations are incomplete or ambiguous; refusing deployment.' >&2
+            exit 1
+          fi
+
+          live_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN}" "https://127.0.0.1/rag-api/health/live")"
+          test "${live_code}" = '200'
+          anonymous_ui_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN}" "https://127.0.0.1${BASE_PATH}")"
+          test "${anonymous_ui_code}" = '302'
+          direct_api_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN}" "https://127.0.0.1${BASE_PATH}/api/health/live")"
+          test "${direct_api_code}" = '404'
+          rm -rf "${REMOTE_DIR}"
+          REMOTE_SCRIPT
+
+      - name: Verify public deployment
+        run: |
+          set -euo pipefail
+          live_code="$(curl -k -sS -o /dev/null -w '%{http_code}' "https://${DOMAIN}/rag-api/health/live")"
+          echo "public liveness -> ${live_code}"
+          test "${live_code}" = '200'
+          portal_code="$(curl -k -sS -o /dev/null -w '%{http_code}' "https://${DOMAIN}/")"
+          echo "public gateway -> ${portal_code}"
+          test "${portal_code}" = '200'
+          ui_code="$(curl -k -sS -o /dev/null -w '%{http_code}' "https://${DOMAIN}${BASE_PATH}")"
+          echo "public anonymous RAG UI -> ${ui_code}"
+          test "${ui_code}" = '302'

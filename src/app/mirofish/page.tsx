@@ -42,7 +42,7 @@ export default function MiroFishPage() {
   useEffect(() => {
     const fetchProjects = async () => {
       try {
-        const response = await fetch('/api/mirofish/project');
+        const response = await fetch('/rag-api/mirofish/project');
         const data = await response.json();
         if (data.success) {
           setProjects(data.projects || []);
@@ -62,7 +62,7 @@ export default function MiroFishPage() {
 
     setCreating(true);
     try {
-      const response = await fetch('/api/mirofish/project', {
+      const response = await fetch('/rag-api/mirofish/project', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -86,7 +86,7 @@ export default function MiroFishPage() {
   // 删除项目
   const handleDelete = async (id: string) => {
     try {
-      await fetch(`/api/mirofish/project/${id}`, { method: 'DELETE' });
+      await fetch(`/rag-api/mirofish/project/${id}`, { method: 'DELETE' });
       setProjects(prev => prev.filter(p => p.id !== id));
     } catch {
       // 忽略

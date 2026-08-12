@@ -227,7 +227,7 @@ export default function AdaptiveEntityRAGPage() {
 
     try {
       // 先读取统一配置快照,避免页面默认值和运行时模型配置漂移。
-      const configResponse = await fetch('/api/model-config');
+      const configResponse = await fetch('/rag-api/model-config');
       const configData = await configResponse.json();
 
       if (configData.config?.llm?.model) {
@@ -259,7 +259,7 @@ export default function AdaptiveEntityRAGPage() {
         setLoadingModels(false);
       }
 
-      const response = await fetch('/api/ollama/models');
+      const response = await fetch('/rag-api/ollama/models');
       const data = await response.json();
 
       if (data.providerConfig?.llm?.model) {
@@ -366,7 +366,7 @@ export default function AdaptiveEntityRAGPage() {
   // 加载实体库
   const loadEntities = useCallback(async () => {
     try {
-      const res = await fetch('/api/adaptive-entity-rag?action=entities');
+      const res = await fetch('/rag-api/adaptive-entity-rag?action=entities');
       const data = await res.json();
       if (data.success) {
         setEntities(data.entities || []);
@@ -380,8 +380,8 @@ export default function AdaptiveEntityRAGPage() {
   const loadKnowledgeStatus = useCallback(async () => {
     try {
       const [statusRes, filesRes] = await Promise.all([
-        fetch('/api/adaptive-entity-rag?action=status'),
-        fetch('/api/adaptive-entity-rag?action=files'),
+        fetch('/rag-api/adaptive-entity-rag?action=status'),
+        fetch('/rag-api/adaptive-entity-rag?action=files'),
       ]);
       
       const statusData = await statusRes.json();
@@ -412,7 +412,7 @@ export default function AdaptiveEntityRAGPage() {
     
     setIsUploading(true);
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -446,7 +446,7 @@ export default function AdaptiveEntityRAGPage() {
     try {
       for (const file of Array.from(files)) {
         const content = await file.text();
-        const res = await fetch('/api/adaptive-entity-rag', {
+        const res = await fetch('/rag-api/adaptive-entity-rag', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -482,7 +482,7 @@ export default function AdaptiveEntityRAGPage() {
     setIsVectorizing(true);
     setVectorizeProgress('正在向量化...');
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -512,7 +512,7 @@ export default function AdaptiveEntityRAGPage() {
   // 删除文件
   const handleDeleteFile = async (filename: string) => {
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -537,7 +537,7 @@ export default function AdaptiveEntityRAGPage() {
     if (!confirm('确定要清空知识库吗？此操作不可恢复。')) return;
     
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -574,7 +574,7 @@ export default function AdaptiveEntityRAGPage() {
     setActiveTab('workflow');
 
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -609,7 +609,7 @@ export default function AdaptiveEntityRAGPage() {
     if (!newEntity.standardName.trim()) return;
 
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -635,7 +635,7 @@ export default function AdaptiveEntityRAGPage() {
     if (!confirm(`确定要删除实体 "${standardName}" 吗？`)) return;
 
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -658,7 +658,7 @@ export default function AdaptiveEntityRAGPage() {
     if (!confirm('确定要重置实体库为默认映射吗？所有自定义实体将被删除。')) return;
 
     try {
-      const res = await fetch('/api/adaptive-entity-rag', {
+      const res = await fetch('/rag-api/adaptive-entity-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

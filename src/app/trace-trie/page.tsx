@@ -119,7 +119,7 @@ export default function TraceTriePage() {
     setError(null);
 
     try {
-      const response = await fetch('/api/trace-trie', {
+      const response = await fetch('/rag-api/trace-trie', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'

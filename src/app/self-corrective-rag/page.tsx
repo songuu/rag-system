@@ -287,7 +287,7 @@ export default function SelfCorrectiveRAGPage() {
     setCurrentResponse(null);
     
     try {
-      const response = await fetch('/api/self-corrective-rag', {
+      const response = await fetch('/rag-api/self-corrective-rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

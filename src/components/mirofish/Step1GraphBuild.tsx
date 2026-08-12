@@ -93,7 +93,7 @@ export default function Step1GraphBuild({
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const response = await fetch('/api/mirofish/upload', { method: 'POST', body: formData });
+      const response = await fetch('/rag-api/mirofish/upload', { method: 'POST', body: formData });
       const data = await response.json();
       if (!data.success) throw new Error(data.error || '上传失败');
       setTexts(data.text);
@@ -123,7 +123,7 @@ export default function Step1GraphBuild({
     setOntologyLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/mirofish/ontology', {
+      const response = await fetch('/rag-api/mirofish/ontology', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -150,7 +150,7 @@ export default function Step1GraphBuild({
     setError(null);
     setProgress({ status: 'pending', progress: 0, message: '正在创建任务...' });
     try {
-      const response = await fetch('/api/mirofish/graph', {
+      const response = await fetch('/rag-api/mirofish/graph', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -173,12 +173,12 @@ export default function Step1GraphBuild({
     if (!graphTaskId || !graphLoading) return;
     const pollStatus = async () => {
       try {
-        const response = await fetch(`/api/mirofish/graph?action=status&taskId=${graphTaskId}`);
+        const response = await fetch(`/rag-api/mirofish/graph?action=status&taskId=${graphTaskId}`);
         const data = await response.json();
         if (data.success) {
           setProgress({ status: data.status, progress: data.progress || 0, message: data.message || '' });
           if (data.status === 'completed' && data.graphId) {
-            const graphResponse = await fetch(`/api/mirofish/graph?action=data&graphId=${data.graphId}`);
+            const graphResponse = await fetch(`/rag-api/mirofish/graph?action=data&graphId=${data.graphId}`);
             const graphResult = await graphResponse.json();
             if (graphResult.success) onGraphBuilt(graphResult.graph);
             setGraphLoading(false);

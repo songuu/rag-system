@@ -144,7 +144,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
     setError(null);
 
     try {
-      const response = await fetch(`/api/mirofish/simulation/${simulationId}`, {
+      const response = await fetch(`/rag-api/mirofish/simulation/${simulationId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'start' }),
@@ -166,7 +166,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
       eventSourceRef.current.close();
     }
 
-    const es = new EventSource(`/api/mirofish/simulation/${simulationId}/stream`);
+    const es = new EventSource(`/rag-api/mirofish/simulation/${simulationId}/stream`);
     eventSourceRef.current = es;
 
     es.onmessage = (event) => {
@@ -226,7 +226,7 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
   // 停止模拟
   const stopSimulation = async () => {
     try {
-      await fetch(`/api/mirofish/simulation/${simulationId}`, {
+      await fetch(`/rag-api/mirofish/simulation/${simulationId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'stop' }),
@@ -250,8 +250,8 @@ export default function Step3Simulation({ simulationId, onComplete }: Step3Props
     const fetchStatus = async () => {
       try {
         const [response, snapshotResponse] = await Promise.all([
-          fetch(`/api/mirofish/simulation/${simulationId}`),
-          fetch(`/api/mirofish/simulation/${simulationId}?action=snapshot`),
+          fetch(`/rag-api/mirofish/simulation/${simulationId}`),
+          fetch(`/rag-api/mirofish/simulation/${simulationId}?action=snapshot`),
         ]);
         const data = await response.json();
         const snapshotData = await snapshotResponse.json();
