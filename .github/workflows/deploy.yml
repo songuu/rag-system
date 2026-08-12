@@ -170,11 +170,28 @@ jobs:
             "${REMOTE_ARCHIVE}" \
             "${RELEASE_NAME}"
 
-          page_locations="$(grep -c 'location \^~ /rag-system/' /etc/nginx/conf.d/default.conf || true)"
-          api_locations="$(grep -c 'location \^~ /rag-api/' /etc/nginx/conf.d/default.conf || true)"
-          if [ "${page_locations}" = "0" ] && [ "${api_locations}" = "0" ]; then
+          location_count() {
+            awk -v modifier="$1" -v route="$2" \
+              '$1 == "location" && $2 == modifier && $3 == route { count++ } END { print count + 0 }' \
+              /etc/nginx/conf.d/default.conf
+          }
+
+          root_location="$(location_count '=' '/rag-system')"
+          direct_api_location="$(location_count '^~' '/rag-system/api/')"
+          page_location="$(location_count '^~' '/rag-system/')"
+          live_location="$(location_count '=' '/rag-api/health/live')"
+          api_location="$(location_count '^~' '/rag-api/')"
+          if [ "${root_location}" = "0" ] && \
+             [ "${direct_api_location}" = "0" ] && \
+             [ "${page_location}" = "0" ] && \
+             [ "${live_location}" = "0" ] && \
+             [ "${api_location}" = "0" ]; then
             "${REMOTE_DIR}/apply-nginx.sh" "${REMOTE_DIR}/patch-nginx.py"
-          elif [ "${page_locations}" != "1" ] || [ "${api_locations}" != "1" ]; then
+          elif [ "${root_location}" != "1" ] || \
+               [ "${direct_api_location}" != "1" ] || \
+               [ "${page_location}" != "1" ] || \
+               [ "${live_location}" != "1" ] || \
+               [ "${api_location}" != "1" ]; then
             echo 'RAG Nginx locations are incomplete or ambiguous; refusing deployment.' >&2
             exit 1
           fi

@@ -39,6 +39,17 @@ def find_block(text: str, start: str) -> Tuple[int, int, str]:
     raise RuntimeError(f"unterminated block for {start!r}")
 
 
+def count_location(text: str, modifier: str, route: str) -> int:
+    """Count an exact nginx location header without matching route prefixes."""
+    pattern = re.compile(
+        r"^[ \t]*location[ \t]+{}[ \t]+{}[ \t]*\{{".format(
+            re.escape(modifier), re.escape(route)
+        ),
+        re.MULTILINE,
+    )
+    return len(pattern.findall(text))
+
+
 def read_env_value(env_file: Path, name: str) -> str:
     prefix = f"{name}="
     for raw_line in env_file.read_text(encoding="utf-8").splitlines():
@@ -64,8 +75,22 @@ def main() -> int:
         raise RuntimeError("RAG_SINGLE_TENANT_TOKEN has an unsafe nginx header format")
 
     original = config.read_text(encoding="utf-8")
-    if "location ^~ /rag-system/" in original or "location ^~ /rag-api/" in original:
-        raise RuntimeError("songuu RAG nginx patch appears to be already installed")
+    existing_locations = {
+        "root": count_location(original, "=", "/rag-system"),
+        "direct_api": count_location(original, "^~", "/rag-system/api/"),
+        "page": count_location(original, "^~", "/rag-system/"),
+        "liveness": count_location(original, "=", "/rag-api/health/live"),
+        "api": count_location(original, "^~", "/rag-api/"),
+    }
+    if any(existing_locations.values()):
+        found = ", ".join(
+            "{}={}".format(name, count)
+            for name, count in existing_locations.items()
+            if count
+        )
+        raise RuntimeError(
+            "songuu RAG nginx locations already exist or are incomplete ({})".format(found)
+        )
 
     root_begin, _, _ = find_block(original, "    location = / {")
     rag_locations = f'''    location = /rag-system {{
