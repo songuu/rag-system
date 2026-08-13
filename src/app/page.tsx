@@ -111,6 +111,7 @@ export default function HomePage() {
   const [storageBackend] = useState<'memory' | 'milvus'>('milvus');
   const [milvusConnected, setMilvusConnected] = useState(false);
   const [vectorBackendDisabled, setVectorBackendDisabled] = useState(false);
+  const [runtimeStatusLoaded, setRuntimeStatusLoaded] = useState(false);
   const [milvusStats, setMilvusStats] = useState<any>(null);
 
   // Agentic RAG 相关状态
@@ -154,7 +155,7 @@ export default function HomePage() {
   }, []);
 
   // 检查系统健康状态
-  const checkSystemHealth = useCallback(async (): Promise<boolean> => {
+  const checkSystemHealth = useCallback(async (): Promise<'enabled' | 'disabled' | 'unavailable'> => {
     try {
       const response = await fetch('/rag-api/health');
       const data = await response.json();
@@ -170,6 +171,7 @@ export default function HomePage() {
         setEmbeddingDim(data.ragSystem?.embeddingDimension || 0);
       } else {
         setSystemStatus('错误');
+        return 'unavailable';
       }
       
       // 更新实际的模型配置（无论成功与否都更新，因为 API 总是返回配置）
@@ -183,11 +185,11 @@ export default function HomePage() {
           setEmbeddingDim(data.modelConfig.embedding.dimension);
         }
       }
-      return disabled;
+      return disabled ? 'disabled' : 'enabled';
     } catch (error) {
       setSystemStatus('错误');
       setVectorBackendDisabled(false);
-      return false;
+      return 'unavailable';
     }
   }, []);
 
@@ -214,8 +216,10 @@ export default function HomePage() {
   }, []);
 
   const refreshRuntimeStatus = useCallback(async () => {
-    const disabled = await checkSystemHealth();
-    if (!disabled) await checkMilvusStatus();
+    setRuntimeStatusLoaded(false);
+    const runtimeStatus = await checkSystemHealth();
+    if (runtimeStatus === 'enabled') await checkMilvusStatus();
+    setRuntimeStatusLoaded(true);
   }, [checkMilvusStatus, checkSystemHealth]);
 
   // 文件上传
@@ -1217,7 +1221,7 @@ export default function HomePage() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Milvus 查询可视化 - 当选择 Milvus 后端时显示 */}
-        {storageBackend === 'milvus' && !vectorBackendDisabled && !useAgenticRAG && !useAdaptiveEntityRAG && (
+        {runtimeStatusLoaded && storageBackend === 'milvus' && !vectorBackendDisabled && systemStatus === '运行中' && !useAgenticRAG && !useAdaptiveEntityRAG && (
           <MilvusQueryVisualizer
             embeddingModel={embeddingModel}
             defaultExpanded={false}

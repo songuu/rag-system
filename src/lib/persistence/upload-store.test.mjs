@@ -20,7 +20,7 @@ registerHooks({
 
 const { LocalBlobStore, LocalUploadManifestStore } = await import('./local-dev-store.ts');
 const { createUploadPersistence } = await import('./upload-store.ts');
-const { getSupabaseConfigSummary } = await import('../supabase/env.ts');
+const { getPostgresConfigSummary } = await import('../postgres/env.ts');
 
 test('local blob store writes, reads, lists, stats, and deletes files', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'rag-upload-store-'));
@@ -70,15 +70,46 @@ test('local upload manifest store records and removes manifest items', async () 
   }
 });
 
-test('upload persistence defaults to local mode when Supabase is not enabled', async () => {
+test('upload persistence defaults to local mode when PostgreSQL is not enabled', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'rag-upload-persistence-'));
   try {
     delete process.env.RAG_PERSISTENCE_BACKEND;
     const persistence = createUploadPersistence({ uploadDir: root });
     await persistence.blobStore.write('local.txt', 'ok', { kind: 'parsed' });
     assert.equal(await persistence.blobStore.readText('local.txt'), 'ok');
-    assert.equal(getSupabaseConfigSummary().persistenceBackend, 'local');
+    assert.equal(getPostgresConfigSummary().persistenceBackend, 'local');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('PostgreSQL persistence fails closed when its required scope is incomplete', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'rag-upload-persistence-'));
+  const previous = {
+    backend: process.env.RAG_PERSISTENCE_BACKEND,
+    databaseUrl: process.env.DATABASE_URL,
+    tenantId: process.env.POSTGRES_DEFAULT_TENANT_ID,
+    corpusId: process.env.POSTGRES_DEFAULT_CORPUS_ID,
+  };
+  try {
+    process.env.RAG_PERSISTENCE_BACKEND = 'postgres';
+    process.env.DATABASE_URL = 'postgresql://rag:secret@db/rag';
+    delete process.env.POSTGRES_DEFAULT_TENANT_ID;
+    delete process.env.POSTGRES_DEFAULT_CORPUS_ID;
+    assert.throws(
+      () => createUploadPersistence({ uploadDir: root }),
+      /POSTGRES_DEFAULT_TENANT_ID.*POSTGRES_DEFAULT_CORPUS_ID/
+    );
+  } finally {
+    restoreEnv('RAG_PERSISTENCE_BACKEND', previous.backend);
+    restoreEnv('DATABASE_URL', previous.databaseUrl);
+    restoreEnv('POSTGRES_DEFAULT_TENANT_ID', previous.tenantId);
+    restoreEnv('POSTGRES_DEFAULT_CORPUS_ID', previous.corpusId);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function restoreEnv(name, value) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}

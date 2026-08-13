@@ -70,13 +70,6 @@ export default function MilvusQueryVisualizer({
     rowCount: 0,
     dimension: 768
   });
-  const [syncStatus, setSyncStatus] = useState<{
-    needsSync: boolean;
-    memoryCount: number;
-    uploadsCount: number;
-  }>({ needsSync: false, memoryCount: 0, uploadsCount: 0 });
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [selectedResult, setSelectedResult] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   
@@ -90,62 +83,28 @@ export default function MilvusQueryVisualizer({
     try {
       const statusRes = await fetch('/rag-api/milvus?action=status');
       const statusData = await statusRes.json();
-      console.log('statusData', statusData);
-      if (statusData.success) {
-        setMilvusStatus({
-          connected: statusData.connected,
-          rowCount: statusData.stats?.rowCount || 0,
-          dimension: statusData.stats?.embeddingDimension || 768
-        });
+      if (!statusRes.ok || !statusData.success || statusData.disabled === true) {
+        setMilvusStatus(prev => ({ ...prev, connected: false }));
+        return;
       }
 
-      const syncRes = await fetch('/rag-api/milvus/sync');
-      const syncData = await syncRes.json();
-      if (syncData.success) {
-        setSyncStatus({
-          needsSync: syncData.needsSync,
-          memoryCount: syncData.memory?.documentCount || 0,
-          uploadsCount: syncData.uploads?.count || 0,
-        });
-      }
+      setMilvusStatus({
+        connected: Boolean(statusData.connected),
+        rowCount: statusData.stats?.rowCount || 0,
+        dimension: statusData.stats?.embeddingDimension || 768,
+      });
     } catch (error) {
       setMilvusStatus(prev => ({ ...prev, connected: false }));
     }
   }, []);
 
   useEffect(() => {
-    checkMilvusStatus();
-    const interval = setInterval(checkMilvusStatus, 30000);
+    void checkMilvusStatus();
+    const interval = window.setInterval(() => {
+      void checkMilvusStatus();
+    }, 30000);
     return () => clearInterval(interval);
   }, [checkMilvusStatus]);
-
-  // 同步文档
-  const handleSyncToMilvus = async (source: 'uploads' | 'memory') => {
-    setIsSyncing(true);
-    setSyncMessage(null);
-    try {
-      const response = await fetch('/rag-api/milvus/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: source === 'uploads' ? 'sync-from-uploads' : 'sync-from-memory',
-          embeddingModel,
-        }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        setSyncMessage({ type: 'success', text: data.message });
-        await checkMilvusStatus();
-      } else {
-        setSyncMessage({ type: 'error', text: data.error || '同步失败' });
-      }
-    } catch (error) {
-      setSyncMessage({ type: 'error', text: error instanceof Error ? error.message : '同步失败' });
-    } finally {
-      setIsSyncing(false);
-      setTimeout(() => setSyncMessage(null), 5000);
-    }
-  };
 
   // 取消搜索
   const cancelSearch = useCallback(() => {
@@ -364,48 +323,15 @@ export default function MilvusQueryVisualizer({
         </button>
       </div>
 
-      {/* 同步提示 */}
-      {milvusStatus.connected && milvusStatus.rowCount === 0 && (syncStatus.memoryCount > 0 || syncStatus.uploadsCount > 0) && (
+      {/* 生产环境通过受保护的 pipeline 入库，不能调用已废弃的 legacy sync 路由。 */}
+      {milvusStatus.connected && milvusStatus.rowCount === 0 && (
         <div className="px-4 py-3 bg-amber-50 border-b border-amber-100">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm text-amber-700">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              集合为空，需要同步数据
-            </div>
-            <div className="flex gap-2">
-              {syncStatus.uploadsCount > 0 && (
-                <button
-                  onClick={() => handleSyncToMilvus('uploads')}
-                  disabled={isSyncing}
-                  className="px-2 py-1 text-xs bg-amber-100 hover:bg-amber-200 text-amber-700 rounded transition-colors disabled:opacity-50"
-                >
-                  从文件 ({syncStatus.uploadsCount})
-                </button>
-              )}
-              {syncStatus.memoryCount > 0 && (
-                <button
-                  onClick={() => handleSyncToMilvus('memory')}
-                  disabled={isSyncing}
-                  className="px-2 py-1 text-xs bg-purple-100 hover:bg-purple-200 text-purple-700 rounded transition-colors disabled:opacity-50"
-                >
-                  从内存 ({syncStatus.memoryCount})
-                </button>
-              )}
-            </div>
+          <div className="flex items-center gap-2 text-sm text-amber-700">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            当前语料库为空。请通过文档管理上传文件，系统会写入当前受保护的语料库。
           </div>
-          {isSyncing && (
-            <div className="mt-2 flex items-center gap-2 text-xs text-amber-600">
-              <div className="animate-spin w-3 h-3 border-2 border-amber-500 border-t-transparent rounded-full"></div>
-              正在同步...
-            </div>
-          )}
-          {syncMessage && (
-            <div className={`mt-2 text-xs ${syncMessage.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-              {syncMessage.text}
-            </div>
-          )}
         </div>
       )}
 

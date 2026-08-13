@@ -1,8 +1,16 @@
 import path from 'path';
-import { getSupabaseRuntimeConfig, shouldUseSupabasePersistence, shouldDualWriteSupabase } from '../supabase/env';
+import {
+  assertPostgresPersistenceConfigured,
+  getPostgresRuntimeConfig,
+  shouldDualWritePostgres,
+  shouldUsePostgresPersistence,
+} from '../postgres/env';
 import { LocalBlobStore, LocalUploadManifestStore } from './local-dev-store';
-import { DualWriteBlobStore, SupabaseBlobStore } from './supabase-blob-store';
-import { DualWriteUploadManifestStore, SupabaseUploadManifestStore } from './supabase-corpus-store';
+import { DualWriteBlobStore, PostgresBlobStore } from './postgres-blob-store';
+import {
+  DualWriteUploadManifestStore,
+  PostgresUploadManifestStore,
+} from './postgres-corpus-store';
 import type { BlobStore, UploadManifestStore } from './ports';
 
 export interface UploadPersistence {
@@ -14,32 +22,33 @@ export function createUploadPersistence(input: {
   uploadDir: string;
   manifestFile?: string;
 }): UploadPersistence {
-  const config = getSupabaseRuntimeConfig();
+  const config = getPostgresRuntimeConfig();
   const manifestFile = input.manifestFile ?? path.join(input.uploadDir, 'file-manifest.json');
   const localBlobStore = new LocalBlobStore(input.uploadDir);
   const localManifestStore = new LocalUploadManifestStore(manifestFile);
 
-  if (!shouldUseSupabasePersistence(config)) {
+  if (!shouldUsePostgresPersistence(config)) {
     return {
       blobStore: localBlobStore,
       manifestStore: localManifestStore,
     };
   }
 
-  const supabaseBlobStore = new SupabaseBlobStore(config);
-  const supabaseManifestStore = new SupabaseUploadManifestStore(config);
+  assertPostgresPersistenceConfigured(config);
+  const postgresBlobStore = new PostgresBlobStore(config);
+  const postgresManifestStore = new PostgresUploadManifestStore(config);
 
-  if (config.persistenceBackend === 'supabase' && supabaseManifestStore.isReady()) {
+  if (config.persistenceBackend === 'postgres' && postgresManifestStore.isReady()) {
     return {
-      blobStore: supabaseBlobStore,
-      manifestStore: supabaseManifestStore,
+      blobStore: postgresBlobStore,
+      manifestStore: postgresManifestStore,
     };
   }
 
-  if (shouldDualWriteSupabase(config)) {
+  if (shouldDualWritePostgres(config)) {
     return {
-      blobStore: new DualWriteBlobStore(localBlobStore, supabaseBlobStore),
-      manifestStore: new DualWriteUploadManifestStore(localManifestStore, supabaseManifestStore),
+      blobStore: new DualWriteBlobStore(localBlobStore, postgresBlobStore),
+      manifestStore: new DualWriteUploadManifestStore(localManifestStore, postgresManifestStore),
     };
   }
 

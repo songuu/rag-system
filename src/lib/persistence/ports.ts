@@ -1,4 +1,4 @@
-import type { JsonValue, TraceScoreSource } from '../supabase/database.types';
+import type { JsonValue, TraceScoreSource } from './types';
 
 export type BlobKind = 'raw' | 'parsed' | 'artifact';
 

@@ -1,7 +1,7 @@
 export type RagVectorBackend =
   | 'milvus'
   | 'zilliz'
-  | 'supabase_pgvector'
+  | 'postgres_pgvector'
   | 'hybrid'
   | 'disabled';
 
@@ -20,10 +20,10 @@ export function resolveRagVectorBackend(
   switch (value?.trim().toLowerCase()) {
     case 'zilliz':
       return 'zilliz';
-    case 'supabase_pgvector':
-    case 'supabase-pgvector':
+    case 'postgres_pgvector':
+    case 'postgres-pgvector':
     case 'pgvector':
-      return 'supabase_pgvector';
+      return 'postgres_pgvector';
     case 'hybrid':
       return 'hybrid';
     case 'disabled':
