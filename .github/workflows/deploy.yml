@@ -162,7 +162,9 @@ jobs:
             chmod "${mode}" "${stage}"
             case "${validator}" in
               bash) bash -n "${stage}" ;;
-              node) node --check "${stage}" ;;
+              # Staged files end in .next.<pid>, so passing the path makes
+              # Node reject the temporary extension before it can parse CJS.
+              node) node --check < "${stage}" ;;
               *) echo "Unknown shared asset validator: ${validator}" >&2; return 2 ;;
             esac
             if [ -f "${target}" ] && cmp -s "${stage}" "${target}"; then
