@@ -7,9 +7,11 @@ import {
   type PostgresRuntimeConfig,
 } from '../postgres/env';
 import type { FileManifestItem, UploadManifestStore } from './ports';
+import { createStableErrorLog } from '../security/error-redaction';
 
 interface DocumentAssetRow {
   id: string;
+  external_document_id: string | null;
   original_name: string;
   content_type: string;
   byte_size: string | number;
@@ -41,7 +43,9 @@ function rowToManifestItem(row: DocumentAssetRow): FileManifestItem {
     : {};
 
   return {
-    id: typeof metadata.manifest_id === 'string' ? metadata.manifest_id : row.id,
+    id: typeof metadata.manifest_id === 'string'
+      ? metadata.manifest_id
+      : row.external_document_id ?? row.id,
     originalName: row.original_name,
     originalExtension: typeof metadata.original_extension === 'string'
       ? metadata.original_extension
@@ -93,10 +97,11 @@ export class PostgresUploadManifestStore implements UploadManifestStore {
   async loadManifest(): Promise<Record<string, FileManifestItem>> {
     const result = await queryPostgres<DocumentAssetRow>(
       this.client,
-      `select id, original_name, content_type, byte_size, source_hash,
+      `select id, external_document_id, original_name, content_type, byte_size, source_hash,
               raw_blob_filename, parsed_blob_filename, parse_method, metadata, created_at
        from document_assets
        where tenant_id = $1 and corpus_id = $2
+         and metadata ? 'manifest_id'
        order by created_at desc`,
       [this.config.defaultTenantId, this.config.defaultCorpusId],
       'load upload manifest'
@@ -119,27 +124,31 @@ export class PostgresUploadManifestStore implements UploadManifestStore {
          delete from document_assets existing
          where existing.tenant_id = $1
            and existing.corpus_id = $2
+           and existing.metadata ? 'manifest_id'
            and not exists (
              select 1 from incoming
-             where incoming.item->>'id' = existing.metadata->>'manifest_id'
+             where incoming.item->>'id' = existing.external_document_id
            )
          returning existing.id
        )
        insert into document_assets (
-         tenant_id, corpus_id, original_name, content_type, byte_size, source_hash,
+         tenant_id, corpus_id, external_document_id, original_name, content_type, byte_size, source_hash,
          raw_blob_filename, parsed_blob_filename, parse_method, metadata
        )
        select
-         $1, $2, item->>'original_name', item->>'content_type',
+         $1, $2, item->>'id', item->>'original_name', item->>'content_type',
          (item->>'byte_size')::bigint, item->>'source_hash',
          item->>'raw_blob_filename', item->>'parsed_blob_filename',
          item->>'parse_method', item->'metadata'
        from incoming
-       on conflict (tenant_id, corpus_id, source_hash)
+       cross join (select count(*) as removed_count from removed) dependency
+       where dependency.removed_count >= 0
+       on conflict (tenant_id, corpus_id, external_document_id)
        do update set
          original_name = excluded.original_name,
          content_type = excluded.content_type,
          byte_size = excluded.byte_size,
+         source_hash = excluded.source_hash,
          raw_blob_filename = excluded.raw_blob_filename,
          parsed_blob_filename = excluded.parsed_blob_filename,
          parse_method = excluded.parse_method,
@@ -154,14 +163,15 @@ export class PostgresUploadManifestStore implements UploadManifestStore {
     await queryPostgres(
       this.client,
       `insert into document_assets (
-         tenant_id, corpus_id, original_name, content_type, byte_size, source_hash,
+         tenant_id, corpus_id, external_document_id, original_name, content_type, byte_size, source_hash,
          raw_blob_filename, parsed_blob_filename, parse_method, metadata
-       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-       on conflict (tenant_id, corpus_id, source_hash)
+       ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+       on conflict (tenant_id, corpus_id, external_document_id)
        do update set
          original_name = excluded.original_name,
          content_type = excluded.content_type,
          byte_size = excluded.byte_size,
+         source_hash = excluded.source_hash,
          raw_blob_filename = excluded.raw_blob_filename,
          parsed_blob_filename = excluded.parsed_blob_filename,
          parse_method = excluded.parse_method,
@@ -169,6 +179,7 @@ export class PostgresUploadManifestStore implements UploadManifestStore {
       [
         this.config.defaultTenantId,
         this.config.defaultCorpusId,
+        record.id,
         record.original_name,
         record.content_type,
         record.byte_size,
@@ -189,6 +200,7 @@ export class PostgresUploadManifestStore implements UploadManifestStore {
        where id = (
          select id from document_assets
          where tenant_id = $1 and corpus_id = $2
+           and metadata ? 'manifest_id'
            and (
              metadata->>'manifest_id' = $3
              or original_name = $3
@@ -197,7 +209,7 @@ export class PostgresUploadManifestStore implements UploadManifestStore {
            )
          limit 1
        )
-       returning id, original_name, content_type, byte_size, source_hash,
+       returning id, external_document_id, original_name, content_type, byte_size, source_hash,
                  raw_blob_filename, parsed_blob_filename, parse_method, metadata, created_at`,
       [this.config.defaultTenantId, this.config.defaultCorpusId, match],
       'remove upload manifest item'
@@ -225,7 +237,7 @@ export class DualWriteUploadManifestStore implements UploadManifestStore {
     try {
       await this.secondary.saveManifest(manifest);
     } catch (error) {
-      console.warn('[DualWriteUploadManifestStore] PostgreSQL manifest mirror failed:', error);
+      console.warn('[DualWriteUploadManifestStore] PostgreSQL manifest mirror failed:', createStableErrorLog(error));
     }
   }
 
@@ -234,7 +246,7 @@ export class DualWriteUploadManifestStore implements UploadManifestStore {
     try {
       await this.secondary.recordUpload(item);
     } catch (error) {
-      console.warn('[DualWriteUploadManifestStore] PostgreSQL manifest record failed:', error);
+      console.warn('[DualWriteUploadManifestStore] PostgreSQL manifest record failed:', createStableErrorLog(error));
     }
   }
 
@@ -243,7 +255,7 @@ export class DualWriteUploadManifestStore implements UploadManifestStore {
     try {
       await this.secondary.removeUpload(match);
     } catch (error) {
-      console.warn('[DualWriteUploadManifestStore] PostgreSQL manifest remove failed:', error);
+      console.warn('[DualWriteUploadManifestStore] PostgreSQL manifest remove failed:', createStableErrorLog(error));
     }
     return removed;
   }

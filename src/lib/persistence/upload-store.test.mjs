@@ -88,23 +88,23 @@ test('PostgreSQL persistence fails closed when its required scope is incomplete'
   const previous = {
     backend: process.env.RAG_PERSISTENCE_BACKEND,
     databaseUrl: process.env.DATABASE_URL,
-    tenantId: process.env.POSTGRES_DEFAULT_TENANT_ID,
-    corpusId: process.env.POSTGRES_DEFAULT_CORPUS_ID,
+    tenantId: process.env.RAG_DEFAULT_TENANT_ID,
+    corpusId: process.env.RAG_DEFAULT_CORPUS_ID,
   };
   try {
     process.env.RAG_PERSISTENCE_BACKEND = 'postgres';
     process.env.DATABASE_URL = 'postgresql://rag:secret@db/rag';
-    delete process.env.POSTGRES_DEFAULT_TENANT_ID;
-    delete process.env.POSTGRES_DEFAULT_CORPUS_ID;
+    delete process.env.RAG_DEFAULT_TENANT_ID;
+    delete process.env.RAG_DEFAULT_CORPUS_ID;
     assert.throws(
       () => createUploadPersistence({ uploadDir: root }),
-      /POSTGRES_DEFAULT_TENANT_ID.*POSTGRES_DEFAULT_CORPUS_ID/
+      /RAG_DEFAULT_TENANT_ID.*RAG_DEFAULT_CORPUS_ID/
     );
   } finally {
     restoreEnv('RAG_PERSISTENCE_BACKEND', previous.backend);
     restoreEnv('DATABASE_URL', previous.databaseUrl);
-    restoreEnv('POSTGRES_DEFAULT_TENANT_ID', previous.tenantId);
-    restoreEnv('POSTGRES_DEFAULT_CORPUS_ID', previous.corpusId);
+    restoreEnv('RAG_DEFAULT_TENANT_ID', previous.tenantId);
+    restoreEnv('RAG_DEFAULT_CORPUS_ID', previous.corpusId);
     await rm(root, { recursive: true, force: true });
   }
 });

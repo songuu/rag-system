@@ -121,7 +121,7 @@ test('SemanticCache never reuses an answer across cache identities', async () =>
 
 test('SemanticCache requires a versioned identity in authenticated modes', async () => {
   const previousMode = process.env.RAG_ACCESS_MODE;
-  process.env.RAG_ACCESS_MODE = 'supabase';
+  process.env.RAG_ACCESS_MODE = 'single-tenant-token';
   try {
     const cache = new SemanticCache(new StubEmbeddings());
     await assert.rejects(

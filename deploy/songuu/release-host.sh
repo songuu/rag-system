@@ -16,6 +16,7 @@ readonly RUNNER="$SHARED/run-rag-system.sh"
 readonly BOOTSTRAP="$SHARED/run-rag-system.cjs"
 readonly PM2_ECOSYSTEM="$SHARED/rag-system.ecosystem.config.cjs"
 readonly PM2_MANAGER="$SHARED/manage-rag-system-pm2.sh"
+readonly READY_URL="http://127.0.0.1:5182${RAG_BASE_PATH}/api/health"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEFAULTS_RENDERER="${RAG_ENV_DEFAULTS_RENDERER:-$SCRIPT_DIR/render-host-env-defaults.py}"
 readonly DEFAULTS_EXAMPLE="${RAG_ENV_DEFAULTS_EXAMPLE:-$SCRIPT_DIR/.env.container.example}"
@@ -67,8 +68,8 @@ NEXT_TELEMETRY_DISABLED=1
 RAG_ACCESS_MODE=single-tenant-token
 RAG_SINGLE_TENANT_TOKEN=${token}
 RAG_SINGLE_TENANT_ROLE=owner
-SUPABASE_DEFAULT_TENANT_ID=songuu-production
-SUPABASE_DEFAULT_CORPUS_ID=default
+RAG_DEFAULT_TENANT_ID=songuu-production
+RAG_DEFAULT_CORPUS_ID=default
 RAG_TENANT_ISOLATION_REQUIRED=true
 
 # These are conservative defaults. Full readiness requires reachable model
@@ -82,7 +83,9 @@ MILVUS_LOCAL_ADDRESS=127.0.0.1:19530
 MILVUS_DEFAULT_DATABASE=default
 MILVUS_DEFAULT_COLLECTION=rag_documents
 MILVUS_DEFAULT_DIMENSION=768
-RAG_PERSISTENCE_BACKEND=local
+# Add DATABASE_URL or POSTGRES_URL to this protected file before retrying the
+# first release. The release fails closed until PostgreSQL is configured.
+RAG_PERSISTENCE_BACKEND=postgres
 RAG_VECTOR_BACKEND=milvus
 
 REASONING_RAG_UPLOAD_DIR=/opt/rag-system/data/reasoning-uploads
@@ -132,6 +135,50 @@ if ! bash -c '
   set -a
   . "$1"
   . "$2"
+
+  trim_outer_whitespace() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf "%s" "$value"
+  }
+
+  validate_postgres_persistence() {
+    local database_url
+    local postgres_url
+    local scope_pattern="^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+
+    if [[ "${RAG_PERSISTENCE_BACKEND:-postgres}" != "postgres" ]]; then
+      echo "Production RAG persistence must use postgres" >&2
+      return 1
+    fi
+
+    database_url="$(trim_outer_whitespace "${DATABASE_URL:-}")"
+    postgres_url="$(trim_outer_whitespace "${POSTGRES_URL:-}")"
+    if [[ -z "$database_url" && -z "$postgres_url" ]]; then
+      echo "DATABASE_URL or POSTGRES_URL is required for PostgreSQL persistence" >&2
+      return 1
+    fi
+    if [[ -n "$database_url" && ! "$database_url" =~ ^postgres(ql)?://[^[:space:]]+$ ]]; then
+      echo "DATABASE_URL must use the postgres or postgresql URL scheme" >&2
+      return 1
+    fi
+    if [[ -n "$postgres_url" && ! "$postgres_url" =~ ^postgres(ql)?://[^[:space:]]+$ ]]; then
+      echo "POSTGRES_URL must use the postgres or postgresql URL scheme" >&2
+      return 1
+    fi
+    if [[ -n "$database_url" && -n "$postgres_url" && "$database_url" != "$postgres_url" ]]; then
+      echo "DATABASE_URL and POSTGRES_URL must match when both are configured" >&2
+      return 1
+    fi
+    if [[ ! "${RAG_DEFAULT_TENANT_ID:-}" =~ $scope_pattern || ! "${RAG_DEFAULT_CORPUS_ID:-}" =~ $scope_pattern ]]; then
+      echo "Valid RAG_DEFAULT_TENANT_ID and RAG_DEFAULT_CORPUS_ID are required for PostgreSQL persistence" >&2
+      return 1
+    fi
+  }
+
+  validate_postgres_persistence
+
   case "${EMBEDDING_PROVIDER:-ollama}" in
     ollama)
       ;;
@@ -215,7 +262,7 @@ if ! bash -c '
   require_allowed_model "LLM" "$llm_model" "${RAG_ALLOWED_LLM_MODELS:-}" "RAG_ALLOWED_LLM_MODELS"
   require_allowed_model "EMBEDDING" "$embedding_model" "${RAG_ALLOWED_EMBEDDING_MODELS:-}" "RAG_ALLOWED_EMBEDDING_MODELS"
 ' bash "$DEFAULTS_FILE" "$ENV_FILE"; then
-  echo "Production RAG environment has incomplete provider configuration or disallows its active model" >&2
+  echo "Production RAG environment has incomplete persistence/provider configuration or disallows its active model" >&2
   exit 2
 fi
 
@@ -277,8 +324,21 @@ if [[ -z "$live" ]]; then
   echo "RAG release failed liveness; restored previous release when available" >&2
   exit 1
 fi
+ready=""
+for _ in $(seq 1 30); do
+  if ready=$(curl --max-time 5 -fsS "$READY_URL"); then
+    break
+  fi
+  sleep 1
+done
+if [[ -z "$ready" ]]; then
+  rollback
+  echo "RAG release failed readiness; restored previous release when available" >&2
+  exit 1
+fi
 pm2 save
 
 printf 'release=%s\n' "$release"
 printf 'current=%s\n' "$(readlink -f "$ROOT/current")"
 printf 'live=%s\n' "$live"
+printf 'ready=%s\n' "$ready"

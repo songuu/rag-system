@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTraceFromPersistence } from '@/lib/persistence/trace-store';
+import { RagSecurityError, resolveRagSecurityContext } from '@/lib/security/request-context';
+import { redactErrorForLog } from '@/lib/security/error-redaction';
 
 // GET /api/traces/[traceId] - 获取特定 Trace
 export async function GET(
@@ -7,6 +9,10 @@ export async function GET(
   { params }: { params: Promise<{ traceId: string }> }
 ) {
   try {
+    await resolveRagSecurityContext(request, {
+      capability: 'query',
+      requestedCorpusId: request.nextUrl.searchParams.get('corpusId') || undefined,
+    });
     const { traceId } = await params;
     const trace = await getTraceFromPersistence(traceId);
     
@@ -22,11 +28,13 @@ export async function GET(
       trace
     });
   } catch (error) {
-    console.error("获取 Trace 错误:", error);
+    console.error('[API/traces/:traceId] get failed:', redactErrorForLog(error));
+    if (error instanceof RagSecurityError) {
+      return NextResponse.json(error.toResponseBody(), { status: error.status });
+    }
     return NextResponse.json(
       { 
-        error: "获取 Trace 失败",
-        details: error instanceof Error ? error.message : String(error)
+        error: "获取 Trace 失败"
       },
       { status: 500 }
     );

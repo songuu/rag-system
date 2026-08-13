@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { 
   DocumentPipeline, 
@@ -30,6 +31,8 @@ import {
 } from '@/lib/security/retrieval-scope';
 import { redactErrorForLog } from '@/lib/security/error-redaction';
 import { toPublicMilvusConfig } from '@/lib/security/public-config';
+import { recordPipelineDocumentIfConfigured } from '@/lib/persistence/postgres-pipeline-store';
+import type { JsonValue } from '@/lib/persistence/types';
 import {
   isVectorBackendDisabled,
   VECTOR_BACKEND_DISABLED_CODE,
@@ -37,6 +40,19 @@ import {
 } from '@/lib/rag/vector-backend';
 
 export const runtime = 'nodejs';
+
+class PostgresIngestReconciliationRequiredError extends Error {
+  readonly code = 'POSTGRES_INGEST_RECONCILIATION_REQUIRED';
+  readonly status = 503;
+
+  constructor(reconciliationId: string, cause: unknown) {
+    super(
+      `PostgreSQL ingestion requires reconciliation after the vector write. reconciliationId=${reconciliationId}`,
+      { cause }
+    );
+    this.name = 'PostgresIngestReconciliationRequiredError';
+  }
+}
 
 // 环境变量配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
@@ -134,11 +150,20 @@ export async function POST(request: NextRequest) {
           metadata: scopeMetadata,
           signal: request.signal,
         });
+        const postgresAssetId = await persistPipelineResult({
+          securityContext,
+          result,
+          originalName: sourceName,
+          contentType: 'text/plain; charset=utf-8',
+          sourceKind: 'text',
+          source: text,
+        });
         
         return NextResponse.json({
           success: true,
           ...result,
           embeddingModel: modelToUse,
+          ...(postgresAssetId ? { postgresAssetId } : {}),
         });
       }
       
@@ -165,11 +190,19 @@ export async function POST(request: NextRequest) {
           metadata: scopeMetadata,
           signal: request.signal,
         });
+        const postgresAssetId = await persistPipelineResult({
+          securityContext,
+          result,
+          originalName: url,
+          contentType: 'text/uri-list',
+          sourceKind: 'url',
+        });
         
         return NextResponse.json({
           success: true,
           ...result,
           embeddingModel: modelToUse,
+          ...(postgresAssetId ? { postgresAssetId } : {}),
         });
       }
       
@@ -197,11 +230,19 @@ export async function POST(request: NextRequest) {
           metadata: scopeMetadata,
           signal: request.signal,
         });
+        const postgresAssetId = await persistPipelineResult({
+          securityContext,
+          result,
+          originalName: videoUrl,
+          contentType: 'text/uri-list',
+          sourceKind: 'youtube',
+        });
         
         return NextResponse.json({
           success: true,
           ...result,
           embeddingModel: modelToUse,
+          ...(postgresAssetId ? { postgresAssetId } : {}),
         });
       }
       
@@ -267,6 +308,27 @@ export async function POST(request: NextRequest) {
         });
         
         const results = await pipeline.processDocuments(inputs);
+
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index];
+          if (!result.success) continue;
+          const item = items[index];
+          const input = inputs[index];
+          const sourceKind = input.type ?? 'text';
+          const postgresAssetId = await persistPipelineResult({
+            securityContext,
+            result,
+            originalName: input.filename ?? `batch-document-${index + 1}`,
+            contentType: sourceKind === 'url' || sourceKind === 'youtube'
+              ? 'text/uri-list'
+              : 'text/plain; charset=utf-8',
+            sourceKind,
+            source: sourceKind === 'url' || sourceKind === 'youtube'
+              ? undefined
+              : [item.content, item.text].find((value): value is string => typeof value === 'string'),
+          });
+          if (postgresAssetId) Object.assign(result, { postgresAssetId });
+        }
         
         const successCount = results.filter(r => r.success).length;
         const totalChunks = results.reduce((sum, r) => sum + r.chunks, 0);
@@ -339,6 +401,15 @@ function mapPipelineError(
     };
   }
   if (error instanceof MilvusHybridIngestOperationalError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
+      },
+    };
+  }
+  if (error instanceof PostgresIngestReconciliationRequiredError) {
     return {
       status: error.status,
       body: {
@@ -448,14 +519,26 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           metadata: scopeMetadata,
           signal: request.signal,
         });
+        const postgresAssetId = await persistPipelineResult({
+          securityContext,
+          result,
+          originalName: filename,
+          contentType: file.type || 'application/octet-stream',
+          sourceKind: type,
+          source: buffer,
+        });
         
         results.push({
           filename,
           ...result,
           success: true,
+          ...(postgresAssetId ? { postgresAssetId } : {}),
         });
       } catch (error) {
-        if (error instanceof MilvusHybridIngestReconciliationRequiredError) throw error;
+        if (
+          error instanceof MilvusHybridIngestReconciliationRequiredError
+          || error instanceof PostgresIngestReconciliationRequiredError
+        ) throw error;
         results.push({
           filename,
           success: false,
@@ -560,4 +643,76 @@ function resolvePublicRequestId(request: NextRequest): string {
   return supplied && supplied.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(supplied)
     ? supplied
     : crypto.randomUUID();
+}
+
+async function persistPipelineResult(input: {
+  securityContext: {
+    actorId: string;
+    tenantId: string;
+    corpusId: string;
+  };
+  result: {
+    documentId: string;
+    chunks: number;
+    ids: string[];
+    metadata: Record<string, unknown>;
+    contextualRetrieval?: unknown;
+    pdfVisual?: unknown;
+  };
+  originalName: string;
+  contentType: string;
+  sourceKind: string;
+  source?: string | Buffer;
+}): Promise<string | null> {
+  const sourceHash = [
+    input.result.metadata.sourceHash,
+    input.result.metadata.source_hash,
+    input.result.metadata.documentVersion,
+    input.result.metadata.document_version,
+  ].find((value): value is string => typeof value === 'string' && value.length > 0);
+  const reconciliationId = createHash('sha256')
+    .update([
+      input.securityContext.tenantId,
+      input.securityContext.corpusId,
+      input.result.documentId,
+      sourceHash ?? 'missing-source-hash',
+    ].join('\0'))
+    .digest('hex')
+    .slice(0, 24);
+  try {
+    if (!sourceHash) {
+      throw new Error('Processed document is missing its source hash.');
+    }
+
+    return await recordPipelineDocumentIfConfigured({
+      tenantId: input.securityContext.tenantId,
+      corpusId: input.securityContext.corpusId,
+      actorId: input.securityContext.actorId,
+      documentId: input.result.documentId,
+      originalName: input.originalName,
+      contentType: input.contentType,
+      sourceHash,
+      sourceKind: input.sourceKind,
+      source: input.source,
+      metadata: toJsonRecord({
+        document: input.result.metadata,
+        chunks: input.result.chunks,
+        chunk_ids: input.result.ids,
+        contextual_retrieval: input.result.contextualRetrieval ?? null,
+        pdf_visual: input.result.pdfVisual ?? null,
+      }),
+    });
+  } catch (error) {
+    throw new PostgresIngestReconciliationRequiredError(reconciliationId, error);
+  }
+}
+
+function toJsonRecord(value: unknown): Record<string, JsonValue> {
+  const serialized = JSON.stringify(value, (_key, candidate) => (
+    candidate === undefined ? null : candidate
+  ));
+  const parsed = JSON.parse(serialized) as JsonValue;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, JsonValue>
+    : {};
 }

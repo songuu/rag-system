@@ -13,16 +13,16 @@
 - `src/lib/langsmith/trace-mirror.ts`：本地 `ObservabilityEngine` -> LangSmith run tree mirror。
 - `src/app/api/ask/route.ts`：所有 RAG policy 统一输出 LangSmith root run。
 - `src/lib/persistence/trace-store.ts`：用户 feedback 同步写入 LangSmith。
-- `src/lib/rag-instance.ts`：Supabase mirror 与 LangSmith mirror 并行触发。
+- `src/lib/rag-instance.ts`：PostgreSQL mirror 与 LangSmith mirror 并行触发。
 - `LANGSMITH_LATEST_GUIDE.md` 与 `ENV_CONFIG_GUIDE.md`：运行配置和使用说明。
 
 ## 设计原则
 
-1. **LangSmith 是观测/评估面，不替代本地 observability 或 Supabase persistence。**
+1. **LangSmith 是观测/评估面，不替代本地 observability 或 PostgreSQL persistence。**
 2. **线程优先。** 所有 trace 统一写 `thread_id`、`session_id`、`conversation_id`，让 Multi-turn Evals 能按会话评估。
 3. **metadata 可筛选。** 每个 run 携带 `rag_policy`、route、model、embedding、vector backend。
 4. **默认 no-op。** 没有 `LANGSMITH_API_KEY` 时不发网络请求、不影响本地开发。
-5. **反馈三写。** 用户 feedback 同步进入本地 trace、Supabase trace_scores、LangSmith feedback。
+5. **反馈三写。** 用户 feedback 同步进入本地 trace、PostgreSQL `trace_scores`、LangSmith feedback。
 
 ## 最新特性映射
 

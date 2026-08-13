@@ -13,7 +13,6 @@
 | `@langchain/langgraph` | `^1.3.1` | Agentic RAG 的 `StateGraph` 工作流 |
 | `@langchain/openai` | `^1.4.6` | OpenAI-compatible provider |
 | `@langchain/ollama` | `^1.2.7` | 本地 Ollama 模型 |
-| `@langchain/community` | `^1.1.28` | 社区集成和兼容层 |
 | `@langchain/textsplitters` | `1.0.1` | 文档切分 |
 
 项目暂未直接依赖 `langchain` 包，因此 `createAgent`、agent middleware、`responseFormat` 等 LangChain v1 高层 agent API 不能直接用于运行时代码。当前已通过 `src/lib/langchain-structured-output.ts` 在 `@langchain/core` 模型基础上落地 structured output 优先、prompt JSON fallback 的兼容层；后续若要使用 `createAgent`，再同步更新 `package.json` 与 `pnpm-lock.yaml`。

@@ -111,7 +111,6 @@ test('getDocumentSecurityFields uses safe local fallback values', () => {
 test('isTenantIsolationRequired is fail-closed for every authenticated access mode and alias', () => {
   assert.equal(isTenantIsolationRequired({}), false);
   assert.equal(isTenantIsolationRequired({ RAG_TENANT_ISOLATION_REQUIRED: 'true' }), true);
-  assert.equal(isTenantIsolationRequired({ RAG_ACCESS_MODE: 'supabase' }), true);
   assert.equal(isTenantIsolationRequired({ RAG_ACCESS_MODE: 'single-tenant-token' }), true);
-  assert.equal(isTenantIsolationRequired({ RAG_AUTH_MODE: 'supabase' }), true);
+  assert.equal(isTenantIsolationRequired({ RAG_AUTH_MODE: 'single-tenant-token' }), true);
 });

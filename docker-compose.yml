@@ -13,6 +13,14 @@ services:
       NODE_ENV: production
       HOSTNAME: 0.0.0.0
       PORT: "3000"
+      # Infrastructure and migration credentials may be present in the Compose
+      # interpolation file, but they are never injected into the app process.
+      POSTGRES_DB: ""
+      POSTGRES_USER: ""
+      POSTGRES_PASSWORD: ""
+      POSTGRES_HOST_PORT: ""
+      POSTGRES_MIGRATION_URL: ""
+      POSTGRES_APP_ROLE: ""
     ports:
       - "3000:3000"
     volumes:

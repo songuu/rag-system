@@ -67,7 +67,22 @@ mkdir -p "$STAGE/.next"
 cp -a .next/standalone/. "$STAGE/"
 cp -a .next/static "$STAGE/.next/static"
 cp -a public "$STAGE/public"
+if [[ -d db/postgres || -f scripts/migrate-postgres.mjs ]]; then
+  test -f db/postgres/bootstrap.sql
+  test -d db/postgres/migrations
+  test -f scripts/migrate-postgres.mjs
+  mkdir -p "$STAGE/db"
+  cp -a db/postgres "$STAGE/db/postgres"
+  mkdir -p "$STAGE/scripts"
+  cp -a scripts/migrate-postgres.mjs "$STAGE/scripts/migrate-postgres.mjs"
+fi
 tar -C "$STAGE" -czf "$ARTIFACT" .
+if [[ -d db/postgres ]]; then
+  artifact_listing="$(tar -tzf "$ARTIFACT")"
+  grep -Fxq './db/postgres/bootstrap.sql' <<< "$artifact_listing"
+  grep -Eq '^\./db/postgres/migrations/.+\.sql$' <<< "$artifact_listing"
+  grep -Fxq './scripts/migrate-postgres.mjs' <<< "$artifact_listing"
+fi
 
 (
   cd "$STAGE"

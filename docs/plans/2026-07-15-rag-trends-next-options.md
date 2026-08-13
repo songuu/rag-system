@@ -135,7 +135,7 @@ hybrid。本轮已用 capability/schema-gated port contract 与 lane handler 取
 | Evidence / citation | 基本未接入 | `src/lib/rag/core/types.ts:77-94` 有类型；`src/lib/rag/core/context-composer.ts:8-34` 无 production call site；`/api/ask` 返回各自 `retrievalDetails` | 先统一 canonical evidence，再谈引用正确性和跨 policy eval |
 | Context packing | 部分实现 | `context-composer.ts:12-31` 用字符数 first-fit 截断；PDF parser 能保留 `pageTexts`，下游仍主要聚合成文本 | 缺 token budget、页/节顺序、span、表格/图像 sidecar |
 | Eval | 基本缺失 | `src/lib/rag/eval/golden-questions.ts:11-36` 仅 4 条 smoke；无 runner/metrics/experiment/CI gate | 当前无法证明任何新增模式优于 dense baseline |
-| Observability | 部分实现 | `/api/ask` 有 LangSmith root run；memory path 有更完整 local/Supabase trace；kernel envelope 主要进入 header | 需要同一事件合同覆盖所有 policy、lane、evidence、cost 与 cache |
+| Observability | 部分实现 | `/api/ask` 有 LangSmith root run；memory path 有更完整 local/PostgreSQL trace；kernel envelope 主要进入 header | 需要同一事件合同覆盖所有 policy、lane、evidence、cost 与 cache |
 | Security / tenant | 运行时缺失 | `/api/ask` 信任 body 的 `userId`；`/api/pipeline` 可抓 URL；Milvus schema 无强制 tenant/corpus scalar filter | 公开部署前属于 P0；还存在 SSRF、间接 prompt injection 与跨租户检索风险 |
 | Corpus / provenance | 脚手架 | `src/lib/rag/corpus/corpus-store.ts:13-28` 有 `sourceHash`/manifest，但为内存 store，未成为所有摄取/检索路径的强合同 | 可以演进为 provenance、版本、ACL 与 cache invalidation 基础 |
 | Agentic / explicit state / durable | agentic 已有，显式状态不统一，durable 缺失 | 当前工作流基于 `RunnableLambda`/`RunnableSequence`；没有统一 transition/budget/stop contract，也没有 checkpointer、interrupt、resume | 复杂 RAG 编排仍需显式可观察状态；只有跨重启、延迟审批或 HITL 才引入 durable checkpoint runtime |
@@ -361,7 +361,7 @@ E2b 与 E3-E7 于同日按用户明确指令进入续作。
 - Scope：完成所有剩余 Epic 的可执行、feature-gated、可回滚代码合同/seam；E2b、E4、E5
   接入现有 `/api/ask` 路径，E3、E6、E7 提供可注入 library seam，并保持与 `RagKernel`、lane、
   canonical evidence、trace 与 eval 合同兼容。
-- Non-scope：不直接切换 production collection，不写真实 Supabase/Milvus，不下载未审计模型，
+- Non-scope：不直接切换 production collection，不写真实 PostgreSQL/Milvus，不下载未审计模型，
   不因 E7 重写 UI/消息协议。
 - Success：每个 Epic 有真实调用 seam、禁用/能力缺失行为、确定性 L3 测试、组合回归；
   外部环境未提供时明确区分“代码闭环”与“live activation”。
@@ -541,7 +541,7 @@ E5 builder→scoped store、E6 ingest/query caller，以及 E7 文件 checkpoint
 
 - E1b 证明 harness、固定 fixture、确定性 target 与门禁接线；不证明真实 ANN、线上语料或
   LLM production answer quality。
-- 未连接真实 Supabase/Milvus 做两租户集成读写；上线前仍需真实凭据、RLS、scalar filter、
+- 未连接真实 PostgreSQL/Milvus 做两租户集成读写；上线前仍需真实凭据、服务端授权、scalar filter、
   timeout 与 shadow collection 验证。
 - E2 只完成 strangler 的 E2a；把 agentic/adaptive/memory 迁入同一 lane/evidence 合同属于 E2b。
 

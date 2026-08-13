@@ -43,8 +43,7 @@ test('legacy routes fail closed in production even with local-dev mode', () => {
 test('legacy routes fail closed for every explicit authenticated mode and alias', () => {
   for (const env of [
     { NODE_ENV: 'development', RAG_ACCESS_MODE: 'single-tenant-token' },
-    { NODE_ENV: 'development', RAG_ACCESS_MODE: 'supabase' },
-    { NODE_ENV: 'development', RAG_AUTH_MODE: 'supabase' },
+    { NODE_ENV: 'development', RAG_AUTH_MODE: 'single-tenant-token' },
     { NODE_ENV: 'development', RAG_ACCESS_MODE: 'invalid' },
   ]) {
     assert.equal(getLegacyRagRouteBlock(env)?.code, 'LEGACY_RAG_ROUTE_DISABLED');
@@ -54,7 +53,7 @@ test('legacy routes fail closed for every explicit authenticated mode and alias'
 test('legacy route response exposes only a stable public 410 payload', async () => {
   const response = createLegacyRagRouteResponse({
     NODE_ENV: 'production',
-    RAG_ACCESS_MODE: 'supabase',
+    RAG_ACCESS_MODE: 'single-tenant-token',
   });
   assert.equal(response.status, 410);
   assert.deepEqual(await response.json(), {

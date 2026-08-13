@@ -18,7 +18,7 @@ If `node --test file1 file2` fails with `spawn EPERM`, rerun the same test files
 
 ## Security Boundary Changes Are L4
 
-Auth mode, tenant/corpus scope, vector filters, admin routes, URL ingestion, body limits, and credential redaction require L4 coverage. Keep most cases hermetic at pure seams: role/capability matrix, split Supabase headers, RLS-visible scope resolution, strict numeric/model validation, scalar filter construction, private IPv4/IPv6 and mixed DNS rejection, pinned redirects, streamed byte caps, and public config/error DTO redaction. Add route/integration checks when infrastructure is available, but never weaken fail-closed behavior because live Supabase or Milvus is unavailable in CI.
+Auth mode, tenant/corpus scope, vector filters, admin routes, URL ingestion, body limits, and credential redaction require L4 coverage. Keep most cases hermetic at pure seams: role/capability matrix, server-owned token/scope resolution, parameterized PostgreSQL statements, composite scope constraints, strict numeric/model validation, scalar filter construction, private IPv4/IPv6 and mixed DNS rejection, pinned redirects, streamed byte caps, and public config/error DTO redaction. Add route/integration checks when infrastructure is available, but never weaken fail-closed behavior because live PostgreSQL or Milvus is unavailable in CI.
 
 ## Eval Targets Are Label-Blind And Corpus-Checked
 

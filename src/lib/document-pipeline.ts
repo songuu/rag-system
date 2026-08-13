@@ -1159,11 +1159,11 @@ export async function applyContextualRetrievalV2ToChunks(input: {
     }
     const tenantId = pipelineIdentityValue(
       chunk.metadata.tenantId ?? chunk.metadata.tenant_id,
-      process.env.SUPABASE_DEFAULT_TENANT_ID || 'local'
+      process.env.RAG_DEFAULT_TENANT_ID || 'local'
     );
     const corpusId = pipelineIdentityValue(
       chunk.metadata.corpusId ?? chunk.metadata.corpus_id,
-      process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default'
+      process.env.RAG_DEFAULT_CORPUS_ID || 'default'
     );
     const documentId = pipelineIdentityValue(
       chunk.metadata.documentId ?? chunk.metadata.document_id,
@@ -1350,13 +1350,13 @@ function resolvePipelinePdfScope(metadata: DocumentMetadata): {
   const tenantId = strictMetadataAlias(
     metadata.tenantId,
     metadata.tenant_id,
-    process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
+    process.env.RAG_DEFAULT_TENANT_ID || 'local',
     'tenant'
   );
   const corpusId = strictMetadataAlias(
     metadata.corpusId,
     metadata.corpus_id,
-    process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
+    process.env.RAG_DEFAULT_CORPUS_ID || 'default',
     'corpus'
   );
   const trustValue = strictMetadataAlias(

@@ -39,7 +39,7 @@
     <g><rect x="378" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="424" y="145" text-anchor="middle">LangChain</text></g>
     <g><rect x="478" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="524" y="145" text-anchor="middle">LangGraph*</text></g>
     <g><rect x="578" y="128" width="70" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="613" y="145" text-anchor="middle">Milvus</text></g>
-    <g><rect x="656" y="128" width="84" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="698" y="145" text-anchor="middle">Supabase</text></g>
+    <g><rect x="656" y="128" width="84" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="698" y="145" text-anchor="middle">PostgreSQL</text></g>
     <g><rect x="748" y="128" width="70" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="783" y="145" text-anchor="middle">Ollama</text></g>
     <g><rect x="826" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="872" y="145" text-anchor="middle">LangSmith</text></g>
     <g><rect x="926" y="128" width="92" height="26" rx="13" fill="#1e293b" stroke="#334155"/><text x="972" y="145" text-anchor="middle">ReactFlow</text></g>
@@ -272,7 +272,7 @@
   <g>
     <rect x="78" y="1272" width="1114" height="168" rx="16" fill="#8b5cf6" fill-opacity="0.06" stroke="#8b5cf6" stroke-opacity="0.4"/>
     <rect x="94" y="1286" width="230" height="26" rx="13" fill="url(#storeG)"/><text x="106" y="1304" font-size="14.5" font-weight="800" fill="#1a0a33">⑤ 存储 &amp; 持久化层</text>
-    <text x="334" y="1304" font-size="12" fill="#a78bfa">Ports 端口模式 · Supabase + 本地双写回退</text>
+    <text x="334" y="1304" font-size="12" fill="#a78bfa">Ports 端口模式 · PostgreSQL + 本地迁移双写</text>
 
     <g>
       <rect x="92" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="92" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
@@ -290,10 +290,10 @@
     </g>
     <g>
       <rect x="532" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="532" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
-      <text x="548" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">Supabase</text>
-      <text x="548" y="1366" font-size="10.5" fill="#9aa7bd">Postgres + Storage</text>
+      <text x="548" y="1344" font-size="13.5" font-weight="700" fill="#ede9fe">PostgreSQL 17</text>
+      <text x="548" y="1366" font-size="10.5" fill="#9aa7bd">关系表 + bytea 对象</text>
       <text x="548" y="1383" font-size="10.5" fill="#9aa7bd">traces / assets / jobs</text>
-      <text x="548" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">supabase-*-store.ts</text>
+      <text x="548" y="1408" font-size="9.5" fill="#6b7a92" font-family="monospace">postgres-*-store.ts</text>
     </g>
     <g>
       <rect x="752" y="1320" width="200" height="100" rx="11" fill="#1a1530" stroke="#8b5cf6" stroke-opacity="0.5"/><rect x="752" y="1320" width="5" height="100" rx="2.5" fill="#a78bfa"/>
@@ -363,11 +363,11 @@
       <text x="1250" y="1183" font-size="10.5" fill="#fda4af">LangSmith Cloud 远程仪表盘</text>
       <text x="1250" y="1202" font-size="10.5" fill="#fda4af">本地 ReactFlow 轨迹图 / TraceTrie 树</text>
     </g>
-    <text x="1234" y="1258" font-size="11" fill="#9aa7bd">SupabaseTraceStore 持久化 traces / observations / trace_scores</text>
+    <text x="1234" y="1258" font-size="11" fill="#9aa7bd">PostgresTraceStore 持久化 traces / observations / trace_scores</text>
     <text x="1234" y="1280" font-size="11" fill="#9aa7bd">@xenova/transformers 提供本地 AutoTokenizer 分词分析</text>
     <text x="1234" y="1302" font-size="11" fill="#9aa7bd">熵 / Shannon 信息量 · 余弦相似 · Levenshtein 编辑距离</text>
     <text x="1234" y="1324" font-size="11" fill="#9aa7bd">TraceStore Facade 合并内存轨迹 + 远端 + LangSmith 反馈</text>
-    <text x="1234" y="1346" font-size="11" fill="#9aa7bd">SupabaseIndexJobStore 跟踪 parse / embed / milvus_sync 任务</text>
+    <text x="1234" y="1346" font-size="11" fill="#9aa7bd">Migration runner 跟踪 schema version / checksum</text>
     <text x="1234" y="1368" font-size="11" fill="#9aa7bd">RagKernelEnvelope 为追踪起点 · traceId 贯穿全链路</text>
     <text x="1234" y="1390" font-size="11" fill="#9aa7bd">DecisionCaptureEngine 拦截 BPE merge 循环提取 token 元数据</text>
     <text x="1234" y="1412" font-size="11" fill="#9aa7bd">golden-questions.ts 评测集 · RAG 质量基线 · 知识覆盖率 + 检索贡献度量</text>

@@ -32,8 +32,8 @@ const originalEnvironment = captureEnvironment([
   'RAG_SINGLE_TENANT_TOKEN',
   'RAG_SINGLE_TENANT_ROLE',
   'RAG_SINGLE_TENANT_ACTOR_ID',
-  'SUPABASE_DEFAULT_TENANT_ID',
-  'SUPABASE_DEFAULT_CORPUS_ID',
+  'RAG_DEFAULT_TENANT_ID',
+  'RAG_DEFAULT_CORPUS_ID',
   'RAG_MIROFISH_GRAPH_STORE_ROOT',
   'RAG_MIROFISH_GRAPH_INGEST_TRUST_LEVEL',
   'RAG_MIROFISH_GRAPH_ARTIFACT_TTL_MS',
@@ -1279,8 +1279,8 @@ function configureSingleTenant(role) {
   process.env.RAG_SINGLE_TENANT_TOKEN = 'graph-secret';
   process.env.RAG_SINGLE_TENANT_ROLE = role;
   process.env.RAG_SINGLE_TENANT_ACTOR_ID = 'actor-a';
-  process.env.SUPABASE_DEFAULT_TENANT_ID = 'tenant-a';
-  process.env.SUPABASE_DEFAULT_CORPUS_ID = 'corpus-a';
+  process.env.RAG_DEFAULT_TENANT_ID = 'tenant-a';
+  process.env.RAG_DEFAULT_CORPUS_ID = 'corpus-a';
 }
 
 function captureEnvironment(keys) {

@@ -20,6 +20,79 @@ EMBEDDING_PROVIDER=siliconflow  # 可选: ollama | siliconflow | openai | custom
 |------|----------|------|
 | LLM 模型 | `MODEL_PROVIDER` | 控制对话/生成模型 |
 | Embedding 模型 | `EMBEDDING_PROVIDER` | 控制向量嵌入模型 |
+| 业务持久化 | `RAG_PERSISTENCE_BACKEND` | `postgres` 使用自建 PostgreSQL；向量仍由 Milvus/Zilliz 配置控制 |
+| API 身份边界 | `RAG_ACCESS_MODE` | 生产当前使用 `single-tenant-token` |
+
+## 自建 PostgreSQL 持久化
+
+活动部署只允许使用自建 PostgreSQL。新环境通过 `POSTGRES_URL` 注入 DSN，
+并用 canonical 的 `RAG_DEFAULT_TENANT_ID` / `RAG_DEFAULT_CORPUS_ID` 固定服务端 scope：
+
+```bash
+RAG_PERSISTENCE_BACKEND=postgres
+POSTGRES_URL=postgresql://rag_app:url-encoded-secret@db.internal:5432/rag_system
+RAG_DEFAULT_TENANT_ID=songuu-production
+RAG_DEFAULT_CORPUS_ID=default
+
+POSTGRES_SSL_MODE=verify-full
+POSTGRES_MAX_CONNECTIONS=10
+POSTGRES_IDLE_TIMEOUT_MS=30000
+POSTGRES_CONNECTION_TIMEOUT_MS=5000
+
+RAG_ACCESS_MODE=single-tenant-token
+RAG_SINGLE_TENANT_TOKEN=inject-through-runtime-secret-manager
+RAG_SINGLE_TENANT_ROLE=owner
+
+# Compatibility example only; new deployments use POSTGRES_URL.
+# DATABASE_URL=postgresql://rag_app:url-encoded-secret@db.internal:5432/rag_system
+
+# 仅一次性 migration job 注入；不要放进应用进程/.env.prod
+POSTGRES_MIGRATION_URL=postgresql://rag_owner:url-encoded-secret@db.internal:5432/rag_system
+POSTGRES_APP_ROLE=rag_app
+```
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `RAG_PERSISTENCE_BACKEND` | `local`（仅非生产代码默认） | 所有生产 runner/release/reload 入口只接受 `postgres`，显式拒绝 `local` 和 `dual-write` |
+| `POSTGRES_URL` | 无 | 优先 DSN；必须通过运行时 secret 注入，不能提交到 Git 或打入镜像 |
+| `RAG_DEFAULT_TENANT_ID` | 无 | PostgreSQL 模式必填；text scope，runner 会幂等创建 |
+| `RAG_DEFAULT_CORPUS_ID` | 无 | PostgreSQL 模式必填；text scope，runner 会校验 tenant 归属 |
+| `POSTGRES_SSL_MODE` | `disable` | `disable` / `require` / `verify-full`；生产优先 `verify-full` |
+| `POSTGRES_MAX_CONNECTIONS` | `10` | 每个 Node.js 进程的池上限，范围 1–100 |
+| `POSTGRES_IDLE_TIMEOUT_MS` | `30000` | 空闲连接回收，范围 1000–600000 ms |
+| `POSTGRES_CONNECTION_TIMEOUT_MS` | `5000` | 建连超时，范围 250–30000 ms |
+| `POSTGRES_MIGRATION_URL` | 无 | migration job 专用高权限 DSN；应用 bootstrap 会主动剔除 |
+| `POSTGRES_APP_ROLE` | 无 | 已存在的低权限应用角色；runner 会授予 schema/DML/sequence 权限 |
+
+生产入口会去掉 `POSTGRES_URL` / `DATABASE_URL` 两端空白，只接受 `postgres://` 或
+`postgresql://` scheme 且拒绝包含未编码空白的 DSN；两者同时存在时，trim 后必须完全一致。
+校验错误只报告变量名和约束，不输出 DSN。`RAG_DEFAULT_TENANT_ID` 与
+`RAG_DEFAULT_CORPUS_ID` 都必须匹配 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`。
+
+`POSTGRES_DEFAULT_TENANT_ID` / `POSTGRES_DEFAULT_CORPUS_ID` 仅为旧配置兼容名，不用于新
+模板。生产连接池预算应满足“副本数 × 每副本池上限 + migration/admin/backup 连接”小于
+数据库 `max_connections`，并保留 20%–30% 运维余量。
+
+首次部署和每次 schema 发布先执行：
+
+```bash
+node scripts/migrate-postgres.mjs
+```
+
+生产推荐 migration job 同时注入 `POSTGRES_MIGRATION_URL`、`POSTGRES_APP_ROLE` 与默认
+scope；运行时 app 只注入 `POSTGRES_URL`。runner 不创建登录角色或密码，角色生命周期由 DBA/
+平台负责。
+
+迁移来源为 `db/postgres/migrations`。runner 记录 SHA-256 checksum，已应用 migration 被修改
+时会失败；默认 tenant/corpus 必须成对配置为安全的文本 scope 标识符，runner 会幂等创建并
+校验二者归属（例如 `songuu-production` / `default`）。
+`/api/health/live` 仅表示进程存活；PostgreSQL 模式下 `/api/health` 才检查数据库连接与核心
+schema，仍需业务写入和数据库回读完成最终验收。
+
+自建 PostgreSQL 不附带用户认证、REST 网关或对象存储。当前生产认证使用
+`single-tenant-token`；对象正文使用 `bytea`，单对象当前边界为 10 MB。更大的对象应放入
+S3/MinIO 等对象存储并在数据库保存 key/hash/metadata。详见
+`docs/deployment/postgresql.md`。
 
 ## LangSmith 观测与评估配置
 
@@ -873,6 +946,16 @@ MILVUS_PROVIDER=zilliz
 MILVUS_ZILLIZ_ENDPOINT=in01-xxx.aws-us-west-2.vectordb.zillizcloud.com:443
 MILVUS_ZILLIZ_TOKEN=xxxxx
 MILVUS_DEFAULT_DIMENSION=1024
+
+# 自建 PostgreSQL（DSN 与 token 必须由平台 secret manager 注入）
+RAG_PERSISTENCE_BACKEND=postgres
+POSTGRES_URL=postgresql://rag_app:url-encoded-secret@db.internal:5432/rag_system
+POSTGRES_SSL_MODE=verify-full
+POSTGRES_MAX_CONNECTIONS=10
+RAG_DEFAULT_TENANT_ID=songuu-production
+RAG_DEFAULT_CORPUS_ID=default
+RAG_ACCESS_MODE=single-tenant-token
+RAG_SINGLE_TENANT_TOKEN=inject-through-runtime-secret-manager
 ```
 
 ### 示例 4: 使用 DeepSeek API + SiliconFlow
@@ -1056,6 +1139,12 @@ reloadEmbeddingConfig();
 ---
 
 ## 常见问题
+
+### Q: 自建 PostgreSQL 是否同时提供认证和对象存储？
+
+不提供。PostgreSQL 负责数据持久化：当前生产入口使用
+`RAG_ACCESS_MODE=single-tenant-token`，当前 10 MB 以内对象写入 PostgreSQL `bytea`。
+真正的多租户登录和大对象存储需要分别接入 IdP/BFF 与 S3/MinIO。
 
 ### Q: 如何选择 Embedding 提供商？
 

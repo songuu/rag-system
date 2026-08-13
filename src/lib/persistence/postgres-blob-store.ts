@@ -6,6 +6,7 @@ import {
   type PostgresRuntimeConfig,
 } from '../postgres/env';
 import type { BlobStat, BlobStore, BlobWriteOptions } from './ports';
+import { createStableErrorLog } from '../security/error-redaction';
 
 type BlobDataRow = { data: Buffer };
 type BlobExistsRow = { exists: boolean };
@@ -152,7 +153,7 @@ export class DualWriteBlobStore implements BlobStore {
     try {
       await this.secondary.write(filename, data, options);
     } catch (error) {
-      console.warn('[DualWriteBlobStore] PostgreSQL blob mirror failed:', error);
+      console.warn('[DualWriteBlobStore] PostgreSQL blob mirror failed:', createStableErrorLog(error));
     }
   }
 
@@ -173,7 +174,7 @@ export class DualWriteBlobStore implements BlobStore {
     try {
       await this.secondary.delete(filename);
     } catch (error) {
-      console.warn('[DualWriteBlobStore] PostgreSQL blob delete mirror failed:', error);
+      console.warn('[DualWriteBlobStore] PostgreSQL blob delete mirror failed:', createStableErrorLog(error));
     }
     return deleted;
   }

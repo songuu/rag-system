@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import {
   Pool,
   type PoolClient,
@@ -26,6 +28,7 @@ interface PostgresPoolLike {
     values?: unknown[]
   ): Promise<{ rows: T[]; rowCount: number | null }>;
   end(): Promise<void>;
+  on?(event: 'error', listener: (error: Error) => void): unknown;
 }
 
 interface PostgresTransactionPoolLike extends PostgresPoolLike {
@@ -41,6 +44,8 @@ interface CachedPool {
 }
 
 let cachedPool: CachedPool | null = null;
+let expectedSchemaChecksumPromise: Promise<string> | null = null;
+const EXPECTED_SCHEMA_VERSION = '0001';
 
 export class PostgresQueryError extends Error {
   readonly operation: string;
@@ -70,6 +75,7 @@ export function createPostgresQueryClient(
   poolFactory: PostgresPoolFactory = (poolConfig) => new Pool(poolConfig)
 ): PostgresQueryClient {
   const pool = poolFactory(buildPostgresPoolConfig(config));
+  attachIdlePoolErrorHandler(pool);
   return wrapPool(pool);
 }
 
@@ -82,6 +88,7 @@ export function getPostgresClient(
   if (!cachedPool || cachedPool.signature !== signature) {
     const previous = cachedPool;
     const pool = new Pool(buildPostgresPoolConfig(config));
+    attachIdlePoolErrorHandler(pool);
     cachedPool = {
       signature,
       pool,
@@ -95,6 +102,14 @@ export function getPostgresClient(
   }
 
   return cachedPool.client;
+}
+
+function attachIdlePoolErrorHandler(pool: PostgresPoolLike): void {
+  pool.on?.('error', (error) => {
+    // An idle pooled connection can fail outside a request. Keep the event handled
+    // and expose only a safe code; readiness will surface database availability.
+    console.error('[postgres] idle connection failed:', safeErrorCode(error));
+  });
 }
 
 export async function closePostgresPool(): Promise<void> {
@@ -147,6 +162,7 @@ export async function checkPostgresReadiness(
   client: PostgresQueryClient | null = getPostgresClient(config)
 ): Promise<{ connected: boolean; schemaReady: boolean }> {
   if (!client) return { connected: false, schemaReady: false };
+  const expectedChecksum = await getExpectedSchemaChecksum();
   const result = await queryPostgres<{
     connected: boolean;
     schema_ready: boolean;
@@ -156,8 +172,31 @@ export async function checkPostgresReadiness(
        true as connected,
        to_regclass('public.rag_schema_migrations') is not null
          and to_regclass('public.tenants') is not null
-         and to_regclass('public.object_blobs') is not null as schema_ready`,
-    [],
+         and to_regclass('public.corpora') is not null
+         and to_regclass('public.document_assets') is not null
+         and to_regclass('public.object_blobs') is not null
+         and to_regclass('public.index_jobs') is not null
+         and to_regclass('public.traces') is not null
+         and to_regclass('public.observations') is not null
+         and to_regclass('public.trace_scores') is not null
+         and exists (
+           select 1
+           from public.rag_schema_migrations
+           where version = $1 and checksum = $2
+         )
+         and exists (
+           select 1
+           from public.tenants tenant
+           join public.corpora corpus
+             on corpus.tenant_id = tenant.id
+           where tenant.id = $3 and corpus.id = $4
+         ) as schema_ready`,
+    [
+      EXPECTED_SCHEMA_VERSION,
+      expectedChecksum,
+      config.defaultTenantId,
+      config.defaultCorpusId,
+    ],
     'check database readiness'
   );
   const row = result.rows[0];
@@ -165,6 +204,26 @@ export async function checkPostgresReadiness(
     connected: row?.connected === true,
     schemaReady: row?.schema_ready === true,
   };
+}
+
+async function getExpectedSchemaChecksum(): Promise<string> {
+  expectedSchemaChecksumPromise ??= readFile(
+    path.join(
+      process.env.RAG_RELEASE_DIR?.trim() || process.cwd(),
+      'db',
+      'postgres',
+      'migrations',
+      `${EXPECTED_SCHEMA_VERSION}_core_schema.sql`
+    )
+  ).then((sql) => createHash('sha256')
+    .update(sql.toString('utf8').replace(/\r\n?/g, '\n'))
+    .digest('hex'));
+  try {
+    return await expectedSchemaChecksumPromise;
+  } catch (error) {
+    expectedSchemaChecksumPromise = null;
+    throw new PostgresQueryError('load expected schema checksum', error);
+  }
 }
 
 function wrapPool(pool: PostgresPoolLike): PostgresQueryClient {

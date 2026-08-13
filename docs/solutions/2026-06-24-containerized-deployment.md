@@ -8,8 +8,8 @@
 
 - Next.js 默认生产启动脚本没有容器边界，启用 `output: 'standalone'` 后需要同步调整 `pnpm start` 契约。
 - 原 `next/font/google` 会在构建期访问 Google Fonts，容器和受限网络环境下不可重复。
-- 健康检查如果复用 readiness 或业务查询路径，会误触发 Milvus、LLM、Supabase 等外部依赖。
-- 本地 Milvus 栈和云端 Zilliz/Supabase/LLM provider 没有共享的环境变量迁移说明。
+- 健康检查如果复用 readiness 或业务查询路径，会误触发 Milvus、LLM、PostgreSQL 等外部依赖。
+- 本地 Milvus/PostgreSQL 栈和云端 Zilliz/外部 PostgreSQL/LLM provider 没有共享的环境变量迁移说明。
 
 ## 已落地
 
@@ -17,7 +17,7 @@
 - 新增 `.dockerignore`，排除依赖、构建产物、上传文件、缓存和 `.env*`，避免密钥与本地状态进入镜像。
 - 新增 `docker-compose.yml`、`docker-compose.local.yml`、`docker-compose.cloud.yml`，将通用 app 服务、本地 Milvus 栈和云端托管服务覆盖层分开。
 - 新增 `.env.container.example`，提供 local / hybrid / cloud 三类部署参数，所有真实凭据都保留为 placeholder。
-- 新增 `src/app/api/health/live/route.ts`，只返回进程存活状态，不初始化 RAG、Milvus、LLM 或 Supabase。
+- 新增 `src/app/api/health/live/route.ts`，只返回进程存活状态，不初始化 RAG、Milvus、LLM 或 PostgreSQL。
 - `next.config.ts` 在非 `STATIC_EXPORT` 时启用 standalone；`package.json` 的 `start` 同步为 `node .next/standalone/server.js`。
 - 移除 `next/font/google`，在 `globals.css` 改用系统字体栈，保证容器构建不依赖构建期外网字体下载。
 - 新增 `docs/deployment/container.md`，记录本地、混合云、云端迁移、健康检查、持久化、静态导出和验证命令。

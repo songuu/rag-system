@@ -34,7 +34,7 @@ deadcode_until: []
 
 - 不新增 `langchain` 顶层依赖，不引入 `createAgent`；当前改版先基于已安装的 `@langchain/core/runnables`。
 - 不重写现有 Agentic RAG / Adaptive Entity RAG 的 LangGraph 状态机。
-- 不修改 Milvus、Supabase、前端 LangSmith ReactFlow viewer。
+- 不修改 Milvus、PostgreSQL 持久化层、前端 LangSmith ReactFlow viewer。
 
 ### Success
 

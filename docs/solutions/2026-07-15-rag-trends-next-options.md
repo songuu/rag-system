@@ -105,8 +105,8 @@ storage/editor/media runtime，未做伪兼容移植。完整 commit 级处理�
 
 - `/api/ask`、`/api/pipeline`、`/api/milvus` 接入 request-scoped
   actor/tenant/corpus/role；客户端自报身份不参与授权。
-- Supabase 模式使用用户 JWT + publishable key 验证 Auth、RLS 可见 corpus 与 membership，
-  不回退 service role；single-tenant 模式使用固定 bearer token 与固定 scope。
+- 当前生产入口使用固定 bearer token 与固定 scope；真正的多租户模式需另行接入
+  IdP/session、membership 授权与服务端 scope 校验。
 - Milvus 新 collection 增加 tenant/corpus/document/trust 标量字段；强制隔离时旧 schema
   fail closed。检索 filter 与写入 metadata 均由服务端 scope 生成。
 - URL ingestion 接入 DNS 全解析、私网/特殊地址拒绝、DNS pinning、逐跳 redirect 复验、
@@ -132,7 +132,7 @@ storage/editor/media runtime，未做伪兼容移植。完整 commit 级处理�
 边界：
 
 - E1a 是确定性 synthetic control，不等于真实 Milvus ANN、线上语料或 LLM answer quality。
-- 当前未连接真实 Supabase/Milvus 做跨租户集成验证；上线前仍需 shadow collection 迁移、
+- 当前未连接真实 PostgreSQL/Milvus 做跨租户集成验证；上线前仍需 shadow collection 迁移、
   两租户负向测试与凭据注入验证。
 - 第一方演示 UI 当前不持有生产 bearer/session，且首页默认 memory policy；因此认证模式下
   生产调用应由同源 BFF/session 或受信反向代理接入 canonical API，不能把共享 token 发到
@@ -202,7 +202,7 @@ canonical evidence、cache identity 与 E1b hard gate 也没有形成同一条�
 
 - E2a 只完成 `milvus-2step` strangler migration；agentic/adaptive/memory 仍属 E2b。
 - 当前 matrix 是同一 hermetic hash-dense/extractive target 的两组参数，不证明生产 policy。
-- 当前未连接真实 Supabase/Milvus，也没有启用 production answer-cache hit。
+- 当前未连接真实 PostgreSQL/Milvus，也没有启用 production answer-cache hit。
 - UI compatibility 文件存在历史 `no-explicit-any`/React hook lint 债务；新增字段通过
   TypeScript/build，但不能声称这些整文件 ESLint 全绿。
 

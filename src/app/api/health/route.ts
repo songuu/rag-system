@@ -6,6 +6,13 @@ import {
   isVectorBackendDisabled,
   resolveRagVectorBackend,
 } from '@/lib/rag/vector-backend';
+import { checkPostgresReadiness } from '@/lib/postgres/client';
+import {
+  assertPostgresPersistenceConfigured,
+  getPostgresRuntimeConfig,
+  shouldUsePostgresPersistence,
+} from '@/lib/postgres/env';
+import { redactErrorForLog } from '@/lib/security/error-redaction';
 
 // GET /api/health - 系统健康检查
 export async function GET() {
@@ -13,6 +20,24 @@ export async function GET() {
     // 获取实际的模型配置
     const llmConfig = getConfigSummary();
     const embeddingConfig = getEmbeddingConfigSummary();
+    const postgresConfig = getPostgresRuntimeConfig();
+    const persistence = shouldUsePostgresPersistence(postgresConfig)
+      ? await resolvePostgresReadiness(postgresConfig)
+      : {
+          backend: 'local' as const,
+          connected: null,
+          schemaReady: null,
+        };
+
+    if (persistence.backend === 'postgres' && !persistence.schemaReady) {
+      return NextResponse.json({
+        success: false,
+        status: 'not_ready',
+        persistence,
+        modelConfig: publicModelConfig(llmConfig, embeddingConfig),
+        timestamp: new Date().toISOString(),
+      }, { status: 503 });
+    }
 
     // Do not initialize the legacy local RAG singleton while vector retrieval
     // is explicitly disabled. Health remains safe to call from the portal.
@@ -28,17 +53,8 @@ export async function GET() {
           backend: resolveRagVectorBackend(),
           disabled: true,
         },
-        modelConfig: {
-          llm: {
-            provider: llmConfig.provider,
-            model: llmConfig.llmModel,
-          },
-          embedding: {
-            provider: embeddingConfig.provider,
-            model: embeddingConfig.model,
-            dimension: embeddingConfig.dimension,
-          },
-        },
+        persistence,
+        modelConfig: publicModelConfig(llmConfig, embeddingConfig),
         timestamp: new Date().toISOString(),
       });
     }
@@ -57,22 +73,13 @@ export async function GET() {
         backend: resolveRagVectorBackend(),
         disabled: false,
       },
+      persistence,
       // 返回实际的模型配置
-      modelConfig: {
-        llm: {
-          provider: llmConfig.provider,
-          model: llmConfig.llmModel,
-        },
-        embedding: {
-          provider: embeddingConfig.provider,
-          model: embeddingConfig.model,
-          dimension: embeddingConfig.dimension,
-        },
-      },
+      modelConfig: publicModelConfig(llmConfig, embeddingConfig),
       timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('健康检查错误:', error);
+    console.error('健康检查错误:', redactErrorForLog(error));
     
     // 即使 RAG 系统初始化失败，也返回配置信息
     try {
@@ -81,30 +88,52 @@ export async function GET() {
       
       return NextResponse.json({
         success: false,
+        status: 'not_ready',
         error: '健康检查失败',
-        details: error instanceof Error ? error.message : String(error),
         // 仍然返回配置信息
-        modelConfig: {
-          llm: {
-            provider: llmConfig.provider,
-            model: llmConfig.llmModel,
-          },
-          embedding: {
-            provider: embeddingConfig.provider,
-            model: embeddingConfig.model,
-            dimension: embeddingConfig.dimension,
-          },
-        },
-      }, { status: 500 });
+        modelConfig: publicModelConfig(llmConfig, embeddingConfig),
+      }, { status: 503 });
     } catch {
       return NextResponse.json(
         { 
           success: false,
-          error: '健康检查失败',
-          details: error instanceof Error ? error.message : String(error)
+          status: 'not_ready',
+          error: '健康检查失败'
         },
-        { status: 500 }
+        { status: 503 }
       );
     }
   }
+}
+
+async function resolvePostgresReadiness(
+  config: ReturnType<typeof getPostgresRuntimeConfig>
+): Promise<{
+  backend: 'postgres';
+  connected: boolean;
+  schemaReady: boolean;
+}> {
+  assertPostgresPersistenceConfigured(config);
+  const readiness = await checkPostgresReadiness(config);
+  return {
+    backend: 'postgres',
+    ...readiness,
+  };
+}
+
+function publicModelConfig(
+  llmConfig: ReturnType<typeof getConfigSummary>,
+  embeddingConfig: ReturnType<typeof getEmbeddingConfigSummary>
+) {
+  return {
+    llm: {
+      provider: llmConfig.provider,
+      model: llmConfig.llmModel,
+    },
+    embedding: {
+      provider: embeddingConfig.provider,
+      model: embeddingConfig.model,
+      dimension: embeddingConfig.dimension,
+    },
+  };
 }

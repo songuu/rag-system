@@ -17,7 +17,7 @@ This output will be used to initialize a FRESH chat session, allowing the user t
 
 1.  **Prompt Engineering Audit**:
     * Identify implicit rules the user enforced (e.g., "User prefers functional components", "Environment is Windows/PowerShell").
-    * Capture specific libraries/versions mandated (e.g., "Supabase v2", "React 19", "pnpm only").
+    * Capture specific libraries/versions mandated (e.g., "PostgreSQL 17", "React 19", "pnpm only").
 
 2.  **Solution Evolution Analysis**:
     * **The Problem**: What was the original request?
@@ -39,7 +39,7 @@ Format:
 ## 1. System Context & Constraints
 You are continuing a complex development task. Adopt the following constraints immediately:
 - **Environment**: [e.g., Windows 11, PowerShell, Node v20]
-- **Tech Stack**: [List exact versions, e.g., Next.js 15 (App Router), Tailwind 4, Supabase]
+- **Tech Stack**: [List exact versions, e.g., Next.js 15 (App Router), Tailwind 4, PostgreSQL]
 - **User Preferences**:
   - [Constraint 1: e.g., No 'any' types, strict TypeScript]
   - [Constraint 2: e.g., Use 'lucide-react' for icons]
@@ -61,4 +61,4 @@ We are currently focusing on:
 
 ## 4. Immediate Next Step Instruction
 Your first task in this new session is:
-[Specific, actionable instruction, e.g., "Generate the API route handler based on the schema defined in `supabase/types.ts`"]
+[Specific, actionable instruction, e.g., "Generate the API route handler based on the schema defined in `db/postgres/migrations/0001_core_schema.sql`"]

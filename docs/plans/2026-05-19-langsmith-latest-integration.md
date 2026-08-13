@@ -39,7 +39,7 @@ aliases: ["LangSmith 最新特性接入"]
 
 - 不接入真实 LangSmith 项目 API key。
 - 不把 Sandboxes 放进 RAG 查询热路径。
-- 不替换现有 Supabase trace persistence。
+- 不替换现有 PostgreSQL trace persistence。
 - 不改变前端 API response 结构，除补充更准确 trace id 外保持兼容。
 
 ## Task Breakdown
@@ -55,7 +55,7 @@ aliases: ["LangSmith 最新特性接入"]
 - 未配置 `LANGSMITH_API_KEY` 时，所有本地 RAG/API 行为不变。
 - 配置 LangSmith 后，每次 RAG 调用都携带 `thread_id`、`session_id`/`conversation_id`、policy/model/vector backend metadata。
 - 本地 observability 的 trace、observation、score 可被同步为 LangSmith run tree 和 feedback。
-- `/api/traces/[traceId]/feedback` 会同步到本地/Supabase/LangSmith 三层。
+- `/api/traces/[traceId]/feedback` 会同步到本地/PostgreSQL/LangSmith 三层。
 - TypeScript、scoped lint、相关测试和 build 通过。
 
 ## Validation Log
@@ -73,7 +73,7 @@ aliases: ["LangSmith 最新特性接入"]
 - 未配置 LangSmith API key 时，adapter 和 root run wrapper 都保持 no-op，本地 RAG/API 行为不变。
 - LangSmith trace 数据按 SmithDB/Engine/Threads 友好形态写入：root run、child observation run、`thread_id`、policy/model/vector metadata、tags、feedback。
 - `/api/ask` 现在覆盖 Milvus / Agentic / Adaptive Entity 等此前不一定经过本地 `ObservabilityEngine` 的热路径。
-- 用户 feedback 同步到本地/Supabase/LangSmith 三层；非 UUID run id 会跳过 LangSmith feedback，避免污染平台侧数据。
+- 用户 feedback 同步到本地/PostgreSQL/LangSmith 三层；非 UUID run id 会跳过 LangSmith feedback，避免污染平台侧数据。
 - Sandboxes、Context Hub SDK 和 LLM Gateway 暂不进入热路径；本轮只预留文档与 env 结构，避免在没有真实 workspace/API key 的情况下引入假集成。
 
 ## Compound

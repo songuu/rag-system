@@ -1011,8 +1011,8 @@ export class MilvusVectorStore {
         ...base,
         ...orderedFields,
         ...getDocumentSecurityFields(doc.metadata, {
-          tenantId: process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
-          corpusId: process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
+          tenantId: process.env.RAG_DEFAULT_TENANT_ID || 'local',
+          corpusId: process.env.RAG_DEFAULT_CORPUS_ID || 'default',
           trustLevel: 'external',
         }),
       };
@@ -1288,8 +1288,8 @@ export class MilvusVectorStore {
         throw new Error('Hybrid document embedding is invalid at index ' + index + '.');
       }
       const security = getDocumentSecurityFields(document.metadata, {
-        tenantId: process.env.SUPABASE_DEFAULT_TENANT_ID || 'local',
-        corpusId: process.env.SUPABASE_DEFAULT_CORPUS_ID || 'default',
+        tenantId: process.env.RAG_DEFAULT_TENANT_ID || 'local',
+        corpusId: process.env.RAG_DEFAULT_CORPUS_ID || 'default',
         trustLevel: 'external',
       });
       const ordered = getOrderedDocumentFields(document.metadata);

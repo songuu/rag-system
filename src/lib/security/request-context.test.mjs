@@ -26,16 +26,8 @@ const SINGLE_ENV = {
   NODE_ENV: 'production',
   RAG_ACCESS_MODE: 'single-tenant-token',
   RAG_SINGLE_TENANT_TOKEN: 'operator-secret',
-  SUPABASE_DEFAULT_TENANT_ID: 'tenant-1',
-  SUPABASE_DEFAULT_CORPUS_ID: 'corpus-1',
-};
-
-const SUPABASE_ENV = {
-  NODE_ENV: 'production',
-  RAG_ACCESS_MODE: 'supabase',
-  NEXT_PUBLIC_SUPABASE_URL: 'https://example.supabase.co',
-  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'publishable-key',
-  SUPABASE_DEFAULT_CORPUS_ID: 'corpus-1',
+  RAG_DEFAULT_TENANT_ID: 'tenant-1',
+  RAG_DEFAULT_CORPUS_ID: 'corpus-1',
 };
 
 test('role capability matrix keeps viewer read-only and reserves runtime management for admins', () => {
@@ -68,8 +60,8 @@ test('local-dev uses configured fixed scope without trusting a body identity', a
     env: {
       NODE_ENV: 'test',
       RAG_ACCESS_MODE: 'local-dev',
-      SUPABASE_DEFAULT_TENANT_ID: 'local-tenant',
-      SUPABASE_DEFAULT_CORPUS_ID: 'local-corpus',
+      RAG_DEFAULT_TENANT_ID: 'local-tenant',
+      RAG_DEFAULT_CORPUS_ID: 'local-corpus',
     },
     requestedCorpusId: 'local-corpus',
     requestIdFactory: () => 'local-scope',
@@ -128,7 +120,7 @@ test('local-dev cannot select a corpus outside its fixed scope', async () => {
     () => resolveRagSecurityContext(request(), {
       env: {
         NODE_ENV: 'test',
-        SUPABASE_DEFAULT_CORPUS_ID: 'corpus-a',
+        RAG_DEFAULT_CORPUS_ID: 'corpus-a',
       },
       requestedCorpusId: 'corpus-b',
       requestIdFactory: () => 'local-cross-corpus',
@@ -265,167 +257,15 @@ test('invalid single-tenant role is a stable configuration error', async () => {
   );
 });
 
-test('supabase mode requires a bearer token', async () => {
+test('unknown access modes fail closed', async () => {
   await expectSecurityError(
-    () => resolveRagSecurityContext(request(), {
-      env: SUPABASE_ENV,
-      requestIdFactory: () => 'supabase-missing-token',
+    () => resolveRagSecurityContext(request('obsolete-token'), {
+      env: { NODE_ENV: 'production', RAG_ACCESS_MODE: 'managed-cloud' },
+      requestIdFactory: () => 'invalid-access-mode',
     }),
-    'RAG_AUTH_REQUIRED',
-    401,
-    'supabase-missing-token'
-  );
-});
-
-test('supabase mode requires URL and publishable key without service-role fallback', async () => {
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: {
-        NODE_ENV: 'production',
-        RAG_ACCESS_MODE: 'supabase',
-        SUPABASE_SERVICE_ROLE_KEY: 'must-not-be-used',
-        SUPABASE_DEFAULT_CORPUS_ID: 'corpus-1',
-      },
-      requestIdFactory: () => 'supabase-config',
-    }),
-    'RAG_AUTH_CONFIG_MISSING',
+    'RAG_AUTH_MODE_INVALID',
     503,
-    'supabase-config'
-  );
-});
-
-test('supabase mode requires an explicit or configured corpus', async () => {
-  const mock = supabaseFetch();
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: { ...SUPABASE_ENV, SUPABASE_DEFAULT_CORPUS_ID: undefined },
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'supabase-no-corpus',
-    }),
-    'RAG_CORPUS_REQUIRED',
-    400,
-    'supabase-no-corpus'
-  );
-});
-
-test('supabase mode maps auth endpoint rejection to stable invalid-auth error', async () => {
-  const mock = supabaseFetch({ authStatus: 401 });
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('expired-jwt'), {
-      env: SUPABASE_ENV,
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'expired-jwt',
-    }),
-    'RAG_AUTH_INVALID',
-    401,
-    'expired-jwt'
-  );
-});
-
-test('supabase mode maps auth endpoint outage to backend-unavailable error', async () => {
-  const mock = supabaseFetch({ authStatus: 500 });
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: SUPABASE_ENV,
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'auth-down',
-    }),
-    'RAG_AUTH_BACKEND_UNAVAILABLE',
-    503,
-    'auth-down'
-  );
-});
-
-test('supabase mode validates user, RLS-visible corpus, membership, and split credentials', async () => {
-  const mock = supabaseFetch();
-  const context = await resolveRagSecurityContext(request('user-jwt'), {
-    env: SUPABASE_ENV,
-    capability: 'ingest',
-    requestedCorpusId: 'corpus-1',
-    fetchImpl: mock.fetchImpl,
-    requestIdFactory: () => 'supabase-ok',
-  });
-
-  assert.deepEqual(context, {
-    actorId: 'user-1',
-    tenantId: 'tenant-1',
-    corpusId: 'corpus-1',
-    role: 'member',
-    accessMode: 'supabase',
-    requestId: 'supabase-ok',
-    enforceIsolation: true,
-  });
-  assert.equal(mock.calls.length, 3);
-  for (const call of mock.calls) {
-    const headers = new Headers(call.init.headers);
-    assert.equal(headers.get('apikey'), 'publishable-key');
-    assert.equal(headers.get('authorization'), 'Bearer user-jwt');
-  }
-  assert.equal(mock.calls[1].url.searchParams.get('id'), 'eq.corpus-1');
-  assert.equal(mock.calls[2].url.searchParams.get('tenant_id'), 'eq.tenant-1');
-  assert.equal(mock.calls[2].url.searchParams.get('user_id'), 'eq.user-1');
-});
-
-test('supabase mode fails closed when corpus is not RLS-visible', async () => {
-  const mock = supabaseFetch({ corpusRows: [] });
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: SUPABASE_ENV,
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'hidden-corpus',
-    }),
-    'RAG_CORPUS_FORBIDDEN',
-    403,
-    'hidden-corpus'
-  );
-});
-
-test('supabase mode fails closed when membership is absent', async () => {
-  const mock = supabaseFetch({ membershipRows: [] });
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: SUPABASE_ENV,
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'missing-membership',
-    }),
-    'RAG_TENANT_FORBIDDEN',
-    403,
-    'missing-membership'
-  );
-});
-
-test('supabase viewer is denied reindex after successful scope resolution', async () => {
-  const mock = supabaseFetch({
-    membershipRows: [{
-      tenant_id: 'tenant-1',
-      user_id: 'user-1',
-      role: 'viewer',
-    }],
-  });
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: SUPABASE_ENV,
-      capability: 'reindex',
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'viewer-reindex',
-    }),
-    'RAG_CAPABILITY_FORBIDDEN',
-    403,
-    'viewer-reindex'
-  );
-});
-
-test('supabase authorization data failure returns stable backend-unavailable error', async () => {
-  const mock = supabaseFetch({ corpusStatus: 500 });
-  await expectSecurityError(
-    () => resolveRagSecurityContext(request('user-jwt'), {
-      env: SUPABASE_ENV,
-      fetchImpl: mock.fetchImpl,
-      requestIdFactory: () => 'authz-down',
-    }),
-    'RAG_AUTH_BACKEND_UNAVAILABLE',
-    503,
-    'authz-down'
+    'invalid-access-mode'
   );
 });
 
@@ -435,7 +275,7 @@ test('assertCapability error exposes stable safe response fields', () => {
     tenantId: 'tenant-1',
     corpusId: 'corpus-1',
     role: 'viewer',
-    accessMode: 'supabase',
+    accessMode: 'single-tenant-token',
     requestId: 'stable-error',
     enforceIsolation: true,
   };
@@ -464,46 +304,6 @@ function request(token, requestId) {
 
 function requestWithAuthorization(authorization) {
   return { headers: new Headers({ authorization }) };
-}
-
-function supabaseFetch(options = {}) {
-  const calls = [];
-  const fetchImpl = async (input, init = {}) => {
-    const url = new URL(String(input));
-    calls.push({ url, init });
-
-    if (url.pathname === '/auth/v1/user') {
-      return jsonResponse(
-        options.authUser ?? { id: 'user-1', email: 'user@example.com' },
-        options.authStatus ?? 200
-      );
-    }
-    if (url.pathname === '/rest/v1/corpora') {
-      return jsonResponse(
-        options.corpusRows ?? [{ id: 'corpus-1', tenant_id: 'tenant-1' }],
-        options.corpusStatus ?? 200
-      );
-    }
-    if (url.pathname === '/rest/v1/tenant_members') {
-      return jsonResponse(
-        options.membershipRows ?? [{
-          tenant_id: 'tenant-1',
-          user_id: 'user-1',
-          role: 'member',
-        }],
-        options.membershipStatus ?? 200
-      );
-    }
-    return jsonResponse({ error: 'unexpected endpoint' }, 404);
-  };
-  return { calls, fetchImpl };
-}
-
-function jsonResponse(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
 }
 
 async function expectSecurityError(action, code, status, requestId) {

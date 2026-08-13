@@ -7,6 +7,8 @@ export type RagPersistenceBackend = 'local' | 'postgres' | 'dual-write';
 export type PostgresSslMode = 'disable' | 'require' | 'verify-full';
 export type { RagVectorBackend } from '../rag/vector-backend';
 
+const SAFE_SCOPE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
 export interface PostgresRuntimeConfig {
   databaseUrl: string;
   defaultTenantId: string;
@@ -23,8 +25,15 @@ function readEnv(env: NodeJS.ProcessEnv, name: string): string {
   return env[name]?.trim() || '';
 }
 
-function parsePersistenceBackend(value: string): RagPersistenceBackend {
-  switch (value.toLowerCase()) {
+function parsePersistenceBackend(value: string, nodeEnv: string): RagPersistenceBackend {
+  const normalized = value.toLowerCase();
+  if (nodeEnv.toLowerCase() === 'production') {
+    if (!normalized || normalized === 'postgres' || normalized === 'postgresql' || normalized === 'pgsql') {
+      return 'postgres';
+    }
+    throw new Error('Production RAG persistence must use postgres.');
+  }
+  switch (normalized) {
     case 'postgres':
     case 'postgresql':
     case 'pgsql':
@@ -36,13 +45,9 @@ function parsePersistenceBackend(value: string): RagPersistenceBackend {
     case '':
     case 'local':
       return 'local';
-    case 'supabase':
-      throw new Error(
-        'RAG_PERSISTENCE_BACKEND=supabase is not supported; configure postgres or dual-write.'
-      );
     default:
       throw new Error(
-        `RAG_PERSISTENCE_BACKEND=${value} is not supported; expected local, postgres, or dual-write.`
+        `RAG_PERSISTENCE_BACKEND=${value} is not supported; expected local, postgres, or dual-write in development.`
       );
   }
 }
@@ -78,10 +83,20 @@ function parseBoundedInteger(input: {
 export function getPostgresRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env
 ): PostgresRuntimeConfig {
+  const databaseUrlAlias = readEnv(env, 'DATABASE_URL');
+  const postgresUrl = readEnv(env, 'POSTGRES_URL');
+  if (databaseUrlAlias && postgresUrl && databaseUrlAlias !== postgresUrl) {
+    throw new Error('DATABASE_URL and POSTGRES_URL must not point to different databases.');
+  }
+  const databaseUrl = postgresUrl || databaseUrlAlias;
+  assertDatabaseUrlHasNoSslParameters(
+    databaseUrl,
+    postgresUrl ? 'POSTGRES_URL' : 'DATABASE_URL'
+  );
   return {
-    databaseUrl: readEnv(env, 'DATABASE_URL') || readEnv(env, 'POSTGRES_URL'),
-    defaultTenantId: readEnv(env, 'POSTGRES_DEFAULT_TENANT_ID'),
-    defaultCorpusId: readEnv(env, 'POSTGRES_DEFAULT_CORPUS_ID'),
+    databaseUrl,
+    defaultTenantId: readEnv(env, 'RAG_DEFAULT_TENANT_ID') || readEnv(env, 'POSTGRES_DEFAULT_TENANT_ID'),
+    defaultCorpusId: readEnv(env, 'RAG_DEFAULT_CORPUS_ID') || readEnv(env, 'POSTGRES_DEFAULT_CORPUS_ID'),
     sslMode: parseSslMode(readEnv(env, 'POSTGRES_SSL_MODE')),
     maxConnections: parseBoundedInteger({
       env,
@@ -104,9 +119,42 @@ export function getPostgresRuntimeConfig(
       min: 250,
       max: 30_000,
     }),
-    persistenceBackend: parsePersistenceBackend(readEnv(env, 'RAG_PERSISTENCE_BACKEND')),
+    persistenceBackend: parsePersistenceBackend(
+      readEnv(env, 'RAG_PERSISTENCE_BACKEND'),
+      readEnv(env, 'NODE_ENV')
+    ),
     vectorBackend: resolveRagVectorBackend(readEnv(env, 'RAG_VECTOR_BACKEND')),
   };
+}
+
+function assertDatabaseUrlHasNoSslParameters(
+  databaseUrl: string,
+  variableName: 'DATABASE_URL' | 'POSTGRES_URL'
+): void {
+  if (!databaseUrl) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(databaseUrl);
+  } catch {
+    throw new Error(`${variableName} must be a valid PostgreSQL connection URL.`);
+  }
+  if (
+    (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:')
+    || !parsed.hostname
+  ) {
+    throw new Error(`${variableName} must be a valid PostgreSQL connection URL.`);
+  }
+  const conflictingParameter = [
+    'sslmode',
+    'sslcert',
+    'sslkey',
+    'sslrootcert',
+  ].find(name => parsed.searchParams.has(name));
+  if (conflictingParameter) {
+    throw new Error(
+      `${variableName} must not contain ${conflictingParameter}; configure TLS with POSTGRES_SSL_MODE and NODE_EXTRA_CA_CERTS.`
+    );
+  }
 }
 
 export function isPostgresConfigured(
@@ -139,11 +187,19 @@ export function assertPostgresPersistenceConfigured(
   if (!shouldUsePostgresPersistence(config)) return;
   const missing = [
     !config.databaseUrl ? 'DATABASE_URL' : '',
-    !config.defaultTenantId ? 'POSTGRES_DEFAULT_TENANT_ID' : '',
-    !config.defaultCorpusId ? 'POSTGRES_DEFAULT_CORPUS_ID' : '',
+    !config.defaultTenantId ? 'RAG_DEFAULT_TENANT_ID' : '',
+    !config.defaultCorpusId ? 'RAG_DEFAULT_CORPUS_ID' : '',
   ].filter(Boolean);
   if (missing.length > 0) {
     throw new Error(`PostgreSQL persistence requires ${missing.join(', ')}.`);
+  }
+  for (const [name, value] of [
+    ['RAG_DEFAULT_TENANT_ID', config.defaultTenantId],
+    ['RAG_DEFAULT_CORPUS_ID', config.defaultCorpusId],
+  ] as const) {
+    if (!SAFE_SCOPE_IDENTIFIER.test(value)) {
+      throw new Error(`${name} must be a valid scope identifier.`);
+    }
   }
 }
 

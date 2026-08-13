@@ -14,13 +14,34 @@ from pathlib import Path
 
 
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
-SKIP_KEYS = {"RAG_SINGLE_TENANT_TOKEN"}
+ALLOWED_DEFAULT_PREFIXES = (
+    "AZURE_OPENAI_", "COHERE_", "CONTEXTUAL_RETRIEVAL_", "CUSTOM_",
+    "EMBEDDING_", "LANGCHAIN_", "LANGSMITH_", "LEMONADE_", "MAIC_",
+    "MILVUS_", "MODEL_", "NOTION_", "OLLAMA_", "OPENAI_", "OPENROUTER_",
+    "PDF_PARSE_", "RAG_", "REASONING_", "RERANK_", "RERANKER_",
+    "SEMANTIC_CACHE_", "SILICONFLOW_", "VOYAGE_",
+)
+ALLOWED_DEFAULT_KEYS = {
+    "FAST_LLM_MODEL", "HOSTNAME", "KEEP_ALIVE_TIMEOUT", "LLM_MODEL",
+    "NEXT_PUBLIC_BASE_PATH", "NEXT_PUBLIC_LANGCHAIN_PROJECT",
+    "NEXT_PUBLIC_LANGCHAIN_TRACING", "NEXT_TELEMETRY_DISABLED", "NODE_ENV",
+    "PORT", "POSTGRES_CONNECTION_TIMEOUT_MS", "POSTGRES_DEFAULT_CORPUS_ID",
+    "POSTGRES_DEFAULT_TENANT_ID", "POSTGRES_IDLE_TIMEOUT_MS",
+    "POSTGRES_MAX_CONNECTIONS", "POSTGRES_SSL_MODE", "STATIC_EXPORT",
+}
+SKIP_KEYS = {
+    "DATABASE_URL",
+    "POSTGRES_URL",
+    "POSTGRES_MIGRATION_URL",
+    "RAG_SINGLE_TENANT_TOKEN",
+}
 HOST_OVERRIDES = {
     "HOSTNAME": "127.0.0.1",
     "PORT": "5182",
     "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
     "MILVUS_LOCAL_ADDRESS": "127.0.0.1:19530",
-    "SUPABASE_DEFAULT_TENANT_ID": "songuu-production",
+    "RAG_DEFAULT_TENANT_ID": "songuu-production",
+    "RAG_DEFAULT_CORPUS_ID": "default",
     "REASONING_RAG_UPLOAD_DIR": "/opt/rag-system/data/reasoning-uploads",
     "RAG_MIROFISH_GRAPH_STORE_ROOT": "/opt/rag-system/data/mirofish-graph-artifacts-v2",
     "RAG_PDF_VISUAL_STORE_ROOT": "/opt/rag-system/data/pdf-visual-assets-v1",
@@ -42,7 +63,11 @@ def read_defaults(example: Path):
         key, value = match.groups()
         if key in values:
             raise RuntimeError("duplicate active default: {}".format(key))
-        if key not in SKIP_KEYS:
+        # Only application runtime configuration belongs in the generated
+        # defaults; database infrastructure credentials stay in secret files.
+        if key not in SKIP_KEYS and (
+            key in ALLOWED_DEFAULT_KEYS or key.startswith(ALLOWED_DEFAULT_PREFIXES)
+        ):
             values[key] = HOST_OVERRIDES.get(key, value)
     return values
 
@@ -55,7 +80,7 @@ def main() -> int:
     defaults = read_defaults(args.example)
     print("# Generated from .env.container.example for the songuu.top host.")
     print("# .env.prod is loaded afterwards and overrides these defaults.")
-    print("# RAG_SINGLE_TENANT_TOKEN stays only in .env.prod.")
+    print("# Database URLs and RAG_SINGLE_TENANT_TOKEN stay only in .env.prod.")
     for key, value in defaults.items():
         print("{}={}".format(key, shell_quote(value)))
     return 0

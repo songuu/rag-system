@@ -73,7 +73,7 @@ test('PostgreSQL blob store parameterizes binary writes and implements the full 
 test('PostgreSQL blob store fails explicitly when persistence scope is incomplete', () => {
   assert.throws(
     () => new PostgresBlobStore({ ...CONFIG, defaultCorpusId: '' }, { query: async () => ({ rows: [], rowCount: 0 }) }),
-    /POSTGRES_DEFAULT_CORPUS_ID/
+    /RAG_DEFAULT_CORPUS_ID/
   );
 });
 

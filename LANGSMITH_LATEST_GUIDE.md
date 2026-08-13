@@ -1,6 +1,6 @@
 # LangSmith 最新特性接入指南
 
-本项目已按 2026-05 LangSmith 最新发布方向升级观测链路：让 RAG 查询在本地可观测、Supabase 持久化之外，同时可以接入 LangSmith 的线程级追踪、反馈、Engine 自动诊断、Insights Agent 和 Multi-turn Evals。
+本项目已按 2026-05 LangSmith 最新发布方向升级观测链路：让 RAG 查询在本地可观测、自建 PostgreSQL 持久化之外，同时可以接入 LangSmith 的线程级追踪、反馈、Engine 自动诊断、Insights Agent 和 Multi-turn Evals。
 
 ## 已接入能力
 
@@ -104,7 +104,7 @@ LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 1. 开发环境先打开 `LANGSMITH_TRACING=true`，用 `LANGSMITH_PROJECT=rag-system-dev` 隔离数据。
 2. 生产环境用稳定的 `sessionId` 作为多轮对话 ID，让 LangSmith Threads 和 Multi-turn Evals 能聚合完整会话。
 3. 每次 RAG 策略、prompt、Milvus 参数或模型变更，都通过 tags/metadata 对比 run filtering。
-4. 用户反馈优先写 `/api/traces/[traceId]/feedback`，让本地、Supabase、LangSmith 三层保持一致。
+4. 用户反馈优先写 `/api/traces/[traceId]/feedback`，让本地、自建 PostgreSQL、LangSmith 三层保持一致。
 5. LangSmith Engine 检出的失败模式，沉淀为项目 regression eval 或 `docs/plans/*` 修复任务。
 
 ## 后续路线

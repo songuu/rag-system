@@ -39,6 +39,10 @@ test('vector backend parser preserves disabled as an explicit maintenance state'
   assert.equal(resolveRagVectorBackend('milvus'), 'milvus');
   assert.equal(resolveRagVectorBackend('memory'), 'milvus');
   assert.equal(resolveRagVectorBackend('unexpected'), 'milvus');
+  assert.throws(
+    () => resolveRagVectorBackend('postgres_pgvector'),
+    /postgres_pgvector.*not implemented.*milvus.*zilliz/i
+  );
 });
 
 test('disabled state is sourced from the runtime environment', () => {

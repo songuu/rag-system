@@ -1,7 +1,6 @@
 export type RagVectorBackend =
   | 'milvus'
   | 'zilliz'
-  | 'postgres_pgvector'
   | 'hybrid'
   | 'disabled';
 
@@ -23,7 +22,9 @@ export function resolveRagVectorBackend(
     case 'postgres_pgvector':
     case 'postgres-pgvector':
     case 'pgvector':
-      return 'postgres_pgvector';
+      throw new Error(
+        'RAG_VECTOR_BACKEND=postgres_pgvector is not implemented; use milvus or zilliz.'
+      );
     case 'hybrid':
       return 'hybrid';
     case 'disabled':

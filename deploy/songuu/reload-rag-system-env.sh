@@ -18,6 +18,7 @@ readonly NGINX_PATCH="$SHARED/patch-nginx.py"
 readonly PM2_MANAGER="$SHARED/manage-rag-system-pm2.sh"
 readonly LOCK_FILE="/run/lock/rag-system-env-reload.lock"
 readonly LIVE_URL="http://127.0.0.1:5182/rag-system/api/health/live"
+readonly READY_URL="http://127.0.0.1:5182/rag-system/api/health"
 readonly SETTLE_SECONDS="${RAG_ENV_RELOAD_SETTLE_SECONDS:-1}"
 
 if ! [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]]; then
@@ -39,6 +40,18 @@ wait_for_liveness() {
   for _ in $(seq 1 30); do
     if live=$(curl -fsS "$LIVE_URL"); then
       printf '%s' "$live"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_readiness() {
+  local ready=""
+  for _ in $(seq 1 30); do
+    if ready=$(curl --max-time 5 -fsS "$READY_URL"); then
+      printf '%s' "$ready"
       return 0
     fi
     sleep 1
@@ -77,6 +90,49 @@ validate_environment() {
     test "${RAG_ACCESS_MODE:-}" = "single-tenant-token"
     test -n "${RAG_SINGLE_TENANT_TOKEN:-}"
     test "$RAG_SINGLE_TENANT_TOKEN" != "replace-with-a-long-random-secret"
+
+    trim_outer_whitespace() {
+      local value="$1"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      printf "%s" "$value"
+    }
+
+    validate_postgres_persistence() {
+      local database_url
+      local postgres_url
+      local scope_pattern="^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+
+      if [[ "${RAG_PERSISTENCE_BACKEND:-postgres}" != "postgres" ]]; then
+        echo "Production RAG persistence must use postgres" >&2
+        return 1
+      fi
+
+      database_url="$(trim_outer_whitespace "${DATABASE_URL:-}")"
+      postgres_url="$(trim_outer_whitespace "${POSTGRES_URL:-}")"
+      if [[ -z "$database_url" && -z "$postgres_url" ]]; then
+        echo "DATABASE_URL or POSTGRES_URL is required for PostgreSQL persistence" >&2
+        return 1
+      fi
+      if [[ -n "$database_url" && ! "$database_url" =~ ^postgres(ql)?://[^[:space:]]+$ ]]; then
+        echo "DATABASE_URL must use the postgres or postgresql URL scheme" >&2
+        return 1
+      fi
+      if [[ -n "$postgres_url" && ! "$postgres_url" =~ ^postgres(ql)?://[^[:space:]]+$ ]]; then
+        echo "POSTGRES_URL must use the postgres or postgresql URL scheme" >&2
+        return 1
+      fi
+      if [[ -n "$database_url" && -n "$postgres_url" && "$database_url" != "$postgres_url" ]]; then
+        echo "DATABASE_URL and POSTGRES_URL must match when both are configured" >&2
+        return 1
+      fi
+      if [[ ! "${RAG_DEFAULT_TENANT_ID:-}" =~ $scope_pattern || ! "${RAG_DEFAULT_CORPUS_ID:-}" =~ $scope_pattern ]]; then
+        echo "Valid RAG_DEFAULT_TENANT_ID and RAG_DEFAULT_CORPUS_ID are required for PostgreSQL persistence" >&2
+        return 1
+      fi
+    }
+
+    validate_postgres_persistence
 
     # Embedding is configured independently from the chat/reasoning provider.
     # A live-only probe cannot initialize it, so reject incomplete provider
@@ -253,6 +309,10 @@ if ! live="$(wait_for_liveness)"; then
   rollback "liveness did not recover" 1
   exit 1
 fi
+if ! ready="$(wait_for_readiness)"; then
+  rollback "readiness did not recover" 1
+  exit 1
+fi
 
 if [[ "$token_changed" = "1" ]]; then
   if ! "$NGINX_TOKEN_REFRESH" "$NGINX_PATCH" >/dev/null; then
@@ -273,4 +333,4 @@ printf '%s\n' "$candidate_hash" > "${APPLIED_HASH_FILE}.next.$$"
 chmod 600 "${APPLIED_HASH_FILE}.next.$$"
 mv -f "${APPLIED_HASH_FILE}.next.$$" "$APPLIED_HASH_FILE"
 pm2 save >/dev/null
-printf 'rag-system env reload applied; live=%s\n' "$live"
+printf 'rag-system env reload applied; live=%s; ready=%s\n' "$live" "$ready"

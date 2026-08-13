@@ -1,6 +1,6 @@
 # 容器化部署指南
 
-本指南用于后续云服务一键迁移：同一份镜像可在本地 Docker、私有云、云容器平台运行。镜像只包含应用代码和构建产物；LLM、Embedding、Milvus/Zilliz、Supabase、LangSmith 等服务通过运行时环境变量接入。
+本指南用于后续云服务一键迁移：同一份镜像可在本地 Docker、私有云、云容器平台运行。镜像只包含应用代码和构建产物；LLM、Embedding、Milvus/Zilliz、自建 PostgreSQL、LangSmith 等服务通过运行时环境变量接入。
 
 ## 部署资产
 
@@ -9,9 +9,10 @@
 | `Dockerfile` | Next.js 服务端生产镜像，使用 standalone 输出和非 root 用户 |
 | `.dockerignore` | 排除依赖、构建产物、上传数据、密钥和缓存 |
 | `docker-compose.yml` | 应用基础服务、端口、volume、healthcheck wiring |
-| `docker-compose.local.yml` | 本地迁移演练：app + Milvus standalone 依赖栈 |
-| `docker-compose.cloud.yml` | 云服务模式：app 连接 Zilliz/Supabase/云模型服务 |
+| `docker-compose.local.yml` | 本地迁移演练：app + PostgreSQL 17 + Milvus standalone 依赖栈 |
+| `docker-compose.cloud.yml` | 云服务模式：app 连接 Zilliz/自建 PostgreSQL/云模型服务 |
 | `.env.container.example` | 容器运行时变量样例，不含真实密钥 |
+| `docs/deployment/postgresql.md` | PostgreSQL 迁移、Auth/Storage 替代、备份恢复和容量边界 |
 
 ## 快速本地演练
 
@@ -33,25 +34,38 @@ ollama pull nomic-embed-text
 Ollama 专用的 `FAST_LLM_MODEL` / `RERANKER_MODEL` 覆盖；省略它们会按当前 provider
 解析轻量默认模型。
 
-3. 启动 app + Milvus：
+3. 首次启动先拉起 PostgreSQL，并从已注入 `POSTGRES_URL` 的 shell 执行迁移：
 
 ```powershell
-docker compose --env-file .env.container -f docker-compose.yml -f docker-compose.local.yml up --build
+docker compose --env-file .env.container -f docker-compose.yml -f docker-compose.local.yml up -d postgres
+node --env-file=.env.container scripts/migrate-postgres.mjs
 ```
 
-4. 验证进程级 liveness：
+4. 启动 app + PostgreSQL + Milvus：
+
+```powershell
+docker compose --env-file .env.container -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+PostgreSQL 的 5432 只绑定到宿主机 `127.0.0.1`；app 使用 Compose 内网地址
+`postgres:5432`。`depends_on: condition: service_healthy` 只等待 `pg_isready`，不替代 schema
+迁移。
+
+5. 验证进程级 liveness：
 
 ```powershell
 Invoke-RestMethod http://localhost:3000/api/health/live
 ```
 
-5. 验证应用 readiness / 外部依赖：
+6. 验证应用 readiness / 外部依赖：
 
 ```powershell
 Invoke-RestMethod http://localhost:3000/api/health
 ```
 
-`/api/health/live` 只证明容器进程可服务，不访问 RAG、Milvus、LLM 或 Supabase。`/api/health` 才用于迁移验收和外部依赖诊断。
+`/api/health/live` 只证明容器进程可服务，不访问 RAG、Milvus、LLM 或 PostgreSQL。镜像
+`HEALTHCHECK` 使用 `/api/health` readiness，并检查 PostgreSQL 连接与核心 schema，失败返回
+503；仍需用一次受控业务写入和数据库回读证明实际持久化成功。
 
 ## 云服务迁移模式
 
@@ -64,7 +78,8 @@ Invoke-RestMethod http://localhost:3000/api/health
 docker compose --env-file .env.container -f docker-compose.yml -f docker-compose.cloud.yml up --build
 ```
 
-5. 云平台部署时使用同一镜像，将 `.env.container` 中的变量逐项配置到平台 secrets/env，不要把密钥 bake 到镜像。
+5. 云平台部署时使用同一镜像，将 `.env.container` 中的变量逐项配置到平台 secrets/env，
+   特别是把 `POSTGRES_URL` 作为外部 secret 注入，不要把 DSN 或其他密钥 bake 到镜像。
 
 ## 关键环境变量
 
@@ -73,15 +88,21 @@ docker compose --env-file .env.container -f docker-compose.yml -f docker-compose
 | LLM | `MODEL_PROVIDER`, `FAST_LLM_MODEL`, `RERANKER_MODEL`, `MODEL_REQUEST_TIMEOUT_MS`, `MODEL_MAX_RETRIES`, `REASONING_REQUEST_TIMEOUT_MS`, `REASONING_MAX_RETRIES`, provider keys/base URLs |
 | Embedding | `EMBEDDING_PROVIDER`, `SILICONFLOW_API_KEY`, `OPENAI_EMBEDDING_MODEL`, `CUSTOM_EMBEDDING_DIMENSION` |
 | Milvus/Zilliz | `MILVUS_PROVIDER`, `MILVUS_LOCAL_ADDRESS`, `MILVUS_ZILLIZ_ENDPOINT`, `MILVUS_ZILLIZ_TOKEN`, `MILVUS_DEFAULT_DIMENSION` |
-| API 安全边界 | `RAG_ACCESS_MODE`, `RAG_SINGLE_TENANT_TOKEN`, `RAG_TENANT_ISOLATION_REQUIRED`, `RAG_ALLOWED_LLM_MODELS`, `RAG_ALLOWED_EMBEDDING_MODELS` |
-| Supabase | `RAG_PERSISTENCE_BACKEND`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DEFAULT_TENANT_ID`, `SUPABASE_DEFAULT_CORPUS_ID` |
+| API 安全边界 | `RAG_ACCESS_MODE=single-tenant-token`, `RAG_SINGLE_TENANT_TOKEN`, `RAG_TENANT_ISOLATION_REQUIRED`, `RAG_ALLOWED_LLM_MODELS`, `RAG_ALLOWED_EMBEDDING_MODELS` |
+| PostgreSQL | `RAG_PERSISTENCE_BACKEND=postgres`, `POSTGRES_URL`, `RAG_DEFAULT_TENANT_ID`, `RAG_DEFAULT_CORPUS_ID`, `POSTGRES_SSL_MODE`, `POSTGRES_MAX_CONNECTIONS`, timeout variables |
 | LangSmith | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` |
 | Uploads | `REASONING_RAG_UPLOAD_DIR`, app volume `/app/uploads`, `/app/reasoning-uploads`, `/app/adaptive-rag-uploads` |
 | RAG staged rollout | `RAG_ORDERED_CONTEXT_MODE`, `RAG_ORDERED_CONTEXT_READ_TIMEOUT_MS`, `RAG_ABSTENTION_MODE`, `RAG_DENSE_ABSTAIN_THRESHOLD`, `RAG_CORPUS_VERSION`, `RAG_MILVUS_INDEX_VERSION`, `MILVUS_HYBRID_MODE`, `RAG_HYBRID_PROBE_TIMEOUT_MS`, `RAG_HYBRID_SEARCH_TIMEOUT_MS`, `CONTEXTUAL_RETRIEVAL_V2_MODE`, `RAG_MIROFISH_GRAPH_MODE`, `RAG_PDF_VISUAL_MODE` |
 | Durable Ask | `RAG_DURABLE_ASK_MODE`, `RAG_DURABLE_WORKFLOW_STORE_ROOT`, `RAG_DURABLE_WORKFLOW_INTEGRITY_KEY`, capacity/lease/topology variables |
 | Local artifact stores | app volume `/app/uploads` for graph, PDF visual and durable workflow subdirectories |
 
-完整变量含义见 `ENV_CONFIG_GUIDE.md`。
+生产容器与宿主机 runner/release/reload 只接受 `RAG_PERSISTENCE_BACKEND=postgres`。DSN 只允许
+`postgres://` / `postgresql://` scheme；若同时提供 `DATABASE_URL` 和 `POSTGRES_URL`，trim 后
+必须完全一致。tenant/corpus 标识符必须匹配 `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`，校验失败
+不会在日志中回显 DSN。
+
+完整变量含义见 `ENV_CONFIG_GUIDE.md`；数据库部署和运维边界见
+`docs/deployment/postgresql.md`。
 
 ## E3-E7 功能激活与回滚
 
@@ -393,9 +414,6 @@ vision model、shared control plane 与生产流量证据时，只能报告“�
 - `RAG_ACCESS_MODE=single-tenant-token`：生产过渡模式；必须设置长随机
   `RAG_SINGLE_TENANT_TOKEN` 与固定 tenant/corpus，请求使用
   `Authorization: Bearer <token>`。
-- `RAG_ACCESS_MODE=supabase`：使用 Supabase 用户 JWT；服务端通过 publishable key +
-  用户 JWT 验证 Auth user、RLS 可见 corpus 和 tenant membership，不回退 service role。
-
 `single-tenant-token` 面向受信服务端调用或会注入 Authorization 的反向代理，不能把共享
 token 下发到浏览器。当前第一方演示 UI 不发送生产 bearer/session，且首页默认 memory
 policy；它只适用于 `local-dev`。认证模式的浏览器体验必须先接入同源 BFF/session，或由受信
@@ -423,13 +441,19 @@ reinitialize 路由在 production 或显式认证模式统一返回 410，只在
 - `/app/uploads`
 - `/app/reasoning-uploads`
 - `/app/adaptive-rag-uploads`
+- PostgreSQL 数据 volume
 - Milvus/MinIO/etcd 数据 volume
 
 云迁移建议：
 
-- 文件/manifest：设置 `RAG_PERSISTENCE_BACKEND=supabase`。
+- 文件/manifest/trace：设置 `RAG_PERSISTENCE_BACKEND=postgres`，通过 secret 注入
+  `POSTGRES_URL`，并先执行 `node scripts/migrate-postgres.mjs`。
 - 向量库：设置 `MILVUS_PROVIDER=zilliz` 或后续接入 `RAG_VECTOR_BACKEND`。
 - 不依赖容器本地磁盘保存长期业务数据，除非平台显式绑定持久卷。
+
+当前对象正文使用 PostgreSQL `bytea`，单对象验收边界为 10 MB；更大对象应使用对象存储，
+数据库只保留 key/hash/metadata。数据库不承担用户认证或对象存储服务，生产身份边界固定为
+`single-tenant-token`，完整方案见 `docs/deployment/postgresql.md`。
 
 
 ## 本机生产启动
@@ -441,7 +465,9 @@ pnpm build
 pnpm start
 ```
 
-`pnpm start` 会运行 `.next/standalone/server.js`；静态导出仍使用 `STATIC_EXPORT=true pnpm build` 生成 `out/`。
+`pnpm start` 会先经过与容器相同的 PostgreSQL-only bootstrap，再运行
+`.next/standalone/server.js`；缺少有效 DSN/scope 或配置为 `local` / `dual-write` 时会在加载
+服务前失败。静态导出仍使用 `STATIC_EXPORT=true pnpm build` 生成 `out/`。
 
 ## 静态导出与容器镜像
 
@@ -461,7 +487,10 @@ Linux Docker 通过 `extra_hosts: host.docker.internal:host-gateway` 提供这�
 
 ### `/api/health/live` 通过但 `/api/health` 失败
 
-这是预期边界：liveness 只证明进程活着，readiness 会初始化 RAG 并读取模型/向量库配置。排查 `.env.container`、Ollama/Zilliz/Supabase 连接和 API Key。
+这是预期边界：liveness 只证明进程活着；readiness 会检查 RAG 配置，并在 PostgreSQL
+持久化启用时验证数据库连接与核心 schema。排查 `.env.container`、PostgreSQL migration、
+tenant/corpus scope、Ollama/Zilliz 连接和 API Key。即使 readiness 通过，也要用受控写入和
+数据库回读完成持久化验收。
 
 ### Zilliz endpoint 是否需要 `https://`
 
@@ -482,7 +511,7 @@ pnpm build
 docker version
 docker build -t rag-system:container-smoke .
 docker compose --env-file .env.container.example -f docker-compose.yml -f docker-compose.local.yml config
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml config
+docker compose --env-file .env.container.example -f docker-compose.yml -f docker-compose.cloud.yml config
 ```
 
 如果 Docker daemon 不可用，只能说明本地代码构建通过，不能宣称容器验证完成。

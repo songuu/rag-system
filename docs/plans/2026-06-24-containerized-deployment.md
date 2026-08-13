@@ -26,7 +26,7 @@ deadcode_until: []
 
 ### 背景
 
-后续存在云服务一键迁移场景，当前仓库没有 Dockerfile、docker compose 或容器部署文档。项目是 Next.js 服务端应用，同时依赖 LLM、Embedding、Milvus/Zilliz、LangSmith、Supabase 等外部服务配置。容器化目标不是只让页面启动，而是让迁移方能用同一份镜像和环境变量在本地、私有云、云托管平台间迁移。
+后续存在云服务一键迁移场景，当前仓库没有 Dockerfile、docker compose 或容器部署文档。项目是 Next.js 服务端应用，同时依赖 LLM、Embedding、Milvus/Zilliz、LangSmith、自建 PostgreSQL 等外部服务配置。容器化目标不是只让页面启动，而是让迁移方能用同一份镜像和环境变量在本地、私有云、云托管平台间迁移。
 
 ### 已验证事实
 
@@ -51,7 +51,7 @@ deadcode_until: []
 
 ### Non-scope
 
-- 不迁移数据库数据，不自动创建 Zilliz/Supabase/LangSmith 云资源。
+- 不迁移数据库数据，不自动创建 PostgreSQL、Zilliz 或 LangSmith 外部资源。
 - 不提交真实 API Key、token、数据库密码或云账号配置。
 - 不把本地 Ollama 模型打包进应用镜像。
 - 不重构 RAG/LLM/Embedding 业务逻辑，除非容器启动必须修复。
@@ -82,7 +82,7 @@ deadcode_until: []
 | Next.js 部署模式 | `STATIC_EXPORT=true` 走静态导出，服务端模式走 `next start` | 只在非静态导出时启用服务端容器路径；Dockerfile 不设置 `STATIC_EXPORT=true` |
 | RAG API 契约 | `/api/ask`、RAG workflow、LangSmith disabled no-op 保持兼容 | 容器化只变启动/环境/部署资产，不修改 RAG API 响应结构 |
 | LangSmith | 未配置 API key 时必须 no-op | env sample 明确可选；容器启动不强制 LangSmith 网络可用 |
-| 持久化/上传 | 本地 `uploads/` 与 Supabase backend 都存在 | compose 用 volume 保存本地上传；cloud mode 推荐 `RAG_PERSISTENCE_BACKEND=supabase` |
+| 持久化/上传 | 本地 `uploads/` 与 PostgreSQL backend 都存在 | compose 使用 PostgreSQL volume；cloud mode 使用 `RAG_PERSISTENCE_BACKEND=postgres` 并从 secret 注入 DSN |
 | 容器密钥 | 镜像不得包含密钥 | `.dockerignore` 排除 `.env*`，文档要求运行时注入 secrets |
 
 ### 入场扫描 - 集成路径
@@ -91,7 +91,7 @@ deadcode_until: []
 |--------|----------|--------|--------|------------|
 | Docker 镜像 | `docker build` | pnpm install -> `pnpm build` -> Next standalone/server output | 镜像层只含构建产物，无 secrets | `docker run` 后服务可访问 |
 | Compose 本地演练 | `docker compose up` | app -> Milvus service；可选 Ollama/external URL | `uploads` volume + `milvus_data` volume | 重启容器后上传/向量库数据仍存在 |
-| 云端全托管模式 | 云平台注入 env | app -> OpenAI/Custom + SiliconFlow + Zilliz/Supabase | 云服务持久化 | 重新部署镜像后仍连接同一云数据 |
+| 云端外部依赖模式 | 云平台注入 env | app -> OpenAI/Custom + SiliconFlow + Zilliz + PostgreSQL | 外部数据库持久化 | 重新部署镜像后仍连接同一数据库 |
 | Liveness | 容器 healthcheck | `/api/health/live` | 无 | 容器平台只确认进程可服务 |
 | Readiness | 迁移验收手动探测 | `/api/health` | RAG/Milvus/模型配置状态 | 外部依赖异常时明确暴露失败 |
 
@@ -112,7 +112,7 @@ deadcode_until: []
    - 运行用户使用非 root，监听 `PORT=3000`，默认 `HOSTNAME=0.0.0.0`。
 
 2. **健康检查策略**
-   - 新增 `src/app/api/health/live/route.ts`：只返回进程级状态、版本/时间戳，不初始化 RAG，不访问 Milvus/LLM/Supabase。
+   - 新增 `src/app/api/health/live/route.ts`：只返回进程级状态、版本/时间戳，不初始化 RAG，不访问 Milvus/LLM/PostgreSQL。
    - Dockerfile `HEALTHCHECK` 使用 `/api/health/live`。
    - `/api/health` 保持 readiness/diagnostics 语义，供部署后人工或自动验收使用。
 
@@ -121,13 +121,13 @@ deadcode_until: []
      - `app`：构建当前镜像，读取 `.env.container`，挂载 `uploads` 和 `reasoning-uploads` volume。
      - `milvus` 及其依赖：本地向量库演练路径，`MILVUS_LOCAL_ADDRESS=milvus:19530`。
      - `ollama` 使用 profile 或文档说明，不默认拉大模型，避免一键启动变慢。
-   - 增加 `docker-compose.cloud.yml` 或 compose profile：只跑 app，连接 Zilliz/Supabase/SiliconFlow/OpenAI 等外部云服务。
+   - 增加 `docker-compose.cloud.yml` 或 compose profile：只跑 app，连接 Zilliz/PostgreSQL/SiliconFlow/OpenAI 等外部服务。
 
 4. **环境变量与 secrets**
    - 增加 `.env.container.example`，覆盖三种模式：
      - local: Ollama + Milvus volume。
      - hybrid: 本地/自托管 LLM + SiliconFlow/Zilliz。
-     - cloud: OpenAI/Custom + SiliconFlow + Zilliz + Supabase。
+     - cloud: OpenAI/Custom + SiliconFlow + Zilliz + PostgreSQL。
    - `.dockerignore` 排除 `.env*`、`node_modules`、`.next`、`uploads`、`reasoning-uploads`、`milvus_data`、临时日志和缓存。
 
 5. **部署文档**
@@ -194,7 +194,7 @@ Phase 2 完成。回复 `go` 进入 Phase 3: Work；或给修改意见先调整�
 | `pnpm build` | pass | Next.js 16.2.6 production build 成功，`/api/health/live` 出现在 route 表 |
 | `docker version` | blocked | Docker CLI 存在，但 Docker Desktop Linux daemon 未运行：`open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified` |
 | `docker compose --env-file .env.container.example -f docker-compose.yml -f docker-compose.local.yml config` | pass | 本地 app + Milvus overlay YAML/变量合成通过 |
-| `docker compose -f docker-compose.yml -f docker-compose.cloud.yml config` | pass | 云服务 overlay 默认值为 `openai` + `siliconflow` + `zilliz` + `supabase` |
+| `docker compose -f docker-compose.yml -f docker-compose.cloud.yml config` | pass | 云服务 overlay 默认值为 `openai` + `siliconflow` + `zilliz` + `postgres` |
 | `docker build -t rag-system:container-smoke .` | blocked | 需要 Docker daemon；升级审批层拒绝执行，且 daemon 已由 `docker version` 证明不可用 |
 | `git diff --check` | pass | 本 sprint 触及文件无 whitespace error；仅 CRLF 工作区提示 |
 
@@ -232,7 +232,7 @@ Phase 3 完成。回复 `go` 进入 Phase 4: Review；或给修改意见先调�
 
 | doc claim | 断言内容 | code 现实 | 状态 | action |
 |-----------|----------|-----------|------|--------|
-| `docs/deployment/container.md:49` | `/api/health/live` 不访问 RAG/Milvus/LLM/Supabase | `src/app/api/health/live/route.ts:1-9` 只返回 JSON | PASS | none |
+| `docs/deployment/container.md:49` | `/api/health/live` 不访问 RAG/Milvus/LLM/PostgreSQL | `src/app/api/health/live/route.ts:1-9` 只返回 JSON | PASS | none |
 | `docs/deployment/container.md:94` | 容器部署走 standalone server output | `next.config.ts:22`, `Dockerfile:29-40` | PASS | none |
 | `docs/deployment/container.md:122` | `.dockerignore` 排除 `.env*` | `.dockerignore:14-15` | PASS | none |
 | `docs/plans/2026-06-24-containerized-deployment.md:198` | Docker build blocked | `docker version` 输出 daemon pipe 不存在；`docker build` escalation 被拒绝 | PASS | none |

@@ -72,7 +72,7 @@ Do not make a new retrieval lane, index schema, embedding, rerank/fusion policy,
 
 ## Request Identity And Retrieval Scope Are Server-Owned
 
-Never authorize RAG work from body-supplied user, tenant, role, corpus ownership, or raw Milvus filters. Resolve one request-scoped security context on the server, validate the selected corpus through fixed scope or RLS, and pass one immutable retrieval scope through ingestion and query adapters. Production modes must fail closed when the active vector schema cannot enforce tenant/corpus/trust scalar filters. Service-role clients remain background-only; user request clients use a publishable project key plus the real user JWT and may not fall back to admin credentials.
+Never authorize RAG work from body-supplied user, tenant, role, corpus ownership, or raw Milvus filters. Resolve one request-scoped security context on the server, validate the selected corpus through fixed scope or RLS, and pass one immutable retrieval scope through ingestion and query adapters. Production modes must fail closed when the active vector schema cannot enforce tenant/corpus/trust scalar filters. Database credentials remain server-only; user requests must pass the configured same-origin or bearer-token boundary and may never select privileged database credentials.
 
 ## External Ingestion Uses A Pinned Egress Boundary
 
@@ -107,9 +107,9 @@ Milvus tuning should enter the project through `milvus-config` and `milvus-clien
 
 Milvus search handlers should not call collection stats, schema description, or load checks on every query once the singleton vector store is initialized. Keep query-time work to embedding generation, vector search, and result shaping; use explicit maintenance actions for schema checks, stats refreshes, collection reloads, and index rebuilds.
 
-## Supabase Is The Persistence Plane, Not The Milvus Replacement
+## PostgreSQL Is The Persistence Plane, Not The Milvus Replacement
 
-When adding Supabase to this project, use it first for Auth/RLS, tenant ownership, Postgres metadata, Storage-backed files, index jobs, traces, feedback, conversations, MiroFish/MAIC product state, and Realtime progress. Keep Milvus/Zilliz as the default production vector hot path. Supabase pgvector can be added as an optional retrieval lane for small corpora, entity/cache embeddings, eval datasets, or metadata-heavy filtering, but it should enter through the RAG Kernel retrieval adapter instead of replacing `milvus-client`.
+Use the self-hosted PostgreSQL adapters for tenant/corpus metadata, object rows, index-job state, traces, and feedback. PostgreSQL does not supply an identity provider or object-storage API: production currently uses the server-owned single-tenant token boundary, and larger objects require an explicit S3/MinIO adapter. Keep Milvus/Zilliz as the default production vector hot path. Any future pgvector lane must enter through the RAG Kernel retrieval adapter instead of replacing `milvus-client` implicitly.
 
 ## PDF Parser Changes Go Through A Shared Adapter
 
@@ -117,7 +117,7 @@ When changing PDF parsing providers, first route `document-parser`, `document-pi
 
 ## Container Deployment Separates Liveness, Readiness, And Runtime Secrets
 
-For this project, container support should keep Next server startup, local Milvus dependencies, and cloud provider credentials as separate layers. Use Next standalone output for non-static container deployments and make `pnpm start` run the same standalone server contract. Keep liveness routes dependency-free, reserve external checks for readiness, and inject all LLM, Zilliz, Supabase, and LangSmith secrets through runtime environment variables rather than image layers.
+For this project, container support should keep Next server startup, local Milvus/PostgreSQL dependencies, and cloud provider credentials as separate layers. Use Next standalone output for non-static container deployments and make `pnpm start` run the same standalone server contract. Keep liveness routes dependency-free, reserve database/schema and other external checks for readiness, and inject all LLM, Zilliz, PostgreSQL, auth-token, and LangSmith secrets through runtime environment variables rather than image layers.
 
 ## MAIC Structured Output Has One Reasoning-Aware Parser
 

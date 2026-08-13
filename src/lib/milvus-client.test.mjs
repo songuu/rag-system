@@ -104,7 +104,7 @@ test('tenant-scoped searches always request evidence provenance fields', () => {
 
 test('tenant isolation rejects unscoped search, insertion, and global mutations before I/O', async () => {
   const previousMode = process.env.RAG_ACCESS_MODE;
-  process.env.RAG_ACCESS_MODE = 'supabase';
+  process.env.RAG_ACCESS_MODE = 'single-tenant-token';
   try {
     const store = new MilvusVectorStore({ collectionName: 'security-test' });
     await assert.rejects(() => store.search([1], 1), /server-derived scope/);
@@ -292,7 +292,7 @@ test('hybrid runtime manifest uses isolated defaults and validates server config
 
 test('tenant isolation rejects hybrid dual-write before any Milvus I/O', async () => {
   const previousMode = process.env.RAG_ACCESS_MODE;
-  process.env.RAG_ACCESS_MODE = 'supabase';
+  process.env.RAG_ACCESS_MODE = 'single-tenant-token';
   try {
     const store = new MilvusVectorStore({
       ...createConfig(),

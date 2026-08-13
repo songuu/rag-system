@@ -1,8 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { getSupabaseServerClient } from '../supabase/server-client';
-import { SupabaseRestError } from '../supabase/rest-client';
 
-export type RagAccessMode = 'local-dev' | 'single-tenant-token' | 'supabase';
+export type RagAccessMode = 'local-dev' | 'single-tenant-token';
 export type RagTenantRole = 'owner' | 'admin' | 'member' | 'viewer';
 export type RagCapability =
   | 'query'
@@ -35,7 +33,6 @@ export interface ResolveRagSecurityContextOptions {
   capability?: RagCapability;
   requestedCorpusId?: string;
   env?: NodeJS.ProcessEnv;
-  fetchImpl?: typeof fetch;
   requestIdFactory?: () => string;
 }
 
@@ -43,14 +40,10 @@ export type RagSecurityErrorCode =
   | 'RAG_AUTH_MODE_INVALID'
   | 'RAG_LOCAL_DEV_FORBIDDEN'
   | 'RAG_SCOPE_CONFIG_MISSING'
-  | 'RAG_AUTH_CONFIG_MISSING'
   | 'RAG_AUTH_REQUIRED'
   | 'RAG_AUTH_INVALID'
-  | 'RAG_AUTH_BACKEND_UNAVAILABLE'
   | 'RAG_CORPUS_INVALID'
-  | 'RAG_CORPUS_REQUIRED'
   | 'RAG_CORPUS_FORBIDDEN'
-  | 'RAG_TENANT_FORBIDDEN'
   | 'RAG_CAPABILITY_FORBIDDEN';
 
 export class RagSecurityError extends Error {
@@ -91,17 +84,6 @@ const ROLE_CAPABILITIES: Readonly<Record<RagTenantRole, ReadonlySet<RagCapabilit
   owner: new Set(['query', 'ingest', 'delete-document', 'reindex', 'manage-runtime']),
 };
 
-type CorpusRow = {
-  id: string;
-  tenant_id: string;
-};
-
-type MembershipRow = {
-  tenant_id: string;
-  user_id: string;
-  role: string;
-};
-
 export async function resolveRagSecurityContext(
   request: RagSecurityRequest,
   options: ResolveRagSecurityContextOptions = {}
@@ -119,15 +101,6 @@ export async function resolveRagSecurityContext(
       break;
     case 'single-tenant-token':
       context = resolveSingleTenantContext(request, env, requestedCorpusId, requestId);
-      break;
-    case 'supabase':
-      context = await resolveSupabaseContext(
-        request,
-        env,
-        requestedCorpusId,
-        requestId,
-        options.fetchImpl
-      );
       break;
   }
 
@@ -157,7 +130,7 @@ export const assertRagCapability = assertCapability;
 
 function resolveAccessMode(env: NodeJS.ProcessEnv, requestId: string): RagAccessMode {
   const raw = (env.RAG_ACCESS_MODE || env.RAG_AUTH_MODE || 'local-dev').trim().toLowerCase();
-  if (raw === 'local-dev' || raw === 'single-tenant-token' || raw === 'supabase') {
+  if (raw === 'local-dev' || raw === 'single-tenant-token') {
     return raw;
   }
   throw securityError(
@@ -182,8 +155,8 @@ function resolveLocalDevContext(
     );
   }
 
-  const tenantId = env.SUPABASE_DEFAULT_TENANT_ID?.trim() || 'local-dev-tenant';
-  const corpusId = env.SUPABASE_DEFAULT_CORPUS_ID?.trim() || 'local-dev-corpus';
+  const tenantId = env.RAG_DEFAULT_TENANT_ID?.trim() || 'local-dev-tenant';
+  const corpusId = env.RAG_DEFAULT_CORPUS_ID?.trim() || 'local-dev-corpus';
   assertFixedCorpus(requestedCorpusId, corpusId, requestId);
 
   return {
@@ -204,8 +177,8 @@ function resolveSingleTenantContext(
   requestId: string
 ): RagSecurityContext {
   const expectedToken = env.RAG_SINGLE_TENANT_TOKEN?.trim();
-  const tenantId = env.SUPABASE_DEFAULT_TENANT_ID?.trim();
-  const corpusId = env.SUPABASE_DEFAULT_CORPUS_ID?.trim();
+  const tenantId = env.RAG_DEFAULT_TENANT_ID?.trim();
+  const corpusId = env.RAG_DEFAULT_CORPUS_ID?.trim();
   if (!expectedToken || !tenantId || !corpusId) {
     throw securityError(
       'RAG_SCOPE_CONFIG_MISSING',
@@ -231,129 +204,6 @@ function resolveSingleTenantContext(
     corpusId,
     role,
     accessMode: 'single-tenant-token',
-    requestId,
-    enforceIsolation: true,
-  };
-}
-
-async function resolveSupabaseContext(
-  request: RagSecurityRequest,
-  env: NodeJS.ProcessEnv,
-  requestedCorpusId: string | undefined,
-  requestId: string,
-  fetchImpl?: typeof fetch
-): Promise<RagSecurityContext> {
-  const accessToken = readBearerToken(request);
-  if (!accessToken) {
-    throw securityError('RAG_AUTH_REQUIRED', 401, 'Authentication is required.', requestId);
-  }
-
-  const url = env.NEXT_PUBLIC_SUPABASE_URL?.trim() || '';
-  const publishableKey = (
-    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-  ).trim();
-  const client = getSupabaseServerClient(accessToken, {
-    config: { url, publishableKey },
-    fetchImpl,
-  });
-  if (!client) {
-    throw securityError(
-      'RAG_AUTH_CONFIG_MISSING',
-      503,
-      'Supabase request authentication is not configured.',
-      requestId
-    );
-  }
-
-  let actorId: string;
-  try {
-    const user = await client.getAuthUser();
-    actorId = typeof user.id === 'string' ? user.id.trim() : '';
-  } catch (error) {
-    if (error instanceof SupabaseRestError && (error.status === 401 || error.status === 403)) {
-      throw securityError('RAG_AUTH_INVALID', 401, 'Authentication failed.', requestId);
-    }
-    throw securityError(
-      'RAG_AUTH_BACKEND_UNAVAILABLE',
-      503,
-      'Authentication is temporarily unavailable.',
-      requestId
-    );
-  }
-  if (!actorId) {
-    throw securityError('RAG_AUTH_INVALID', 401, 'Authentication failed.', requestId);
-  }
-
-  const corpusId = requestedCorpusId ?? env.SUPABASE_DEFAULT_CORPUS_ID?.trim();
-  if (!corpusId) {
-    throw securityError(
-      'RAG_CORPUS_REQUIRED',
-      400,
-      'A corpus must be selected for this request.',
-      requestId
-    );
-  }
-
-  let corpus: CorpusRow | null;
-  try {
-    corpus = await client.selectSingle<CorpusRow>('corpora', {
-      select: 'id,tenant_id',
-      filters: { id: corpusId },
-    });
-  } catch {
-    throw securityError(
-      'RAG_AUTH_BACKEND_UNAVAILABLE',
-      503,
-      'Authorization data is temporarily unavailable.',
-      requestId
-    );
-  }
-  if (!corpus || corpus.id !== corpusId || !corpus.tenant_id) {
-    throw securityError(
-      'RAG_CORPUS_FORBIDDEN',
-      403,
-      'The selected corpus is not available to the authenticated actor.',
-      requestId
-    );
-  }
-
-  let membership: MembershipRow | null;
-  try {
-    membership = await client.selectSingle<MembershipRow>('tenant_members', {
-      select: 'tenant_id,user_id,role',
-      filters: {
-        tenant_id: corpus.tenant_id,
-        user_id: actorId,
-      },
-    });
-  } catch {
-    throw securityError(
-      'RAG_AUTH_BACKEND_UNAVAILABLE',
-      503,
-      'Authorization data is temporarily unavailable.',
-      requestId
-    );
-  }
-  if (
-    !membership ||
-    membership.tenant_id !== corpus.tenant_id ||
-    membership.user_id !== actorId ||
-    !isTenantRole(membership.role)
-  ) {
-    throw securityError(
-      'RAG_TENANT_FORBIDDEN',
-      403,
-      'Tenant membership is required for the selected corpus.',
-      requestId
-    );
-  }
-
-  return {
-    actorId,
-    tenantId: corpus.tenant_id,
-    corpusId,
-    role: membership.role,
-    accessMode: 'supabase',
     requestId,
     enforceIsolation: true,
   };

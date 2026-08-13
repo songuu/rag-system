@@ -51,7 +51,11 @@ export class DocumentPipeline {
       documentId: 'pdf:sha256:route-test',
       chunks: 2,
       ids: ['chunk-a', 'chunk-b'],
-      metadata: { source: options.filename, type: 'pdf' },
+      metadata: {
+        source: options.filename,
+        type: 'pdf',
+        sourceHash: 'sha256:route-test',
+      },
       contextualRetrieval: {
         version: 'contextual-retrieval/v2',
         mode: 'off',
@@ -74,10 +78,29 @@ export async function loadDocument() { throw new Error('preview not expected'); 
 export async function splitDocument() { throw new Error('preview not expected'); }
 `);
 
+const persistenceStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+let calls = [];
+let failure;
+export function resetPersistenceCalls() { calls = []; failure = undefined; }
+export function getPersistenceCalls() { return structuredClone(calls); }
+export function setPersistenceFailure(value) { failure = value; }
+export async function recordPipelineDocumentIfConfigured(input) {
+  calls.push({
+    ...input,
+    source: input.source instanceof Uint8Array ? [...input.source] : input.source,
+  });
+  if (failure) throw new Error('database detail must stay private');
+  return 'asset-route-test';
+}
+`);
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@/lib/document-pipeline') {
       return { url: pipelineStubUrl, shortCircuit: true };
+    }
+    if (specifier === '@/lib/persistence/postgres-pipeline-store') {
+      return { url: persistenceStubUrl, shortCircuit: true };
     }
     if (specifier === 'next/server') return nextResolve('next/server.js', context);
     if (specifier.startsWith('@/')) {
@@ -106,8 +129,8 @@ const environmentKeys = [
   'RAG_SINGLE_TENANT_TOKEN',
   'RAG_SINGLE_TENANT_ROLE',
   'RAG_SINGLE_TENANT_ACTOR_ID',
-  'SUPABASE_DEFAULT_TENANT_ID',
-  'SUPABASE_DEFAULT_CORPUS_ID',
+  'RAG_DEFAULT_TENANT_ID',
+  'RAG_DEFAULT_CORPUS_ID',
   'RAG_PDF_VISUAL_MODE',
   'RAG_VECTOR_BACKEND',
 ];
@@ -119,8 +142,8 @@ Object.assign(process.env, {
   RAG_SINGLE_TENANT_TOKEN: 'pipeline-route-token',
   RAG_SINGLE_TENANT_ROLE: 'owner',
   RAG_SINGLE_TENANT_ACTOR_ID: 'actor-a',
-  SUPABASE_DEFAULT_TENANT_ID: 'tenant-a',
-  SUPABASE_DEFAULT_CORPUS_ID: 'corpus-a',
+  RAG_DEFAULT_TENANT_ID: 'tenant-a',
+  RAG_DEFAULT_CORPUS_ID: 'corpus-a',
   RAG_PDF_VISUAL_MODE: 'active',
 });
 
@@ -131,6 +154,11 @@ const {
   resetPipelineCalls,
   setPipelineFailure,
 } = await import(pipelineStubUrl);
+const {
+  getPersistenceCalls,
+  resetPersistenceCalls,
+  setPersistenceFailure,
+} = await import(persistenceStubUrl);
 
 after(() => {
   for (const [key, value] of Object.entries(originalEnvironment)) {
@@ -141,6 +169,7 @@ after(() => {
 
 test('authenticated multipart PDF reaches the production pipeline seam with server scope', async () => {
   resetPipelineCalls();
+  resetPersistenceCalls();
   const form = new FormData();
   form.append(
     'files',
@@ -164,12 +193,14 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   const response = await POST(request);
   const body = await response.json();
   const call = getPipelineCalls()[0];
+  const persistenceCall = getPersistenceCalls()[0];
 
   assert.equal(response.status, 200);
   assert.equal(body.success, true);
   assert.equal(body.successful, 1);
   assert.equal(body.results[0].pdfVisual.status, 'published');
   assert.equal(body.results[0].pdfVisual.visualPageCount, 2);
+  assert.equal(body.results[0].postgresAssetId, 'asset-route-test');
   assert.equal(call.inputIsBuffer, true);
   assert.equal(new TextDecoder().decode(new Uint8Array(call.inputBytes)).startsWith('%PDF-1.7'), true);
   assert.equal(call.filename, '测试 visual.pdf');
@@ -178,6 +209,12 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   assert.equal(call.metadata.corpusId, 'corpus-a');
   assert.equal(call.metadata.trustLevel, 'external');
   assert.equal(call.signalIsAbortSignal, true);
+  assert.equal(persistenceCall.tenantId, 'tenant-a');
+  assert.equal(persistenceCall.corpusId, 'corpus-a');
+  assert.equal(persistenceCall.actorId, 'actor-a');
+  assert.equal(persistenceCall.documentId, 'pdf:sha256:route-test');
+  assert.equal(persistenceCall.sourceHash, 'sha256:route-test');
+  assert.equal(new TextDecoder().decode(new Uint8Array(persistenceCall.source)).startsWith('%PDF-1.7'), true);
   assert.equal('tenantId' in body.results[0].pdfVisual, false);
   assert.equal('rootDir' in body.results[0].pdfVisual, false);
 });
@@ -272,4 +309,35 @@ test('text ingest exposes the stable active-hybrid rolled-back failure', async t
   assert.match(body.error, /exact compensation completed/);
   assert.match(body.error, /reconciliationId=audit-test/);
   assert.equal(body.requestId, 'pipeline-route-rolled-back-test');
+});
+
+test('completed vector ingest exposes PostgreSQL reconciliation-required failure', async t => {
+  t.mock.method(console, 'error', () => {});
+  resetPipelineCalls();
+  resetPersistenceCalls();
+  setPersistenceFailure(true);
+  const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer pipeline-route-token',
+      'content-type': 'application/json',
+      'x-request-id': 'pipeline-route-postgres-reconciliation-test',
+    },
+    body: JSON.stringify({
+      action: 'process-text',
+      text: 'persist me',
+      source: 'fixture.txt',
+      corpusId: 'corpus-a',
+    }),
+  }));
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.success, false);
+  assert.equal(body.code, 'POSTGRES_INGEST_RECONCILIATION_REQUIRED');
+  assert.match(body.error, /reconciliationId=[0-9a-f]{24}/);
+  assert.equal(body.error.includes('database detail'), false);
+  assert.equal(body.requestId, 'pipeline-route-postgres-reconciliation-test');
+  assert.equal(getPipelineCalls().length, 1);
+  assert.equal(getPersistenceCalls().length, 1);
 });

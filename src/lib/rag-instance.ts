@@ -5,7 +5,7 @@
  * @LastEditor: songyu
  */
 import { LocalRAGSystem } from './rag-system';
-import { mirrorTraceToSupabase } from './persistence/supabase-trace-store';
+import { mirrorTraceToPostgres } from './persistence/postgres-trace-store';
 import { mirrorTraceToLangSmith } from './langsmith/trace-mirror';
 import type { Trace } from './observability';
 
@@ -70,6 +70,6 @@ export function getCurrentRagSystem(): LocalRAGSystem | undefined {
 }
 
 function mirrorTrace(trace: Trace): void {
-  mirrorTraceToSupabase(trace);
+  mirrorTraceToPostgres(trace);
   mirrorTraceToLangSmith(trace);
 }
