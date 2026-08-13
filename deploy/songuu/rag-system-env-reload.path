@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch rag-system runtime environment changes
+
+[Path]
+# The file watch covers in-place writes. The directory watch covers editors
+# that atomically rename a temporary file over .env.prod.
+PathModified=/opt/rag-system/shared
+PathModified=/opt/rag-system/shared/.env.prod
+Unit=rag-system-env-reload.service
+
+[Install]
+WantedBy=multi-user.target

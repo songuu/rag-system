@@ -27,7 +27,7 @@ interface SystemInfoProps {
   llmModel: string;
   embeddingModel: string;
   modelConfig?: ModelConfig;
-  onReinitialize: () => void;
+  onRefresh: () => void;
   onModelChange: (llmModel: string, embeddingModel: string) => void;
 }
 
@@ -55,7 +55,7 @@ export default function SystemInfo({
   llmModel,
   embeddingModel,
   modelConfig,
-  onReinitialize,
+  onRefresh,
   onModelChange
 }: SystemInfoProps) {
   const [showModelSelector, setShowModelSelector] = useState(false);
@@ -214,12 +214,12 @@ export default function SystemInfo({
           </div>
           
           <button 
-            onClick={onReinitialize}
-            disabled={systemStatus === '重新初始化中...'}
+            onClick={onRefresh}
+            disabled={systemStatus === '检查中...'}
             className="w-full mt-4 px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <i className="fas fa-redo mr-2"></i>
-            重新初始化
+            刷新状态
           </button>
         </div>
       </div>

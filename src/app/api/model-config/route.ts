@@ -6,6 +6,7 @@ import {
   validateEmbeddingConfig,
   reloadEmbeddingConfig,
 } from '@/lib/embedding-config';
+import { validateRuntimeModelAllowlistCoherence } from '@/lib/security/request-validation';
 
 /**
  * 获取当前模型配置
@@ -20,6 +21,7 @@ export async function GET() {
     // 获取独立的 Embedding 配置
     const embeddingConfig = getEmbeddingConfigSummary();
     const embeddingValidation = validateEmbeddingConfig();
+    const allowlistValidation = validateRuntimeModelAllowlistCoherence();
 
     return NextResponse.json({
       success: true,
@@ -61,8 +63,15 @@ export async function GET() {
         },
         embedding: embeddingValidation,
         overall: {
-          valid: validation.valid && embeddingValidation.valid,
-          errors: [...validation.errors, ...embeddingValidation.errors],
+          valid: validation.valid && embeddingValidation.valid && allowlistValidation.valid,
+          // ModelFactory already includes embedding validation in its errors.
+          // Keep the explicit embedding payload for the UI, but do not render
+          // the same missing provider variable twice in the overall summary.
+          errors: [...new Set([
+            ...validation.errors,
+            ...embeddingValidation.errors,
+            ...allowlistValidation.errors,
+          ])],
         },
       },
       timestamp: new Date().toISOString(),

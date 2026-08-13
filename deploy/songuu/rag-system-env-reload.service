@@ -1,0 +1,10 @@
+[Unit]
+Description=Reload rag-system after a validated runtime environment edit
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=PM2_HOME=/root/.pm2
+ExecStart=/opt/rag-system/shared/reload-rag-system-env.sh
+TimeoutStartSec=90

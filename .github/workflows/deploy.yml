@@ -122,9 +122,18 @@ jobs:
           scp -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
             "${ARCHIVE}" \
             deploy/songuu/run-rag-system.sh \
+            deploy/songuu/run-rag-system.cjs \
+            deploy/songuu/rag-system.ecosystem.config.cjs \
+            deploy/songuu/manage-rag-system-pm2.sh \
             deploy/songuu/release-host.sh \
+            deploy/songuu/render-host-env-defaults.py \
+            deploy/songuu/reload-rag-system-env.sh \
+            deploy/songuu/refresh-rag-nginx-token.sh \
+            deploy/songuu/rag-system-env-reload.service \
+            deploy/songuu/rag-system-env-reload.path \
             deploy/songuu/patch-nginx.py \
             deploy/songuu/apply-nginx.sh \
+            .env.container.example \
             "${DEPLOY_USER}@${DEPLOY_HOST}:${REMOTE_DIR}/"
 
       - name: Remote atomic release and gateway verification
@@ -143,32 +152,87 @@ jobs:
             *) echo "Unsafe release archive: ${REMOTE_ARCHIVE}" >&2; exit 2 ;;
           esac
 
-          runner='/opt/rag-system/shared/run-rag-system.sh'
-          runner_stage="${runner}.next.$$"
-          tr -d '\r' < "${REMOTE_DIR}/run-rag-system.sh" > "${runner_stage}"
-          chmod 700 "${runner_stage}"
-          bash -n "${runner_stage}"
-          if [ -f "${runner}" ] && cmp -s "${runner_stage}" "${runner}"; then
-            rm -f "${runner_stage}"
-          else
-            if [ -f "${runner}" ]; then
-              cp -a "${runner}" "${runner}.bak.$(date +%Y%m%d%H%M%S)"
+          install_shared_asset() {
+            source_name="$1"
+            target="$2"
+            mode="$3"
+            validator="$4"
+            stage="${target}.next.$$"
+            tr -d '\r' < "${REMOTE_DIR}/${source_name}" > "${stage}"
+            chmod "${mode}" "${stage}"
+            case "${validator}" in
+              bash) bash -n "${stage}" ;;
+              node) node --check "${stage}" ;;
+              *) echo "Unknown shared asset validator: ${validator}" >&2; return 2 ;;
+            esac
+            if [ -f "${target}" ] && cmp -s "${stage}" "${target}"; then
+              rm -f "${stage}"
+              return 0
             fi
-            mv -f "${runner_stage}" "${runner}"
-          fi
+            if [ -f "${target}" ]; then
+              cp -a "${target}" "${target}.bak.$(date +%Y%m%d%H%M%S)"
+            fi
+            mv -f "${stage}" "${target}"
+          }
 
-          for script in release-host.sh patch-nginx.py apply-nginx.sh; do
+          install_shared_asset run-rag-system.sh '/opt/rag-system/shared/run-rag-system.sh' 700 bash
+          install_shared_asset run-rag-system.cjs '/opt/rag-system/shared/run-rag-system.cjs' 700 node
+          install_shared_asset rag-system.ecosystem.config.cjs '/opt/rag-system/shared/rag-system.ecosystem.config.cjs' 600 node
+          install_shared_asset manage-rag-system-pm2.sh '/opt/rag-system/shared/manage-rag-system-pm2.sh' 700 bash
+
+          for script in release-host.sh patch-nginx.py apply-nginx.sh reload-rag-system-env.sh refresh-rag-nginx-token.sh; do
             tr -d '\r' < "${REMOTE_DIR}/${script}" > "${REMOTE_DIR}/${script}.normalized"
             mv -f "${REMOTE_DIR}/${script}.normalized" "${REMOTE_DIR}/${script}"
           done
-          chmod 700 "${REMOTE_DIR}/release-host.sh" "${REMOTE_DIR}/apply-nginx.sh"
+          chmod 700 "${REMOTE_DIR}/release-host.sh" "${REMOTE_DIR}/apply-nginx.sh" "${REMOTE_DIR}/reload-rag-system-env.sh" "${REMOTE_DIR}/refresh-rag-nginx-token.sh"
           bash -n "${REMOTE_DIR}/release-host.sh"
           bash -n "${REMOTE_DIR}/apply-nginx.sh"
+          bash -n "${REMOTE_DIR}/reload-rag-system-env.sh"
+          bash -n "${REMOTE_DIR}/refresh-rag-nginx-token.sh"
           python3 -m py_compile "${REMOTE_DIR}/patch-nginx.py"
 
+          RAG_ENV_DEFAULTS_RENDERER="${REMOTE_DIR}/render-host-env-defaults.py" \
+          RAG_ENV_DEFAULTS_EXAMPLE="${REMOTE_DIR}/.env.container.example" \
           "${REMOTE_DIR}/release-host.sh" \
             "${REMOTE_ARCHIVE}" \
             "${RELEASE_NAME}"
+
+          reload_runner='/opt/rag-system/shared/reload-rag-system-env.sh'
+          reload_runner_stage="${reload_runner}.next.$$"
+          tr -d '\r' < "${REMOTE_DIR}/reload-rag-system-env.sh" > "${reload_runner_stage}"
+          chmod 700 "${reload_runner_stage}"
+          bash -n "${reload_runner_stage}"
+          if [ -f "${reload_runner}" ]; then
+            cp -a "${reload_runner}" "${reload_runner}.bak.$(date +%Y%m%d%H%M%S)"
+          fi
+          mv -f "${reload_runner_stage}" "${reload_runner}"
+
+          for file in patch-nginx.py refresh-rag-nginx-token.sh; do
+            target="/opt/rag-system/shared/${file}"
+            stage="${target}.next.$$"
+            tr -d '\r' < "${REMOTE_DIR}/${file}" > "${stage}"
+            if [ "${file}" = 'refresh-rag-nginx-token.sh' ]; then
+              chmod 700 "${stage}"
+              bash -n "${stage}"
+            fi
+            if [ -f "${target}" ]; then
+              cp -a "${target}" "${target}.bak.$(date +%Y%m%d%H%M%S)"
+            fi
+            mv -f "${stage}" "${target}"
+          done
+
+          for unit in rag-system-env-reload.service rag-system-env-reload.path; do
+            unit_target="/etc/systemd/system/${unit}"
+            unit_stage="${unit_target}.next.$$"
+            tr -d '\r' < "${REMOTE_DIR}/${unit}" > "${unit_stage}"
+            chmod 644 "${unit_stage}"
+            if [ -f "${unit_target}" ]; then
+              cp -a "${unit_target}" "${unit_target}.bak.$(date +%Y%m%d%H%M%S)"
+            fi
+            mv -f "${unit_stage}" "${unit_target}"
+          done
+          systemctl daemon-reload
+          systemctl enable --now rag-system-env-reload.path
 
           location_count() {
             awk -v modifier="$1" -v route="$2" \
@@ -196,12 +260,39 @@ jobs:
             exit 1
           fi
 
+          # Keep the gateway's injected bearer token synchronized before
+          # recording this environment as the watcher's verified baseline.
+          # That makes a later token edit detectable rather than silently
+          # treating it as an ordinary PM2 reload.
+          "${REMOTE_DIR}/refresh-rag-nginx-token.sh" "${REMOTE_DIR}/patch-nginx.py" >/dev/null
+
           live_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN}" "https://127.0.0.1/rag-api/health/live")"
           test "${live_code}" = '200'
           anonymous_ui_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN}" "https://127.0.0.1${BASE_PATH}")"
           test "${anonymous_ui_code}" = '302'
           direct_api_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN}" "https://127.0.0.1${BASE_PATH}/api/health/live")"
           test "${direct_api_code}" = '404'
+
+          # Seed watcher state only after the app and the RAG gateway have
+          # passed verification. Do not let the first edited candidate become
+          # its own baseline; that would hide a tenant-token rotation.
+          env_file='/opt/rag-system/shared/.env.prod'
+          last_good='/opt/rag-system/shared/.env.prod.last-known-good'
+          applied_hash='/opt/rag-system/shared/.env.prod.last-applied.sha256'
+          test -r "${env_file}"
+          env_hash="$(sha256sum "${env_file}" | cut -d' ' -f1)"
+          last_good_stage="${last_good}.next.$$"
+          cp -a "${env_file}" "${last_good_stage}"
+          chmod 600 "${last_good_stage}"
+          if [ "${env_hash}" != "$(sha256sum "${env_file}" | cut -d' ' -f1)" ]; then
+            rm -f "${last_good_stage}"
+            echo 'RAG environment changed while seeding watcher state; refusing an ambiguous baseline.' >&2
+            exit 1
+          fi
+          mv -f "${last_good_stage}" "${last_good}"
+          printf '%s\n' "${env_hash}" > "${applied_hash}.next.$$"
+          chmod 600 "${applied_hash}.next.$$"
+          mv -f "${applied_hash}.next.$$" "${applied_hash}"
           rm -rf "${REMOTE_DIR}"
           REMOTE_SCRIPT
 

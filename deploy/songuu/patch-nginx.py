@@ -61,11 +61,67 @@ def read_env_value(env_file: Path, name: str) -> str:
     raise RuntimeError(f"{name} is missing from {env_file}")
 
 
+def expected_locations(text: str):
+    return {
+        "root": count_location(text, "=", "/rag-system"),
+        "direct_api": count_location(text, "^~", "/rag-system/api/"),
+        "page": count_location(text, "^~", "/rag-system/"),
+        "liveness": count_location(text, "=", "/rag-api/health/live"),
+        "api": count_location(text, "^~", "/rag-api/"),
+    }
+
+
+def write_with_backup(config: Path, original: str, text: str) -> Path:
+    timestamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+    backup = config.with_name(f"{config.name}.bak.rag-system.{timestamp}")
+    suffix = 1
+    while backup.exists():
+        backup = config.with_name(
+            f"{config.name}.bak.rag-system.{timestamp}.{suffix}"
+        )
+        suffix += 1
+    shutil.copy2(config, backup)
+    config.write_text(text, encoding="utf-8")
+    return backup
+
+
+def refresh_api_token(config: Path, original: str, token: str) -> Path:
+    locations = expected_locations(original)
+    if any(count != 1 for count in locations.values()):
+        found = ", ".join(
+            "{}={}".format(name, count) for name, count in locations.items()
+        )
+        raise RuntimeError(
+            "cannot refresh RAG nginx token with incomplete or ambiguous locations ({})".format(
+                found
+            )
+        )
+
+    begin, end, api_block = find_block(original, "    location ^~ /rag-api/ {")
+    header = re.compile(
+        r'^(?P<indent>[ \t]*)proxy_set_header[ \t]+Authorization[ \t]+'
+        r'"Bearer [^"]*";[ \t]*$',
+        re.MULTILINE,
+    )
+    if len(header.findall(api_block)) != 1:
+        raise RuntimeError(
+            "expected exactly one RAG Authorization header in /rag-api/ location"
+        )
+    replacement = r'\g<indent>proxy_set_header Authorization "Bearer {}";'.format(token)
+    updated_block = header.sub(replacement, api_block)
+    return write_with_backup(config, original, original[:begin] + updated_block + original[end:])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/etc/nginx/conf.d/default.conf")
-    parser.add_argument("--env-file", default="/opt/rag-system/shared/.env.production")
+    parser.add_argument("--env-file", default="/opt/rag-system/shared/.env.prod")
     parser.add_argument("--upstream", default="127.0.0.1:5182")
+    parser.add_argument(
+        "--refresh-token",
+        action="store_true",
+        help="replace only the RAG /rag-api/ Authorization header from --env-file",
+    )
     args = parser.parse_args()
 
     config = Path(args.config)
@@ -75,13 +131,13 @@ def main() -> int:
         raise RuntimeError("RAG_SINGLE_TENANT_TOKEN has an unsafe nginx header format")
 
     original = config.read_text(encoding="utf-8")
-    existing_locations = {
-        "root": count_location(original, "=", "/rag-system"),
-        "direct_api": count_location(original, "^~", "/rag-system/api/"),
-        "page": count_location(original, "^~", "/rag-system/"),
-        "liveness": count_location(original, "=", "/rag-api/health/live"),
-        "api": count_location(original, "^~", "/rag-api/"),
-    }
+    if args.refresh_token:
+        backup = refresh_api_token(config, original, token)
+        print(f"refreshed={config}")
+        print(f"backup={backup}")
+        return 0
+
+    existing_locations = expected_locations(original)
     if any(existing_locations.values()):
         found = ", ".join(
             "{}={}".format(name, count)
@@ -153,10 +209,7 @@ def main() -> int:
 '''
     text = original[:root_begin] + rag_locations + original[root_begin:]
 
-    timestamp = dt.datetime.now().strftime("%Y%m%d%H%M%S")
-    backup = config.with_name(f"{config.name}.bak.rag-system.{timestamp}")
-    shutil.copy2(config, backup)
-    config.write_text(text, encoding="utf-8")
+    backup = write_with_backup(config, original, text)
     print(f"patched={config}")
     print(f"backup={backup}")
     return 0

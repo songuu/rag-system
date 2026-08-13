@@ -10,7 +10,7 @@
     "start": "node .next/standalone/server.js",
     "lint": "eslint",
     "sync:notion": "node scripts/sync-to-notion.mjs",
-    "test:model-runtime": "node src/lib/model-config.test.mjs && node src/lib/model-runtime-policy.test.mjs && node src/lib/maic/pipeline/page-order.test.mjs && node src/app/api/model-config/route.test.mjs",
+    "test:model-runtime": "node src/lib/model-config.test.mjs && node src/lib/model-runtime-policy.test.mjs && node src/lib/maic/pipeline/page-order.test.mjs && node src/app/api/model-config/route.test.mjs && node deploy/songuu/run-rag-system.test.mjs && node deploy/songuu/manage-rag-system-pm2.test.mjs",
     "rag:eval": "node scripts/run-rag-eval.mjs",
     "rag:eval:validate": "node scripts/run-rag-eval.mjs --validate-only",
     "rag:eval:e1b": "node scripts/run-rag-eval.mjs --fixture src/lib/rag/eval/fixtures/e1b-canonical-v2.json --target fixture-hash-dense-v2 --gate e1b",

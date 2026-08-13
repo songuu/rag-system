@@ -165,13 +165,13 @@ export function validateAskInput(
     raw.llmModel,
     'llmModel',
     env.RAG_ALLOWED_LLM_MODELS,
-    env.OLLAMA_LLM_MODEL || env.OPENAI_LLM_MODEL || 'llama3.1'
+    resolveRuntimeLlmModel(env)
   );
   const embeddingModel = validatedModel(
     raw.embeddingModel,
     'embeddingModel',
     env.RAG_ALLOWED_EMBEDDING_MODELS,
-    env.EMBEDDING_MODEL || env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text'
+    resolveRuntimeEmbeddingModel(env)
   );
 
   return {
@@ -222,8 +222,88 @@ export function validateEmbeddingModelSelection(
     value,
     'embeddingModel',
     env.RAG_ALLOWED_EMBEDDING_MODELS,
-    env.EMBEDDING_MODEL || env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text'
+    resolveRuntimeEmbeddingModel(env)
   );
+}
+
+/**
+ * Resolve the model the server will actually construct when an ask request
+ * omits llmModel. Keeping this next to request validation prevents the
+ * client-facing fallback from silently drifting away from ModelFactory.
+ */
+export function resolveRuntimeLlmModel(env: NodeJS.ProcessEnv = process.env): string {
+  switch (env.MODEL_PROVIDER) {
+    case 'openai':
+      return env.OPENAI_LLM_MODEL || 'gpt-4o-mini';
+    case 'custom':
+      return env.CUSTOM_LLM_MODEL || 'default';
+    case 'openrouter':
+      return env.OPENROUTER_LLM_MODEL || 'deepseek/deepseek-v4-flash';
+    case 'lemonade':
+      return env.LEMONADE_LLM_MODEL || 'Gemma-4-26B-A4B-it-GGUF';
+    case 'azure':
+      return env.AZURE_OPENAI_LLM_DEPLOYMENT || '';
+    case 'ollama':
+    default:
+      return env.OLLAMA_LLM_MODEL || 'llama3.1';
+  }
+}
+
+/**
+ * Resolve the embedding model selected by EmbeddingFactory. EMBEDDING_MODEL
+ * used to be a request-only fallback, but it is not consumed by the runtime
+ * provider configuration and would allow uploads to validate one model while
+ * indexing with another.
+ */
+export function resolveRuntimeEmbeddingModel(env: NodeJS.ProcessEnv = process.env): string {
+  const provider = env.EMBEDDING_PROVIDER || (env.SILICONFLOW_API_KEY ? 'siliconflow' : 'ollama');
+
+  switch (provider) {
+    case 'siliconflow':
+      return env.SILICONFLOW_EMBEDDING_MODEL || 'BAAI/bge-m3';
+    case 'openai':
+      return env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+    case 'custom':
+      return env.CUSTOM_EMBEDDING_MODEL || 'default';
+    case 'ollama':
+    default:
+      return env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text';
+  }
+}
+
+export interface RuntimeModelAllowlistValidation {
+  valid: boolean;
+  errors: string[];
+}
+
+/**
+ * Checks configuration coherence without weakening request-time enforcement.
+ * A blank allowlist remains an explicit operator choice; when an allowlist is
+ * configured, the active provider model must be an exact member of it.
+ */
+export function validateRuntimeModelAllowlistCoherence(
+  env: NodeJS.ProcessEnv = process.env
+): RuntimeModelAllowlistValidation {
+  const errors: string[] = [];
+  const llmModel = resolveRuntimeLlmModel(env);
+  const embeddingModel = resolveRuntimeEmbeddingModel(env);
+
+  appendAllowlistCoherenceError(
+    errors,
+    'LLM',
+    llmModel,
+    'RAG_ALLOWED_LLM_MODELS',
+    env.RAG_ALLOWED_LLM_MODELS
+  );
+  appendAllowlistCoherenceError(
+    errors,
+    'Embedding',
+    embeddingModel,
+    'RAG_ALLOWED_EMBEDDING_MODELS',
+    env.RAG_ALLOWED_EMBEDDING_MODELS
+  );
+
+  return { valid: errors.length === 0, errors };
 }
 
 export function validateBatchItems(value: unknown): Array<Record<string, unknown>> {
@@ -371,14 +451,30 @@ function validatedModel(
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/+-]*$/.test(model)) {
     fail('INVALID_MODEL_ID', `${field} contains unsupported characters.`);
   }
-  const allowlist = configuredAllowlist
-    ?.split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const allowlist = parseModelAllowlist(configuredAllowlist);
   if (allowlist?.length && !allowlist.includes(model)) {
     fail('MODEL_NOT_ALLOWED', `${field} is not allowed by server configuration.`, 403);
   }
   return model;
+}
+
+function appendAllowlistCoherenceError(
+  errors: string[],
+  label: string,
+  model: string,
+  environmentVariable: string,
+  configuredAllowlist: string | undefined
+): void {
+  const allowlist = parseModelAllowlist(configuredAllowlist);
+  if (!model || !allowlist?.length || allowlist.includes(model)) return;
+  errors.push(`Active ${label} model "${model}" is not in ${environmentVariable}.`);
+}
+
+function parseModelAllowlist(configuredAllowlist: string | undefined): string[] | undefined {
+  return configuredAllowlist
+    ?.split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

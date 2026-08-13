@@ -26,6 +26,9 @@ const {
   validateEmbeddingModelSelection,
   validateQueryText,
   validateUploadedFiles,
+  resolveRuntimeEmbeddingModel,
+  resolveRuntimeLlmModel,
+  validateRuntimeModelAllowlistCoherence,
 } = await import('./request-validation.ts');
 
 test('readJsonObjectWithLimit parses a bounded JSON object', async () => {
@@ -138,10 +141,79 @@ test('validateAskInput applies configured model allowlists before provider creat
   );
 });
 
+test('provider-aware request defaults match active LLM and Embedding providers', () => {
+  const llmModels = [
+    [{ MODEL_PROVIDER: 'ollama', OLLAMA_LLM_MODEL: 'ollama-active' }, 'ollama-active'],
+    [{ MODEL_PROVIDER: 'openai', OPENAI_LLM_MODEL: 'openai-active' }, 'openai-active'],
+    [{ MODEL_PROVIDER: 'custom', CUSTOM_LLM_MODEL: 'custom-active' }, 'custom-active'],
+    [{ MODEL_PROVIDER: 'openrouter', OPENROUTER_LLM_MODEL: 'router-active' }, 'router-active'],
+    [{ MODEL_PROVIDER: 'lemonade', LEMONADE_LLM_MODEL: 'lemonade-active' }, 'lemonade-active'],
+    [{ MODEL_PROVIDER: 'azure', AZURE_OPENAI_LLM_DEPLOYMENT: 'azure-deployment' }, 'azure-deployment'],
+  ];
+  for (const [env, expected] of llmModels) {
+    assert.equal(resolveRuntimeLlmModel(env), expected);
+  }
+
+  const embeddingModels = [
+    [{ EMBEDDING_PROVIDER: 'ollama', OLLAMA_EMBEDDING_MODEL: 'ollama-embed' }, 'ollama-embed'],
+    [{ EMBEDDING_PROVIDER: 'siliconflow', SILICONFLOW_EMBEDDING_MODEL: 'BAAI/bge-m3' }, 'BAAI/bge-m3'],
+    [{ EMBEDDING_PROVIDER: 'openai', OPENAI_EMBEDDING_MODEL: 'openai-embed' }, 'openai-embed'],
+    [{ EMBEDDING_PROVIDER: 'custom', CUSTOM_EMBEDDING_MODEL: 'custom-embed' }, 'custom-embed'],
+  ];
+  for (const [env, expected] of embeddingModels) {
+    assert.equal(resolveRuntimeEmbeddingModel(env), expected);
+  }
+});
+
+test('validateAskInput defaults to the active custom and SiliconFlow models without relaxing allowlists', () => {
+  const env = {
+    MODEL_PROVIDER: 'custom',
+    CUSTOM_LLM_MODEL: 'deepseek-v4-flash',
+    EMBEDDING_PROVIDER: 'siliconflow',
+    SILICONFLOW_EMBEDDING_MODEL: 'BAAI/bge-m3',
+    RAG_ALLOWED_LLM_MODELS: 'deepseek-v4-flash',
+    RAG_ALLOWED_EMBEDDING_MODELS: 'BAAI/bge-m3',
+  };
+
+  const input = validateAskInput({ question: 'q' }, env);
+  assert.equal(input.llmModel, 'deepseek-v4-flash');
+  assert.equal(input.embeddingModel, 'BAAI/bge-m3');
+  assert.equal(validateEmbeddingModelSelection(undefined, env), 'BAAI/bge-m3');
+  assert.throws(
+    () => validateAskInput({ question: 'q', llmModel: 'llama3.1' }, env),
+    match('MODEL_NOT_ALLOWED', 403)
+  );
+  assert.throws(
+    () => validateEmbeddingModelSelection('nomic-embed-text', env),
+    match('MODEL_NOT_ALLOWED', 403)
+  );
+});
+
 test('validateEmbeddingModelSelection applies the same server allowlist to ingestion', () => {
-  const env = { RAG_ALLOWED_EMBEDDING_MODELS: 'embed-a', EMBEDDING_MODEL: 'embed-a' };
+  const env = {
+    EMBEDDING_PROVIDER: 'ollama',
+    RAG_ALLOWED_EMBEDDING_MODELS: 'embed-a',
+    OLLAMA_EMBEDDING_MODEL: 'embed-a',
+  };
   assert.equal(validateEmbeddingModelSelection(undefined, env), 'embed-a');
   assert.throws(() => validateEmbeddingModelSelection('embed-b', env), match('MODEL_NOT_ALLOWED', 403));
+});
+
+test('runtime model allowlist coherence reports stale configured allowlists without adding models', () => {
+  const validation = validateRuntimeModelAllowlistCoherence({
+    MODEL_PROVIDER: 'custom',
+    CUSTOM_LLM_MODEL: 'deepseek-v4-flash',
+    EMBEDDING_PROVIDER: 'siliconflow',
+    SILICONFLOW_EMBEDDING_MODEL: 'BAAI/bge-m3',
+    RAG_ALLOWED_LLM_MODELS: 'llama3.1',
+    RAG_ALLOWED_EMBEDDING_MODELS: 'nomic-embed-text',
+  });
+
+  assert.equal(validation.valid, false);
+  assert.deepEqual(validation.errors, [
+    'Active LLM model "deepseek-v4-flash" is not in RAG_ALLOWED_LLM_MODELS.',
+    'Active Embedding model "BAAI/bge-m3" is not in RAG_ALLOWED_EMBEDDING_MODELS.',
+  ]);
 });
 
 test('validateQueryText bounds direct vector search queries', () => {

@@ -47,6 +47,7 @@ rsync -a \
   --exclude 'node_modules/' \
   --exclude '.env' \
   --exclude '.env.local' \
+  --exclude '.env.prod' \
   --exclude '.env.production' \
   "$SOURCE_DIR/" "$SOURCE_COPY/"
 

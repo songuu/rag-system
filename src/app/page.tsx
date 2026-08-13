@@ -8,7 +8,6 @@ import QueryAnalysis from '@/components/QueryAnalysis';
 import QuestionSelector from '@/components/QuestionSelector';
 import ParameterControls from '@/components/ParameterControls';
 import FileUpload from '@/components/FileUpload';
-import FileList from '@/components/FileList';
 import RealtimeMonitoring from '@/components/RealtimeMonitoring';
 import RetrievalDetailsPanel from '@/components/RetrievalDetailsPanel';
 import SystemInfo from '@/components/SystemInfo';
@@ -33,12 +32,6 @@ interface Message {
   storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
-}
-
-interface FileInfo {
-  name: string;
-  size: number;
-  modified: string;
 }
 
 interface Toast {
@@ -96,7 +89,6 @@ export default function HomePage() {
   const [docCount, setDocCount] = useState(0);
   const [embeddingDim, setEmbeddingDim] = useState(0);
   const [systemStatus, setSystemStatus] = useState('检查中...');
-  const [files, setFiles] = useState<FileInfo[]>([]);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [vectorizationProgress, setVectorizationProgress] = useState(0);
@@ -114,7 +106,9 @@ export default function HomePage() {
   const [showIntentDistillation, setShowIntentDistillation] = useState(false);
 
   // Milvus 相关状态
-  const [storageBackend, setStorageBackend] = useState<'memory' | 'milvus'>('memory');
+  // Production requests are scoped to a tenant/corpus and therefore require
+  // the canonical Milvus retrieval path. The old in-memory route is local-only.
+  const [storageBackend] = useState<'memory' | 'milvus'>('milvus');
   const [milvusConnected, setMilvusConnected] = useState(false);
   const [milvusStats, setMilvusStats] = useState<any>(null);
 
@@ -188,91 +182,36 @@ export default function HomePage() {
   };
 
   // 检查 Milvus 状态
-  const checkMilvusStatus = useCallback(async () => {
+  const checkMilvusStatus = useCallback(async (): Promise<boolean> => {
     try {
       const response = await fetch('/rag-api/milvus?action=status');
       const data = await response.json();
       if (data.success) {
-        setMilvusConnected(data.connected);
+        const connected = Boolean(data.connected);
+        setMilvusConnected(connected);
         setMilvusStats(data.stats);
+        return connected;
       } else {
         setMilvusConnected(false);
+        return false;
       }
     } catch (error) {
       setMilvusConnected(false);
+      return false;
     }
   }, []);
-
-  // 切换存储后端
-  const handleStorageBackendChange = async (backend: 'memory' | 'milvus') => {
-    if (backend === 'milvus' && !milvusConnected) {
-      showToast('Milvus 未连接，请先确保 Milvus 服务正常运行', 'warning');
-      return;
-    }
-
-    setStorageBackend(backend);
-    showToast(`已切换到 ${backend === 'milvus' ? 'Milvus 向量数据库' : '内存存储'}`, 'success');
-
-    if (backend === 'milvus') {
-      await checkMilvusStatus();
-
-      // 检查是否需要同步
-      try {
-        const syncCheckRes = await fetch('/rag-api/milvus/sync');
-        const syncCheck = await syncCheckRes.json();
-
-        if (syncCheck.success && syncCheck.needsSync) {
-          // Milvus 为空但有可同步的数据
-          if (syncCheck.memory?.documentCount > 0) {
-            showToast(`检测到 ${syncCheck.memory.documentCount} 个内存文档，可在可视化面板中同步到 Milvus`, 'info');
-          } else if (syncCheck.uploads?.count > 0) {
-            showToast(`检测到 ${syncCheck.uploads.count} 个上传文件，可在可视化面板中同步到 Milvus`, 'info');
-          }
-        }
-      } catch (e) {
-        console.error('Sync check error:', e);
-      }
-    }
-  };
-
-  // 加载文件列表
-  const loadFilesList = async () => {
-    try {
-      const response = await fetch('/rag-api/files');
-      const data = await response.json();
-      if (data.success) {
-        setFiles(data.files || []);
-      }
-    } catch (error) {
-      console.error('加载文件列表失败:', error);
-    }
-  };
-
-  // 删除文件
-  const handleDeleteFile = async (filename: string) => {
-    if (!confirm(`确定要删除文件 "${filename}" 吗？`)) return;
-
-    try {
-      const response = await fetch(`/rag-api/files/${encodeURIComponent(filename)}`, {
-        method: 'DELETE'
-      });
-      const data = await response.json();
-      if (data.success) {
-        showToast('文件删除成功', 'success');
-        loadFilesList();
-        checkSystemHealth();
-      } else {
-        showToast(data.error || '删除失败', 'error');
-      }
-    } catch (error) {
-      showToast('删除文件时发生错误', 'error');
-    }
-  };
 
   // 文件上传
   const handleFileUpload = async () => {
     if (selectedFiles.length === 0) {
       showToast('请先选择文件', 'warning');
+      return;
+    }
+
+    // Canonical ingestion requires Milvus. Avoid submitting a file when the
+    // dependency check has already established that the scoped corpus is down.
+    if (!milvusConnected) {
+      showToast('知识库暂不可用：向量服务未连接，恢复后即可继续上传。', 'error');
       return;
     }
 
@@ -282,44 +221,36 @@ export default function HomePage() {
       selectedFiles.forEach(file => {
         formData.append('files', file);
       });
+      formData.append('chunkSize', '500');
+      formData.append('chunkOverlap', '50');
+      formData.append('embeddingModel', embeddingModel);
 
-      const response = await fetch('/rag-api/upload', {
+      const response = await fetch('/rag-api/pipeline', {
         method: 'POST',
         body: formData
       });
 
       const data = await response.json();
-      if (data.success) {
-        showToast(`成功上传 ${data.results.length} 个文件`, 'success');
-        setSelectedFiles([]);
-        loadFilesList();
-        checkSystemHealth();
+      if (response.ok && data.success) {
+        const successful = Number(data.successful || 0);
+        const failed = Number(data.failed || 0);
+        const totalChunks = Number(data.totalChunks || 0);
 
-        // 如果当前是 Milvus 后端，自动同步到 Milvus
-        if (storageBackend === 'milvus' && milvusConnected) {
-          showToast('正在同步到 Milvus...', 'info');
-          try {
-            const syncResponse = await fetch('/rag-api/milvus/sync', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                action: 'sync-from-uploads',
-                embeddingModel,
-              }),
-            });
-            const syncData = await syncResponse.json();
-            if (syncData.success) {
-              showToast(`已同步到 Milvus: ${syncData.totalChunks} 个文档块`, 'success');
-              checkMilvusStatus();
-            } else {
-              showToast(`Milvus 同步失败: ${syncData.error}`, 'warning');
-            }
-          } catch (syncError) {
-            showToast('Milvus 同步失败', 'warning');
-          }
+        if (successful > 0) {
+          showToast(`已写入知识库：${successful} 个文件，${totalChunks} 个文档块`, 'success');
         }
+        if (failed > 0) {
+          showToast(`${failed} 个文件未能写入知识库，请检查格式、模型和向量服务后重试`, 'warning');
+        }
+        if (successful === 0) {
+          showToast('所选文件未能写入知识库，请检查后重试', 'error');
+          return;
+        }
+
+        setSelectedFiles([]);
+        await Promise.all([checkSystemHealth(), checkMilvusStatus()]);
       } else {
-        showToast(data.error || '上传失败', 'error');
+        showToast(data.error || '文件写入知识库失败', 'error');
       }
     } catch (error) {
       showToast('上传文件时发生错误', 'error');
@@ -328,67 +259,18 @@ export default function HomePage() {
     }
   };
 
-  // 重新初始化
-  const handleReinitialize = async () => {
-    if (!confirm('确定要重新初始化系统吗？这将重新加载所有文档。')) return;
-
-    try {
-      const response = await fetch('/rag-api/reinitialize', { method: 'POST' });
-      const data = await response.json();
-      if (data.success) {
-        showToast('系统重新初始化成功', 'success');
-        checkSystemHealth();
-        loadFilesList();
-      } else {
-        showToast(data.error || '重新初始化失败', 'error');
-      }
-    } catch (error) {
-      showToast('重新初始化时发生错误', 'error');
-    }
-  };
-
   // 处理模型切换
   const handleModelChange = async (newLlmModel: string, newEmbeddingModel: string) => {
-    const hasChanged = newLlmModel !== llmModel || newEmbeddingModel !== embeddingModel;
-
-    if (!hasChanged) {
+    if (newLlmModel === llmModel && newEmbeddingModel === embeddingModel) {
       showToast('模型未做任何更改', 'info');
       return;
     }
 
-    try {
-      showToast('正在切换模型...', 'info');
-      setSystemStatus('重新初始化中...');
-
-      // 更新模型状态
-      setLlmModel(newLlmModel);
-      setEmbeddingModel(newEmbeddingModel);
-
-      // 调用重新初始化 API（使用新模型）
-      const response = await fetch('/rag-api/reinitialize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          llmModel: newLlmModel,
-          embeddingModel: newEmbeddingModel
-        })
-      });
-
-      const data = await response.json();
-
-      if (data.success) {
-        showToast(`模型切换成功: ${newLlmModel.split(':')[0]}`, 'success');
-        checkSystemHealth();
-        loadFilesList();
-      } else {
-        showToast(data.error || '模型切换失败', 'error');
-        setSystemStatus('错误');
-      }
-    } catch (error) {
-      console.error('模型切换错误:', error);
-      showToast('模型切换时发生错误', 'error');
-      setSystemStatus('错误');
-    }
+    // Production model selection is server-owned and allowlisted. Calling the
+    // legacy reinitialize route here would be rejected and could leave the UI
+    // claiming a model change that never reached the runtime.
+    showToast('生产模型由服务器环境配置和白名单管理，请在部署配置中变更后刷新状态。', 'info');
+    await checkSystemHealth();
   };
 
   // Toast 通知
@@ -410,15 +292,6 @@ export default function HomePage() {
       highlighted = highlighted.replace(regex, '<mark class="bg-yellow-200">$1</mark>');
     });
     return highlighted.length > 200 ? highlighted.substring(0, 200) + '...' : highlighted;
-  };
-
-  // 格式化文件大小
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   // 保存消息到 IndexedDB
@@ -757,6 +630,13 @@ export default function HomePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
+
+    // Every production ask uses the scoped Milvus retrieval lane. Failing
+    // locally gives the user an actionable status instead of a generic 500.
+    if (!milvusConnected) {
+      showToast('知识库暂不可用：向量服务未连接，恢复后即可继续提问。', 'error');
+      return;
+    }
 
     const userMessageId = Date.now().toString();
     const userMessage: Message = {
@@ -1106,7 +986,6 @@ export default function HomePage() {
   // 初始化时加载数据
   useEffect(() => {
     checkSystemHealth();
-    loadFilesList();
     loadLatestConversation();
     checkMilvusStatus();
   }, [checkMilvusStatus]);
@@ -1169,34 +1048,20 @@ export default function HomePage() {
       <nav className="bg-white shadow-sm border-b">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-14">
-            {/* 左侧: Logo + 存储切换 */}
+            {/* 左侧: Logo + 受保护的检索存储 */}
             <div className="flex items-center gap-6">
               <div className="flex items-center">
                 <i className="fas fa-brain text-blue-600 text-xl mr-2"></i>
                 <h1 className="text-lg font-semibold text-gray-900">RAG 知识库</h1>
               </div>
 
-              {/* 存储后端切换 - 更紧凑 */}
-              <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                <button
-                  onClick={() => handleStorageBackendChange('memory')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${storageBackend === 'memory'
-                    ? 'bg-white text-blue-600 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                  内存
-                </button>
-                <button
-                  onClick={() => handleStorageBackendChange('milvus')}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1 ${storageBackend === 'milvus'
-                    ? 'bg-white text-purple-600 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                  Milvus
-                  <span className={`w-1.5 h-1.5 rounded-full ${milvusConnected ? 'bg-green-400' : 'bg-red-400'}`}></span>
-                </button>
+              <div
+                className="flex items-center gap-1.5 rounded-lg bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700"
+                title="生产环境使用受认证的 Milvus 语料库"
+              >
+                <i className="fas fa-database"></i>
+                Milvus
+                <span className={`w-1.5 h-1.5 rounded-full ${milvusConnected ? 'bg-green-400' : 'bg-red-400'}`}></span>
               </div>
 
               {/* RAG 模式开关 - 仅在 Milvus 模式下显示 */}
@@ -1689,16 +1554,38 @@ export default function HomePage() {
             <FileUpload
               selectedFiles={selectedFiles}
               isUploading={isUploading}
+              canUpload={milvusConnected}
               onFileSelect={setSelectedFiles}
               onUpload={handleFileUpload}
             />
 
-            <FileList
-              files={files}
-              onRefresh={loadFilesList}
-              onDelete={handleDeleteFile}
-              formatFileSize={formatFileSize}
-            />
+            <section className="rounded-lg border bg-white shadow-sm">
+              <div className="flex items-center justify-between border-b px-6 py-4">
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900">受保护的知识库</h3>
+                  <p className="mt-1 text-sm text-gray-500">文件会直接写入当前 Milvus 语料库</p>
+                </div>
+                <button
+                  onClick={() => {
+                    void Promise.all([checkSystemHealth(), checkMilvusStatus()]);
+                  }}
+                  className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                  title="刷新知识库状态"
+                >
+                  <i className="fas fa-sync-alt"></i>
+                </button>
+              </div>
+              <div className="space-y-2 p-6 text-sm text-gray-600">
+                <p>
+                  {milvusConnected
+                    ? `当前语料库包含 ${milvusStats?.rowCount || 0} 个向量文档块。`
+                    : '正在检查 Milvus 连接状态；连接恢复后可继续上传和提问。'}
+                </p>
+                <p className="text-xs text-gray-500">
+                  为保证租户与语料库隔离，生产环境不再展示旧版原始文件清单，也不提供不受范围保护的删除或全量重建操作。
+                </p>
+              </div>
+            </section>
 
             <RealtimeMonitoring
               showVectorization={showVectorization}
@@ -1725,7 +1612,9 @@ export default function HomePage() {
               llmModel={llmModel}
               embeddingModel={embeddingModel}
               modelConfig={modelConfig}
-              onReinitialize={handleReinitialize}
+              onRefresh={() => {
+                void Promise.all([checkSystemHealth(), checkMilvusStatus()]);
+              }}
               onModelChange={handleModelChange}
             />
 

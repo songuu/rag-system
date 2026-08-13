@@ -5,6 +5,7 @@ import React, { useRef, useState, useEffect } from 'react';
 interface FileUploadProps {
   selectedFiles: File[];
   isUploading: boolean;
+  canUpload: boolean;
   onFileSelect: (files: File[]) => void;
   onUpload: () => void;
 }
@@ -13,7 +14,7 @@ interface FileUploadProps {
 const SUPPORTED_EXTENSIONS = [
   '.txt', '.md', '.markdown', '.pdf', 
   '.xlsx', '.xls', '.csv', 
-  '.docx', '.doc', '.json'
+  '.docx', '.json'
 ];
 
 // 文件类型图标映射
@@ -52,7 +53,7 @@ function isSupportedFile(filename: string): boolean {
   return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
-export default function FileUpload({ selectedFiles, isUploading, onFileSelect, onUpload }: FileUploadProps) {
+export default function FileUpload({ selectedFiles, isUploading, canUpload, onFileSelect, onUpload }: FileUploadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [invalidFiles, setInvalidFiles] = useState<string[]>([]);
@@ -138,7 +139,7 @@ export default function FileUpload({ selectedFiles, isUploading, onFileSelect, o
     <div className="bg-white rounded-lg shadow-sm border">
       <div className="border-b px-6 py-4">
         <h3 className="text-lg font-medium text-gray-900">文档管理</h3>
-        <p className="text-sm text-gray-500 mt-1">上传文档到知识库</p>
+        <p className="text-sm text-gray-500 mt-1">上传后直接写入当前受保护的知识库</p>
       </div>
       
       <div className="p-6">
@@ -262,9 +263,9 @@ export default function FileUpload({ selectedFiles, isUploading, onFileSelect, o
         {/* 上传按钮 */}
         <button 
           onClick={onUpload}
-          disabled={selectedFiles.length === 0 || isUploading}
+          disabled={selectedFiles.length === 0 || isUploading || !canUpload}
           className={`w-full px-4 py-3 rounded-lg font-medium transition-all duration-200 ${
-            selectedFiles.length === 0 || isUploading
+            selectedFiles.length === 0 || isUploading || !canUpload
               ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
               : 'bg-gradient-to-r from-green-500 to-green-600 text-white hover:from-green-600 hover:to-green-700 shadow-md hover:shadow-lg'
           }`}
@@ -281,6 +282,11 @@ export default function FileUpload({ selectedFiles, isUploading, onFileSelect, o
             </>
           )}
         </button>
+        {!canUpload && (
+          <p className="mt-2 text-xs text-amber-700" role="status">
+            向量服务暂未连接，恢复后可直接写入知识库。
+          </p>
+        )}
       </div>
     </div>
   );
