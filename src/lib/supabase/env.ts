@@ -1,10 +1,10 @@
 import {
   resolveRagVectorBackend,
   type RagVectorBackend,
-} from '@/lib/rag/vector-backend';
+} from '../rag/vector-backend';
 
 export type RagPersistenceBackend = 'local' | 'supabase' | 'dual-write';
-export type { RagVectorBackend } from '@/lib/rag/vector-backend';
+export type { RagVectorBackend } from '../rag/vector-backend';
 
 export interface SupabaseRuntimeConfig {
   url: string;
