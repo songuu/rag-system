@@ -46,6 +46,11 @@ import {
   toPublicMilvusConfig,
   toPublicServiceHealth,
 } from '@/lib/security/public-config';
+import {
+  isVectorBackendDisabled,
+  VECTOR_BACKEND_DISABLED_CODE,
+  VECTOR_BACKEND_DISABLED_MESSAGE,
+} from '@/lib/rag/vector-backend';
 
 export const runtime = 'nodejs';
 
@@ -80,6 +85,32 @@ const GLOBAL_MILVUS_ACTIONS = new Set<MilvusAction>([
   'rebuild-index',
   'update-config',
 ]);
+
+function vectorBackendDisabledResponse(requestId: string) {
+  return NextResponse.json({
+    success: false,
+    error: VECTOR_BACKEND_DISABLED_MESSAGE,
+    code: VECTOR_BACKEND_DISABLED_CODE,
+    requestId,
+  }, { status: 503 });
+}
+
+function vectorBackendDisabledStatusResponse() {
+  return NextResponse.json({
+    success: true,
+    connected: false,
+    disabled: true,
+    health: {
+      healthy: false,
+      status: 'disabled',
+    },
+    stats: null,
+    config: {
+      provider: 'disabled',
+      configured: false,
+    },
+  });
+}
 
 type RawMilvusDocument = {
   id?: string;
@@ -157,6 +188,10 @@ export async function POST(request: NextRequest) {
       corpusId: securityContext.corpusId,
       enforceIsolation: securityContext.enforceIsolation,
     });
+
+    if (isVectorBackendDisabled()) {
+      return vectorBackendDisabledResponse(requestId);
+    }
 
     if (securityContext.enforceIsolation && GLOBAL_MILVUS_ACTIONS.has(milvusAction)) {
       throw new RequestValidationError(
@@ -649,6 +684,11 @@ export async function GET(request: NextRequest) {
       requestedCorpusId: searchParams.get('corpusId') || undefined,
       requestIdFactory: () => requestId,
     });
+    if (isVectorBackendDisabled()) {
+      return action === 'status'
+        ? vectorBackendDisabledStatusResponse()
+        : vectorBackendDisabledResponse(requestId);
+    }
     switch (action) {
       case 'status': {
         const defaultConfig = getDefaultMilvusConfig();

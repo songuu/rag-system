@@ -258,6 +258,7 @@ const environmentKeys = [
   'RAG_DURABLE_WORKFLOW_LEASE_MS',
   'RAG_DURABLE_WORKFLOW_MAX_THREADS',
   'RAG_DURABLE_WORKFLOW_RESULT_MAX_ARTIFACTS',
+  'RAG_VECTOR_BACKEND',
 ];
 const originalEnvironment = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
 Object.assign(process.env, {
@@ -322,6 +323,27 @@ test('POST executes authenticated agentic policy through Kernel and preserves fa
   assert.equal(querySignals.length, 1);
   assert.equal(querySignals[0] instanceof AbortSignal, true);
   assert.equal(querySignals[0].aborted, false);
+});
+
+test('POST fails closed before vector or model work when the vector backend is disabled', async () => {
+  process.env.RAG_VECTOR_BACKEND = 'disabled';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+
+  try {
+    const response = await POST(milvusAskRequest('maintenance-mode query'));
+    const body = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'VECTOR_BACKEND_DISABLED');
+    assert.equal(getMilvusSignals().connect, 0);
+    assert.equal(getMilvusSignals().search, 0);
+    assert.equal(getModelSignals().embed, 0);
+    assert.equal(getModelSignals().generate, 0);
+  } finally {
+    delete process.env.RAG_VECTOR_BACKEND;
+  }
 });
 
 test('POST activates bounded ordered context before lane execution and skips dense search', async () => {

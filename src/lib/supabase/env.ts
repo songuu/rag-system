@@ -1,5 +1,10 @@
+import {
+  resolveRagVectorBackend,
+  type RagVectorBackend,
+} from '@/lib/rag/vector-backend';
+
 export type RagPersistenceBackend = 'local' | 'supabase' | 'dual-write';
-export type RagVectorBackend = 'milvus' | 'zilliz' | 'supabase_pgvector' | 'hybrid';
+export type { RagVectorBackend } from '@/lib/rag/vector-backend';
 
 export interface SupabaseRuntimeConfig {
   url: string;
@@ -38,22 +43,6 @@ function parsePersistenceBackend(value: string): RagPersistenceBackend {
   }
 }
 
-function parseVectorBackend(value: string): RagVectorBackend {
-  switch (value.toLowerCase()) {
-    case 'zilliz':
-      return 'zilliz';
-    case 'supabase_pgvector':
-    case 'supabase-pgvector':
-    case 'pgvector':
-      return 'supabase_pgvector';
-    case 'hybrid':
-      return 'hybrid';
-    case 'milvus':
-    default:
-      return 'milvus';
-  }
-}
-
 export function getSupabaseRuntimeConfig(): SupabaseRuntimeConfig {
   return {
     url: readEnv('NEXT_PUBLIC_SUPABASE_URL'),
@@ -66,7 +55,7 @@ export function getSupabaseRuntimeConfig(): SupabaseRuntimeConfig {
     parsedBucket: readEnv('SUPABASE_STORAGE_PARSED_BUCKET') || 'rag-parsed-text',
     realtimeEnabled: parseBoolean(readEnv('SUPABASE_REALTIME_ENABLED'), true),
     persistenceBackend: parsePersistenceBackend(readEnv('RAG_PERSISTENCE_BACKEND')),
-    vectorBackend: parseVectorBackend(readEnv('RAG_VECTOR_BACKEND')),
+    vectorBackend: resolveRagVectorBackend(readEnv('RAG_VECTOR_BACKEND')),
   };
 }
 

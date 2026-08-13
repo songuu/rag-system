@@ -109,6 +109,7 @@ const environmentKeys = [
   'SUPABASE_DEFAULT_TENANT_ID',
   'SUPABASE_DEFAULT_CORPUS_ID',
   'RAG_PDF_VISUAL_MODE',
+  'RAG_VECTOR_BACKEND',
 ];
 const originalEnvironment = Object.fromEntries(
   environmentKeys.map(key => [key, process.env[key]])
@@ -179,6 +180,40 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   assert.equal(call.signalIsAbortSignal, true);
   assert.equal('tenantId' in body.results[0].pdfVisual, false);
   assert.equal('rootDir' in body.results[0].pdfVisual, false);
+});
+
+test('authenticated multipart ingest fails closed before pipeline construction when vectors are disabled', async () => {
+  process.env.RAG_VECTOR_BACKEND = 'disabled';
+  resetPipelineCalls();
+  const form = new FormData();
+  form.append(
+    'files',
+    new File([new TextEncoder().encode('%PDF-1.7 maintenance fixture')], 'maintenance.pdf', {
+      type: 'application/pdf',
+    })
+  );
+
+  try {
+    const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer pipeline-route-token',
+        'x-rag-corpus-id': 'corpus-a',
+        'x-request-id': 'pipeline-route-maintenance-test',
+        'content-length': '1024',
+      },
+      body: form,
+    }));
+    const body = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'VECTOR_BACKEND_DISABLED');
+    assert.equal(body.requestId, 'pipeline-route-maintenance-test');
+    assert.equal(getPipelineCalls().length, 0);
+  } finally {
+    delete process.env.RAG_VECTOR_BACKEND;
+  }
 });
 
 test('multipart ingest exposes a stable reconciliation-required failure', async t => {

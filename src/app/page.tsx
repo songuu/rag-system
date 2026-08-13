@@ -110,6 +110,7 @@ export default function HomePage() {
   // the canonical Milvus retrieval path. The old in-memory route is local-only.
   const [storageBackend] = useState<'memory' | 'milvus'>('milvus');
   const [milvusConnected, setMilvusConnected] = useState(false);
+  const [vectorBackendDisabled, setVectorBackendDisabled] = useState(false);
   const [milvusStats, setMilvusStats] = useState<any>(null);
 
   // Agentic RAG 相关状态
@@ -153,12 +154,18 @@ export default function HomePage() {
   }, []);
 
   // 检查系统健康状态
-  const checkSystemHealth = async () => {
+  const checkSystemHealth = useCallback(async (): Promise<boolean> => {
     try {
       const response = await fetch('/rag-api/health');
       const data = await response.json();
+      const disabled = data.vectorBackend?.disabled === true;
+      setVectorBackendDisabled(disabled);
+      if (disabled) {
+        setMilvusConnected(false);
+        setMilvusStats(null);
+      }
       if (data.success) {
-        setSystemStatus('运行中');
+        setSystemStatus(disabled ? '知识库维护中' : '运行中');
         setDocCount(data.ragSystem?.documentCount || 0);
         setEmbeddingDim(data.ragSystem?.embeddingDimension || 0);
       } else {
@@ -176,10 +183,13 @@ export default function HomePage() {
           setEmbeddingDim(data.modelConfig.embedding.dimension);
         }
       }
+      return disabled;
     } catch (error) {
       setSystemStatus('错误');
+      setVectorBackendDisabled(false);
+      return false;
     }
-  };
+  }, []);
 
   // 检查 Milvus 状态
   const checkMilvusStatus = useCallback(async (): Promise<boolean> => {
@@ -187,7 +197,9 @@ export default function HomePage() {
       const response = await fetch('/rag-api/milvus?action=status');
       const data = await response.json();
       if (data.success) {
-        const connected = Boolean(data.connected);
+        const disabled = data.disabled === true;
+        setVectorBackendDisabled(disabled);
+        const connected = !disabled && Boolean(data.connected);
         setMilvusConnected(connected);
         setMilvusStats(data.stats);
         return connected;
@@ -201,6 +213,11 @@ export default function HomePage() {
     }
   }, []);
 
+  const refreshRuntimeStatus = useCallback(async () => {
+    const disabled = await checkSystemHealth();
+    if (!disabled) await checkMilvusStatus();
+  }, [checkMilvusStatus, checkSystemHealth]);
+
   // 文件上传
   const handleFileUpload = async () => {
     if (selectedFiles.length === 0) {
@@ -210,6 +227,11 @@ export default function HomePage() {
 
     // Canonical ingestion requires Milvus. Avoid submitting a file when the
     // dependency check has already established that the scoped corpus is down.
+    if (vectorBackendDisabled) {
+      showToast('知识库维护中：向量检索已临时关闭，暂不支持上传。', 'info');
+      return;
+    }
+
     if (!milvusConnected) {
       showToast('知识库暂不可用：向量服务未连接，恢复后即可继续上传。', 'error');
       return;
@@ -248,7 +270,7 @@ export default function HomePage() {
         }
 
         setSelectedFiles([]);
-        await Promise.all([checkSystemHealth(), checkMilvusStatus()]);
+        await refreshRuntimeStatus();
       } else {
         showToast(data.error || '文件写入知识库失败', 'error');
       }
@@ -633,6 +655,11 @@ export default function HomePage() {
 
     // Every production ask uses the scoped Milvus retrieval lane. Failing
     // locally gives the user an actionable status instead of a generic 500.
+    if (vectorBackendDisabled) {
+      showToast('知识库维护中：向量检索已临时关闭，暂不支持知识库提问。', 'info');
+      return;
+    }
+
     if (!milvusConnected) {
       showToast('知识库暂不可用：向量服务未连接，恢复后即可继续提问。', 'error');
       return;
@@ -985,10 +1012,9 @@ export default function HomePage() {
 
   // 初始化时加载数据
   useEffect(() => {
-    checkSystemHealth();
+    void refreshRuntimeStatus();
     loadLatestConversation();
-    checkMilvusStatus();
-  }, [checkMilvusStatus]);
+  }, [refreshRuntimeStatus]);
 
   // 雷达图配置
   const getRadarChartOption = () => {
@@ -1056,16 +1082,26 @@ export default function HomePage() {
               </div>
 
               <div
-                className="flex items-center gap-1.5 rounded-lg bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700"
-                title="生产环境使用受认证的 Milvus 语料库"
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-medium ${
+                  vectorBackendDisabled
+                    ? 'bg-amber-50 text-amber-700'
+                    : 'bg-purple-50 text-purple-700'
+                }`}
+                title={vectorBackendDisabled
+                  ? '知识库向量检索已临时关闭'
+                  : '生产环境使用受认证的 Milvus 语料库'}
               >
-                <i className="fas fa-database"></i>
-                Milvus
-                <span className={`w-1.5 h-1.5 rounded-full ${milvusConnected ? 'bg-green-400' : 'bg-red-400'}`}></span>
+                <i className={`fas ${vectorBackendDisabled ? 'fa-pause-circle' : 'fa-database'}`}></i>
+                {vectorBackendDisabled ? '知识库维护' : 'Milvus'}
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  vectorBackendDisabled
+                    ? 'bg-amber-400'
+                    : milvusConnected ? 'bg-green-400' : 'bg-red-400'
+                }`}></span>
               </div>
 
               {/* RAG 模式开关 - 仅在 Milvus 模式下显示 */}
-              {storageBackend === 'milvus' && (
+              {storageBackend === 'milvus' && !vectorBackendDisabled && (
                 <div className="flex items-center gap-2">
                   {/* Agentic RAG 开关 */}
                   <button
@@ -1171,7 +1207,7 @@ export default function HomePage() {
                 <div className={`w-2 h-2 rounded-full mr-2 ${systemStatus === '运行中' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
                 <span className="text-xs text-gray-600">{systemStatus}</span>
               </div>
-              <button onClick={checkSystemHealth} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded" title="刷新">
+              <button onClick={() => { void refreshRuntimeStatus(); }} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded" title="刷新">
                 <i className="fas fa-sync-alt text-sm"></i>
               </button>
             </div>
@@ -1181,7 +1217,7 @@ export default function HomePage() {
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Milvus 查询可视化 - 当选择 Milvus 后端时显示 */}
-        {storageBackend === 'milvus' && !useAgenticRAG && !useAdaptiveEntityRAG && (
+        {storageBackend === 'milvus' && !vectorBackendDisabled && !useAgenticRAG && !useAdaptiveEntityRAG && (
           <MilvusQueryVisualizer
             embeddingModel={embeddingModel}
             defaultExpanded={false}
@@ -1189,7 +1225,7 @@ export default function HomePage() {
         )}
 
         {/* Agentic RAG 工作流面板 - 当启用 Agentic RAG 时显示 */}
-        {storageBackend === 'milvus' && useAgenticRAG && showAgenticPanel && (
+        {storageBackend === 'milvus' && !vectorBackendDisabled && useAgenticRAG && showAgenticPanel && (
           <div className="mb-6 space-y-4">
             <AgenticWorkflowPanel
               workflow={agenticWorkflow}
@@ -1217,7 +1253,7 @@ export default function HomePage() {
         )}
 
         {/* 自适应实体路由 RAG 工作流面板 - 当启用自适应实体 RAG 时显示 */}
-        {storageBackend === 'milvus' && useAdaptiveEntityRAG && showAdaptiveEntityPanel && (
+        {storageBackend === 'milvus' && !vectorBackendDisabled && useAdaptiveEntityRAG && showAdaptiveEntityPanel && (
           <div className="mb-6">
             <AdaptiveEntityWorkflowPanel
               workflow={adaptiveEntityWorkflow}
@@ -1247,8 +1283,12 @@ export default function HomePage() {
               <div className="h-96 overflow-y-auto p-6 space-y-4">
                 {messages.length === 0 ? (
                   <div className="text-center text-gray-500 text-sm">
-                    <i className="fas fa-comments text-2xl mb-2"></i>
-                    <p>开始提问吧！我会根据已上传的文档来回答您的问题。</p>
+                    <i className={`fas ${vectorBackendDisabled ? 'fa-pause-circle text-amber-500' : 'fa-comments'} text-2xl mb-2`}></i>
+                    <p>
+                      {vectorBackendDisabled
+                        ? '知识库维护中：向量检索已临时关闭，恢复后可继续上传和提问。'
+                        : '开始提问吧！我会根据已上传的文档来回答您的问题。'}
+                    </p>
                   </div>
                 ) : (
                   messages.map((message) => (
@@ -1278,7 +1318,7 @@ export default function HomePage() {
                 )}
 
                 {/* 推荐问题（猜你想问）- 只显示通过校验的最终结果 */}
-                {enableSuggestions && !isLoading && !isSuggestionsLoading && 
+                {!vectorBackendDisabled && enableSuggestions && !isLoading && !isSuggestionsLoading &&
                   suggestedQuestions.filter(q => q.validated).length > 0 && (
                   <div className="mt-4 p-4 bg-gradient-to-r from-slate-800/80 to-slate-900/80 rounded-xl border border-slate-700/50">
                     <SuggestedQuestions
@@ -1295,18 +1335,26 @@ export default function HomePage() {
 
               {/* 输入区域 */}
               <div className="border-t p-6">
-                <ParameterControls
-                  topK={topK}
-                  threshold={threshold}
-                  llmModel={llmModel}
-                  embeddingModel={embeddingModel}
-                  onTopKChange={setTopK}
-                  onThresholdChange={setThreshold}
-                  onLLMModelChange={setLlmModel}
-                  onEmbeddingModelChange={setEmbeddingModel}
-                  showParams={showParams}
-                  onToggle={() => setShowParams(!showParams)}
-                />
+                {!vectorBackendDisabled && (
+                  <ParameterControls
+                    topK={topK}
+                    threshold={threshold}
+                    llmModel={llmModel}
+                    embeddingModel={embeddingModel}
+                    onTopKChange={setTopK}
+                    onThresholdChange={setThreshold}
+                    onLLMModelChange={setLlmModel}
+                    onEmbeddingModelChange={setEmbeddingModel}
+                    showParams={showParams}
+                    onToggle={() => setShowParams(!showParams)}
+                  />
+                )}
+
+                {vectorBackendDisabled && (
+                  <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">
+                    向量知识库正在维护，问答参数、上传和检索已临时暂停；模型与账户配置保持不变。
+                  </div>
+                )}
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div className="space-y-3">
@@ -1316,9 +1364,9 @@ export default function HomePage() {
                           type="text"
                           value={input}
                           onChange={(e) => setInput(e.target.value)}
-                          placeholder="请输入您的问题..."
+                          placeholder={vectorBackendDisabled ? '知识库维护中，暂不可提问' : '请输入您的问题...'}
                           className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          disabled={isLoading}
+                          disabled={isLoading || vectorBackendDisabled}
                           required
                         />
                       </div>
@@ -1328,8 +1376,9 @@ export default function HomePage() {
                         className={`px-4 py-2 rounded-lg transition-colors ${showIntentDistillation
                           ? 'bg-purple-600 text-white'
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
+                        }`}
                         title="意图蒸馏"
+                        disabled={vectorBackendDisabled}
                       >
                         <i className="fas fa-brain mr-2"></i>
                         🧠
@@ -1340,8 +1389,9 @@ export default function HomePage() {
                         className={`px-4 py-2 rounded-lg transition-colors ${enableSuggestions
                           ? 'bg-teal-600 text-white'
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
+                        }`}
                         title={enableSuggestions ? '关闭推荐问题' : '开启推荐问题'}
+                        disabled={vectorBackendDisabled}
                       >
                         💬
                       </button>
@@ -1352,15 +1402,16 @@ export default function HomePage() {
                           className={`px-4 py-2 rounded-lg transition-colors ${showExpansionWorkflow
                             ? 'bg-cyan-600 text-white'
                             : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                            }`}
+                          }`}
                           title={showExpansionWorkflow ? '隐藏思考过程' : '显示思考过程'}
+                          disabled={vectorBackendDisabled}
                         >
                           🔬
                         </button>
                       )}
                       <button
                         type="submit"
-                        disabled={isLoading || !input.trim()}
+                        disabled={isLoading || vectorBackendDisabled || !input.trim()}
                         className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <i className="fas fa-paper-plane mr-2"></i>
@@ -1369,7 +1420,7 @@ export default function HomePage() {
                     </div>
 
                     {/* 意图蒸馏面板 */}
-                    {showIntentDistillation && input.trim() && (
+                    {!vectorBackendDisabled && showIntentDistillation && input.trim() && (
                       <div className="bg-gradient-to-br from-purple-50 to-blue-50 border-2 border-purple-200 rounded-xl p-4">
                         <div className="flex items-center justify-between mb-3">
                           <h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2">
@@ -1440,7 +1491,7 @@ export default function HomePage() {
                     )}
 
                     {/* 猜你想问 - 思考过程可视化（每次都显示完整检索过程） */}
-                    {enableSuggestions && showExpansionWorkflow && (isSuggestionsLoading || suggestionAnchor || suggestedQuestions.length > 0) && (
+                    {!vectorBackendDisabled && enableSuggestions && showExpansionWorkflow && (isSuggestionsLoading || suggestionAnchor || suggestedQuestions.length > 0) && (
                       <div className="mt-4">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
@@ -1479,7 +1530,8 @@ export default function HomePage() {
           <div className="space-y-4">
 
             {/* 高级 RAG 模式快捷入口 */}
-            <div className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-xl border border-indigo-200 p-4">
+            {!vectorBackendDisabled && (
+              <div className="bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 rounded-xl border border-indigo-200 p-4">
               <h3 className="text-sm font-semibold text-gray-800 mb-3 flex items-center gap-2">
                 <span className="text-lg">🚀</span>
                 高级 RAG 模式
@@ -1549,12 +1601,16 @@ export default function HomePage() {
               <p className="text-[10px] text-gray-500 mt-3 text-center">
                 基于 LangGraph + Milvus 的智能检索增强生成
               </p>
-            </div>
+              </div>
+            )}
 
             <FileUpload
               selectedFiles={selectedFiles}
               isUploading={isUploading}
-              canUpload={milvusConnected}
+              canUpload={milvusConnected && !vectorBackendDisabled}
+              unavailableMessage={vectorBackendDisabled
+                ? '知识库维护中：向量检索已临时关闭，暂不支持上传。'
+                : undefined}
               onFileSelect={setSelectedFiles}
               onUpload={handleFileUpload}
             />
@@ -1563,12 +1619,12 @@ export default function HomePage() {
               <div className="flex items-center justify-between border-b px-6 py-4">
                 <div>
                   <h3 className="text-lg font-medium text-gray-900">受保护的知识库</h3>
-                  <p className="mt-1 text-sm text-gray-500">文件会直接写入当前 Milvus 语料库</p>
+                  <p className="mt-1 text-sm text-gray-500">
+                    {vectorBackendDisabled ? '向量检索已临时关闭' : '文件会直接写入当前 Milvus 语料库'}
+                  </p>
                 </div>
                 <button
-                  onClick={() => {
-                    void Promise.all([checkSystemHealth(), checkMilvusStatus()]);
-                  }}
+                  onClick={() => { void refreshRuntimeStatus(); }}
                   className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                   title="刷新知识库状态"
                 >
@@ -1577,7 +1633,9 @@ export default function HomePage() {
               </div>
               <div className="space-y-2 p-6 text-sm text-gray-600">
                 <p>
-                  {milvusConnected
+                  {vectorBackendDisabled
+                    ? '维护模式已启用：不会连接 Milvus 或 Zilliz，也不会写入向量库。'
+                    : milvusConnected
                     ? `当前语料库包含 ${milvusStats?.rowCount || 0} 个向量文档块。`
                     : '正在检查 Milvus 连接状态；连接恢复后可继续上传和提问。'}
                 </p>
@@ -1587,23 +1645,27 @@ export default function HomePage() {
               </div>
             </section>
 
-            <RealtimeMonitoring
-              showVectorization={showVectorization}
-              vectorizationDetails={vectorizationDetails}
-              vectorizationProgress={vectorizationProgress}
-              vectorizationStatus={vectorizationStatus}
-              showQueryProcessing={showQueryProcessing}
-              queryProcessingStatus={queryProcessingStatus}
-              isLoading={isLoading}
-              queryAnalysis={queryAnalysis}
-              retrievalDetails={retrievalDetails}
-            />
+            {!vectorBackendDisabled && (
+              <RealtimeMonitoring
+                showVectorization={showVectorization}
+                vectorizationDetails={vectorizationDetails}
+                vectorizationProgress={vectorizationProgress}
+                vectorizationStatus={vectorizationStatus}
+                showQueryProcessing={showQueryProcessing}
+                queryProcessingStatus={queryProcessingStatus}
+                isLoading={isLoading}
+                queryAnalysis={queryAnalysis}
+                retrievalDetails={retrievalDetails}
+              />
+            )}
 
             {/* 检索详情面板 */}
-            <RetrievalDetailsPanel
-              retrievalDetails={retrievalDetails}
-              queryText={currentQuery}
-            />
+            {!vectorBackendDisabled && (
+              <RetrievalDetailsPanel
+                retrievalDetails={retrievalDetails}
+                queryText={currentQuery}
+              />
+            )}
 
             <SystemInfo
               docCount={storageBackend === 'milvus' ? (milvusStats?.rowCount || 0) : docCount}
@@ -1612,9 +1674,7 @@ export default function HomePage() {
               llmModel={llmModel}
               embeddingModel={embeddingModel}
               modelConfig={modelConfig}
-              onRefresh={() => {
-                void Promise.all([checkSystemHealth(), checkMilvusStatus()]);
-              }}
+              onRefresh={() => { void refreshRuntimeStatus(); }}
               onModelChange={handleModelChange}
             />
 

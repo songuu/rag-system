@@ -110,6 +110,11 @@ import {
   type RagRetrievalScope,
   type RagTrustLevel,
 } from '@/lib/security/retrieval-scope';
+import {
+  isVectorBackendDisabled,
+  VECTOR_BACKEND_DISABLED_CODE,
+  VECTOR_BACKEND_DISABLED_MESSAGE,
+} from '@/lib/rag/vector-backend';
 
 export const runtime = 'nodejs';
 
@@ -511,8 +516,17 @@ export async function POST(request: NextRequest) {
       corpusId: securityContext.corpusId,
       enforceIsolation: securityContext.enforceIsolation,
     });
+    const vectorBackendDisabled = isVectorBackendDisabled();
     // Request identity is server-derived. Legacy body.userId/body.tenantId are ignored.
     const userId = securityContext.actorId;
+
+    if (vectorBackendDisabled) {
+      throw new RequestValidationError(
+        VECTOR_BACKEND_DISABLED_CODE,
+        VECTOR_BACKEND_DISABLED_MESSAGE,
+        503
+      );
+    }
 
     if (
       securityContext.enforceIsolation

@@ -6,6 +6,7 @@ interface FileUploadProps {
   selectedFiles: File[];
   isUploading: boolean;
   canUpload: boolean;
+  unavailableMessage?: string;
   onFileSelect: (files: File[]) => void;
   onUpload: () => void;
 }
@@ -53,7 +54,14 @@ function isSupportedFile(filename: string): boolean {
   return SUPPORTED_EXTENSIONS.includes(ext);
 }
 
-export default function FileUpload({ selectedFiles, isUploading, canUpload, onFileSelect, onUpload }: FileUploadProps) {
+export default function FileUpload({
+  selectedFiles,
+  isUploading,
+  canUpload,
+  unavailableMessage,
+  onFileSelect,
+  onUpload,
+}: FileUploadProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
   const [invalidFiles, setInvalidFiles] = useState<string[]>([]);
@@ -284,7 +292,7 @@ export default function FileUpload({ selectedFiles, isUploading, canUpload, onFi
         </button>
         {!canUpload && (
           <p className="mt-2 text-xs text-amber-700" role="status">
-            向量服务暂未连接，恢复后可直接写入知识库。
+            {unavailableMessage || '向量服务暂未连接，恢复后可直接写入知识库。'}
           </p>
         )}
       </div>

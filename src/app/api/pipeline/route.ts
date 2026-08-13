@@ -30,6 +30,11 @@ import {
 } from '@/lib/security/retrieval-scope';
 import { redactErrorForLog } from '@/lib/security/error-redaction';
 import { toPublicMilvusConfig } from '@/lib/security/public-config';
+import {
+  isVectorBackendDisabled,
+  VECTOR_BACKEND_DISABLED_CODE,
+  VECTOR_BACKEND_DISABLED_MESSAGE,
+} from '@/lib/rag/vector-backend';
 
 export const runtime = 'nodejs';
 
@@ -85,6 +90,13 @@ export async function POST(request: NextRequest) {
       requestedCorpusId: typeof params.corpusId === 'string' ? params.corpusId : undefined,
       requestIdFactory: () => requestId,
     });
+    if (isVectorBackendDisabled()) {
+      throw new RequestValidationError(
+        VECTOR_BACKEND_DISABLED_CODE,
+        VECTOR_BACKEND_DISABLED_MESSAGE,
+        503
+      );
+    }
     const retrievalScope = createRetrievalScope({
       tenantId: securityContext.tenantId,
       corpusId: securityContext.corpusId,
@@ -346,6 +358,13 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
       requestedCorpusId: request.headers.get('x-rag-corpus-id') || undefined,
       requestIdFactory: () => requestId,
     });
+    if (isVectorBackendDisabled()) {
+      throw new RequestValidationError(
+        VECTOR_BACKEND_DISABLED_CODE,
+        VECTOR_BACKEND_DISABLED_MESSAGE,
+        503
+      );
+    }
     const scopeMetadata = stampDocumentScope(
       { createdBy: securityContext.actorId },
       createRetrievalScope({
@@ -482,6 +501,13 @@ export async function GET(request: NextRequest) {
       requestedCorpusId: searchParams.get('corpusId') || undefined,
       requestIdFactory: () => requestId,
     });
+    if (isVectorBackendDisabled()) {
+      throw new RequestValidationError(
+        VECTOR_BACKEND_DISABLED_CODE,
+        VECTOR_BACKEND_DISABLED_MESSAGE,
+        503
+      );
+    }
     switch (action) {
       case 'info': {
         return NextResponse.json({
