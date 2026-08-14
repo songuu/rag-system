@@ -167,7 +167,8 @@ function runProvisioner(fixture) {
       '--noprofile',
       '--norc',
       '-c',
-      'PATH="$1:$PATH"; export PATH; exec "$2" "$3" "$4"',
+      // CI checks repository scripts out as 0644; production grants execute permission after upload.
+      'PATH="$1:$PATH"; export PATH; exec "$BASH" "$2" "$3" "$4"',
       'postgres-provision-test',
       fixture.bin,
       provisioner,
