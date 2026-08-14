@@ -13,6 +13,8 @@ export interface FileManifestItem {
   uploadedAt: string;
   parseMethod: string;
   pages?: number;
+  source?: 'maic';
+  sourceHash?: string;
 }
 
 export interface BlobWriteOptions {

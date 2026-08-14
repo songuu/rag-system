@@ -94,8 +94,44 @@ schema/DML/sequence 权限及未来默认权限，但不会创建登录角色或
 会主动剔除 `POSTGRES_MIGRATION_URL`，不要把高权限 DSN 写入应用 `.env.prod`。
 
 容器镜像和宿主机 release artifact 都包含 `db/postgres` 与 migration runner，供一次性
-migration job 使用；应用启动仍不会隐式迁移。生产应在滚动发布前由 CI/release workspace
-或专用 migration job 显式执行，避免多个 app 副本争用启动时迁移。
+migration job 使用；应用启动仍不会隐式迁移。通用生产环境应在滚动发布前由 CI/release
+workspace 或专用 migration job 显式执行，避免多个 app 副本争用启动时迁移。
+
+## songuu.top 宿主机发布
+
+仓库的 GitHub Actions 宿主机发布会自动调用
+`deploy/songuu/provision-postgres-host.sh`，不要求把数据库密码放入 GitHub Secrets。首次运行会
+创建一套只属于 RAG 的 PostgreSQL 17 基础设施：
+
+- 容器：`rag-system-postgres`
+- 数据卷：`rag-system-postgres-data`
+- 监听：`127.0.0.1:25432`（不暴露公网）
+- 数据库：`rag_system`
+- 应用角色：`rag_app`
+- migration owner：`rag_owner`
+
+宿主 provisioner 的 `postgres:17-bookworm` 使用仓库内固定 digest，镜像升级需要显式更新并重新跑
+provisioner 契约，避免同一 tag 在不同发布时间解析到未经审阅的镜像。
+
+随机密码保存在 `/opt/rag-system/shared/.postgres-host/credentials.env`，应用 DSN 写入权限为
+`0600` 的 `.env.prod`；owner DSN 单独写入权限为 `0600` 的
+`.postgres-migration.env`。应用 bootstrap 会过滤 `POSTGRES_MIGRATION_URL`，因此 owner 凭据
+不会进入 PM2 worker。`rag_owner` 是 `NOSUPERUSER`、`NOCREATEDB`、`NOCREATEROLE` 的 schema
+owner；只有保存在 root-only credential state 中、不会写入应用或 migration env 的 `postgres`
+管理员负责幂等创建/修复 `rag_owner` 与低权限 `rag_app`。migration runner 只能读取
+`rag_owner` DSN。
+
+发布顺序固定为：持有环境热重载锁 → 幂等 provision → 校验生产配置 → 解压新 release →
+执行 `node scripts/migrate-postgres.mjs` → 检查并事务回填旧本地上传 → 原子切换 `current` →
+PM2 reload → liveness/readiness → watcher/Nginx/token/gateway verify。任何 provision、迁移、回填、
+readiness 或 gateway gate 失败都会阻止提交新 release，并恢复旧 `current`、环境/defaults、PM2、
+watcher 与 Nginx 快照后重新验证旧服务。
+provisioner 不会删除同名容器、已有数据卷或端口占用者；发现不符合托管标签、镜像、volume
+或 loopback 端口契约时会 fail closed，交由人工确认。
+
+GitHub Actions 只在 SSH 校验/安装步骤注入 root 私钥。默认生产 IP 的 Ed25519 host key 固定在
+`deploy/songuu/ssh-known-hosts`；使用非默认 `RAG_SYSTEM_DEPLOY_HOST` 时必须同时配置经过人工核验的
+`RAG_SYSTEM_SSH_KNOWN_HOSTS`，运行时不会通过 `ssh-keyscan` 自动信任未知主机。
 
 ### SSL
 
@@ -193,11 +229,17 @@ Invoke-RestMethod http://localhost:3000/api/health
 
 ## 已有数据切换
 
-本轮仓库改造提供新 PostgreSQL schema、运行时适配器和迁移 runner，**不包含**从既有
-外部数据库或对象存储导出历史数据的 backfill 工具。切换前必须先确认旧系统没有需要保留
-的 trace、manifest、blob 或业务表存量；若存在，不能直接切换流量，应单独完成：
+宿主机发布支持把旧 `uploads/file-manifest.json` 及其引用的本地 blob 自动回填到
+`document_assets` / `object_blobs`。`scripts/backfill-local-postgres.mjs` 会扫描共享 uploads 和历史
+release 的 uploads，拒绝路径穿越、符号链接、缺失文件、超过 10 MB、大小或 SHA-256 冲突。
+需要导入时，发布器先停止旧 PM2 writer，再以 advisory lock 和单个 PostgreSQL 事务写入、回读，
+最后把 plan hash、行数和字节数收据写入 corpus metadata。源文件不会自动删除，失败可安全重试。
+MAIC 上传已走同一 PostgreSQL persistence seam，不会在回填后继续生成 local-only manifest。
 
-1. 冻结或双写增量窗口，导出表数据与 Storage 对象清单。
+该自动工具只覆盖仓库旧本地 upload manifest/blob，不覆盖其他外部数据库、对象存储或历史 trace。
+这些源若有存量，不能直接切换流量，应单独完成：
+
+1. 冻结增量窗口，导出表数据与对象清单。
 2. 映射到 `document_assets` / `object_blobs` / trace 三表族，并校验 tenant/corpus scope。
 3. 对表行数、对象字节数与 SHA-256 做源/目标回读对账。
 4. 通过新 app 的受控读写、readiness 和回滚演练后再切流。

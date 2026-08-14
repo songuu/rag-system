@@ -20,6 +20,191 @@ readonly READY_URL="http://127.0.0.1:5182${RAG_BASE_PATH}/api/health"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEFAULTS_RENDERER="${RAG_ENV_DEFAULTS_RENDERER:-$SCRIPT_DIR/render-host-env-defaults.py}"
 readonly DEFAULTS_EXAMPLE="${RAG_ENV_DEFAULTS_EXAMPLE:-$SCRIPT_DIR/.env.container.example}"
+readonly POSTGRES_PROVISIONER="${RAG_POSTGRES_PROVISIONER:-}"
+readonly POSTGRES_MIGRATION_ENV_FILE="${RAG_POSTGRES_MIGRATION_ENV_FILE:-$SHARED/.postgres-migration.env}"
+readonly ENV_RELOAD_LOCK_FILE="/run/lock/rag-system-env-reload.lock"
+readonly ENV_RELOAD_LOCK_HELD="${RAG_ENV_RELOAD_LOCK_HELD:-0}"
+readonly POST_RELEASE_GATE="${RAG_POST_RELEASE_GATE:-}"
+readonly RELEASE_GATE_ROOT="${RAG_RELEASE_GATE_ROOT:-}"
+
+environment_snapshot=''
+migration_environment_snapshot=''
+defaults_snapshot=''
+environment_existed_before_provision=false
+migration_environment_existed_before_provision=false
+defaults_existed_before_release=false
+database_environment_snapshot_ready=false
+database_environment_restored=false
+release_committed=false
+old_process_fenced=false
+cutover_started=false
+legacy_local_runtime=false
+previous=""
+verified_post_release_gate=""
+
+cleanup_database_environment_snapshots() {
+  [[ -z "$environment_snapshot" || ! -e "$environment_snapshot" ]] \
+    || rm -f -- "$environment_snapshot"
+  [[ -z "$migration_environment_snapshot" || ! -e "$migration_environment_snapshot" ]] \
+    || rm -f -- "$migration_environment_snapshot"
+  [[ -z "$defaults_snapshot" || ! -e "$defaults_snapshot" ]] \
+    || rm -f -- "$defaults_snapshot"
+}
+
+snapshot_database_environment() {
+  if [[ "$database_environment_snapshot_ready" = true ]]; then
+    return 0
+  fi
+  umask 077
+  if [[ -f "$ENV_FILE" ]]; then
+    environment_snapshot="$(mktemp "$SHARED/.env.prod.release-snapshot.XXXXXX")"
+    cp -p -- "$ENV_FILE" "$environment_snapshot"
+    chmod 600 "$environment_snapshot"
+    environment_existed_before_provision=true
+  fi
+  if [[ -f "$POSTGRES_MIGRATION_ENV_FILE" ]]; then
+    migration_environment_snapshot="$(mktemp "$SHARED/.postgres-migration.release-snapshot.XXXXXX")"
+    cp -p -- "$POSTGRES_MIGRATION_ENV_FILE" "$migration_environment_snapshot"
+    chmod 600 "$migration_environment_snapshot"
+    migration_environment_existed_before_provision=true
+  fi
+  if [[ -f "$DEFAULTS_FILE" ]]; then
+    defaults_snapshot="$(mktemp "$SHARED/.env.defaults.release-snapshot.XXXXXX")"
+    cp -p -- "$DEFAULTS_FILE" "$defaults_snapshot"
+    chmod 600 "$defaults_snapshot"
+    defaults_existed_before_release=true
+  fi
+  database_environment_snapshot_ready=true
+}
+
+restore_or_remove_environment_file() {
+  local target="$1"
+  local snapshot="$2"
+  local existed_before="$3"
+  local stage="${target}.rollback.$$"
+
+  if [[ "$existed_before" = true ]]; then
+    if ! cp -p -- "$snapshot" "$stage"; then
+      rm -f -- "$stage"
+      return 1
+    fi
+    if ! chmod 600 "$stage" || ! mv -f -- "$stage" "$target"; then
+      rm -f -- "$stage"
+      return 1
+    fi
+  elif ! rm -f -- "$target"; then
+    return 1
+  fi
+}
+
+restore_database_environment() {
+  local restore_failed=0
+  if [[ "$database_environment_snapshot_ready" != true || "$database_environment_restored" = true ]]; then
+    return 0
+  fi
+
+  restore_or_remove_environment_file \
+    "$ENV_FILE" "$environment_snapshot" "$environment_existed_before_provision" \
+    || restore_failed=1
+  restore_or_remove_environment_file \
+    "$POSTGRES_MIGRATION_ENV_FILE" "$migration_environment_snapshot" \
+    "$migration_environment_existed_before_provision" \
+    || restore_failed=1
+  restore_or_remove_environment_file \
+    "$DEFAULTS_FILE" "$defaults_snapshot" "$defaults_existed_before_release" \
+    || restore_failed=1
+
+  if [[ "$restore_failed" -ne 0 ]]; then
+    return 1
+  fi
+  database_environment_restored=true
+}
+
+release_exit_trap() {
+  local status="$?"
+  local environment_restore_ok=true
+  trap - EXIT
+  if [[ "$release_committed" != true ]]; then
+    if ! restore_database_environment; then
+      echo "RAG release could not restore its previous database environment" >&2
+      status=1
+      environment_restore_ok=false
+    fi
+    if [[ "$environment_restore_ok" = true \
+      && "$old_process_fenced" = true \
+      && "$cutover_started" != true ]]; then
+      if ! resume_previous_process_after_backfill_failure; then
+        echo "RAG release could not restore the previous process after local-data backfill failure" >&2
+        status=1
+      fi
+    fi
+  fi
+  cleanup_database_environment_snapshots
+  exit "$status"
+}
+
+trap release_exit_trap EXIT
+
+validate_post_release_gate() {
+  local gate_root_real=""
+  local gate_real=""
+
+  if [[ -z "$POST_RELEASE_GATE" && -z "$RELEASE_GATE_ROOT" ]]; then
+    return 0
+  fi
+  if [[ -z "$POST_RELEASE_GATE" || -z "$RELEASE_GATE_ROOT" ]]; then
+    echo "RAG_POST_RELEASE_GATE and RAG_RELEASE_GATE_ROOT must be configured together" >&2
+    return 1
+  fi
+  if [[ -L "$RELEASE_GATE_ROOT" || ! -d "$RELEASE_GATE_ROOT" ]]; then
+    echo "Post-release gate root must be a real directory" >&2
+    return 1
+  fi
+  if [[ -L "$POST_RELEASE_GATE" || ! -f "$POST_RELEASE_GATE" || ! -x "$POST_RELEASE_GATE" ]]; then
+    echo "Post-release gate must be a real executable file" >&2
+    return 1
+  fi
+
+  gate_root_real="$(readlink -f -- "$RELEASE_GATE_ROOT")" || return 1
+  gate_real="$(readlink -f -- "$POST_RELEASE_GATE")" || return 1
+  if [[ -z "$gate_root_real" || "$gate_root_real" = "/" ]]; then
+    echo "Post-release gate root must be a constrained directory" >&2
+    return 1
+  fi
+  case "$gate_real" in
+    "$gate_root_real"/*) ;;
+    *)
+      echo "Post-release gate must be contained by its verified root" >&2
+      return 1
+      ;;
+  esac
+  if [[ "${gate_real%/*}" != "$gate_root_real" ]]; then
+    echo "Post-release gate must be a direct child of its verified root" >&2
+    return 1
+  fi
+
+  if find "$gate_root_real" -maxdepth 0 \
+    \( ! -type d -o ! -user root -o ! -group root -o -perm /022 \) \
+    -print -quit | grep -q .; then
+    echo "Post-release gate root ownership or permissions are unsafe" >&2
+    return 1
+  fi
+  if find "$gate_real" -maxdepth 0 \
+    \( ! -type f -o ! -user root -o ! -group root -o -perm /022 -o ! -perm /111 \) \
+    -print -quit | grep -q .; then
+    echo "Post-release gate ownership or permissions are unsafe" >&2
+    return 1
+  fi
+
+  verified_post_release_gate="$gate_real"
+}
+
+run_post_release_gate() {
+  if [[ -z "$verified_post_release_gate" ]]; then
+    return 0
+  fi
+  "$verified_post_release_gate" "$@"
+}
 
 case "$RELEASE_NAME" in
   rag-system-[A-Za-z0-9._-]*) ;;
@@ -35,6 +220,30 @@ command -v curl >/dev/null
 command -v openssl >/dev/null
 command -v python3 >/dev/null
 command -v node >/dev/null
+command -v flock >/dev/null
+command -v find >/dev/null
+command -v readlink >/dev/null
+
+if ! validate_post_release_gate; then
+  exit 2
+fi
+
+case "$ENV_RELOAD_LOCK_HELD" in
+  0|1) ;;
+  *)
+    echo "RAG_ENV_RELOAD_LOCK_HELD must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+
+# Serialize releases with the .env.prod watcher. Without this lock, the
+# watcher could reload the old app after provisioning changes the DSN but
+# before the new release has migrated the PostgreSQL schema.
+if [[ "$ENV_RELOAD_LOCK_HELD" = "0" ]]; then
+  install -d -m 0755 "$(dirname "$ENV_RELOAD_LOCK_FILE")"
+  exec 9>"$ENV_RELOAD_LOCK_FILE"
+  flock 9
+fi
 
 install -d -m 0755 "$RELEASES" "$SHARED" \
   "$ROOT/data/uploads" \
@@ -96,6 +305,32 @@ EOF
   chmod 600 "$ENV_FILE"
   ln -s ".env.prod" "$LEGACY_ENV_FILE"
 fi
+
+# The GitHub host deployment supplies a dedicated provisioner. It upgrades an
+# existing pre-PostgreSQL environment atomically and is intentionally separate
+# from the app runtime so database owner credentials never reach PM2.
+if bash -c '
+  set -euo pipefail
+  set -a
+  . "$1"
+  test "${RAG_PERSISTENCE_BACKEND:-local}" = "local"
+' bash "$ENV_FILE"; then
+  legacy_local_runtime=true
+fi
+
+if [[ -n "$POSTGRES_PROVISIONER" ]]; then
+  if [[ ! -x "$POSTGRES_PROVISIONER" ]]; then
+    echo "PostgreSQL host provisioner is missing or not executable" >&2
+    exit 2
+  fi
+  snapshot_database_environment
+  "$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"
+fi
+
+# Defaults are generated below even when no database provisioner is needed.
+# Snapshot the complete active release environment before that overwrite so
+# every later failure can restore (or remove) this release's defaults.
+snapshot_database_environment
 
 if ! bash -c '
   set -euo pipefail
@@ -275,6 +510,30 @@ reload_rag_process() {
   "$PM2_MANAGER" reload
 }
 
+wait_for_liveness() {
+  local response=""
+  for _ in $(seq 1 30); do
+    if response=$(curl -fsS "http://127.0.0.1:5182${RAG_BASE_PATH}/api/health/live"); then
+      printf '%s' "$response"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+wait_for_readiness() {
+  local response=""
+  for _ in $(seq 1 30); do
+    if response=$(curl --max-time 5 -fsS "$READY_URL"); then
+      printf '%s' "$response"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 release="$RELEASES/$RELEASE_NAME"
 if [[ -e "$release" ]]; then
   echo "Release already exists: $release" >&2
@@ -282,61 +541,325 @@ if [[ -e "$release" ]]; then
 fi
 
 mkdir -p "$release"
-tar -xzf "$ARTIFACT" -C "$release"
+tar --no-same-owner --no-same-permissions -xzf "$ARTIFACT" -C "$release"
+
+# The archive is produced from a Docker image whose files are owned by UID
+# 1001. Never preserve that identity on the host: a matching local account
+# could otherwise rewrite code or migration SQL that root executes later.
+if find "$release" \( -type l -o \( ! -type f ! -type d \) \) -print -quit | grep -q .; then
+  echo "Release artifact contains an unsafe file type or symbolic link" >&2
+  exit 1
+fi
+chown -R root:root -- "$release"
+chmod -R go-w -- "$release"
+if find "$release" \( ! -user root -o ! -group root -o -perm /022 \) -print -quit | grep -q .; then
+  echo "Release artifact ownership or permissions are unsafe" >&2
+  exit 1
+fi
 if [[ ! -f "$release/server.js" || ! -d "$release/.next/static" || ! -d "$release/public" ]]; then
   echo "Extracted release is not a complete standalone artifact" >&2
   exit 1
 fi
+if [[ ! -f "$release/db/postgres/bootstrap.sql" \
+  || ! -f "$release/scripts/migrate-postgres.mjs" \
+  || ! -f "$release/scripts/backfill-local-postgres.mjs" ]] \
+  || ! compgen -G "$release/db/postgres/migrations/*.sql" >/dev/null; then
+  echo "Extracted release is missing PostgreSQL migration assets" >&2
+  exit 1
+fi
 
-previous=""
+if [[ -e "$POSTGRES_MIGRATION_ENV_FILE" && ! -f "$POSTGRES_MIGRATION_ENV_FILE" ]]; then
+  echo "PostgreSQL migration environment path is not a regular file" >&2
+  exit 2
+fi
+
+# Migrate the newly extracted release before changing the current symlink. The
+# owner DSN is sourced only inside this subshell; the PM2 bootstrap separately
+# allowlists app variables and strips POSTGRES_MIGRATION_URL.
+if ! (
+  set -euo pipefail
+  set -a
+  . "$DEFAULTS_FILE"
+  . "$ENV_FILE"
+  if [[ -f "$POSTGRES_MIGRATION_ENV_FILE" ]]; then
+    . "$POSTGRES_MIGRATION_ENV_FILE"
+  fi
+  set +a
+  cd "$release"
+  node scripts/migrate-postgres.mjs
+); then
+  echo "PostgreSQL migration failed before release cutover" >&2
+  exit 1
+fi
+
 if [[ -L "$ROOT/current" || -e "$ROOT/current" ]]; then
   previous=$(readlink -f "$ROOT/current" || true)
 fi
 
-next_link="$ROOT/current.next.$$"
-ln -s "$release" "$next_link"
-mv -Tf "$next_link" "$ROOT/current"
+resume_previous_process_after_backfill_failure() {
+  local current_target=""
+  if [[ -z "$previous" || ! -d "$previous" ]]; then
+    return 0
+  fi
+  current_target="$(readlink -f "$ROOT/current" 2>/dev/null || true)"
+  if [[ "$current_target" != "$previous" ]]; then
+    return 1
+  fi
+  reload_rag_process >/dev/null 2>&1 \
+    && wait_for_liveness >/dev/null \
+    && wait_for_readiness >/dev/null
+}
 
-rollback() {
-  if [[ -n "$previous" && -d "$previous" ]]; then
-    rollback_link="$ROOT/current.rollback.$$"
-    ln -s "$previous" "$rollback_link"
-    mv -Tf "$rollback_link" "$ROOT/current"
-    reload_rag_process >/dev/null 2>&1 || true
+local_backfill_args=(--source-root "$ROOT/data/uploads")
+shopt -s nullglob
+for local_upload_root in "$RELEASES"/rag-system-*/uploads; do
+  local_backfill_args+=(--source-root "$local_upload_root")
+done
+shopt -u nullglob
+
+run_local_backfill() {
+  local mode="$1"
+  (
+    set -euo pipefail
+    set -a
+    . "$DEFAULTS_FILE"
+    . "$ENV_FILE"
+    if [[ -f "$POSTGRES_MIGRATION_ENV_FILE" ]]; then
+      . "$POSTGRES_MIGRATION_ENV_FILE"
+    fi
+    set +a
+    cd "$release"
+    node scripts/backfill-local-postgres.mjs "$mode" "${local_backfill_args[@]}"
+  )
+}
+
+pm2_entry_exists() {
+  local process_list=""
+  if ! process_list="$(pm2 jlist 2>/dev/null)"; then
+    return 2
+  fi
+  python3 -c '
+import json
+import sys
+
+try:
+    processes = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(2)
+if not isinstance(processes, list):
+    raise SystemExit(2)
+raise SystemExit(
+    0
+    if any(isinstance(process, dict) and process.get("name") == "rag-system" for process in processes)
+    else 1
+)
+' <<<"$process_list"
+}
+
+is_rag_port_reachable() {
+  python3 -c '
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as connection:
+    connection.settimeout(1)
+    raise SystemExit(0 if connection.connect_ex(("127.0.0.1", 5182)) == 0 else 1)
+' >/dev/null 2>&1
+}
+
+wait_for_rag_runtime_shutdown() {
+  local pm2_state=2
+  for _ in $(seq 1 15); do
+    pm2_state=0
+    pm2_entry_exists || pm2_state=$?
+    if [[ "$pm2_state" -eq 1 ]] \
+      && ! curl --connect-timeout 1 --max-time 1 -fsS \
+        "http://127.0.0.1:5182${RAG_BASE_PATH}/api/health/live" >/dev/null 2>&1 \
+      && ! is_rag_port_reachable; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+fence_previous_process() {
+  local pm2_state=0
+  if [[ "$old_process_fenced" = true ]]; then
+    if ! wait_for_rag_runtime_shutdown; then
+      echo "Could not re-confirm the previous RAG writer remained shut down" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  pm2_entry_exists || pm2_state=$?
+  case "$pm2_state" in
+    0)
+      if ! pm2 delete rag-system >/dev/null 2>&1; then
+        echo "Could not delete the previous PM2 entry before local-data backfill" >&2
+        return 1
+      fi
+      # Set this immediately after deletion so the EXIT trap attempts to resume
+      # the old release even if a stray listener makes shutdown verification fail.
+      old_process_fenced=true
+      ;;
+    1)
+      ;;
+    *)
+      echo "Could not determine the previous PM2 process state" >&2
+      return 1
+      ;;
+  esac
+
+  if ! wait_for_rag_runtime_shutdown; then
+    echo "Could not prove the previous RAG writer and port were shut down" >&2
+    return 1
   fi
 }
 
+# A prior failed cutover may have committed a receipt before the legacy local
+# writer was restored. Once that writer is fenced, reset only the receipt and
+# rebuild it from the now-immutable source plan; imported rows remain intact.
+if [[ "$legacy_local_runtime" = true ]]; then
+  fence_previous_process
+  if ! run_local_backfill --reset-receipt; then
+    echo "Could not reset the local upload backfill receipt" >&2
+    exit 1
+  fi
+fi
+
+backfill_status=0
+run_local_backfill --check || backfill_status=$?
+case "$backfill_status" in
+  0)
+    ;;
+  3)
+    # Stop the legacy writer before rebuilding the source plan. This closes the
+    # last mutation window without deleting any source files.
+    fence_previous_process
+    if ! run_local_backfill --apply; then
+      echo "Local upload backfill failed before release cutover" >&2
+      exit 1
+    fi
+    if ! run_local_backfill --check; then
+      echo "Local upload backfill readback failed before release cutover" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Local upload backfill preflight failed before release cutover" >&2
+    exit 1
+    ;;
+esac
+
+next_link="$ROOT/current.next.$$"
+ln -s "$release" "$next_link"
+mv -Tf "$next_link" "$ROOT/current"
+cutover_started=true
+
+rollback() {
+  local rollback_failed=0
+  local current_target=""
+  local environment_restore_ok=true
+  local pm2_state=0
+  if ! restore_database_environment; then
+    rollback_failed=1
+    environment_restore_ok=false
+  fi
+  if [[ -n "$previous" && -d "$previous" ]]; then
+    rollback_link="$ROOT/current.rollback.$$"
+    if ! ln -s "$previous" "$rollback_link"; then
+      rollback_failed=1
+    elif ! mv -Tf "$rollback_link" "$ROOT/current"; then
+      rm -f -- "$rollback_link"
+      rollback_failed=1
+    elif [[ "$environment_restore_ok" != true ]]; then
+      rollback_failed=1
+    elif ! reload_rag_process >/dev/null 2>&1; then
+      rollback_failed=1
+    elif ! wait_for_liveness >/dev/null || ! wait_for_readiness >/dev/null; then
+      rollback_failed=1
+    fi
+  else
+    current_target="$(readlink -f "$ROOT/current" 2>/dev/null || true)"
+    if [[ "$current_target" = "$release" ]]; then
+      if ! rm -f -- "$ROOT/current"; then
+        rollback_failed=1
+      fi
+      pm2_entry_exists || pm2_state=$?
+      case "$pm2_state" in
+        0)
+          if ! pm2 delete rag-system >/dev/null 2>&1; then
+            rollback_failed=1
+          fi
+          ;;
+        1)
+          ;;
+        *)
+          rollback_failed=1
+          ;;
+      esac
+      if ! wait_for_rag_runtime_shutdown; then
+        rollback_failed=1
+      fi
+    else
+      rollback_failed=1
+    fi
+  fi
+  # The gate owns any gateway-side mutation performed by `verify`. Invoke its
+  # rollback only after the old environment/current/process restoration has
+  # been attempted, and treat failure as an incomplete release rollback.
+  if ! run_post_release_gate rollback "$previous" "$release"; then
+    rollback_failed=1
+  fi
+  return "$rollback_failed"
+}
+
 if ! reload_rag_process; then
-  rollback
-  echo "RAG release failed to hand off the PM2 runtime; restored previous release when available" >&2
+  if rollback; then
+    echo "RAG release failed to hand off the PM2 runtime; restored and verified the previous release" >&2
+  else
+    echo "RAG release failed to hand off the PM2 runtime and rollback verification failed" >&2
+  fi
   exit 1
 fi
 
-live=""
-for _ in $(seq 1 30); do
-  if live=$(curl -fsS "http://127.0.0.1:5182${RAG_BASE_PATH}/api/health/live"); then
-    break
+if ! live="$(wait_for_liveness)"; then
+  if rollback; then
+    echo "RAG release failed liveness; restored and verified the previous release" >&2
+  else
+    echo "RAG release failed liveness and rollback verification failed" >&2
   fi
-  sleep 1
-done
-if [[ -z "$live" ]]; then
-  rollback
-  echo "RAG release failed liveness; restored previous release when available" >&2
   exit 1
 fi
-ready=""
-for _ in $(seq 1 30); do
-  if ready=$(curl --max-time 5 -fsS "$READY_URL"); then
-    break
+if ! ready="$(wait_for_readiness)"; then
+  if rollback; then
+    echo "RAG release failed readiness; restored and verified the previous release" >&2
+  else
+    echo "RAG release failed readiness and rollback verification failed" >&2
   fi
-  sleep 1
-done
-if [[ -z "$ready" ]]; then
-  rollback
-  echo "RAG release failed readiness; restored previous release when available" >&2
   exit 1
 fi
-pm2 save
+if ! run_post_release_gate verify "$release" "$previous"; then
+  if rollback; then
+    echo "RAG post-release gateway verification failed; restored and verified the previous release" >&2
+  else
+    echo "RAG post-release gateway verification failed and rollback verification failed" >&2
+  fi
+  exit 1
+fi
+if ! pm2 save; then
+  if rollback; then
+    echo "RAG release could not persist PM2 state; restored and verified the previous release" >&2
+  else
+    echo "RAG release could not persist PM2 state and rollback verification failed" >&2
+  fi
+  exit 1
+fi
+
+release_committed=true
+cleanup_database_environment_snapshots
+trap - EXIT
 
 printf 'release=%s\n' "$release"
 printf 'current=%s\n' "$(readlink -f "$ROOT/current")"

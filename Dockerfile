@@ -38,6 +38,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/db/postgres ./db/postgres
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/migrate-postgres.mjs ./scripts/migrate-postgres.mjs
+COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-local-postgres.mjs ./scripts/backfill-local-postgres.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/deploy/songuu/run-rag-system.cjs ./run-rag-system.cjs
 RUN mkdir -p /app/uploads /app/reasoning-uploads /app/adaptive-rag-uploads \
   && chown -R nextjs:nodejs /app/uploads /app/reasoning-uploads /app/adaptive-rag-uploads

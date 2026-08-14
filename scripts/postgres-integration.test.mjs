@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import pg from 'pg';
 
@@ -25,6 +28,7 @@ const { PostgresUploadManifestStore } = await import('../src/lib/persistence/pos
 const { PostgresPipelineStore } = await import('../src/lib/persistence/postgres-pipeline-store.ts');
 const { PostgresTraceStore } = await import('../src/lib/persistence/postgres-trace-store.ts');
 const { checkPostgresReadiness } = await import('../src/lib/postgres/client.ts');
+const { applyLocalBackfill, buildLocalBackfillPlan, inspectLocalBackfill } = await import('./backfill-local-postgres.mjs');
 const { runMigrationSession } = await import('./migrate-postgres.mjs');
 
 const databaseUrl = process.env.TEST_DATABASE_URL?.trim();
@@ -36,6 +40,7 @@ test('real PostgreSQL migration and persistence round trip', {
   const tenantId = `integration-${suffix}`;
   const corpusId = `corpus-${suffix}`;
   const appRole = `rag_app_${suffix}`;
+  const backfillRoot = await mkdtemp(path.join(tmpdir(), 'rag-pg-backfill-integration-'));
   const client = new pg.Client({ connectionString: databaseUrl, ssl: false });
   await client.connect();
 
@@ -179,6 +184,66 @@ test('real PostgreSQL migration and persistence round trip', {
       is_manifest: false,
     }]);
 
+    const backfillText = `MAIC PostgreSQL integration ${suffix}`;
+    const backfillFilename = `maic_${suffix}_parsed.txt`;
+    const backfillId = `maic_${suffix}`;
+    const backfillSourceHash = `${'a'.repeat(52)}${suffix}`;
+    await writeFile(path.join(backfillRoot, backfillFilename), backfillText, 'utf8');
+    await writeFile(path.join(backfillRoot, 'file-manifest.json'), JSON.stringify({
+      [backfillId]: {
+        id: backfillId,
+        originalName: 'course.pptx',
+        originalExtension: '.pptx',
+        storedFilename: backfillFilename,
+        parsedFilename: backfillFilename,
+        size: Buffer.byteLength(backfillText),
+        contentLength: backfillText.length,
+        uploadedAt: '2026-08-14T00:00:00.000Z',
+        parseMethod: 'maic-slide-parser',
+        pages: 1,
+        source: 'maic',
+        sourceHash: backfillSourceHash,
+      },
+    }), 'utf8');
+    const backfillPlan = await buildLocalBackfillPlan([backfillRoot]);
+    assert.equal((await inspectLocalBackfill(client, backfillPlan, {
+      tenantId,
+      corpusId,
+    })).complete, false);
+    assert.deepEqual(await applyLocalBackfill(client, [backfillRoot], { tenantId, corpusId }), {
+      planHash: backfillPlan.hash,
+      documents: 1,
+      blobs: 1,
+      bytes: Buffer.byteLength(backfillText),
+    });
+    assert.deepEqual(await applyLocalBackfill(client, [backfillRoot], { tenantId, corpusId }), {
+      planHash: backfillPlan.hash,
+      documents: 1,
+      blobs: 1,
+      bytes: Buffer.byteLength(backfillText),
+    });
+    const backfillRows = await client.query(
+      `select blob.kind, convert_from(blob.data, 'UTF8') as text,
+              asset.external_document_id, asset.source_hash,
+              corpus.metadata->'local_postgres_backfill'->>'plan_sha256' as receipt_hash
+       from object_blobs blob
+       join document_assets asset
+         on asset.tenant_id = blob.tenant_id
+        and asset.corpus_id = blob.corpus_id
+        and asset.raw_blob_filename = blob.filename
+       join corpora corpus
+         on corpus.tenant_id = blob.tenant_id and corpus.id = blob.corpus_id
+       where blob.tenant_id = $1 and blob.corpus_id = $2 and blob.filename = $3`,
+      [tenantId, corpusId, backfillFilename]
+    );
+    assert.deepEqual(backfillRows.rows, [{
+      kind: 'parsed',
+      text: backfillText,
+      external_document_id: backfillId,
+      source_hash: backfillSourceHash,
+      receipt_hash: backfillPlan.hash,
+    }]);
+
     const traceId = randomUUID();
     const observationId = randomUUID();
     const traceStore = new PostgresTraceStore(config, queryClient);
@@ -227,5 +292,6 @@ test('real PostgreSQL migration and persistence round trip', {
     await client.query(`drop owned by "${appRole}"`).catch(() => {});
     await client.query(`drop role if exists "${appRole}"`).catch(() => {});
     await client.end();
+    await rm(backfillRoot, { recursive: true, force: true });
   }
 });

@@ -90,11 +90,60 @@ test('recordUpload uses manifest id as the stable external document key', async 
     contentLength: 40,
     uploadedAt: '2026-08-13T00:00:00.000Z',
     parseMethod: 'pdf',
+    source: 'maic',
+    sourceHash: 'source-hash-1',
   });
 
   assert.equal(calls[0].values[2], 'manifest-1');
+  assert.equal(calls[0].values[6], 'source-hash-1');
+  assert.deepEqual(JSON.parse(calls[0].values[10]), {
+    manifest_id: 'manifest-1',
+    original_extension: '.pdf',
+    content_length: 40,
+    uploaded_at: '2026-08-13T00:00:00.000Z',
+    pages: null,
+    source: 'maic',
+    source_hash: 'source-hash-1',
+  });
   assert.match(calls[0].text, /on conflict \(tenant_id, corpus_id, external_document_id\)/i);
   assert.match(calls[0].text, /source_hash = excluded\.source_hash/i);
+});
+
+test('loadManifest restores optional MAIC provenance from document metadata', async () => {
+  const client = {
+    async query() {
+      return {
+        rows: [{
+          id: 'asset-id',
+          external_document_id: 'manifest-1',
+          original_name: 'course.pptx',
+          content_type: '.pptx',
+          byte_size: 12,
+          source_hash: 'derived-record-hash',
+          raw_blob_filename: 'course.txt',
+          parsed_blob_filename: 'course.txt',
+          parse_method: 'maic-slide-parser',
+          metadata: {
+            manifest_id: 'manifest-1',
+            original_extension: '.pptx',
+            content_length: 12,
+            uploaded_at: '2026-08-14T00:00:00.000Z',
+            pages: 2,
+            source: 'maic',
+            source_hash: 'source-hash-1',
+          },
+          created_at: '2026-08-14T00:00:00.000Z',
+        }],
+        rowCount: 1,
+      };
+    },
+  };
+  const store = new PostgresUploadManifestStore(CONFIG, client);
+
+  const manifest = await store.loadManifest();
+
+  assert.equal(manifest['manifest-1'].source, 'maic');
+  assert.equal(manifest['manifest-1'].sourceHash, 'source-hash-1');
 });
 
 function isRelativeImport(specifier) {

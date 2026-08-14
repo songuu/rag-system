@@ -34,6 +34,8 @@ function manifestMetadata(item: FileManifestItem) {
     content_length: item.contentLength,
     uploaded_at: item.uploadedAt,
     pages: item.pages ?? null,
+    ...(item.source ? { source: item.source } : {}),
+    ...(item.sourceHash ? { source_hash: item.sourceHash } : {}),
   };
 }
 
@@ -59,6 +61,8 @@ function rowToManifestItem(row: DocumentAssetRow): FileManifestItem {
       : toIso(row.created_at),
     parseMethod: row.parse_method || 'unknown',
     pages: typeof metadata.pages === 'number' ? metadata.pages : undefined,
+    source: metadata.source === 'maic' ? 'maic' : undefined,
+    sourceHash: typeof metadata.source_hash === 'string' ? metadata.source_hash : undefined,
   };
 }
 
@@ -68,7 +72,7 @@ function manifestRecord(item: FileManifestItem) {
     original_name: item.originalName,
     content_type: item.originalExtension || 'application/octet-stream',
     byte_size: item.size,
-    source_hash: stableSourceHash(item),
+    source_hash: item.sourceHash ?? stableSourceHash(item),
     raw_blob_filename: item.storedFilename,
     parsed_blob_filename: item.parsedFilename || null,
     parse_method: item.parseMethod,
