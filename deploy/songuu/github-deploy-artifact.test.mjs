@@ -280,6 +280,19 @@ test('SSH trusts an audited host key and fails closed for unpinned hosts', () =>
   );
 });
 
+test('long remote release keeps its SSH transport alive during quiet provisioning', () => {
+  const remoteStep = stepBody(
+    'Remote atomic release and gateway verification',
+    'Verify public deployment'
+  );
+
+  assert.ok(remoteStep, 'Remote atomic release step must exist');
+  const releaseCommand = remoteStep.slice(0, remoteStep.indexOf("<<'REMOTE_SCRIPT'"));
+  assert.match(releaseCommand, /-o ServerAliveInterval=30/);
+  assert.match(releaseCommand, /-o ServerAliveCountMax=20/);
+  assert.match(releaseCommand, /-o TCPKeepAlive=yes/);
+});
+
 test('remote gateway and watcher gate remains inside the release transaction', () => {
   const uploadStep = stepBody(
     'Upload release and host scripts',

@@ -296,6 +296,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' RELEASE_NAME='${RELEASE_NAME}' DOMAIN='${DOMAIN}' BASE_PATH='${BASE_PATH}' bash -s" <<'REMOTE_SCRIPT'
