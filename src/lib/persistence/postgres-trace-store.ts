@@ -15,7 +15,6 @@ import type {
   TraceScoreSource,
   TraceStatus,
 } from './types';
-import { createStableErrorLog } from '../security/error-redaction';
 
 interface TraceRow {
   id: string;
@@ -343,19 +342,17 @@ export function enqueueTraceMirror(
   return next;
 }
 
-export function mirrorTraceToPostgres(trace: unknown): void {
+export function mirrorTraceToPostgres(trace: unknown): Promise<void> {
   const config = getPostgresRuntimeConfig();
-  if (!isPostgresPersistenceReady(config)) return;
-  if (config.persistenceBackend === 'local') return;
+  if (config.persistenceBackend === 'local') return Promise.resolve();
+  assertPostgresPersistenceConfigured(config);
 
   const signature = [config.databaseUrl, config.defaultTenantId].join('|');
   if (!mirrorStore || mirrorSignature !== signature) {
     mirrorStore = new PostgresTraceStore(config);
     mirrorSignature = signature;
   }
-  enqueueTraceMirror(mirrorStore, asJson(trace)).catch((error) => {
-    console.warn('[PostgresTraceStore] trace mirror failed:', createStableErrorLog(error));
-  });
+  return enqueueTraceMirror(mirrorStore, asJson(trace));
 }
 
 function observationForSql(row: ObservationRecord) {

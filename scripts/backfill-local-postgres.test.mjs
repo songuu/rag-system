@@ -9,6 +9,7 @@ const {
   LocalBackfillError,
   applyLocalBackfill,
   buildLocalBackfillPlan,
+  getLocalBackfillExitCode,
   inspectLocalBackfill,
   resetLocalBackfillReceipt,
 } = await import('./backfill-local-postgres.mjs');
@@ -273,10 +274,17 @@ test('a conflicting corpus receipt fails closed without scanning blob or documen
     },
   };
 
-  await assert.rejects(
-    () => inspectLocalBackfill(client, plan, SCOPE),
-    (error) => error instanceof LocalBackfillError && /conflicting.*receipt/i.test(error.message)
-  );
+  let failure;
+  try {
+    await inspectLocalBackfill(client, plan, SCOPE);
+  } catch (error) {
+    failure = error;
+  }
+  assert.ok(failure instanceof LocalBackfillError);
+  assert.equal(failure.code, 'LOCAL_BACKFILL_RECEIPT_CONFLICT');
+  assert.match(failure.message, /conflicting.*receipt/i);
+  assert.equal(getLocalBackfillExitCode(failure), 4);
+  assert.equal(getLocalBackfillExitCode(new Error('other failure')), 1);
   assert.equal(calls.length, 1);
   assert.doesNotMatch(calls[0].text, /object_blobs|document_assets/i);
 });

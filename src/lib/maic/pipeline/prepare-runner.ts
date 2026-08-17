@@ -25,6 +25,17 @@ import {
 
 type Listener = (event: PrepareEvent) => void;
 
+export function resolvePrepareStartStatus(
+  persistedStatus: Course['status'],
+  runningInThisProcess: boolean
+): 'running' | 'started' | 'restarted' {
+  if (runningInThisProcess) return 'running';
+  // A persisted `preparing` state without an in-process job means the previous
+  // worker restarted or crashed. Re-run the idempotent pipeline instead of
+  // reporting a job that can never finish.
+  return persistedStatus === 'preparing' ? 'restarted' : 'started';
+}
+
 interface PrepareJob {
   course_id: string;
   listeners: Set<Listener>;
@@ -83,8 +94,15 @@ class PrepareRunner {
       this.starting.delete(courseId);
       await this.runPipeline(courseId, emit);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown error';
-      getMaicStore().updateCourseStatus(courseId, 'failed', message);
+      let message = error instanceof Error ? error.message : 'unknown error';
+      try {
+        await getMaicStore().updateCourseStatus(courseId, 'failed', message);
+      } catch (persistenceError) {
+        const persistenceMessage = persistenceError instanceof Error
+          ? persistenceError.message
+          : 'unknown persistence error';
+        message = `${message}; 课程失败状态持久化失败: ${persistenceMessage}`;
+      }
       emit({ type: 'prepare:error', data: { error: message } });
     } finally {
       job.finished = true;
@@ -93,7 +111,7 @@ class PrepareRunner {
 
   private async runPipeline(courseId: string, emit: (e: PrepareEvent) => void): Promise<void> {
     const store = getMaicStore();
-    const course = store.getCourse(courseId);
+    const course = await store.getCourse(courseId);
     if (!course) throw new Error(`课程不存在: ${courseId}`);
     if (course.status === 'ready' && course.prepared) {
       emit({
@@ -103,7 +121,8 @@ class PrepareRunner {
       return;
     }
 
-    store.updateCourseStatus(courseId, 'preparing');
+    const preparing = await store.updateCourseStatus(courseId, 'preparing');
+    if (!preparing) throw new Error(`课程在准备开始前已被删除: ${courseId}`);
     emit({ type: 'prepare:start', data: { course_id: courseId, message: '开始准备课程' } });
 
     const cacheIdentity = getMaicPrepareCacheIdentity({
@@ -117,7 +136,8 @@ class PrepareRunner {
 
     const cached = await loadPreparedFromCache(cacheIdentity);
     if (cached) {
-      store.setCoursePrepared(courseId, cached.prepared);
+      const updated = await store.setCoursePrepared(courseId, cached.prepared);
+      if (!updated) throw new Error(`课程在缓存恢复期间已被删除: ${courseId}`);
       emit({
         type: 'prepare:cache',
         data: {
@@ -205,7 +225,8 @@ class PrepareRunner {
       stage,
       scenes,
     };
-    store.setCoursePrepared(courseId, prepared);
+    const updated = await store.setCoursePrepared(courseId, prepared);
+    if (!updated) throw new Error(`课程在准备完成前已被删除: ${courseId}`);
     const stored = await savePreparedToCache(cacheIdentity, prepared);
     if (stored) {
       emit({

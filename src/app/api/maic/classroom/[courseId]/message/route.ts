@@ -21,7 +21,7 @@ export async function POST(
 ): Promise<NextResponse> {
   const { courseId } = await params;
   const store = getMaicStore();
-  const course = store.getCourse(courseId);
+  const course = await store.getCourse(courseId);
   if (!course) {
     return NextResponse.json({ success: false, error: '课程不存在' }, { status: 404 });
   }
@@ -38,29 +38,29 @@ export async function POST(
   const control = typeof body.control === 'string' ? body.control : undefined;
   const slideIndex = typeof body.slide_index === 'number' ? body.slide_index : undefined;
 
-  const session = ensureSessionForCourse(courseId, DEFAULT_ACTIVE_ROLES);
+  const session = await ensureSessionForCourse(courseId, DEFAULT_ACTIVE_ROLES);
   const controller = getSessionController();
 
-  if (mode) controller.setMode(session.session_id, mode);
+  if (mode) await controller.setMode(session.session_id, mode);
   if (control === 'pause') {
-    controller.pause(session.session_id);
+    await controller.pause(session.session_id);
     return NextResponse.json({ success: true, data: { control } });
   }
   if (control === 'resume') {
-    controller.resume(session.session_id);
+    await controller.resume(session.session_id);
     return NextResponse.json({ success: true, data: { control } });
   }
   if (control === 'restart') {
-    controller.restart(session.session_id);
+    await controller.restart(session.session_id);
     return NextResponse.json({ success: true, data: { control } });
   }
   if (control === 'navigate' && slideIndex !== undefined) {
-    controller.navigateTo(session.session_id, slideIndex, course.prepared);
+    await controller.navigateTo(session.session_id, slideIndex, course.prepared);
     return NextResponse.json({ success: true, data: { control, slide_index: slideIndex } });
   }
 
   if (content) {
-    const utterance = controller.submitStudentMessage(session.session_id, content);
+    const utterance = await controller.submitStudentMessage(session.session_id, content);
     return NextResponse.json({ success: true, data: { utterance } });
   }
 

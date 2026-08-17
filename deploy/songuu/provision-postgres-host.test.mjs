@@ -23,6 +23,7 @@ const skip = process.platform === 'win32' && !existsSync(windowsGitBash);
 const ownerPassword = 'a'.repeat(64);
 const appPassword = 'b'.repeat(64);
 const adminPassword = 'c'.repeat(64);
+const retiredVendorPrefix = ['SUPA', 'BASE_'].join('');
 
 function createFixture() {
   const temp = mkdtempSync(path.join(os.tmpdir(), 'rag-postgres-provision-'));
@@ -260,6 +261,9 @@ test('atomically cuts over an eligible PostgreSQL placeholder and is idempotent'
       "RAG_PERSISTENCE_BACKEND='postgres'",
       "RAG_DEFAULT_TENANT_ID='songuu-production'",
       "RAG_DEFAULT_CORPUS_ID='default'",
+      `${retiredVendorPrefix}URL='https://retired.invalid'`,
+      `${retiredVendorPrefix}${['SERVICE', 'ROLE', 'KEY'].join('_')}='retired-secret'`,
+      `${retiredVendorPrefix}DEFAULT_TENANT_ID='retired-tenant'`,
       '',
     ].join('\n'));
 
@@ -274,6 +278,8 @@ test('atomically cuts over an eligible PostgreSQL placeholder and is idempotent'
     assert.equal(readFileSync(fixture.migration, 'utf8'), firstMigration);
     assert.match(firstRuntime, /^# keep this comment$/m);
     assert.match(firstRuntime, /^UNRELATED_SETTING='preserved'$/m);
+    assert.doesNotMatch(firstRuntime, new RegExp(`^${retiredVendorPrefix}`, 'm'));
+    assert.doesNotMatch(`${first.stdout}\n${first.stderr}`, /retired-secret/);
     assert.equal((firstRuntime.match(/^POSTGRES_URL=/gm) ?? []).length, 1);
     assert.equal((firstRuntime.match(/^RAG_PERSISTENCE_BACKEND=/gm) ?? []).length, 1);
     assert.equal((firstRuntime.match(/^# BEGIN managed PostgreSQL host$/gm) ?? []).length, 1);

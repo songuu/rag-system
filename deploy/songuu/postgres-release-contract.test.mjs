@@ -72,15 +72,18 @@ test('host release migrates a complete PostgreSQL artifact before atomic cutover
   const extract = script.indexOf('tar --no-same-owner --no-same-permissions -xzf "$ARTIFACT" -C "$release"');
   const artifactValidation = script.indexOf('Extracted release is missing PostgreSQL migration assets');
   const migrate = script.indexOf('node scripts/migrate-postgres.mjs');
+  const runtimeVerification = script.indexOf('node scripts/verify-postgres-runtime.mjs');
   const cutover = script.indexOf('mv -Tf "$next_link" "$ROOT/current"');
 
   assert.ok(extract >= 0);
   assert.ok(artifactValidation > extract);
   assert.ok(migrate > artifactValidation);
-  assert.ok(cutover > migrate);
+  assert.ok(runtimeVerification > migrate);
+  assert.ok(cutover > runtimeVerification);
   assert.match(script, /db\/postgres\/bootstrap\.sql/);
   assert.match(script, /db\/postgres\/migrations\/\*\.sql/);
   assert.match(script, /scripts\/migrate-postgres\.mjs/);
+  assert.match(script, /scripts\/verify-postgres-runtime\.mjs/);
   assert.match(script, /scripts\/backfill-local-postgres\.mjs/);
   assert.match(script, /tar --no-same-owner --no-same-permissions -xzf "\$ARTIFACT" -C "\$release"/);
   assert.match(script, /chown -R root:root -- "\$release"/);
@@ -88,37 +91,52 @@ test('host release migrates a complete PostgreSQL artifact before atomic cutover
   assert.match(script, /Release artifact contains an unsafe file type or symbolic link/);
 });
 
-test('migration-only credentials are scoped to migration and backfill subprocesses', () => {
+test('migration-only credentials are scoped to migration, runtime verification, and backfill subprocesses', () => {
   const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
   const migrationSource = '. "$POSTGRES_MIGRATION_ENV_FILE"';
   const migration = script.indexOf('node scripts/migrate-postgres.mjs');
+  const runtimeVerification = script.indexOf('node scripts/verify-postgres-runtime.mjs');
   const backfillFunction = script.match(/run_local_backfill\(\) \{[\s\S]*?\n\}/);
   const sourceOffsets = [...script.matchAll(/\. "\$POSTGRES_MIGRATION_ENV_FILE"/g)]
     .map((match) => match.index ?? -1);
 
   assert.ok(migration >= 0);
+  assert.ok(runtimeVerification > migration);
   assert.ok(backfillFunction);
-  assert.equal(sourceOffsets.length, 2);
+  assert.equal(sourceOffsets.length, 3);
   assert.ok(sourceOffsets.some((offset) => offset < migration));
+  assert.ok(sourceOffsets.some((offset) => offset > migration && offset < runtimeVerification));
   assert.ok(backfillFunction[0].includes(migrationSource));
+  assert.match(script, /PostgreSQL application-role runtime verification failed before release cutover/);
+  assert.match(script, /PostgreSQL migration environment is missing or unsafe/);
 });
 
 test('legacy local uploads are fenced, transactionally backfilled, and verified before cutover', () => {
   const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
   const migrate = script.indexOf('node scripts/migrate-postgres.mjs');
+  const runtimeVerification = script.indexOf('node scripts/verify-postgres-runtime.mjs');
   const legacyGate = script.indexOf('if [[ "$legacy_local_runtime" = true ]]');
   const resetReceipt = script.indexOf('run_local_backfill --reset-receipt', legacyGate);
   const check = script.indexOf('run_local_backfill --check');
   const apply = script.indexOf('run_local_backfill --apply', check);
   const readback = script.indexOf('run_local_backfill --check', apply);
+  const receiptConflict = script.indexOf('  4)');
+  const expandedFence = script.indexOf('fence_previous_process', receiptConflict);
+  const expandedReset = script.indexOf('run_local_backfill --reset-receipt', receiptConflict);
+  const expandedApply = script.indexOf('run_local_backfill --apply', receiptConflict);
   const cutover = script.indexOf('mv -Tf "$next_link" "$ROOT/current"');
   const fenceFunction = script.match(/fence_previous_process\(\) \{[\s\S]*?\n\}/);
 
-  assert.ok(legacyGate > migrate);
+  assert.ok(runtimeVerification > migrate);
+  assert.ok(legacyGate > runtimeVerification);
   assert.ok(resetReceipt > legacyGate);
   assert.ok(check > resetReceipt);
   assert.ok(apply > check);
   assert.ok(readback > apply);
+  assert.ok(receiptConflict > readback);
+  assert.ok(expandedFence > receiptConflict);
+  assert.ok(expandedReset > expandedFence);
+  assert.ok(expandedApply > expandedReset);
   assert.ok(cutover > readback);
   assert.ok(fenceFunction);
   assert.match(fenceFunction[0], /if ! pm2 delete rag-system/);
@@ -131,23 +149,43 @@ test('legacy local uploads are fenced, transactionally backfilled, and verified 
   assert.match(script, /old_process_fenced=true/);
   assert.match(script, /resume_previous_process_after_backfill_failure/);
   assert.match(script, /test "\$\{RAG_PERSISTENCE_BACKEND:-local\}" = "local"/);
+  assert.match(script, /local_backfill_args=\(--source-root "\$ROOT\/uploads"\)/);
+  assert.match(script, /local_backfill_args\+=\(--source-root "\$ROOT\/data\/uploads"\)/);
   assert.match(script, /Local upload backfill failed before release cutover/);
   assert.match(script, /Local upload backfill readback failed before release cutover/);
+  assert.match(script, /Expanded local upload backfill readback failed before release cutover/);
 });
 
 test('failed release restores the previous database environment before reloading the previous app', () => {
   const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
   const rollback = script.match(/rollback\(\) \{[\s\S]*?\n\}/);
+  const resume = script.match(/resume_previous_process_after_backfill_failure\(\) \{[\s\S]*?\n\}/);
+  const sharedValidation = script.match(/validate_release_shared_asset_backup\(\) \{[\s\S]*?\n\}/);
 
   assert.ok(rollback);
+  assert.ok(resume);
+  assert.ok(sharedValidation);
   const restore = rollback[0].indexOf('restore_database_environment');
   const symlink = rollback[0].indexOf('mv -Tf "$rollback_link" "$ROOT/current"');
+  const restoreShared = rollback[0].indexOf('restore_release_shared_assets');
   const reload = rollback[0].indexOf('reload_rag_process');
   const verify = rollback[0].indexOf('wait_for_readiness');
   assert.ok(restore >= 0);
   assert.ok(symlink > restore);
+  assert.ok(restoreShared > symlink);
+  assert.ok(reload > restoreShared);
   assert.ok(reload > symlink);
   assert.ok(verify > reload);
+  assert.ok(
+    resume[0].indexOf('restore_release_shared_assets')
+      < resume[0].indexOf('reload_rag_process')
+  );
+  assert.match(script, /RAG_SHARED_ASSET_BACKUP_DIR:-/);
+  assert.match(script, /RAG_SHARED_ASSET_BACKUP_MANIFEST:-/);
+  assert.match(script, /release_exit_trap\(\)[\s\S]*restore_database_environment[\s\S]*restore_release_shared_assets[\s\S]*resume_previous_process_after_backfill_failure/);
+  assert.match(sharedValidation[0], /declare -A seen_targets=/);
+  assert.match(sharedValidation[0], /\[\[ "\$record_count" -eq 4 \]\]/);
+  assert.match(sharedValidation[0], /"run-rag-system\.sh:\$RUNNER"/);
   assert.match(script, /trap release_exit_trap EXIT/);
   assert.match(script, /release_committed=true[\s\S]*trap - EXIT/);
 });

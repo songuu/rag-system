@@ -4,8 +4,7 @@ import { getMaicStore } from '@/lib/maic/course-store';
 export const runtime = 'nodejs';
 
 export async function GET(): Promise<NextResponse> {
-  const courses = getMaicStore()
-    .listCourses()
+  const courses = (await getMaicStore().listCourses())
     .map(c => ({
       course_id: c.course_id,
       title: c.title,

@@ -317,18 +317,23 @@ export async function grantApplicationRole(client, role) {
     'PostgreSQL application role grants failed.',
     async () => {
       for (const statement of [
+        `revoke insert, update, delete, truncate, references, trigger on table
+           public.rag_schema_migrations, public.tenants, public.corpora
+         from ${quotedRole}`,
+        `alter default privileges in schema public
+         revoke select, insert, update, delete, truncate, references, trigger
+         on tables from ${quotedRole}`,
+        `alter default privileges in schema public
+         revoke usage, select, update on sequences from ${quotedRole}`,
         `grant usage on schema public to ${quotedRole}`,
         `grant select on table public.rag_schema_migrations to ${quotedRole}`,
+        `grant select on table public.tenants, public.corpora to ${quotedRole}`,
         `grant select, insert, update, delete on table
-           public.tenants, public.corpora, public.document_assets,
-           public.object_blobs, public.index_jobs, public.traces,
-           public.observations, public.trace_scores
+           public.document_assets, public.object_blobs, public.index_jobs,
+           public.traces, public.observations, public.trace_scores,
+           public.maic_courses, public.maic_classroom_sessions
          to ${quotedRole}`,
         `grant usage, select on all sequences in schema public to ${quotedRole}`,
-        `alter default privileges in schema public
-         grant select, insert, update, delete on tables to ${quotedRole}`,
-        `alter default privileges in schema public
-         grant usage, select on sequences to ${quotedRole}`,
       ]) {
         await safeQuery(
           client,

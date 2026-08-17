@@ -15,7 +15,11 @@ registerHooks({
   },
 });
 
-const { PostgresTraceStore, enqueueTraceMirror } = await import('./postgres-trace-store.ts');
+const {
+  PostgresTraceStore,
+  enqueueTraceMirror,
+  mirrorTraceToPostgres,
+} = await import('./postgres-trace-store.ts');
 
 const CONFIG = {
   databaseUrl: 'postgresql://rag:secret@db/rag',
@@ -152,6 +156,49 @@ test('trace mirror serializes updates for the same trace in callback order', asy
   releaseFirst();
   await Promise.all([first, second]);
   assert.deepEqual(statuses, ['PENDING', 'SUCCESS']);
+});
+
+test('trace mirror exposes the queued PostgreSQL write failure to its terminal caller', async () => {
+  const persistenceFailure = new Error('postgres unavailable');
+  const store = {
+    async upsertTrace() {
+      throw persistenceFailure;
+    },
+  };
+
+  await assert.rejects(
+    enqueueTraceMirror(store, { id: 'trace-failed', status: 'ERROR' }),
+    (error) => error === persistenceFailure
+  );
+});
+
+test('postgres trace mirror fails closed when required runtime scope is missing', () => {
+  const names = [
+    'NODE_ENV',
+    'RAG_PERSISTENCE_BACKEND',
+    'POSTGRES_URL',
+    'DATABASE_URL',
+    'RAG_DEFAULT_TENANT_ID',
+    'POSTGRES_DEFAULT_TENANT_ID',
+    'RAG_DEFAULT_CORPUS_ID',
+    'POSTGRES_DEFAULT_CORPUS_ID',
+  ];
+  const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    process.env.NODE_ENV = 'production';
+    process.env.RAG_PERSISTENCE_BACKEND = 'postgres';
+    for (const name of names.slice(2)) delete process.env[name];
+
+    assert.throws(
+      () => mirrorTraceToPostgres({ id: 'trace-misconfigured', status: 'ERROR' }),
+      /PostgreSQL persistence requires DATABASE_URL, RAG_DEFAULT_TENANT_ID, RAG_DEFAULT_CORPUS_ID/
+    );
+  } finally {
+    for (const name of names) {
+      if (previous[name] === undefined) delete process.env[name];
+      else process.env[name] = previous[name];
+    }
+  }
 });
 
 function isRelativeImport(specifier) {

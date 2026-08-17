@@ -8,7 +8,7 @@ export async function GET(
   { params }: { params: Promise<{ courseId: string }> }
 ): Promise<NextResponse> {
   const { courseId } = await params;
-  const course = getMaicStore().getCourse(courseId);
+  const course = await getMaicStore().getCourse(courseId);
   if (!course) {
     return NextResponse.json({ success: false, error: '课程不存在' }, { status: 404 });
   }
@@ -20,6 +20,6 @@ export async function DELETE(
   { params }: { params: Promise<{ courseId: string }> }
 ): Promise<NextResponse> {
   const { courseId } = await params;
-  const ok = getMaicStore().deleteCourse(courseId);
+  const ok = await getMaicStore().deleteCourse(courseId);
   return NextResponse.json({ success: ok });
 }

@@ -436,10 +436,17 @@ chmod 600 -- "$runtime_stage" "$migration_stage"
 
 if [[ -f "$RUNTIME_ENV" ]]; then
   awk '
+    BEGIN { retired_prefix = "SUPA" "BASE_" }
     /^# BEGIN managed PostgreSQL host$/ { managed = 1; next }
     /^# END managed PostgreSQL host$/ { managed = 0; next }
     managed { next }
     /^[[:space:]]*(export[[:space:]]+)?(RAG_PERSISTENCE_BACKEND|DATABASE_URL|POSTGRES_URL|POSTGRES_SSL_MODE|POSTGRES_MIGRATION_URL|POSTGRES_APP_ROLE|POSTGRES_PASSWORD|RAG_DEFAULT_TENANT_ID|RAG_DEFAULT_CORPUS_ID)=/ { next }
+    {
+      candidate = $0
+      sub(/^[[:space:]]*/, "", candidate)
+      sub(/^export[[:space:]]+/, "", candidate)
+      if (candidate ~ ("^" retired_prefix "[A-Za-z0-9_]+=")) next
+    }
     { kept[++count] = $0 }
     END {
       while (count > 0 && kept[count] ~ /^[[:space:]]*$/) count -= 1

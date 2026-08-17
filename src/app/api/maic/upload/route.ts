@@ -73,7 +73,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         : file.name.replace(/\.[^.]+$/, '');
     const titleSource = typeof titleField === 'string' && titleField.trim() ? 'user' : 'filename';
 
-    const course = getMaicStore().createCourse({
+    const course = await getMaicStore().createCourse({
       course_id,
       title,
       title_source: titleSource,
@@ -86,7 +86,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const cached = await loadPreparedFromCache(cacheIdentity);
     if (cached) {
-      getMaicStore().setCoursePrepared(course.course_id, cached.prepared);
+      await getMaicStore().setCoursePrepared(course.course_id, cached.prepared);
     }
 
     return NextResponse.json({

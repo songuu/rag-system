@@ -19,6 +19,10 @@ const postReleaseGate = readFileSync(
   path.join(root, 'deploy', 'songuu', 'post-release-gate.sh'),
   'utf8'
 ).replaceAll('\r\n', '\n');
+const postgresProvisioner = readFileSync(
+  path.join(root, 'deploy', 'songuu', 'provision-postgres-host.sh'),
+  'utf8'
+).replaceAll('\r\n', '\n');
 
 function stepBody(name, nextName) {
   return workflow.match(
@@ -42,8 +46,12 @@ test('GitHub standalone archive carries the PostgreSQL migration runtime', () =>
     /COPY --from=builder .*\/app\/scripts\/backfill-local-postgres\.mjs \.\/scripts\/backfill-local-postgres\.mjs/
   );
   assert.match(
+    dockerfile,
+    /COPY --from=builder .*\/app\/scripts\/verify-postgres-runtime\.mjs \.\/scripts\/verify-postgres-runtime\.mjs/
+  );
+  assert.match(
     packageStep,
-    /tar -C \/app --owner=0 --group=0 --numeric-owner -czf - server\.js \.next public node_modules db\/postgres scripts\/migrate-postgres\.mjs scripts\/backfill-local-postgres\.mjs/
+    /tar -C \/app --owner=0 --group=0 --numeric-owner -czf - server\.js \.next public node_modules db\/postgres scripts\/migrate-postgres\.mjs scripts\/backfill-local-postgres\.mjs scripts\/verify-postgres-runtime\.mjs/
   );
   assert.match(packageStep, /tar --numeric-owner -tvzf "\$\{archive\}"/);
   assert.match(packageStep, /awk '\$2 != "0\/0" \{ exit 1 \}'/);
@@ -60,6 +68,34 @@ test('GitHub standalone archive carries the PostgreSQL migration runtime', () =>
     packageStep,
     /grep -qx 'scripts\/backfill-local-postgres\.mjs' "\$\{entries\}"/
   );
+  assert.match(
+    packageStep,
+    /grep -qx 'scripts\/verify-postgres-runtime\.mjs' "\$\{entries\}"/
+  );
+});
+
+test('GitHub quality gates exercise a pinned real PostgreSQL 17 service', () => {
+  const qualityGateStep = stepBody('Run RAG quality gates', 'Build Linux production image');
+  const provisionedImage = postgresProvisioner.match(
+    /readonly CONTAINER_IMAGE='(?<image>postgres:17-[^']+@sha256:[0-9a-f]{64})'/
+  )?.groups?.image;
+
+  assert.ok(provisionedImage, 'host provisioner must pin a PostgreSQL 17 image digest');
+  assert.ok(qualityGateStep, 'RAG quality gate step must exist');
+  assert.ok(
+    workflow.includes(`services:\n      postgres:\n        image: ${provisionedImage}`),
+    'CI PostgreSQL service must reuse the host provisioner image digest'
+  );
+  assert.match(workflow, /POSTGRES_USER: rag_ci_owner/);
+  assert.match(workflow, /POSTGRES_PASSWORD: rag_ci_ephemeral_password/);
+  assert.match(workflow, /POSTGRES_DB: rag_ci/);
+  assert.match(workflow, /- 54329:5432/);
+  assert.match(workflow, /--health-cmd "pg_isready -U rag_ci_owner -d rag_ci"/);
+  assert.match(
+    qualityGateStep,
+    /env:\n\s+TEST_DATABASE_URL: postgresql:\/\/rag_ci_owner:rag_ci_ephemeral_password@127\.0\.0\.1:54329\/rag_ci/
+  );
+  assert.match(qualityGateStep, /pnpm test:postgres:integration/);
 });
 
 test('GitHub deployment installs and passes the PostgreSQL host provisioner', () => {
@@ -311,7 +347,7 @@ test('remote gateway and watcher gate remains inside the release transaction', (
   assert.match(remoteStep, /bash -n "\$\{REMOTE_DIR\}\/post-release-gate\.sh"/);
   assert.match(
     remoteStep,
-    /RAG_POST_RELEASE_GATE="\$\{REMOTE_DIR\}\/post-release-gate\.sh" \\\n+\s*RAG_RELEASE_GATE_ROOT="\$\{REMOTE_DIR\}" \\\n+\s*RAG_ENV_RELOAD_LOCK_HELD=1/
+    /RAG_POST_RELEASE_GATE="\$\{REMOTE_DIR\}\/post-release-gate\.sh" \\\n+\s*RAG_SHARED_ASSET_BACKUP_DIR="\$\{shared_backup_dir\}" \\\n+\s*RAG_SHARED_ASSET_BACKUP_MANIFEST="\$\{shared_backup_manifest\}" \\\n+\s*RAG_RELEASE_GATE_ROOT="\$\{REMOTE_DIR\}" \\\n+\s*RAG_ENV_RELOAD_LOCK_HELD=1/
   );
 
   const releaseInvocation = remoteStep.indexOf('"${REMOTE_DIR}/release-host.sh"');

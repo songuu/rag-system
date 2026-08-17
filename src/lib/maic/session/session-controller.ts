@@ -43,17 +43,21 @@ class SessionController {
   private slots: Map<string, RuntimeSlot> = new Map();
 
   /** 订阅事件;首次订阅会自动启动循环 */
-  subscribe(sessionId: string, listener: Listener): () => void {
+  async subscribe(sessionId: string, listener: Listener): Promise<() => void> {
     const slot = this.ensureSlot(sessionId);
     slot.listeners.add(listener);
 
-    // 推送初始 state
-    const sess = getMaicStore().getSession(sessionId);
-    if (sess) {
-      listener({ type: 'state', data: sess.state });
+    try {
+      // 推送初始 state
+      const sess = await getMaicStore().getSession(sessionId);
+      if (sess) {
+        listener({ type: 'state', data: sess.state });
+      }
+      this.ensureLoop(sessionId);
+    } catch (error) {
+      slot.listeners.delete(listener);
+      throw error;
     }
-
-    this.ensureLoop(sessionId);
 
     return () => {
       slot.listeners.delete(listener);
@@ -64,9 +68,9 @@ class SessionController {
   }
 
   /** 学生输入入队 + 打断当前 wait */
-  submitStudentMessage(sessionId: string, content: string): Utterance | null {
+  async submitStudentMessage(sessionId: string, content: string): Promise<Utterance | null> {
     const store = getMaicStore();
-    const sess = store.getSession(sessionId);
+    const sess = await store.getSession(sessionId);
     if (!sess) return null;
 
     const utterance: Utterance = {
@@ -76,7 +80,8 @@ class SessionController {
       content: content.trim(),
       timestamp: new Date().toISOString(),
     };
-    store.appendUtterance(sessionId, utterance);
+    const appended = await store.appendUtterance(sessionId, utterance);
+    if (!appended) return null;
 
     const slot = this.ensureSlot(sessionId);
     slot.pendingStudent.push(utterance.content);
@@ -86,52 +91,52 @@ class SessionController {
 
     // 若当前 paused/ended,重新 running
     if (sess.state.status !== 'running') {
-      store.updateSessionState(sessionId, { status: 'running' });
+      await store.updateSessionState(sessionId, { status: 'running' });
     }
 
     this.ensureLoop(sessionId);
     return utterance;
   }
 
-  setMode(sessionId: string, mode: ClassroomMode): void {
+  async setMode(sessionId: string, mode: ClassroomMode): Promise<void> {
     const store = getMaicStore();
-    const updated = store.setSessionMode(sessionId, mode);
+    const updated = await store.setSessionMode(sessionId, mode);
     if (updated) {
       this.emit(sessionId, { type: 'mode', data: { mode } });
       this.emit(sessionId, { type: 'state', data: updated.state });
     }
   }
 
-  pause(sessionId: string): void {
+  async pause(sessionId: string): Promise<void> {
     const slot = this.ensureSlot(sessionId);
     slot.running = false;
     slot.waitAbort?.abort();
-    const updated = getMaicStore().updateSessionState(sessionId, { status: 'paused' });
+    const updated = await getMaicStore().updateSessionState(sessionId, { status: 'paused' });
     if (updated) {
       this.emit(sessionId, { type: 'state', data: updated.state });
     }
   }
 
-  resume(sessionId: string): void {
-    const updated = getMaicStore().updateSessionState(sessionId, { status: 'running' });
+  async resume(sessionId: string): Promise<void> {
+    const updated = await getMaicStore().updateSessionState(sessionId, { status: 'running' });
     if (updated) {
       this.emit(sessionId, { type: 'state', data: updated.state });
     }
     this.ensureLoop(sessionId);
   }
 
-  navigateTo(
+  async navigateTo(
     sessionId: string,
     slideIndex: number,
     prepared: CoursePrepared | undefined
-  ): void {
+  ): Promise<void> {
     const pageCount = prepared?.pages.length ?? 1;
     const P_t = Math.max(0, Math.min(slideIndex, pageCount - 1));
     const script_cursor = findScriptCursorForSlide(prepared, P_t);
     const slot = this.ensureSlot(sessionId);
     slot.running = false;
     slot.waitAbort?.abort();
-    const updated = getMaicStore().updateSessionState(sessionId, {
+    const updated = await getMaicStore().updateSessionState(sessionId, {
       P_t,
       script_cursor,
       status: 'paused',
@@ -142,12 +147,12 @@ class SessionController {
     }
   }
 
-  restart(sessionId: string): void {
+  async restart(sessionId: string): Promise<void> {
     const slot = this.ensureSlot(sessionId);
     slot.pendingStudent = [];
     slot.running = false;
     slot.waitAbort?.abort();
-    const updated = getMaicStore().updateSessionState(sessionId, {
+    const updated = await getMaicStore().updateSessionState(sessionId, {
       P_t: 0,
       H_t: [],
       script_cursor: 0,
@@ -200,10 +205,15 @@ class SessionController {
     const slot = this.ensureSlot(sessionId);
     slot.running = true;
     if (slot.loopPromise) return;
-    slot.loopPromise = this.runLoop(sessionId).finally(() => {
-      const s = this.slots.get(sessionId);
-      if (s) s.loopPromise = null;
-    });
+    slot.loopPromise = this.runLoop(sessionId)
+      .catch(error => {
+        const message = error instanceof Error ? error.message : 'classroom loop failed';
+        this.emit(sessionId, { type: 'error', data: { message } });
+      })
+      .finally(() => {
+        const s = this.slots.get(sessionId);
+        if (s) s.loopPromise = null;
+      });
   }
 
   private async runLoop(sessionId: string): Promise<void> {
@@ -211,13 +221,13 @@ class SessionController {
     const registry = getAgentRegistry();
     const manager = getManagerAgent();
 
-    const sess = store.getSession(sessionId);
+    const sess = await store.getSession(sessionId);
     if (!sess) return;
-    const course = store.getCourse(sess.course_id);
+    const course = await store.getCourse(sess.course_id);
     if (!course) return;
     const prepared = course.prepared;
 
-    const afterStart = store.updateSessionState(sessionId, { status: 'running' });
+    const afterStart = await store.updateSessionState(sessionId, { status: 'running' });
     if (afterStart) {
       this.emit(sessionId, { type: 'state', data: afterStart.state });
     }
@@ -228,7 +238,7 @@ class SessionController {
       const slot = this.slots.get(sessionId);
       if (!slot || !slot.running || slot.listeners.size === 0) break;
 
-      const current = store.getSession(sessionId);
+      const current = await store.getSession(sessionId);
       if (!current) break;
       if (current.state.status === 'ended' || current.state.status === 'paused') break;
 
@@ -239,6 +249,8 @@ class SessionController {
         decision = await manager.decide(current.state, prepared, studentMsg);
       } catch (error) {
         const message = error instanceof Error ? error.message : 'manager failed';
+        const failed = await store.updateSessionState(sessionId, { status: 'error' });
+        if (failed) this.emit(sessionId, { type: 'state', data: failed.state });
         this.emit(sessionId, { type: 'error', data: { message } });
         break;
       }
@@ -247,11 +259,11 @@ class SessionController {
       try {
         const agent = registry.get(decision.next_agent);
         const utterance = await agent.respond(current.state, decision.action, prepared);
-        store.appendUtterance(sessionId, utterance);
+        await store.appendUtterance(sessionId, utterance);
         this.emit(sessionId, { type: 'utterance', data: utterance });
 
         const patch = applyAction(current.state, decision.action, prepared);
-        const updated = store.updateSessionState(sessionId, patch);
+        const updated = await store.updateSessionState(sessionId, patch);
         if (updated) {
           if (patch.P_t !== undefined) {
             this.emit(sessionId, {
@@ -268,6 +280,8 @@ class SessionController {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'agent failed';
+        const failed = await store.updateSessionState(sessionId, { status: 'error' });
+        if (failed) this.emit(sessionId, { type: 'state', data: failed.state });
         this.emit(sessionId, { type: 'error', data: { message } });
         break;
       }
@@ -275,7 +289,7 @@ class SessionController {
       steps += 1;
 
       // Wait with abort
-      const mode = store.getSession(sessionId)?.state.mode ?? 'continuous';
+      const mode = (await store.getSession(sessionId))?.state.mode ?? 'continuous';
       const delay = mode === 'continuous' ? TURN_DELAY_MS : TURN_DELAY_MS * 1.5;
       await this.waitOrAbort(sessionId, delay);
     }
@@ -313,7 +327,7 @@ export function getSessionController(): SessionController {
 export function ensureSessionForCourse(
   courseId: string,
   roles: AgentRole[]
-): ClassroomSession {
+): Promise<ClassroomSession> {
   return getMaicStore().getOrCreateSession(courseId, roles);
 }
 

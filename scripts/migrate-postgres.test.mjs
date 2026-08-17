@@ -71,8 +71,13 @@ test('migration runner supports a separate migration DSN and a validated app rol
     .filter((text) => !/^(begin|commit)$/i.test(text))
     .every((text) => text.includes('"rag_app"')));
   assert.ok(calls.some((text) => /grant select on table public\.rag_schema_migrations/i.test(text)));
+  assert.ok(calls.some((text) => /grant select on table[\s\S]*public\.tenants[\s\S]*public\.corpora/i.test(text)));
+  assert.ok(calls.some((text) => /public\.maic_courses[\s\S]*public\.maic_classroom_sessions/i.test(text)));
   assert.equal(calls.some((text) => /insert.*rag_schema_migrations/i.test(text)), false);
-  assert.ok(calls.some((text) => /alter default privileges/i.test(text)));
+  assert.equal(calls.some((text) => /grant select, insert, update, delete on table[\s\S]*public\.tenants/i.test(text)), false);
+  assert.ok(calls.some((text) => /revoke insert, update, delete[\s\S]*public\.tenants[\s\S]*public\.corpora/i.test(text)));
+  assert.ok(calls.some((text) => /alter default privileges[\s\S]*revoke[\s\S]*on tables/i.test(text)));
+  assert.equal(calls.some((text) => /alter default privileges[\s\S]*grant/i.test(text)), false);
 });
 
 test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract', async () => {
@@ -114,6 +119,8 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
     'traces',
     'observations',
     'trace_scores',
+    'maic_courses',
+    'maic_classroom_sessions',
   ]) {
     assert.match(sql, new RegExp(`create table(?: if not exists)? public\\.${table}\\b`, 'i'));
   }
@@ -134,6 +141,12 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
   assert.match(sql, /foreign key\s*\(\s*trace_id\s*,\s*parent_observation_id\s*\)\s+references\s+public\.observations\s*\(\s*trace_id\s*,\s*id\s*\)/i);
   assert.match(sql, /foreign key\s*\(\s*trace_id\s*,\s*observation_id\s*\)\s+references\s+public\.observations\s*\(\s*trace_id\s*,\s*id\s*\)/i);
   assert.match(sql, /create trigger[\s\S]*?updated_at/i);
+  assert.match(
+    sql,
+    /foreign key\s*\(\s*tenant_id\s*,\s*corpus_id\s*,\s*course_id\s*\)\s+references\s+public\.maic_courses\s*\(\s*tenant_id\s*,\s*corpus_id\s*,\s*course_id\s*\)\s+on delete cascade/i
+  );
+  assert.match(sql, /maic_courses[\s\S]*?payload\s+jsonb[\s\S]*?version\s+bigint/i);
+  assert.match(sql, /maic_classroom_sessions[\s\S]*?payload\s+jsonb[\s\S]*?version\s+bigint/i);
 });
 
 test('migration discovery is ordered, checksummed, and rejects duplicate versions', async () => {

@@ -16,7 +16,7 @@ export async function GET(
 ): Promise<Response> {
   const { courseId } = await params;
   const store = getMaicStore();
-  const course = store.getCourse(courseId);
+  const course = await store.getCourse(courseId);
   if (!course) {
     return NextResponse.json({ success: false, error: '课程不存在' }, { status: 404 });
   }
@@ -27,11 +27,11 @@ export async function GET(
     );
   }
 
-  const session = ensureSessionForCourse(courseId, DEFAULT_ACTIVE_ROLES);
+  const session = await ensureSessionForCourse(courseId, DEFAULT_ACTIVE_ROLES);
   const controller = getSessionController();
 
-  return createSseResponse<ClassroomEvent>(emitter => {
-    const unsubscribe = controller.subscribe(session.session_id, event => {
+  return createSseResponse<ClassroomEvent>(async emitter => {
+    const unsubscribe = await controller.subscribe(session.session_id, event => {
       emitter.emit(event);
       if (event.type === 'end') {
         emitter.close();
@@ -40,7 +40,7 @@ export async function GET(
 
     emitter.emit({
       type: 'state',
-      data: store.getSession(session.session_id)!.state,
+      data: (await store.getSession(session.session_id))!.state,
     });
 
     return { cleanup: unsubscribe };

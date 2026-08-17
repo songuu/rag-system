@@ -26,6 +26,8 @@ readonly ENV_RELOAD_LOCK_FILE="/run/lock/rag-system-env-reload.lock"
 readonly ENV_RELOAD_LOCK_HELD="${RAG_ENV_RELOAD_LOCK_HELD:-0}"
 readonly POST_RELEASE_GATE="${RAG_POST_RELEASE_GATE:-}"
 readonly RELEASE_GATE_ROOT="${RAG_RELEASE_GATE_ROOT:-}"
+readonly SHARED_ASSET_BACKUP_DIR="${RAG_SHARED_ASSET_BACKUP_DIR:-}"
+readonly SHARED_ASSET_BACKUP_MANIFEST="${RAG_SHARED_ASSET_BACKUP_MANIFEST:-}"
 
 environment_snapshot=''
 migration_environment_snapshot=''
@@ -41,6 +43,7 @@ cutover_started=false
 legacy_local_runtime=false
 previous=""
 verified_post_release_gate=""
+shared_assets_restored=false
 
 cleanup_database_environment_snapshots() {
   [[ -z "$environment_snapshot" || ! -e "$environment_snapshot" ]] \
@@ -123,6 +126,7 @@ restore_database_environment() {
 release_exit_trap() {
   local status="$?"
   local environment_restore_ok=true
+  local shared_restore_ok=true
   trap - EXIT
   if [[ "$release_committed" != true ]]; then
     if ! restore_database_environment; then
@@ -130,7 +134,13 @@ release_exit_trap() {
       status=1
       environment_restore_ok=false
     fi
+    if ! restore_release_shared_assets; then
+      echo "RAG release could not restore its previous shared runtime assets" >&2
+      status=1
+      shared_restore_ok=false
+    fi
     if [[ "$environment_restore_ok" = true \
+      && "$shared_restore_ok" = true \
       && "$old_process_fenced" = true \
       && "$cutover_started" != true ]]; then
       if ! resume_previous_process_after_backfill_failure; then
@@ -199,6 +209,111 @@ validate_post_release_gate() {
   verified_post_release_gate="$gate_real"
 }
 
+validate_release_shared_target() {
+  case "$1" in
+    "$RUNNER"|"$BOOTSTRAP"|"$PM2_ECOSYSTEM"|"$PM2_MANAGER") ;;
+    *)
+      echo "Unsafe shared runtime rollback target: $1" >&2
+      return 2
+      ;;
+  esac
+}
+
+validate_release_shared_asset_backup() {
+  local state=""
+  local backup_name=""
+  local target=""
+  local extra=""
+  local backup=""
+  local record_count=0
+  declare -A seen_targets=()
+
+  if [[ -z "$SHARED_ASSET_BACKUP_DIR" && -z "$SHARED_ASSET_BACKUP_MANIFEST" ]]; then
+    return 0
+  fi
+  if [[ -z "$RELEASE_GATE_ROOT" \
+    || "$SHARED_ASSET_BACKUP_DIR" != "$RELEASE_GATE_ROOT/shared-assets" \
+    || "$SHARED_ASSET_BACKUP_MANIFEST" != "$RELEASE_GATE_ROOT/shared-assets.manifest" ]]; then
+    echo "Shared runtime rollback paths are incomplete or outside the release gate" >&2
+    return 2
+  fi
+  if [[ -L "$SHARED_ASSET_BACKUP_DIR" || ! -d "$SHARED_ASSET_BACKUP_DIR" \
+    || -L "$SHARED_ASSET_BACKUP_MANIFEST" || ! -f "$SHARED_ASSET_BACKUP_MANIFEST" ]]; then
+    echo "Shared runtime rollback state is not a real directory and manifest" >&2
+    return 2
+  fi
+  if [[ "$(stat -c '%U:%G' -- "$SHARED_ASSET_BACKUP_DIR")" != root:root \
+    || "$(stat -c '%a' -- "$SHARED_ASSET_BACKUP_DIR")" != 700 \
+    || "$(stat -c '%U:%G' -- "$SHARED_ASSET_BACKUP_MANIFEST")" != root:root \
+    || "$(stat -c '%a' -- "$SHARED_ASSET_BACKUP_MANIFEST")" != 600 ]]; then
+    echo "Shared runtime rollback state ownership or permissions are unsafe" >&2
+    return 2
+  fi
+
+  while IFS=$'\t' read -r state backup_name target extra; do
+    [[ -n "$state" && -n "$backup_name" && -n "$target" && -z "$extra" ]] || return 2
+    validate_release_shared_target "$target" || return
+    case "$backup_name:$target" in
+      "run-rag-system.sh:$RUNNER"|\
+      "run-rag-system.cjs:$BOOTSTRAP"|\
+      "rag-system.ecosystem.config.cjs:$PM2_ECOSYSTEM"|\
+      "manage-rag-system-pm2.sh:$PM2_MANAGER") ;;
+      *) return 2 ;;
+    esac
+    [[ -z "${seen_targets[$target]+present}" ]] || return 2
+    seen_targets[$target]=present
+    record_count=$((record_count + 1))
+    case "$state" in
+      present)
+        backup="$SHARED_ASSET_BACKUP_DIR/$backup_name"
+        [[ -f "$backup" && ! -L "$backup" ]] || return 2
+        [[ "$(stat -c '%U:%G' -- "$backup")" = root:root ]] || return 2
+        if find "$backup" -maxdepth 0 -perm /022 -print -quit | grep -q .; then
+          return 2
+        fi
+        ;;
+      absent) ;;
+      *) return 2 ;;
+    esac
+  done < "$SHARED_ASSET_BACKUP_MANIFEST"
+  [[ "$record_count" -eq 4 ]] || return 2
+}
+
+restore_release_shared_assets() {
+  local state=""
+  local backup_name=""
+  local target=""
+  local extra=""
+  local backup=""
+  local stage=""
+
+  if [[ "$shared_assets_restored" = true \
+    || -z "$SHARED_ASSET_BACKUP_DIR" ]]; then
+    return 0
+  fi
+  validate_release_shared_asset_backup || return
+  while IFS=$'\t' read -r state backup_name target extra; do
+    validate_release_shared_target "$target" || return
+    stage="${target}.release-rollback.$$"
+    rm -f -- "$stage" || return
+    case "$state" in
+      present)
+        backup="$SHARED_ASSET_BACKUP_DIR/$backup_name"
+        cp -a -- "$backup" "$stage" || return
+        mv -f -- "$stage" "$target" || {
+          rm -f -- "$stage"
+          return 1
+        }
+        ;;
+      absent)
+        rm -f -- "$target" || return
+        ;;
+      *) return 2 ;;
+    esac
+  done < "$SHARED_ASSET_BACKUP_MANIFEST"
+  shared_assets_restored=true
+}
+
 run_post_release_gate() {
   if [[ -z "$verified_post_release_gate" ]]; then
     return 0
@@ -225,6 +340,9 @@ command -v find >/dev/null
 command -v readlink >/dev/null
 
 if ! validate_post_release_gate; then
+  exit 2
+fi
+if ! validate_release_shared_asset_backup; then
   exit 2
 fi
 
@@ -562,14 +680,15 @@ if [[ ! -f "$release/server.js" || ! -d "$release/.next/static" || ! -d "$releas
 fi
 if [[ ! -f "$release/db/postgres/bootstrap.sql" \
   || ! -f "$release/scripts/migrate-postgres.mjs" \
+  || ! -f "$release/scripts/verify-postgres-runtime.mjs" \
   || ! -f "$release/scripts/backfill-local-postgres.mjs" ]] \
   || ! compgen -G "$release/db/postgres/migrations/*.sql" >/dev/null; then
   echo "Extracted release is missing PostgreSQL migration assets" >&2
   exit 1
 fi
 
-if [[ -e "$POSTGRES_MIGRATION_ENV_FILE" && ! -f "$POSTGRES_MIGRATION_ENV_FILE" ]]; then
-  echo "PostgreSQL migration environment path is not a regular file" >&2
+if [[ ! -f "$POSTGRES_MIGRATION_ENV_FILE" || -L "$POSTGRES_MIGRATION_ENV_FILE" ]]; then
+  echo "PostgreSQL migration environment is missing or unsafe" >&2
   exit 2
 fi
 
@@ -592,6 +711,23 @@ if ! (
   exit 1
 fi
 
+# Prove that the exact runtime DSN authenticates as the restricted app role and
+# can perform rollback-only persistence DML. The migration URL is available to
+# the process for role-name metadata only; the verifier deliberately ignores it.
+if ! (
+  set -euo pipefail
+  set -a
+  . "$DEFAULTS_FILE"
+  . "$ENV_FILE"
+  . "$POSTGRES_MIGRATION_ENV_FILE"
+  set +a
+  cd "$release"
+  node scripts/verify-postgres-runtime.mjs
+); then
+  echo "PostgreSQL application-role runtime verification failed before release cutover" >&2
+  exit 1
+fi
+
 if [[ -L "$ROOT/current" || -e "$ROOT/current" ]]; then
   previous=$(readlink -f "$ROOT/current" || true)
 fi
@@ -605,12 +741,14 @@ resume_previous_process_after_backfill_failure() {
   if [[ "$current_target" != "$previous" ]]; then
     return 1
   fi
-  reload_rag_process >/dev/null 2>&1 \
+  restore_release_shared_assets \
+    && reload_rag_process >/dev/null 2>&1 \
     && wait_for_liveness >/dev/null \
     && wait_for_readiness >/dev/null
 }
 
-local_backfill_args=(--source-root "$ROOT/data/uploads")
+local_backfill_args=(--source-root "$ROOT/uploads")
+local_backfill_args+=(--source-root "$ROOT/data/uploads")
 shopt -s nullglob
 for local_upload_root in "$RELEASES"/rag-system-*/uploads; do
   local_backfill_args+=(--source-root "$local_upload_root")
@@ -746,6 +884,25 @@ case "$backfill_status" in
       exit 1
     fi
     ;;
+  4)
+    # A previous PostgreSQL release may have recorded a receipt before this
+    # release learned about an older shared upload root. Fence even a PG-backed
+    # predecessor because older builds could still contain a local-only writer,
+    # then rebuild the receipt from the immutable union of all source roots.
+    fence_previous_process
+    if ! run_local_backfill --reset-receipt; then
+      echo "Could not reset the expanded local upload backfill receipt" >&2
+      exit 1
+    fi
+    if ! run_local_backfill --apply; then
+      echo "Expanded local upload backfill failed before release cutover" >&2
+      exit 1
+    fi
+    if ! run_local_backfill --check; then
+      echo "Expanded local upload backfill readback failed before release cutover" >&2
+      exit 1
+    fi
+    ;;
   *)
     echo "Local upload backfill preflight failed before release cutover" >&2
     exit 1
@@ -774,6 +931,8 @@ rollback() {
       rm -f -- "$rollback_link"
       rollback_failed=1
     elif [[ "$environment_restore_ok" != true ]]; then
+      rollback_failed=1
+    elif ! restore_release_shared_assets; then
       rollback_failed=1
     elif ! reload_rag_process >/dev/null 2>&1; then
       rollback_failed=1

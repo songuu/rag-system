@@ -16,7 +16,10 @@ registerHooks({
 });
 
 const { describePages } = await import('./read-stage.ts');
-const { runPrepareDependencyGraph } = await import('./prepare-runner.ts');
+const {
+  resolvePrepareStartStatus,
+  runPrepareDependencyGraph,
+} = await import('./prepare-runner.ts');
 
 // Test 验证 prepare-runner 的依赖图重排:
 //   describe → Promise.all([script, tree → Promise.all([questions, focus])])
@@ -90,6 +93,12 @@ function delay(ms) {
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }
+
+test('persisted preparing state restarts after the previous process disappears', () => {
+  assert.equal(resolvePrepareStartStatus('preparing', false), 'restarted');
+  assert.equal(resolvePrepareStartStatus('uploaded', false), 'started');
+  assert.equal(resolvePrepareStartStatus('preparing', true), 'running');
+});
 
 test('runner dependency graph: script and focus execute concurrently after describe gate', async t => {
   const previousConcurrency = process.env.MAIC_LLM_CONCURRENCY;

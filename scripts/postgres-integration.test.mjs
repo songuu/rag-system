@@ -27,9 +27,14 @@ const { PostgresBlobStore } = await import('../src/lib/persistence/postgres-blob
 const { PostgresUploadManifestStore } = await import('../src/lib/persistence/postgres-corpus-store.ts');
 const { PostgresPipelineStore } = await import('../src/lib/persistence/postgres-pipeline-store.ts');
 const { PostgresTraceStore } = await import('../src/lib/persistence/postgres-trace-store.ts');
+const { PostgresMaicStore } = await import('../src/lib/maic/course-store.ts');
 const { checkPostgresReadiness } = await import('../src/lib/postgres/client.ts');
 const { applyLocalBackfill, buildLocalBackfillPlan, inspectLocalBackfill } = await import('./backfill-local-postgres.mjs');
-const { runMigrationSession } = await import('./migrate-postgres.mjs');
+const { grantApplicationRole, runMigrationSession } = await import('./migrate-postgres.mjs');
+const {
+  resolveRuntimeVerificationConfig,
+  verifyPostgresRuntime,
+} = await import('./verify-postgres-runtime.mjs');
 
 const databaseUrl = process.env.TEST_DATABASE_URL?.trim();
 
@@ -40,8 +45,10 @@ test('real PostgreSQL migration and persistence round trip', {
   const tenantId = `integration-${suffix}`;
   const corpusId = `corpus-${suffix}`;
   const appRole = `rag_app_${suffix}`;
+  const appPassword = `runtime_${suffix}_A1`;
   const backfillRoot = await mkdtemp(path.join(tmpdir(), 'rag-pg-backfill-integration-'));
   const client = new pg.Client({ connectionString: databaseUrl, ssl: false });
+  let appClient;
   await client.connect();
 
   const config = {
@@ -65,7 +72,7 @@ test('real PostgreSQL migration and persistence round trip', {
   try {
     // The runner grants an existing least-privilege role; role creation remains
     // an explicit DBA responsibility in production.
-    await client.query(`create role "${appRole}" nologin`);
+    await client.query(`create role "${appRole}" login password '${appPassword}'`);
     const migration = await runMigrationSession(client, {
       seedScope: { tenantId, corpusId },
       appRole,
@@ -76,7 +83,35 @@ test('real PostgreSQL migration and persistence round trip', {
       appRole,
     });
     assert.deepEqual(repeatedMigration.applied, []);
-    assert.deepEqual(repeatedMigration.skipped, ['0001']);
+    assert.deepEqual(repeatedMigration.skipped, ['0001', '0002']);
+
+    const appDatabaseUrl = new URL(databaseUrl);
+    appDatabaseUrl.username = appRole;
+    appDatabaseUrl.password = appPassword;
+    const runtimeVerificationConfig = resolveRuntimeVerificationConfig({
+      POSTGRES_URL: appDatabaseUrl.toString(),
+      POSTGRES_APP_ROLE: appRole,
+      POSTGRES_SSL_MODE: 'disable',
+      RAG_DEFAULT_TENANT_ID: tenantId,
+      RAG_DEFAULT_CORPUS_ID: corpusId,
+    });
+    appClient = new pg.Client({
+      connectionString: runtimeVerificationConfig.databaseUrl,
+      ssl: runtimeVerificationConfig.ssl,
+    });
+    await appClient.connect();
+    assert.deepEqual(
+      await verifyPostgresRuntime(appClient, runtimeVerificationConfig),
+      {
+        role: appRole,
+        postgresMajor: 17,
+        scopeVerified: true,
+        transactionalDmlVerified: true,
+      }
+    );
+    await appClient.end();
+    appClient = undefined;
+
     assert.deepEqual(await checkPostgresReadiness(config, queryClient), {
       connected: true,
       schemaReady: true,
@@ -89,6 +124,81 @@ test('real PostgreSQL migration and persistence round trip', {
       connected: true,
       schemaReady: false,
     });
+
+    // Simulate grants left by an older release and prove the current grant pass
+    // actively removes parent-table writes and future-table blanket DML.
+    await client.query(
+      `grant insert, update, delete on table public.tenants, public.corpora to "${appRole}"`
+    );
+    await client.query(
+      `alter default privileges in schema public
+       grant select, insert, update, delete on tables to "${appRole}"`
+    );
+    await grantApplicationRole(client, appRole);
+
+    await client.query('begin');
+    try {
+      await client.query(`set local role "${appRole}"`);
+      await assert.rejects(
+        () => client.query(
+          `update public.corpora set metadata = metadata where tenant_id = $1 and id = $2`,
+          [tenantId, corpusId]
+        ),
+        error => error?.code === '42501'
+      );
+    } finally {
+      await client.query('rollback');
+    }
+
+    const maicCourseId = `course-${suffix}`;
+    let maicSessionId;
+    await client.query('begin');
+    try {
+      await client.query(`set local role "${appRole}"`);
+      const maicStore = new PostgresMaicStore(config, queryClient);
+      await maicStore.createCourse({
+        course_id: maicCourseId,
+        title: 'MAIC PostgreSQL integration',
+        source_filename: 'course.pdf',
+        source_text: 'MAIC source text',
+      });
+      await maicStore.setCoursePrepared(maicCourseId, preparedCourse());
+      const [firstSession, concurrentSession] = await Promise.all([
+        maicStore.getOrCreateSession(maicCourseId, ['teacher', 'manager']),
+        maicStore.getOrCreateSession(maicCourseId, ['teacher', 'manager']),
+      ]);
+      assert.equal(concurrentSession.session_id, firstSession.session_id);
+      maicSessionId = firstSession.session_id;
+      await maicStore.appendUtterance(firstSession.session_id, {
+        id: `utterance-${suffix}`,
+        speaker: 'student',
+        speaker_name: '我',
+        content: 'PostgreSQL keeps the classroom state',
+        timestamp: '2026-08-17T00:00:00.000Z',
+      });
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    }
+
+    const reloadedMaicStore = new PostgresMaicStore(config, queryClient);
+    assert.equal((await reloadedMaicStore.getCourse(maicCourseId))?.status, 'ready');
+    assert.equal(
+      (await reloadedMaicStore.getSession(maicSessionId))?.state.H_t[0]?.content,
+      'PostgreSQL keeps the classroom state'
+    );
+
+    await client.query('begin');
+    try {
+      await client.query(`set local role "${appRole}"`);
+      assert.equal(await reloadedMaicStore.deleteCourse(maicCourseId), true);
+      await client.query('commit');
+    } catch (error) {
+      await client.query('rollback');
+      throw error;
+    }
+    assert.equal(await reloadedMaicStore.getSession(maicSessionId), undefined);
 
     const blobStore = new PostgresBlobStore(config, queryClient);
     await blobStore.write('round-trip.txt', 'hello PostgreSQL', {
@@ -288,6 +398,7 @@ test('real PostgreSQL migration and persistence round trip', {
       error => error?.code === '23503'
     );
   } finally {
+    await appClient?.end().catch(() => {});
     await client.query('delete from tenants where id = $1', [tenantId]).catch(() => {});
     await client.query(`drop owned by "${appRole}"`).catch(() => {});
     await client.query(`drop role if exists "${appRole}"`).catch(() => {});
@@ -295,3 +406,26 @@ test('real PostgreSQL migration and persistence round trip', {
     await rm(backfillRoot, { recursive: true, force: true });
   }
 });
+
+function preparedCourse() {
+  return {
+    pages: [{ index: 0, raw_text: 'MAIC source text', description: '', key_points: [] }],
+    knowledge_tree: {
+      id: 'root',
+      title: 'MAIC PostgreSQL integration',
+      summary: '',
+      page_refs: [0],
+      children: [],
+    },
+    lecture_script: [],
+    active_questions: [],
+    stage: {
+      title: 'MAIC PostgreSQL integration',
+      summary: '',
+      objectives: [],
+      scene_count: 0,
+      estimated_minutes: 8,
+    },
+    scenes: [],
+  };
+}

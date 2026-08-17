@@ -13,10 +13,15 @@ const SAFE_SCOPE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 export class LocalBackfillError extends Error {
-  constructor(message) {
+  constructor(message, code = 'LOCAL_BACKFILL_ERROR') {
     super(message);
     this.name = 'LocalBackfillError';
+    this.code = code;
   }
+}
+
+export function getLocalBackfillExitCode(error) {
+  return error?.code === 'LOCAL_BACKFILL_RECEIPT_CONFLICT' ? 4 : 1;
 }
 
 export async function buildLocalBackfillPlan(sourceRoots) {
@@ -60,7 +65,10 @@ export async function inspectLocalBackfill(client, plan, scope) {
   assertScope(scope);
   const receipt = await readBackfillReceipt(client, scope);
   if (receipt && !receiptMatches(receipt, plan)) {
-    throw new LocalBackfillError('PostgreSQL contains a conflicting local-backfill receipt.');
+    throw new LocalBackfillError(
+      'PostgreSQL contains a conflicting local-backfill receipt.',
+      'LOCAL_BACKFILL_RECEIPT_CONFLICT'
+    );
   }
   const rows = await inspectPlanRows(client, plan, scope);
   if (receipt) return { ...rows, receipt: true };
@@ -621,6 +629,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === SCRIPT_PATH) {
       ? error.message
       : 'PostgreSQL local backfill failed.';
     console.error(`[backfill:local-postgres] ${message}`);
-    process.exitCode = 1;
+    process.exitCode = getLocalBackfillExitCode(error);
   });
 }

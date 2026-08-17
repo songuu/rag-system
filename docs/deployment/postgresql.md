@@ -89,8 +89,9 @@ SQL、认证 helper、对象存储 schema 或扩展 schema 当作本项目初始
 5. 同时检查 app readiness、一次受控写入和数据库回读，再切流。
 
 迁移 job 使用 `POSTGRES_MIGRATION_URL`（owner/migration role）与 `POSTGRES_APP_ROLE`（例如
-`rag_app`）；应用只使用 `POSTGRES_URL`。runner 会为已存在的 app role 授予当前表的必要
-schema/DML/sequence 权限及未来默认权限，但不会创建登录角色或管理密码。宿主 app bootstrap
+`rag_app`）；应用只使用 `POSTGRES_URL`。runner 会为已存在的 app role 授予 ledger/scope
+只读权限及当前业务表的显式 DML/sequence 权限，不授予未来表的默认全量 DML，也不会创建登录角色
+或管理密码。新增业务表时必须在同一迁移版本中显式更新权限清单。宿主 app bootstrap
 会主动剔除 `POSTGRES_MIGRATION_URL`，不要把高权限 DSN 写入应用 `.env.prod`。
 
 容器镜像和宿主机 release artifact 都包含 `db/postgres` 与 migration runner，供一次性
@@ -122,7 +123,8 @@ owner；只有保存在 root-only credential state 中、不会写入应用或 m
 `rag_owner` DSN。
 
 发布顺序固定为：持有环境热重载锁 → 幂等 provision → 校验生产配置 → 解压新 release →
-执行 `node scripts/migrate-postgres.mjs` → 检查并事务回填旧本地上传 → 原子切换 `current` →
+执行 `node scripts/migrate-postgres.mjs` → 用 `rag_app` 执行 PG17/scope/回滚式 DML 探针 →
+检查并事务回填旧本地上传 → 原子切换 `current` →
 PM2 reload → liveness/readiness → watcher/Nginx/token/gateway verify。任何 provision、迁移、回填、
 readiness 或 gateway gate 失败都会阻止提交新 release，并恢复旧 `current`、环境/defaults、PM2、
 watcher 与 Nginx 快照后重新验证旧服务。
@@ -215,7 +217,10 @@ docker compose --env-file .env.container -f docker-compose.yml -f docker-compose
 2. `node scripts/migrate-postgres.mjs` 成功：证明迁移 runner 完成，不证明 app 已连到同一 DSN。
 3. `/api/health/live` 200：只证明 Next.js 进程存活，**不访问数据库**。
 4. 镜像 `HEALTHCHECK` 调用 `/api/health` readiness，检查数据库连接和核心 schema；失败返回 503。
-5. 一次带认证的业务写入和直接数据库回读：才证明当前 app、scope 与持久化链路一致。
+5. 发布前 `node scripts/verify-postgres-runtime.mjs`：使用应用 DSN 验证实际 `current_user`、
+   PostgreSQL 17、默认 scope，并在 blob、document、MAIC course/session 表内完成增删改查后强制
+   回滚和零残留回读；这证明受限应用角色具备真实运行权限。
+6. 一次带认证的 HTTP 业务写入和直接数据库回读：才证明网关、当前 app、scope 与完整请求链路一致。
 
 本地检查示例：
 

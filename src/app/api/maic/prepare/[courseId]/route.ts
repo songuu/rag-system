@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSseResponse } from '@/lib/maic/sse-utils';
-import { getPrepareRunner } from '@/lib/maic/pipeline/prepare-runner';
+import {
+  getPrepareRunner,
+  resolvePrepareStartStatus,
+} from '@/lib/maic/pipeline/prepare-runner';
 import { getMaicStore } from '@/lib/maic/course-store';
 import type { PrepareEvent } from '@/lib/maic/types';
 
@@ -11,7 +14,7 @@ export async function POST(
   { params }: { params: Promise<{ courseId: string }> }
 ): Promise<NextResponse> {
   const { courseId } = await params;
-  const course = getMaicStore().getCourse(courseId);
+  const course = await getMaicStore().getCourse(courseId);
   if (!course) {
     return NextResponse.json({ success: false, error: '课程不存在' }, { status: 404 });
   }
@@ -20,12 +23,13 @@ export async function POST(
   }
 
   const runner = getPrepareRunner();
-  if (runner.isRunning(courseId) || course.status === 'preparing') {
+  const startStatus = resolvePrepareStartStatus(course.status, runner.isRunning(courseId));
+  if (startStatus === 'running') {
     return NextResponse.json({ success: true, data: { status: 'running' } });
   }
 
   void runner.start(courseId);
-  return NextResponse.json({ success: true, data: { status: 'started' } });
+  return NextResponse.json({ success: true, data: { status: startStatus } });
 }
 
 export async function GET(
@@ -34,7 +38,7 @@ export async function GET(
 ): Promise<Response> {
   const { courseId } = await params;
 
-  return createSseResponse<PrepareEvent>(emitter => {
+  return createSseResponse<PrepareEvent>(async emitter => {
     const runner = getPrepareRunner();
     const unsubscribe = runner.subscribe(courseId, event => {
       emitter.emit(event);
@@ -43,7 +47,7 @@ export async function GET(
       }
     });
 
-    const course = getMaicStore().getCourse(courseId);
+    const course = await getMaicStore().getCourse(courseId);
     if (course?.status === 'ready') {
       emitter.emit({
         type: 'prepare:done',

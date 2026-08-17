@@ -94,6 +94,8 @@ interface Score {
   timestamp: Date;
 }
 
+type TraceUpdateCallback = (trace: Trace) => void | Promise<void>;
+
 // ============= 可观测性引擎 =============
 
 class ObservabilityEngine {
@@ -101,17 +103,32 @@ class ObservabilityEngine {
   private observations: Map<string, Observation> = new Map();
   private scores: Map<string, Score> = new Map();
   private callbacks: {
-    onTraceUpdate?: (trace: Trace) => void;
+    onTraceUpdate?: TraceUpdateCallback;
     onObservationUpdate?: (observation: Observation) => void;
     onScoreUpdate?: (score: Score) => void;
   } = {};
 
   constructor(callbacks?: {
-    onTraceUpdate?: (trace: Trace) => void;
+    onTraceUpdate?: TraceUpdateCallback;
     onObservationUpdate?: (observation: Observation) => void;
     onScoreUpdate?: (score: Score) => void;
   }) {
     this.callbacks = callbacks || {};
+  }
+
+  private notifyTraceUpdate(trace: Trace): Promise<void> {
+    let completion: void | Promise<void>;
+    try {
+      completion = this.callbacks.onTraceUpdate?.(trace);
+    } catch (error) {
+      completion = Promise.reject(error);
+    }
+    const pending = Promise.resolve(completion);
+    // Intermediate updates intentionally remain non-blocking. Attaching a
+    // handler prevents ignored callbacks from becoming unhandled rejections;
+    // callers that await a terminal update still receive the original error.
+    void pending.catch(() => undefined);
+    return pending;
   }
 
   // ============= Trace 管理 =============
@@ -140,7 +157,7 @@ class ObservabilityEngine {
     };
 
     this.traces.set(traceId, trace);
-    this.callbacks.onTraceUpdate?.(trace);
+    void this.notifyTraceUpdate(trace);
     return traceId;
   }
 
@@ -149,16 +166,16 @@ class ObservabilityEngine {
     metadata?: Record<string, any>;
     status?: 'PENDING' | 'SUCCESS' | 'ERROR';
     endTime?: Date;
-  }): void {
+  }): Promise<void> {
     const trace = this.traces.get(traceId);
-    if (!trace) return;
+    if (!trace) return Promise.resolve();
 
     Object.assign(trace, updates);
     if (updates.endTime) {
       trace.endTime = updates.endTime;
     }
 
-    this.callbacks.onTraceUpdate?.(trace);
+    return this.notifyTraceUpdate(trace);
   }
 
   // ============= Observation 管理 =============
@@ -193,7 +210,7 @@ class ObservabilityEngine {
     const trace = this.traces.get(params.traceId);
     if (trace) {
       trace.observations.push(generation);
-      this.callbacks.onTraceUpdate?.(trace);
+      void this.notifyTraceUpdate(trace);
     }
 
     this.callbacks.onObservationUpdate?.(generation);
@@ -226,7 +243,7 @@ class ObservabilityEngine {
     const trace = this.traces.get(params.traceId);
     if (trace) {
       trace.observations.push(span);
-      this.callbacks.onTraceUpdate?.(trace);
+      void this.notifyTraceUpdate(trace);
     }
 
     this.callbacks.onObservationUpdate?.(span);
@@ -262,7 +279,7 @@ class ObservabilityEngine {
     const trace = this.traces.get(params.traceId);
     if (trace) {
       trace.observations.push(event);
-      this.callbacks.onTraceUpdate?.(trace);
+      void this.notifyTraceUpdate(trace);
     }
 
     this.callbacks.onObservationUpdate?.(event);
@@ -290,7 +307,7 @@ class ObservabilityEngine {
     // 更新 trace
     const trace = this.traces.get(observation.traceId);
     if (trace) {
-      this.callbacks.onTraceUpdate?.(trace);
+      void this.notifyTraceUpdate(trace);
     }
   }
 
@@ -307,11 +324,11 @@ class ObservabilityEngine {
     };
 
     this.traces.set(traceId, trace);
-    this.callbacks.onTraceUpdate?.(trace);
+    void this.notifyTraceUpdate(trace);
   }
 
-  endTrace(traceId: string, output?: any, status: 'SUCCESS' | 'ERROR' = 'SUCCESS'): void {
-    this.updateTrace(traceId, {
+  endTrace(traceId: string, output?: any, status: 'SUCCESS' | 'ERROR' = 'SUCCESS'): Promise<void> {
+    return this.updateTrace(traceId, {
       output,
       status,
       endTime: new Date()
@@ -346,7 +363,7 @@ class ObservabilityEngine {
     const trace = this.traces.get(params.traceId);
     if (trace) {
       trace.scores.push(score);
-      this.callbacks.onTraceUpdate?.(trace);
+      void this.notifyTraceUpdate(trace);
     }
 
     this.callbacks.onScoreUpdate?.(score);
@@ -442,5 +459,6 @@ export {
   type Generation,
   type Span,
   type Event,
-  type Score
+  type Score,
+  type TraceUpdateCallback
 };

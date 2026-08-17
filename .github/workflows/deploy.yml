@@ -24,6 +24,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
 
+    services:
+      postgres:
+        image: postgres:17-bookworm@sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
+        env:
+          POSTGRES_USER: rag_ci_owner
+          POSTGRES_PASSWORD: rag_ci_ephemeral_password
+          POSTGRES_DB: rag_ci
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U rag_ci_owner -d rag_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
     env:
       NODE_VERSION: "24"
       PNPM_VERSION: "11.1.3"
@@ -74,9 +89,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run RAG quality gates
+        env:
+          TEST_DATABASE_URL: postgresql://rag_ci_owner:rag_ci_ephemeral_password@127.0.0.1:54329/rag_ci
         run: |
           set -euo pipefail
           pnpm test
+          pnpm test:postgres:integration
           pnpm exec tsc --noEmit --incremental false
 
       - name: Build Linux production image
@@ -96,7 +114,7 @@ jobs:
           archive="${RUNNER_TEMP}/rag-system-${GITHUB_SHA}.tgz"
           entries="${RUNNER_TEMP}/rag-system-${GITHUB_SHA}.entries"
           docker run --rm --entrypoint sh "${IMAGE}" \
-            -c 'tar -C /app --owner=0 --group=0 --numeric-owner -czf - server.js .next public node_modules db/postgres scripts/migrate-postgres.mjs scripts/backfill-local-postgres.mjs' > "${archive}"
+            -c 'tar -C /app --owner=0 --group=0 --numeric-owner -czf - server.js .next public node_modules db/postgres scripts/migrate-postgres.mjs scripts/backfill-local-postgres.mjs scripts/verify-postgres-runtime.mjs' > "${archive}"
           tar -tzf "${archive}" > "${entries}"
           grep -qx 'server.js' "${entries}"
           grep -q '^\.next/static/' "${entries}"
@@ -105,6 +123,7 @@ jobs:
           grep -Eq '^db/postgres/migrations/.+\.sql$' "${entries}"
           grep -qx 'scripts/migrate-postgres.mjs' "${entries}"
           grep -qx 'scripts/backfill-local-postgres.mjs' "${entries}"
+          grep -qx 'scripts/verify-postgres-runtime.mjs' "${entries}"
           tar --numeric-owner -tvzf "${archive}" | awk '$2 != "0/0" { exit 1 }'
           sha256sum "${archive}"
           {
@@ -498,6 +517,8 @@ jobs:
           python3 -m py_compile "${REMOTE_DIR}/patch-nginx.py"
 
           RAG_POST_RELEASE_GATE="${REMOTE_DIR}/post-release-gate.sh" \
+          RAG_SHARED_ASSET_BACKUP_DIR="${shared_backup_dir}" \
+          RAG_SHARED_ASSET_BACKUP_MANIFEST="${shared_backup_manifest}" \
           RAG_RELEASE_GATE_ROOT="${REMOTE_DIR}" \
           RAG_ENV_RELOAD_LOCK_HELD=1 \
           RAG_POSTGRES_PROVISIONER="${REMOTE_DIR}/provision-postgres-host.sh" \

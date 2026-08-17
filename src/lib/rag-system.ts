@@ -4,14 +4,14 @@ import { StringOutputParser } from "@langchain/core/output_parsers";
 import { Document } from "@langchain/core/documents";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Embeddings } from "@langchain/core/embeddings";
-import { ObservabilityEngine, type Trace } from "./observability";
+import { ObservabilityEngine, type TraceUpdateCallback } from "./observability";
 import { createLangSmithThreadId } from "./langsmith/config";
 import { AutoTokenizer } from "@xenova/transformers";
-import { readdir, readFile } from "fs/promises";
-import { existsSync } from "fs";
 import path from "path";
 import { createLLM, createEmbedding, getModelFactory, isOllamaProvider, isCustomProvider } from "./model-config";
 import { getEmbeddingProvider, getEmbeddingConfigSummary } from "./embedding-config";
+import { createUploadPersistence } from "./persistence/upload-store";
+import { getPostgresRuntimeConfig, type RagPersistenceBackend } from "./postgres/env";
 
 // 接口定义
 export interface TokenInfo {
@@ -586,6 +586,107 @@ class SimpleMemoryVectorStore {
   }
 }
 
+interface InitialDocumentLoadDependencies {
+  createPersistence?: typeof createUploadPersistence;
+  resolvePersistenceBackend?: () => RagPersistenceBackend;
+}
+
+/**
+ * Load the initial in-memory RAG corpus from the configured persistence source.
+ * PostgreSQL is fail-closed so a database outage can never be masked by local
+ * or example content in production.
+ */
+export async function loadInitialRagDocuments(
+  uploadsDir: string,
+  dependencies: InitialDocumentLoadDependencies = {}
+): Promise<Document[]> {
+  const persistenceBackend = (
+    dependencies.resolvePersistenceBackend
+    ?? (() => getPostgresRuntimeConfig().persistenceBackend)
+  )();
+  const postgresSource = persistenceBackend === 'postgres';
+  const documents: Document[] = [];
+
+  try {
+    const { blobStore } = (
+      dependencies.createPersistence
+      ?? createUploadPersistence
+    )({ uploadDir: uploadsDir });
+    const files = await blobStore.list();
+    // Canonical uploads use .txt while the document pipeline stores parsed
+    // source text under a deterministic `.parsed` blob name.
+    const txtFiles = files.filter(file => file.endsWith('.txt') || file.endsWith('.parsed'));
+
+    if (txtFiles.length > 0) {
+      console.log(`发现 ${txtFiles.length} 个上传的文档文件`);
+      for (const filename of txtFiles) {
+        const content = await blobStore.readText(filename);
+        if (content.trim()) {
+          documents.push(new Document({
+            pageContent: content,
+            metadata: { source: filename }
+          }));
+          console.log(`已加载: ${filename}`);
+        }
+      }
+    }
+  } catch (error) {
+    if (postgresSource) {
+      throw new Error(
+        'Failed to load RAG documents from PostgreSQL persistence.',
+        { cause: error }
+      );
+    }
+    // Local development keeps its historical best-effort behavior.
+    console.error("读取上传文档时出错:", error);
+  }
+
+  if (documents.length > 0) {
+    console.log(`成功加载 ${documents.length} 个上传的文档`);
+    return documents;
+  }
+
+  if (postgresSource) {
+    console.log('PostgreSQL persistence contains no text documents; example fallback is disabled.');
+    return [];
+  }
+
+  console.log("没有找到上传的文档，使用示例文档...");
+  return createExampleDocuments();
+}
+
+function createExampleDocuments(): Document[] {
+  return [
+    new Document({
+      pageContent: "人工智能（AI）是计算机科学的一个分支，致力于创建能够执行通常需要人类智能的任务的系统。这包括学习、推理、问题解决、感知和语言理解。",
+      metadata: { source: "ai-intro.txt" }
+    }),
+    new Document({
+      pageContent: "机器学习是人工智能的一个子集，它使计算机能够在没有明确编程的情况下学习和改进。它基于算法，这些算法可以从数据中学习并做出预测或决策。",
+      metadata: { source: "ml-intro.txt" }
+    }),
+    new Document({
+      pageContent: "深度学习是机器学习的一个子领域，它使用具有多层的神经网络来模拟人脑的工作方式。这种方法在图像识别、自然语言处理和语音识别等领域取得了显著成功。",
+      metadata: { source: "dl-intro.txt" }
+    }),
+    new Document({
+      pageContent: "智能手机是一种功能强大的移动设备，集成了计算、通信和娱乐功能。现代智能手机配备了先进的处理器、高分辨率显示屏和多种传感器。",
+      metadata: { source: "smartphone-intro.txt" }
+    }),
+    new Document({
+      pageContent: "苹果公司是一家美国跨国科技公司，以设计、开发和销售消费电子产品、计算机软件和在线服务而闻名。其产品包括iPhone、iPad、Mac电脑等。",
+      metadata: { source: "apple-intro.txt" }
+    })
+  ];
+}
+
+class TerminalTracePersistenceError extends Error {
+  constructor(cause: unknown) {
+    super('Failed to persist terminal RAG trace to PostgreSQL.', { cause });
+    this.name = 'TerminalTracePersistenceError';
+  }
+}
+
 // 主要的 RAG 系统类
 export class LocalRAGSystem {
   private llm: BaseChatModel;
@@ -604,7 +705,7 @@ export class LocalRAGSystem {
       onVectorizationProgress?: (progress: VectorizationProgress) => void;
       onRetrievalDetails?: (details: RetrievalDetails) => void;
       onQueryVectorizationProgress?: (progress: QueryVectorizationProgress) => void;
-      onTraceUpdate?: (trace: Trace) => void;
+      onTraceUpdate?: TraceUpdateCallback;
     } = {}
   ) {
     const factory = getModelFactory();
@@ -650,62 +751,7 @@ export class LocalRAGSystem {
     const uploadsDir = docsPath
       ? path.resolve(/*turbopackIgnore: true*/ process.cwd(), docsPath)
       : path.join(process.cwd(), "uploads");
-    let documents: Document[] = [];
-
-    try {
-      if (existsSync(uploadsDir)) {
-        const files = await readdir(uploadsDir);
-        const txtFiles = files.filter(file => file.endsWith('.txt'));
-        
-        if (txtFiles.length > 0) {
-          console.log(`发现 ${txtFiles.length} 个上传的文档文件`);
-          
-          for (const filename of txtFiles) {
-            const filePath = path.join(uploadsDir, filename);
-            const content = await readFile(filePath, 'utf-8');
-            
-            if (content.trim()) {
-              documents.push(new Document({
-                pageContent: content,
-                metadata: { source: filename }
-              }));
-              console.log(`已加载: ${filename}`);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error("读取上传文档时出错:", error);
-    }
-
-    // 如果没有上传的文档，使用示例文档作为回退
-    if (documents.length === 0) {
-      console.log("没有找到上传的文档，使用示例文档...");
-      documents = [
-        new Document({
-          pageContent: "人工智能（AI）是计算机科学的一个分支，致力于创建能够执行通常需要人类智能的任务的系统。这包括学习、推理、问题解决、感知和语言理解。",
-          metadata: { source: "ai-intro.txt" }
-        }),
-        new Document({
-          pageContent: "机器学习是人工智能的一个子集，它使计算机能够在没有明确编程的情况下学习和改进。它基于算法，这些算法可以从数据中学习并做出预测或决策。",
-          metadata: { source: "ml-intro.txt" }
-        }),
-        new Document({
-          pageContent: "深度学习是机器学习的一个子领域，它使用具有多层的神经网络来模拟人脑的工作方式。这种方法在图像识别、自然语言处理和语音识别等领域取得了显著成功。",
-          metadata: { source: "dl-intro.txt" }
-        }),
-        new Document({
-          pageContent: "智能手机是一种功能强大的移动设备，集成了计算、通信和娱乐功能。现代智能手机配备了先进的处理器、高分辨率显示屏和多种传感器。",
-          metadata: { source: "smartphone-intro.txt" }
-        }),
-        new Document({
-          pageContent: "苹果公司是一家美国跨国科技公司，以设计、开发和销售消费电子产品、计算机软件和在线服务而闻名。其产品包括iPhone、iPad、Mac电脑等。",
-          metadata: { source: "apple-intro.txt" }
-        })
-      ];
-    } else {
-      console.log(`成功加载 ${documents.length} 个上传的文档`);
-    }
+    const documents = await loadInitialRagDocuments(uploadsDir);
 
     // 文本分割
     const textSplitter = new RecursiveCharacterTextSplitter({
@@ -897,7 +943,7 @@ export class LocalRAGSystem {
       });
 
       // 完成 Trace
-      this.observabilityEngine.updateTrace(traceId, {
+      await this.finalizeTrace(traceId, {
         output: { answer: result, context },
         status: 'SUCCESS',
         endTime: new Date(),
@@ -911,12 +957,24 @@ export class LocalRAGSystem {
       };
 
     } catch (error) {
-      this.observabilityEngine.updateTrace(traceId, {
+      if (error instanceof TerminalTracePersistenceError) throw error;
+      await this.finalizeTrace(traceId, {
         status: 'ERROR',
         endTime: new Date(),
         metadata: { error: error instanceof Error ? error.message : String(error) }
       });
       throw error;
+    }
+  }
+
+  private async finalizeTrace(
+    traceId: string,
+    updates: Parameters<ObservabilityEngine['updateTrace']>[1]
+  ): Promise<void> {
+    try {
+      await this.observabilityEngine.updateTrace(traceId, updates);
+    } catch (error) {
+      throw new TerminalTracePersistenceError(error);
     }
   }
 

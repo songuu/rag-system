@@ -8,6 +8,7 @@ import { LocalRAGSystem } from './rag-system';
 import { mirrorTraceToPostgres } from './persistence/postgres-trace-store';
 import { mirrorTraceToLangSmith } from './langsmith/trace-mirror';
 import type { Trace } from './observability';
+import { createStableErrorLog } from './security/error-redaction';
 
 // 使用 globalThis 来确保在 Next.js 热重载时保持单例
 // 这是 Next.js 推荐的方式来保持服务器端的单例
@@ -69,7 +70,30 @@ export function getCurrentRagSystem(): LocalRAGSystem | undefined {
   return globalThis.ragSystemInstance;
 }
 
-function mirrorTrace(trace: Trace): void {
-  mirrorTraceToPostgres(trace);
+function mirrorTrace(trace: Trace): void | Promise<void> {
+  // LangSmith is an external observability sink and remains best-effort.
   mirrorTraceToLangSmith(trace);
+
+  try {
+    const postgresWrite = mirrorTraceToPostgres(trace);
+    if (trace.status === 'SUCCESS' || trace.status === 'ERROR') {
+      return postgresWrite;
+    }
+    // Intermediate snapshots are queued in order but must not add database
+    // latency to each retrieval/model event.
+    void postgresWrite.catch((error) => {
+      console.warn(
+        '[PostgresTraceStore] intermediate trace mirror failed:',
+        createStableErrorLog(error)
+      );
+    });
+  } catch (error) {
+    if (trace.status === 'SUCCESS' || trace.status === 'ERROR') {
+      return Promise.reject(error);
+    }
+    console.warn(
+      '[PostgresTraceStore] intermediate trace mirror failed:',
+      createStableErrorLog(error)
+    );
+  }
 }
