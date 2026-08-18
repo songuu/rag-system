@@ -25,6 +25,81 @@ function createFixture() {
   };
 }
 
+async function captureTlsClientConfig(env) {
+  const configs = [];
+  let clientNumber = 0;
+  await verifyPublicPostgres(env, {
+    createClient(config) {
+      configs.push(config);
+      clientNumber += 1;
+      if (clientNumber === 1) {
+        return {
+          async connect() {},
+          async query() {
+            return {
+              rows: [{
+                current_user: 'rag_app',
+                current_database: 'rag_system',
+                server_version_num: 170006,
+                ssl: true,
+                tls_version: 'TLSv1.3',
+                restricted_role: true,
+                no_role_memberships: true,
+                operational_dml: true,
+                parent_write_denied: true,
+              }],
+            };
+          },
+          async end() {},
+        };
+      }
+      return {
+        async connect() {
+          const error = new Error('HBA rejected');
+          error.code = '28000';
+          throw error;
+        },
+        async query() {},
+        async end() {},
+      };
+    },
+    writeOutput() {},
+  });
+  return configs[0];
+}
+
+test('validates the TLS certificate against the configured public host when pg reports localhost', async () => {
+  const fixture = createFixture();
+  try {
+    const config = await captureTlsClientConfig(fixture.env);
+    const certificate = {
+      subjectaltname: `IP Address:${fixture.env.POSTGRES_PUBLIC_EXPECTED_HOST}`,
+    };
+
+    assert.equal(config.ssl.checkServerIdentity('localhost', certificate), undefined);
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('validates the TLS certificate against the configured public host when pg omits servername', async () => {
+  const fixture = createFixture();
+  try {
+    const config = await captureTlsClientConfig(fixture.env);
+    const matchingCertificate = {
+      subjectaltname: `IP Address:${fixture.env.POSTGRES_PUBLIC_EXPECTED_HOST}`,
+    };
+    const wrongCertificate = { subjectaltname: 'IP Address:203.0.113.10' };
+
+    assert.equal(config.ssl.checkServerIdentity(undefined, matchingCertificate), undefined);
+    const error = config.ssl.checkServerIdentity(undefined, wrongCertificate);
+    assert.ok(error instanceof Error);
+    assert.equal(error.code, 'ERR_TLS_CERT_ALTNAME_INVALID');
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('verifies the public endpoint with TLS and rejects plaintext access', async () => {
   const fixture = createFixture();
   const configs = [];

@@ -99,10 +99,7 @@ function resolveConfig(env) {
       ssl: {
         ca,
         rejectUnauthorized: true,
-        checkServerIdentity(servername, certificate) {
-          if (servername !== expectedHost) {
-            return new Error('PostgreSQL TLS peer name did not match the deployment target.');
-          }
+        checkServerIdentity(_servername, certificate) {
           return checkServerIdentity(expectedHost, certificate);
         },
       },
