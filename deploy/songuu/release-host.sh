@@ -18,6 +18,7 @@ readonly PM2_ECOSYSTEM="$SHARED/rag-system.ecosystem.config.cjs"
 readonly PM2_MANAGER="$SHARED/manage-rag-system-pm2.sh"
 readonly READY_URL="http://127.0.0.1:5182${RAG_BASE_PATH}/api/health"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly RELEASE_ARCHIVE_EXTRACTOR="$SCRIPT_DIR/extract-release-artifact.py"
 readonly DEFAULTS_RENDERER="${RAG_ENV_DEFAULTS_RENDERER:-$SCRIPT_DIR/render-host-env-defaults.py}"
 readonly DEFAULTS_EXAMPLE="${RAG_ENV_DEFAULTS_EXAMPLE:-$SCRIPT_DIR/.env.container.example}"
 readonly POSTGRES_PROVISIONER="${RAG_POSTGRES_PROVISIONER:-}"
@@ -471,6 +472,12 @@ run_post_release_gate() {
 }
 
 test -f "$ARTIFACT"
+if [[ ! -f "$RELEASE_ARCHIVE_EXTRACTOR" || -L "$RELEASE_ARCHIVE_EXTRACTOR" \
+  || "$(stat -c '%U:%G' -- "$RELEASE_ARCHIVE_EXTRACTOR")" != root:root ]] \
+  || find "$RELEASE_ARCHIVE_EXTRACTOR" -perm /022 -print -quit | grep -q .; then
+  echo "Release archive extractor is missing or unsafe" >&2
+  exit 2
+fi
 command -v pm2 >/dev/null
 command -v curl >/dev/null
 command -v openssl >/dev/null
@@ -818,22 +825,28 @@ if [[ -e "$release" ]]; then
   exit 2
 fi
 
-mkdir -p "$release"
-tar --no-same-owner --no-same-permissions -xzf "$ARTIFACT" -C "$release"
+python3 "$RELEASE_ARCHIVE_EXTRACTOR" extract "$ARTIFACT" "$release"
 
-# The archive is produced from a Docker image whose files are owned by UID
-# 1001. Never preserve that identity on the host: a matching local account
-# could otherwise rewrite code or migration SQL that root executes later.
-if find "$release" \( -type l -o \( ! -type f ! -type d \) \) -print -quit | grep -q .; then
-  echo "Release artifact contains an unsafe file type or symbolic link" >&2
+# The extractor creates regular files and directories first, then only
+# archive-root-contained relative symlinks. Keep a second host-side type gate
+# before any code or migration asset is executed.
+if find "$release" \( ! -type f ! -type d ! -type l \) -print -quit | grep -q .; then
+  echo "Release artifact contains an unsafe file type" >&2
   exit 1
 fi
-chown -R root:root -- "$release"
+chown -hR root:root -- "$release"
 chmod -R go-w -- "$release"
-if find "$release" \( ! -user root -o ! -group root -o -perm /022 \) -print -quit | grep -q .; then
+if find "$release" \( -type f -o -type d \) \
+  \( ! -user root -o ! -group root -o -perm /022 -o -perm /07000 \) \
+  -print -quit | grep -q .; then
   echo "Release artifact ownership or permissions are unsafe" >&2
   exit 1
 fi
+if find "$release" -type l \( ! -user root -o ! -group root \) -print -quit | grep -q .; then
+  echo "Release artifact symbolic link ownership is unsafe" >&2
+  exit 1
+fi
+python3 "$RELEASE_ARCHIVE_EXTRACTOR" tree "$release"
 if [[ ! -f "$release/server.js" || ! -d "$release/.next/static" || ! -d "$release/public" ]]; then
   echo "Extracted release is not a complete standalone artifact" >&2
   exit 1

@@ -66,8 +66,14 @@ test('GitHub standalone archive carries the PostgreSQL migration runtime', () =>
   );
   assert.match(
     packageStep,
-    /tar -C \/app --owner=0 --group=0 --numeric-owner -czf - server\.js \.next public node_modules db\/postgres scripts\/migrate-postgres\.mjs scripts\/backfill-local-postgres\.mjs scripts\/verify-postgres-runtime\.mjs/
+    /tar --format=gnu --hard-dereference -C \/app --owner=0 --group=0 --numeric-owner -czf - server\.js \.next public node_modules db\/postgres scripts\/migrate-postgres\.mjs scripts\/backfill-local-postgres\.mjs scripts\/verify-postgres-runtime\.mjs/
   );
+  assert.match(
+    packageStep,
+    /python3 deploy\/songuu\/extract-release-artifact\.py requirements "\$\{archive\}"/
+  );
+  assert.match(packageStep, /ARCHIVE_EXPANDED_BYTES=\$\{archive_expanded_bytes\}/);
+  assert.match(packageStep, /ARCHIVE_MEMBER_COUNT=\$\{archive_member_count\}/);
   assert.match(packageStep, /tar --numeric-owner -tvzf "\$\{archive\}"/);
   assert.match(packageStep, /awk '\$2 != "0\/0" \{ exit 1 \}'/);
   assert.match(packageStep, /grep -qx 'db\/postgres\/bootstrap\.sql' "\$\{entries\}"/);
@@ -127,12 +133,25 @@ test('GitHub deployment installs and passes the PostgreSQL host provisioner', ()
   assert.ok(uploadStep, 'Upload release and host scripts step must exist');
   assert.ok(remoteStep, 'Remote atomic release step must exist');
   assert.match(uploadStep, /deploy\/songuu\/provision-postgres-host\.sh/);
+  assert.match(uploadStep, /deploy\/songuu\/extract-release-artifact\.py/);
+  assert.match(uploadStep, /Remote host lacks the protected free-space or inode reserve/);
+  assert.match(uploadStep, /ARCHIVE_BYTES \+ ARCHIVE_EXPANDED_BYTES/);
+  assert.match(uploadStep, /ARCHIVE_MEMBER_COUNT \+ 50000/);
+  assert.ok(
+    uploadStep.indexOf('trap cleanup_failed_upload EXIT') <
+      uploadStep.indexOf('Remote host lacks the protected free-space or inode reserve'),
+    'remote staging cleanup must be armed before the capacity gate can fail'
+  );
   assert.match(
     remoteStep,
     /for script in [^\n]*provision-postgres-host\.sh[^\n]*; do/
   );
   assert.match(remoteStep, /chmod 700 [^\n]*provision-postgres-host\.sh/);
   assert.match(remoteStep, /bash -n "\$\{REMOTE_DIR\}\/provision-postgres-host\.sh"/);
+  assert.match(
+    remoteStep,
+    /python3 -m py_compile "\$\{REMOTE_DIR\}\/extract-release-artifact\.py"/
+  );
   assert.match(
     remoteStep,
     /RAG_POSTGRES_PROVISIONER="\$\{REMOTE_DIR\}\/provision-postgres-host\.sh" \\\n+\s*RAG_ENV_DEFAULTS_RENDERER=/

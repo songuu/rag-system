@@ -79,14 +79,20 @@ test('host release provisions PostgreSQL before validating production persistenc
 
 test('host release migrates a complete PostgreSQL artifact before atomic cutover', () => {
   const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
-  const extract = script.indexOf('tar --no-same-owner --no-same-permissions -xzf "$ARTIFACT" -C "$release"');
+  const extract = script.indexOf(
+    'python3 "$RELEASE_ARCHIVE_EXTRACTOR" extract "$ARTIFACT" "$release"'
+  );
+  const extractedTreeValidation = script.indexOf(
+    'python3 "$RELEASE_ARCHIVE_EXTRACTOR" tree "$release"'
+  );
   const artifactValidation = script.indexOf('Extracted release is missing PostgreSQL migration assets');
   const migrate = script.indexOf('node scripts/migrate-postgres.mjs');
   const runtimeVerification = script.indexOf('node scripts/verify-postgres-runtime.mjs');
   const cutover = script.indexOf('mv -Tf "$next_link" "$ROOT/current"');
 
   assert.ok(extract >= 0);
-  assert.ok(artifactValidation > extract);
+  assert.ok(extractedTreeValidation > extract);
+  assert.ok(artifactValidation > extractedTreeValidation);
   assert.ok(migrate > artifactValidation);
   assert.ok(runtimeVerification > migrate);
   assert.ok(cutover > runtimeVerification);
@@ -95,10 +101,21 @@ test('host release migrates a complete PostgreSQL artifact before atomic cutover
   assert.match(script, /scripts\/migrate-postgres\.mjs/);
   assert.match(script, /scripts\/verify-postgres-runtime\.mjs/);
   assert.match(script, /scripts\/backfill-local-postgres\.mjs/);
-  assert.match(script, /tar --no-same-owner --no-same-permissions -xzf "\$ARTIFACT" -C "\$release"/);
-  assert.match(script, /chown -R root:root -- "\$release"/);
+  assert.match(script, /readonly RELEASE_ARCHIVE_EXTRACTOR=/);
+  assert.match(
+    script,
+    /python3 "\$RELEASE_ARCHIVE_EXTRACTOR" extract "\$ARTIFACT" "\$release"/
+  );
+  assert.match(script, /python3 "\$RELEASE_ARCHIVE_EXTRACTOR" tree "\$release"/);
+  assert.match(script, /chown -hR root:root -- "\$release"/);
   assert.match(script, /chmod -R go-w -- "\$release"/);
-  assert.match(script, /Release artifact contains an unsafe file type or symbolic link/);
+  assert.match(script, /Release artifact contains an unsafe file type/);
+  assert.match(script, /Release artifact symbolic link ownership is unsafe/);
+  assert.doesNotMatch(script, /unsafe file type or symbolic link/);
+  assert.ok(script.includes('find "$release" \\( -type f -o -type d \\)'));
+  assert.ok(
+    script.includes('find "$release" -type l \\( ! -user root -o ! -group root \\)')
+  );
 });
 
 test('migration-only credentials are scoped to migration, runtime verification, and backfill subprocesses', () => {

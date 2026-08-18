@@ -122,7 +122,13 @@ jobs:
           archive="${RUNNER_TEMP}/rag-system-${GITHUB_SHA}.tgz"
           entries="${RUNNER_TEMP}/rag-system-${GITHUB_SHA}.entries"
           docker run --rm --entrypoint sh "${IMAGE}" \
-            -c 'tar -C /app --owner=0 --group=0 --numeric-owner -czf - server.js .next public node_modules db/postgres scripts/migrate-postgres.mjs scripts/backfill-local-postgres.mjs scripts/verify-postgres-runtime.mjs' > "${archive}"
+            -c 'tar --format=gnu --hard-dereference -C /app --owner=0 --group=0 --numeric-owner -czf - server.js .next public node_modules db/postgres scripts/migrate-postgres.mjs scripts/backfill-local-postgres.mjs scripts/verify-postgres-runtime.mjs' > "${archive}"
+          requirements="$(python3 deploy/songuu/extract-release-artifact.py requirements "${archive}")"
+          if [[ ! "${requirements}" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+$ ]]; then
+            echo 'Release archive requirements output is invalid.' >&2
+            exit 2
+          fi
+          read -r archive_bytes archive_expanded_bytes archive_member_count archive_stream_bytes <<< "${requirements}"
           tar -tzf "${archive}" > "${entries}"
           grep -qx 'server.js' "${entries}"
           grep -q '^\.next/static/' "${entries}"
@@ -136,6 +142,10 @@ jobs:
           sha256sum "${archive}"
           {
             echo "ARCHIVE=${archive}"
+            echo "ARCHIVE_BYTES=${archive_bytes}"
+            echo "ARCHIVE_EXPANDED_BYTES=${archive_expanded_bytes}"
+            echo "ARCHIVE_MEMBER_COUNT=${archive_member_count}"
+            echo "ARCHIVE_STREAM_BYTES=${archive_stream_bytes}"
             echo "RELEASE_NAME=rag-system-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           } >> "$GITHUB_ENV"
 
@@ -219,12 +229,72 @@ jobs:
       - name: Upload release and host scripts
         run: |
           set -euo pipefail
+          upload_complete=0
+          cleanup_failed_upload() {
+            status=$?
+            trap - EXIT
+            if [ "${upload_complete}" != '1' ]; then
+              ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+                -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' bash -s" <<'REMOTE_CLEANUP' || true
+          set -euo pipefail
+          case "${REMOTE_DIR}" in
+            "${REMOTE_PARENT}"/rag-system.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) exit 2 ;;
+          esac
+          test -d "${REMOTE_DIR}"
+          test ! -L "${REMOTE_DIR}"
+          test "$(readlink -f -- "${REMOTE_DIR}")" = "${REMOTE_DIR}"
+          test "$(stat -c '%U:%G' -- "${REMOTE_DIR}")" = 'root:root'
+          test "$(stat -c '%a' -- "${REMOTE_DIR}")" = '700'
+          rm -rf -- "${REMOTE_DIR}"
+          REMOTE_CLEANUP
+            fi
+            exit "${status}"
+          }
+          trap cleanup_failed_upload EXIT
+
+          for measurement in "${ARCHIVE_BYTES}" "${ARCHIVE_EXPANDED_BYTES}" "${ARCHIVE_MEMBER_COUNT}" "${ARCHIVE_STREAM_BYTES}"; do
+            if [[ ! "${measurement}" =~ ^[0-9]+$ ]]; then
+              echo 'Release archive capacity measurement is invalid.' >&2
+              exit 2
+            fi
+          done
+          ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' ARCHIVE_BYTES='${ARCHIVE_BYTES}' ARCHIVE_EXPANDED_BYTES='${ARCHIVE_EXPANDED_BYTES}' ARCHIVE_MEMBER_COUNT='${ARCHIVE_MEMBER_COUNT}' bash -s" <<'REMOTE_CAPACITY'
+          set -euo pipefail
+          case "${REMOTE_DIR}" in
+            "${REMOTE_PARENT}"/rag-system.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) echo 'Unsafe remote staging path for capacity check.' >&2; exit 2 ;;
+          esac
+          test -d "${REMOTE_DIR}"
+          test ! -L "${REMOTE_DIR}"
+          test "$(readlink -f -- "${REMOTE_DIR}")" = "${REMOTE_DIR}"
+          test "$(stat -c '%U:%G' -- "${REMOTE_DIR}")" = 'root:root'
+          test "$(stat -c '%a' -- "${REMOTE_DIR}")" = '700'
+          for measurement in "${ARCHIVE_BYTES}" "${ARCHIVE_EXPANDED_BYTES}" "${ARCHIVE_MEMBER_COUNT}"; do
+            case "${measurement}" in ''|*[!0-9]*) exit 2 ;; esac
+          done
+          available_bytes="$(df -B1 --output=avail "${REMOTE_DIR}" | tail -n 1 | tr -d ' ')"
+          available_inodes="$(df -i --output=iavail "${REMOTE_DIR}" | tail -n 1 | tr -d ' ')"
+          required_bytes=$((ARCHIVE_BYTES + ARCHIVE_EXPANDED_BYTES + ARCHIVE_MEMBER_COUNT * 4096 + 872415232))
+          required_inodes=$((ARCHIVE_MEMBER_COUNT + 50000))
+          if (( available_bytes < required_bytes || available_inodes < required_inodes )); then
+            echo 'Remote host lacks the protected free-space or inode reserve for this release.' >&2
+            exit 1
+          fi
+          REMOTE_CAPACITY
+
           payloads=(
             "${ARCHIVE}"
             deploy/songuu/run-rag-system.sh
             deploy/songuu/run-rag-system.cjs
             deploy/songuu/rag-system.ecosystem.config.cjs
             deploy/songuu/manage-rag-system-pm2.sh
+            deploy/songuu/extract-release-artifact.py
             deploy/songuu/release-host.sh
             deploy/songuu/post-release-gate.sh
             deploy/songuu/provision-postgres-host.sh
@@ -245,31 +315,6 @@ jobs:
             printf '%s  %s\n' "${digest}" "$(basename -- "${source}")" >> "${checksums}"
           done
           chmod 600 "${checksums}"
-
-          upload_complete=0
-          cleanup_failed_upload() {
-            status=$?
-            trap - EXIT
-            if [ "${upload_complete}" != '1' ]; then
-              ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
-                -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
-                "${DEPLOY_USER}@${DEPLOY_HOST}" \
-                "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' bash -s" <<'REMOTE_CLEANUP' || true
-          set -euo pipefail
-          case "${REMOTE_DIR}" in
-            "${REMOTE_PARENT}"/rag-system.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
-            *) exit 2 ;;
-          esac
-          test -d "${REMOTE_DIR}"
-          test ! -L "${REMOTE_DIR}"
-          test "$(stat -c '%U:%G' -- "${REMOTE_DIR}")" = 'root:root'
-          test "$(stat -c '%a' -- "${REMOTE_DIR}")" = '700'
-          rm -rf -- "${REMOTE_DIR}"
-          REMOTE_CLEANUP
-            fi
-            exit "${status}"
-          }
-          trap cleanup_failed_upload EXIT
 
           scp -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
@@ -777,7 +822,7 @@ jobs:
           install_shared_asset rag-system.ecosystem.config.cjs '/opt/rag-system/shared/rag-system.ecosystem.config.cjs' 600 node
           install_shared_asset manage-rag-system-pm2.sh '/opt/rag-system/shared/manage-rag-system-pm2.sh' 700 bash
 
-          for script in release-host.sh post-release-gate.sh provision-postgres-host.sh patch-nginx.py apply-nginx.sh reload-rag-system-env.sh refresh-rag-nginx-token.sh; do
+          for script in release-host.sh post-release-gate.sh provision-postgres-host.sh extract-release-artifact.py patch-nginx.py apply-nginx.sh reload-rag-system-env.sh refresh-rag-nginx-token.sh; do
             tr -d '\r' < "${REMOTE_DIR}/${script}" > "${REMOTE_DIR}/${script}.normalized"
             mv -f "${REMOTE_DIR}/${script}.normalized" "${REMOTE_DIR}/${script}"
           done
@@ -789,6 +834,7 @@ jobs:
           bash -n "${REMOTE_DIR}/reload-rag-system-env.sh"
           bash -n "${REMOTE_DIR}/refresh-rag-nginx-token.sh"
           python3 -m py_compile "${REMOTE_DIR}/patch-nginx.py"
+          python3 -m py_compile "${REMOTE_DIR}/extract-release-artifact.py"
           test ! -e "${release_receipt}"
           test ! -L "${release_receipt}"
 
