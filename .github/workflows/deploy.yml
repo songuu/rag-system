@@ -279,7 +279,7 @@ jobs:
             case "${measurement}" in ''|*[!0-9]*) exit 2 ;; esac
           done
           available_bytes="$(df -B1 --output=avail "${REMOTE_DIR}" | tail -n 1 | tr -d ' ')"
-          available_inodes="$(df -i --output=iavail "${REMOTE_DIR}" | tail -n 1 | tr -d ' ')"
+          available_inodes="$(df --output=iavail "${REMOTE_DIR}" | tail -n 1 | tr -d ' ')"
           required_bytes=$((ARCHIVE_BYTES + ARCHIVE_EXPANDED_BYTES + ARCHIVE_MEMBER_COUNT * 4096 + 872415232))
           required_inodes=$((ARCHIVE_MEMBER_COUNT + 50000))
           if (( available_bytes < required_bytes || available_inodes < required_inodes )); then

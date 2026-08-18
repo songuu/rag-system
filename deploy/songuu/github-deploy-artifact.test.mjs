@@ -137,6 +137,8 @@ test('GitHub deployment installs and passes the PostgreSQL host provisioner', ()
   assert.match(uploadStep, /Remote host lacks the protected free-space or inode reserve/);
   assert.match(uploadStep, /ARCHIVE_BYTES \+ ARCHIVE_EXPANDED_BYTES/);
   assert.match(uploadStep, /ARCHIVE_MEMBER_COUNT \+ 50000/);
+  assert.match(uploadStep, /df --output=iavail "\$\{REMOTE_DIR\}"/);
+  assert.doesNotMatch(uploadStep, /df -i --output=iavail/);
   assert.ok(
     uploadStep.indexOf('trap cleanup_failed_upload EXIT') <
       uploadStep.indexOf('Remote host lacks the protected free-space or inode reserve'),
