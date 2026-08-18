@@ -123,12 +123,23 @@ test('migration-only credentials are scoped to migration, runtime verification, 
   const migrationSource = '. "$POSTGRES_MIGRATION_ENV_FILE"';
   const migration = script.indexOf('node scripts/migrate-postgres.mjs');
   const runtimeVerification = script.indexOf('node scripts/verify-postgres-runtime.mjs');
+  const runtimeVerificationBlockStart = script.lastIndexOf('if ! (', runtimeVerification);
+  const runtimeVerificationBlock = script.slice(
+    runtimeVerificationBlockStart,
+    runtimeVerification
+  );
   const backfillFunction = script.match(/run_local_backfill\(\) \{[\s\S]*?\n\}/);
   const sourceOffsets = [...script.matchAll(/\. "\$POSTGRES_MIGRATION_ENV_FILE"/g)]
     .map((match) => match.index ?? -1);
 
   assert.ok(migration >= 0);
   assert.ok(runtimeVerification > migration);
+  assert.ok(runtimeVerificationBlockStart >= 0);
+  assert.ok(
+    runtimeVerificationBlock.indexOf('. "$POSTGRES_MIGRATION_ENV_FILE"') <
+      runtimeVerificationBlock.indexOf('. "$ENV_FILE"'),
+    'runtime settings must override migration-only POSTGRES_SSL_MODE'
+  );
   assert.ok(backfillFunction);
   assert.equal(sourceOffsets.length, 3);
   assert.ok(sourceOffsets.some((offset) => offset < migration));

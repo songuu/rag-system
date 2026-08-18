@@ -891,8 +891,10 @@ if ! (
   set -euo pipefail
   set -a
   . "$DEFAULTS_FILE"
-  . "$ENV_FILE"
   . "$POSTGRES_MIGRATION_ENV_FILE"
+  # The migration file supplies only role metadata to this verifier. Load the
+  # runtime environment last so its TLS policy cannot be downgraded.
+  . "$ENV_FILE"
   set +a
   cd "$release"
   node scripts/verify-postgres-runtime.mjs
