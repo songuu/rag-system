@@ -19,14 +19,29 @@ const postReleaseGate = readFileSync(
   path.join(root, 'deploy', 'songuu', 'post-release-gate.sh'),
   'utf8'
 ).replaceAll('\r\n', '\n');
+const releaseHost = readFileSync(
+  path.join(root, 'deploy', 'songuu', 'release-host.sh'),
+  'utf8'
+).replaceAll('\r\n', '\n');
 const postgresProvisioner = readFileSync(
   path.join(root, 'deploy', 'songuu', 'provision-postgres-host.sh'),
   'utf8'
 ).replaceAll('\r\n', '\n');
+const publicPostgresVerifier = readFileSync(
+  path.join(root, 'scripts', 'verify-postgres-public.mjs'),
+  'utf8'
+).replaceAll('\r\n', '\n');
+const publicPostgresVerifierTest = readFileSync(
+  path.join(root, 'scripts', 'verify-postgres-public.test.mjs'),
+  'utf8'
+).replaceAll('\r\n', '\n');
 
 function stepBody(name, nextName) {
+  const boundary = nextName
+    ? `(?=\\n      - name: ${nextName})`
+    : '$';
   return workflow.match(
-    new RegExp(`- name: ${name}\\n(?<body>[\\s\\S]*?)(?=\\n      - name: ${nextName})`)
+    new RegExp(`- name: ${name}\\n(?<body>[\\s\\S]*?)${boundary}`)
   )?.groups?.body;
 }
 
@@ -96,16 +111,17 @@ test('GitHub quality gates exercise a pinned real PostgreSQL 17 service', () => 
     /env:\n\s+TEST_DATABASE_URL: postgresql:\/\/rag_ci_owner:rag_ci_ephemeral_password@127\.0\.0\.1:54329\/rag_ci/
   );
   assert.match(qualityGateStep, /pnpm test:postgres:integration/);
+  assert.match(qualityGateStep, /node scripts\/verify-postgres-public\.test\.mjs/);
 });
 
 test('GitHub deployment installs and passes the PostgreSQL host provisioner', () => {
   const uploadStep = stepBody(
     'Upload release and host scripts',
-    'Remote atomic release and gateway verification'
+    'Provision public PostgreSQL host'
   );
   const remoteStep = stepBody(
     'Remote atomic release and gateway verification',
-    'Verify public deployment'
+    'Verify released PostgreSQL public contract'
   );
 
   assert.ok(uploadStep, 'Upload release and host scripts step must exist');
@@ -123,6 +139,402 @@ test('GitHub deployment installs and passes the PostgreSQL host provisioner', ()
   );
 });
 
+test('GitHub release safely passes DEPLOY_HOST as the PostgreSQL public identity', () => {
+  const defaultsStep = stepBody('Set deployment defaults', 'Validate deployment secret');
+  const remoteStep = stepBody(
+    'Remote atomic release and gateway verification',
+    'Verify released PostgreSQL public contract'
+  );
+
+  assert.ok(defaultsStep, 'deployment defaults step must exist');
+  assert.ok(remoteStep, 'remote release step must exist');
+  assert.match(defaultsStep, /DEPLOY_HOST="\$\{DEPLOY_HOST:-47\.253\.230\.197\}"/);
+  assert.match(defaultsStep, /\[\[ ! "\$\{DEPLOY_HOST\}" =~ \^\[A-Za-z0-9\]/);
+  assert.match(defaultsStep, /Unsafe DEPLOY_HOST/);
+  assert.match(
+    remoteStep,
+    /RAG_POSTGRES_PUBLIC_HOST='\$\{DEPLOY_HOST\}'[^\n]*bash -s/
+  );
+  assert.match(
+    remoteStep,
+    /RAG_POSTGRES_PUBLIC_HOST="\$\{RAG_POSTGRES_PUBLIC_HOST\}" \\\n+\s*RAG_POSTGRES_CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN\}" \\\n+\s*RAG_POSTGRES_CUTOVER_ACTION=activate \\\n+\s*RAG_POSTGRES_PROVISIONER=/
+  );
+});
+
+test('public PostgreSQL network gate precedes and full gate follows app release', () => {
+  const provisionStep = stepBody(
+    'Provision public PostgreSQL host',
+    'Verify public PostgreSQL TLS endpoint'
+  );
+  const publicPostgresStep = stepBody(
+    'Verify public PostgreSQL TLS endpoint',
+    'Remote atomic release and gateway verification'
+  );
+  const remoteReleaseStep = stepBody(
+    'Remote atomic release and gateway verification',
+    'Verify released PostgreSQL public contract'
+  );
+  const rollbackStep = stepBody('Roll back unfinished public PostgreSQL cutover');
+  const releasedPublicPostgresStep = stepBody(
+    'Verify released PostgreSQL public contract',
+    'Verify public deployment'
+  );
+  const provisionPosition = workflow.indexOf('- name: Provision public PostgreSQL host');
+  const publicGatePosition = workflow.indexOf('- name: Verify public PostgreSQL TLS endpoint');
+  const releasePosition = workflow.indexOf('- name: Remote atomic release and gateway verification');
+  const releasedPublicGatePosition = workflow.indexOf(
+    '- name: Verify released PostgreSQL public contract'
+  );
+  const publicDeploymentPosition = workflow.indexOf('- name: Verify public deployment');
+  const rollbackPosition = workflow.indexOf(
+    '- name: Roll back unfinished public PostgreSQL cutover'
+  );
+
+  assert.ok(provisionStep, 'public PostgreSQL provision step must exist');
+  assert.ok(publicPostgresStep, 'public PostgreSQL verification step must exist');
+  assert.ok(remoteReleaseStep, 'remote release transaction must exist');
+  assert.ok(rollbackStep, 'cross-step PostgreSQL rollback guard must exist');
+  assert.ok(releasedPublicPostgresStep, 'post-migration public PostgreSQL gate must exist');
+  assert.ok(provisionPosition >= 0 && publicGatePosition > provisionPosition);
+  assert.ok(releasePosition > publicGatePosition, 'external database gate must precede app release');
+  assert.ok(
+    releasedPublicGatePosition > releasePosition,
+    'full external database gate must follow release migration and runtime probes'
+  );
+  assert.ok(
+    rollbackPosition > publicDeploymentPosition,
+    'pending cutover finalizer must remain after every release verification step'
+  );
+  assert.match(
+    provisionStep,
+    /RAG_POSTGRES_PUBLIC_HOST='\$\{DEPLOY_HOST\}'[^\n]*bash -s/
+  );
+  assert.match(provisionStep, /tr -d '\\r' < "\$\{provisioner\}"/);
+  assert.match(provisionStep, /chmod 700 -- "\$\{provisioner\}"/);
+  assert.match(provisionStep, /bash -n "\$\{provisioner\}"/);
+  assert.match(
+    provisionStep,
+    /RAG_POSTGRES_PUBLIC_HOST="\$\{RAG_POSTGRES_PUBLIC_HOST\}" \\\n+\s*RAG_POSTGRES_CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN\}" \\\n+\s*RAG_POSTGRES_CUTOVER_ACTION=prepare \\\n+\s*"\$\{provisioner\}"/
+  );
+  assert.match(provisionStep, /RAG_POSTGRES_CUTOVER_TOKEN='\$\{RELEASE_NAME\}'/);
+  assert.match(provisionStep, /prepare_succeeded=0/);
+  assert.match(
+    provisionStep,
+    /if \[ "\$\{prepare_succeeded\}" = '1' \]; then[\s\S]*RAG_POSTGRES_CUTOVER_ACTION=rollback/
+  );
+  assert.match(
+    provisionStep,
+    /RAG_POSTGRES_CUTOVER_ACTION=prepare[\s\S]*prepare_succeeded=1/
+  );
+  assert.match(provisionStep, /RAG_POSTGRES_CUTOVER_ACTION=prepare/);
+  assert.match(provisionStep, /RAG_POSTGRES_CUTOVER_ACTION=rollback/);
+  assert.match(provisionStep, /cleanup_failed_preflight/);
+  assert.match(postgresProvisioner, /prepare\|activate\|finalize\|rollback\|verify/);
+  assert.match(postgresProvisioner, /readonly CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN:-\}"/);
+  assert.match(postgresProvisioner, /pending_token/);
+  assert.match(postgresProvisioner, /does not own the pending PostgreSQL public cutover/);
+  assert.match(postgresProvisioner, /prepare cannot downgrade an active or committed transaction/);
+  assert.match(postgresProvisioner, /write_cutover_marker activated/);
+  assert.match(postgresProvisioner, /cutover_irreversible=true/);
+  assert.match(postgresProvisioner, /rollback is intentionally skipped/);
+  assert.doesNotMatch(postgresProvisioner, /state=committed/);
+  const finalizeBlock = postgresProvisioner.slice(
+    postgresProvisioner.lastIndexOf('[[ "$CUTOVER_ACTION" = finalize ]]')
+  );
+  const finalizingReceipt = finalizeBlock.indexOf('write_cutover_marker finalizing');
+  const irreversibleBackupRemoval = finalizeBlock.indexOf('docker rm "$CONTAINER_BACKUP_NAME"');
+  const finalizedReceipt = finalizeBlock.indexOf('write_cutover_marker finalized');
+  const committedCleanup = finalizeBlock.indexOf('cleanup_committed_cutover_state');
+  assert.ok(finalizingReceipt >= 0);
+  assert.ok(irreversibleBackupRemoval > finalizingReceipt);
+  assert.ok(finalizedReceipt > irreversibleBackupRemoval);
+  assert.ok(committedCleanup > finalizedReceipt);
+  assert.match(postgresProvisioner, /cleanup remains pending/);
+  assert.match(releaseHost, /readonly POSTGRES_CUTOVER_TOKEN=/);
+  assert.match(releaseHost, /RAG_POSTGRES_CUTOVER_TOKEN="\$POSTGRES_CUTOVER_TOKEN"/);
+  assert.match(releaseHost, /postgres_finalize_started=false/);
+  assert.match(
+    releaseHost,
+    /run_postgres_finalize_action\(\)[\s\S]*RAG_POSTGRES_CUTOVER_ACTION=finalize[\s\S]*RAG_POSTGRES_CUTOVER_TOKEN="\$POSTGRES_CUTOVER_TOKEN"/
+  );
+  assert.match(
+    releaseHost,
+    /reconcile_postgres_finalize_receipt\(\)[\s\S]*run_postgres_finalize_action[\s\S]*run_postgres_verify_action[\s\S]*release_committed=true/
+  );
+  const releaseVerifyAction = releaseHost.match(
+    /run_postgres_verify_action\(\) \{[\s\S]*?\n\}/
+  );
+  assert.ok(releaseVerifyAction);
+  assert.match(releaseVerifyAction[0], /RAG_POSTGRES_CUTOVER_ACTION=verify/);
+  assert.doesNotMatch(releaseVerifyAction[0], /RAG_POSTGRES_CUTOVER_TOKEN=/);
+  assert.match(
+    postgresProvisioner,
+    /if \[\[ "\$CUTOVER_ACTION" = verify \]\]; then[\s\S]*pending_state" = finalizing[\s\S]*pending_state" = finalized[\s\S]*rollback-capable/
+  );
+  const releaseExitTrap = releaseHost.slice(
+    releaseHost.indexOf('release_exit_trap() {'),
+    releaseHost.indexOf('trap release_exit_trap EXIT')
+  );
+  assert.ok(
+    releaseExitTrap.indexOf('reconcile_postgres_finalize_receipt') <
+      releaseExitTrap.indexOf('restore_database_environment'),
+    'lost finalize acknowledgements must be reconciled before app environment rollback'
+  );
+  assert.match(
+    releaseHost,
+    /if ! finalize_postgres_cutover; then[\s\S]*reconcile_postgres_finalize_receipt[\s\S]*elif rollback/
+  );
+  assert.match(releaseHost, /RAG_RELEASE_RECEIPT_ROOT:-/);
+  assert.match(releaseHost, /RAG_RELEASE_RECEIPT:-/);
+  assert.match(
+    releaseHost,
+    /write_release_receipt\(\)[\s\S]*release=%s\\ntoken=%s\\nstate=%s\\n[\s\S]*chmod 600[\s\S]*sync -f/
+  );
+  assert.match(releaseHost, /write_release_receipt app-committed/);
+  assert.match(releaseHost, /write_release_receipt app-rolled-back/);
+
+  assert.match(publicPostgresStep, /readonly postgres_public_port='25432'/);
+  assert.match(
+    publicPostgresStep,
+    /mktemp -d "\$\{RUNNER_TEMP\}\/rag-postgres-public\.XXXXXXXXXX"/
+  );
+  assert.match(publicPostgresStep, /trap cleanup_public_postgres_probe EXIT/);
+  assert.match(
+    publicPostgresStep,
+    /rm -f -- "\$\{postgres_ca\}" "\$\{public_client_env\}"/
+  );
+  assert.match(publicPostgresStep, /rmdir -- "\$\{probe_dir\}"/);
+  assert.match(
+    publicPostgresStep,
+    /scp -i ~\/\.ssh\/rag_system_deploy_key -o BatchMode=yes \\\n+\s*-o StrictHostKeyChecking=yes -o UserKnownHostsFile="\$\{HOME\}\/\.ssh\/known_hosts"/
+  );
+  assert.match(
+    publicPostgresStep,
+    /"\$\{DEPLOY_USER\}@\$\{DEPLOY_HOST\}:\/opt\/rag-system\/shared\/\.postgres-host\/tls\/ca\.crt"/
+  );
+  assert.match(
+    publicPostgresStep,
+    /"\$\{DEPLOY_USER\}@\$\{DEPLOY_HOST\}:\/opt\/rag-system\/shared\/\.postgres-host\/tls\/rag-app-client\.env"/
+  );
+  assert.match(
+    publicPostgresStep,
+    /chmod 600 -- "\$\{postgres_ca\}" "\$\{public_client_env\}"/
+  );
+  assert.match(publicPostgresStep, /PGSSLMODE\|PGSSLROOTCERT/);
+  assert.match(publicPostgresStep, /\. "\$\{public_client_env\}"/);
+  assert.match(publicPostgresStep, /export PGSSLMODE='verify-full'/);
+  assert.match(publicPostgresStep, /PGSSLROOTCERT="\$\(readlink -f -- "\$\{postgres_ca\}"\)"/);
+  assert.match(publicPostgresStep, /POSTGRES_PUBLIC_EXPECTED_HOST="\$\{DEPLOY_HOST\}"/);
+  assert.match(publicPostgresStep, /POSTGRES_PUBLIC_VERIFY_PHASE='network'/);
+  assert.match(publicPostgresStep, /timeout 30 node scripts\/verify-postgres-public\.mjs/);
+  assert.match(publicPostgresStep, /cloud security group allows this port from the runner/);
+  assert.match(publicPostgresStep, /REMOTE_CLEANUP/);
+  assert.match(publicPostgresStep, /RAG_POSTGRES_CUTOVER_ACTION=rollback/);
+  assert.match(publicPostgresStep, /RAG_POSTGRES_CUTOVER_TOKEN='\$\{RELEASE_NAME\}'/);
+  assert.match(
+    publicPostgresStep,
+    /RAG_POSTGRES_CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN\}" \\\n+\s*RAG_POSTGRES_CUTOVER_ACTION=rollback/
+  );
+  assert.doesNotMatch(
+    publicPostgresStep,
+    /RAG_POSTGRES_CUTOVER_ACTION=(?:commit|activate|finalize)|cutover_committed/
+  );
+  assert.match(
+    remoteReleaseStep,
+    /RAG_POSTGRES_CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN\}" \\\n+\s*RAG_POSTGRES_CUTOVER_ACTION=activate \\\n+\s*RAG_POSTGRES_PROVISIONER=/
+  );
+  assert.match(remoteReleaseStep, /RAG_POSTGRES_CUTOVER_TOKEN='\$\{RELEASE_NAME\}'/);
+  assert.match(releaseHost, /Host release PostgreSQL action must be activate or verify/);
+  assert.ok(
+    releaseHost.indexOf('run_post_release_gate verify') <
+      releaseHost.lastIndexOf('finalize_postgres_cutover'),
+    'PostgreSQL topology must finalize only after release readiness and gateway verification'
+  );
+  assert.ok(
+    releaseHost.lastIndexOf('finalize_postgres_cutover') <
+      releaseHost.lastIndexOf('release_committed=true'),
+    'PostgreSQL finalization must remain inside the release transaction'
+  );
+  assert.match(remoteReleaseStep, /rollback_pending_postgres\(\)/);
+  assert.match(
+    remoteReleaseStep,
+    /remote_exit\(\) \{[\s\S]*rollback_pending_postgres[\s\S]*cleanup_remote_staging/
+  );
+  const remoteExit = remoteReleaseStep.match(/remote_exit\(\) \{[\s\S]*?\n          \}/);
+  const receiptValidator = remoteReleaseStep.match(
+    /validate_app_release_receipt\(\) \{[\s\S]*?\n          \}/
+  );
+  assert.ok(remoteExit);
+  assert.ok(receiptValidator);
+  assert.match(receiptValidator[0], /release-state\.receipt/);
+  assert.match(receiptValidator[0], /stat -c '%U:%G'/);
+  assert.match(receiptValidator[0], /stat -c '%a'/);
+  assert.match(receiptValidator[0], /wc -l/);
+  assert.match(receiptValidator[0], /receipt_release.*RELEASE_NAME/);
+  assert.match(receiptValidator[0], /receipt_token.*RAG_POSTGRES_CUTOVER_TOKEN/);
+  assert.match(receiptValidator[0], /app-committed\|app-rolled-back/);
+  assert.match(remoteReleaseStep, /RAG_RELEASE_RECEIPT_ROOT="\$\{REMOTE_DIR\}"/);
+  assert.match(remoteReleaseStep, /RAG_RELEASE_RECEIPT="\$\{release_receipt\}"/);
+  assert.match(
+    remoteReleaseStep,
+    /reconcile_committed_postgres\(\)[\s\S]*RAG_POSTGRES_CUTOVER_ACTION=verify/
+  );
+  assert.doesNotMatch(
+    remoteReleaseStep.match(/reconcile_committed_postgres\(\) \{[\s\S]*?\n          \}/)[0],
+    /RAG_POSTGRES_CUTOVER_ACTION=finalize|RAG_POSTGRES_CUTOVER_TOKEN=/
+  );
+  assert.ok(
+    remoteExit[0].indexOf('validate_app_release_receipt') <
+      remoteExit[0].indexOf('reconcile_committed_postgres')
+  );
+  assert.ok(
+    remoteExit[0].indexOf('reconcile_committed_postgres') <
+      remoteExit[0].indexOf('rollback_pending_postgres')
+  );
+  assert.ok(
+    remoteExit[0].indexOf('shared_assets_armed=0') <
+      remoteExit[0].indexOf('rollback_shared_assets')
+  );
+  assert.match(
+    remoteExit[0],
+    /\[ "\$\{app_recovery_authorized\}" = '1' \] && \[ "\$\{shared_assets_armed\}" = '1' \]/
+  );
+  assert.match(
+    remoteExit[0],
+    /app_release_state}" = 'app-committed'[\s\S]*reconcile_committed_postgres; then[\s\S]*shared_assets_armed=0[\s\S]*cleanup_allowed=0/
+  );
+  assert.match(
+    remoteExit[0],
+    /No valid durable app receipt exists; preserving PostgreSQL, app\/current, shared assets[\s\S]*cleanup_allowed=0/
+  );
+  assert.match(
+    remoteExit[0],
+    /else[\s\S]*app_recovery_authorized=1[\s\S]*rollback_pending_postgres/
+  );
+  assert.match(remoteReleaseStep, /postgres-rollback\.failed/);
+  assert.match(remoteReleaseStep, /cleanup_allowed=0/);
+  assert.doesNotMatch(publicPostgresStep, /openssl s_client|printenv|credentials\.env/);
+  assert.match(rollbackStep, /if: \$\{\{ failure\(\) \|\| cancelled\(\) \}\}/);
+  assert.match(rollbackStep, /RELEASE_NAME='\$\{RELEASE_NAME\}'/);
+  const finalizerReceipt = rollbackStep.match(
+    /validate_finalizer_release_receipt\(\) \{[\s\S]*?\n          \}/
+  );
+  const finalizerCommitted = rollbackStep.match(
+    /if \[ "\$\{app_release_state\}" = 'app-committed' \]; then[\s\S]*?\n          fi/
+  );
+  assert.ok(finalizerReceipt);
+  assert.ok(finalizerCommitted);
+  const finalizerLock = rollbackStep.indexOf("lock_file='/run/lock/rag-system-env-reload.lock'");
+  const finalizerFlock = rollbackStep.indexOf('flock -w 120 -x 9');
+  const finalizerReceiptRead = rollbackStep.indexOf('release_started=0');
+  const finalizerRollback = rollbackStep.indexOf('RAG_POSTGRES_CUTOVER_ACTION=rollback');
+  assert.ok(finalizerLock >= 0);
+  assert.ok(finalizerFlock > finalizerLock);
+  assert.ok(finalizerReceiptRead > finalizerFlock);
+  assert.ok(finalizerRollback > finalizerReceiptRead);
+  assert.match(rollbackStep, /test ! -L "\$\{lock_file\}"/);
+  assert.match(rollbackStep, /stat -c '%U:%G' -- "\$\{lock_file\}"/);
+  assert.match(rollbackStep, /chmod 600 -- "\$\{lock_file\}"/);
+  assert.match(rollbackStep, /Timed out waiting for the release transaction lock/);
+  assert.match(rollbackStep, /release_started=0/);
+  assert.match(rollbackStep, /shared-assets\.manifest/);
+  assert.match(finalizerReceipt[0], /stat -c '%U:%G'/);
+  assert.match(finalizerReceipt[0], /stat -c '%a'/);
+  assert.match(finalizerReceipt[0], /receipt_release.*RELEASE_NAME/);
+  assert.match(finalizerReceipt[0], /receipt_token.*RAG_POSTGRES_CUTOVER_TOKEN/);
+  assert.match(finalizerReceipt[0], /app-committed\|app-rolled-back/);
+  assert.match(
+    rollbackStep,
+    /release_started}" = '1'[\s\S]*! validate_finalizer_release_receipt[\s\S]*preserving PostgreSQL, app\/current, shared assets, and staging[\s\S]*exit 1/
+  );
+  assert.match(finalizerCommitted[0], /RAG_POSTGRES_CUTOVER_ACTION=verify/);
+  assert.doesNotMatch(finalizerCommitted[0], /RAG_POSTGRES_CUTOVER_TOKEN=/);
+  assert.ok(
+    rollbackStep.indexOf('RAG_POSTGRES_CUTOVER_ACTION=verify') <
+      finalizerRollback
+  );
+  assert.match(rollbackStep, /RAG_POSTGRES_CUTOVER_ACTION=rollback/);
+  assert.match(rollbackStep, /RAG_POSTGRES_CUTOVER_TOKEN='\$\{RELEASE_NAME\}'/);
+  assert.match(
+    rollbackStep,
+    /RAG_POSTGRES_CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN\}" \\\n+\s*RAG_POSTGRES_CUTOVER_ACTION=rollback/
+  );
+  assert.match(rollbackStep, /protected staging was retained for audit/);
+
+  assert.match(publicPostgresVerifier, /requireExact\(env, 'PGSSLMODE', 'verify-full'\)/);
+  assert.match(publicPostgresVerifier, /POSTGRES_PUBLIC_VERIFY_PHASE/);
+  assert.match(publicPostgresVerifier, /network/);
+  assert.match(publicPostgresVerifier, /full/);
+  assert.match(publicPostgresVerifier, /checkServerIdentity\(expectedHost, certificate\)/);
+  assert.match(publicPostgresVerifier, /FROM pg_stat_ssl/);
+  assert.match(publicPostgresVerifier, /server_version_num < 170_000/);
+  assert.match(publicPostgresVerifier, /operational_dml !== true/);
+  assert.match(publicPostgresVerifier, /parent_write_denied !== true/);
+  assert.match(publicPostgresVerifier, /ssl: false/);
+  assert.match(publicPostgresVerifier, /error\.code === '28000'/);
+  assert.match(
+    publicPostgresVerifier,
+    /assertRestrictedRoleRejected\(createClient, (?:clientConfig|config), 'rag_owner'\)/
+  );
+  assert.match(
+    publicPostgresVerifier,
+    /assertRestrictedRoleRejected\(createClient, (?:clientConfig|config), 'postgres'\)/
+  );
+  assert.match(publicPostgresVerifier, /randomBytes\(32\)\.toString\('hex'\)/);
+  assert.match(publicPostgresVerifierTest, /does not expose credentials or endpoint details/);
+  assert.match(
+    publicPostgresVerifierTest,
+    /network phase verifies an empty PG17 database without referencing application tables/
+  );
+  assert.doesNotMatch(
+    publicPostgresStep,
+    /POSTGRES_URL|POSTGRES_MIGRATION_URL|OWNER_PASSWORD|ADMIN_PASSWORD/
+  );
+
+  assert.match(
+    releasedPublicPostgresStep,
+    /mktemp -d "\$\{RUNNER_TEMP\}\/rag-postgres-public-full\.XXXXXXXXXX"/
+  );
+  assert.match(releasedPublicPostgresStep, /trap cleanup_released_public_postgres_probe EXIT/);
+  assert.match(
+    releasedPublicPostgresStep,
+    /scp -i ~\/\.ssh\/rag_system_deploy_key -o BatchMode=yes \\\n+\s*-o StrictHostKeyChecking=yes -o UserKnownHostsFile="\$\{HOME\}\/\.ssh\/known_hosts"/
+  );
+  assert.match(
+    releasedPublicPostgresStep,
+    /tls\/ca\.crt"[\s\S]*tls\/rag-app-client\.env"/
+  );
+  assert.match(
+    releasedPublicPostgresStep,
+    /chmod 600 -- "\$\{postgres_ca\}" "\$\{public_client_env\}"/
+  );
+  assert.match(releasedPublicPostgresStep, /wc -l < "\$\{public_client_env\}"\)" -ne 7/);
+  assert.match(releasedPublicPostgresStep, /\. "\$\{public_client_env\}"/);
+  assert.match(releasedPublicPostgresStep, /export PGSSLMODE='verify-full'/);
+  assert.match(
+    releasedPublicPostgresStep,
+    /PGSSLROOTCERT="\$\(readlink -f -- "\$\{postgres_ca\}"\)"/
+  );
+  assert.match(
+    releasedPublicPostgresStep,
+    /POSTGRES_PUBLIC_EXPECTED_HOST="\$\{DEPLOY_HOST\}"/
+  );
+  assert.match(releasedPublicPostgresStep, /POSTGRES_PUBLIC_VERIFY_PHASE='full'/);
+  assert.match(
+    releasedPublicPostgresStep,
+    /timeout 30 node scripts\/verify-postgres-public\.mjs/
+  );
+  assert.match(releasedPublicPostgresStep, /release completed, but PostgreSQL post-migration/);
+  assert.match(
+    releasedPublicPostgresStep,
+    /rm -f -- "\$\{postgres_ca\}" "\$\{public_client_env\}"/
+  );
+  assert.doesNotMatch(
+    releasedPublicPostgresStep,
+    /POSTGRES_URL|POSTGRES_MIGRATION_URL|OWNER_PASSWORD|ADMIN_PASSWORD|credentials\.env|printenv/
+  );
+});
+
 test('GitHub deployment creates an unpredictable root-only remote staging directory', () => {
   const configureStep = stepBody('Configure SSH', 'Create secure remote staging');
   const stagingStep = stepBody(
@@ -131,7 +543,7 @@ test('GitHub deployment creates an unpredictable root-only remote staging direct
   );
   const uploadStep = stepBody(
     'Upload release and host scripts',
-    'Remote atomic release and gateway verification'
+    'Provision public PostgreSQL host'
   );
 
   assert.ok(configureStep, 'Configure SSH step must precede secure staging');
@@ -167,7 +579,7 @@ test('GitHub deployment creates an unpredictable root-only remote staging direct
 test('uploaded staging payload is root-owned, private, non-symlink and hash-verified', () => {
   const uploadStep = stepBody(
     'Upload release and host scripts',
-    'Remote atomic release and gateway verification'
+    'Provision public PostgreSQL host'
   );
 
   assert.ok(uploadStep);
@@ -185,10 +597,10 @@ test('uploaded staging payload is root-owned, private, non-symlink and hash-veri
   assert.match(uploadStep, /sha256sum -c -- "\$\{REMOTE_CHECKSUMS_NAME\}"/);
 });
 
-test('remote deployment cleans exact staging and rolls shared runtime assets back on failure', () => {
+test('remote deployment cleans exact staging and only rolls shared assets back with app evidence', () => {
   const remoteStep = stepBody(
     'Remote atomic release and gateway verification',
-    'Verify public deployment'
+    'Verify released PostgreSQL public contract'
   );
 
   assert.ok(remoteStep);
@@ -229,7 +641,7 @@ test('remote deployment cleans exact staging and rolls shared runtime assets bac
 test('remote deployment holds the environment reload lock while shared assets change', () => {
   const remoteStep = stepBody(
     'Remote atomic release and gateway verification',
-    'Verify public deployment'
+    'Verify released PostgreSQL public contract'
   );
 
   assert.ok(remoteStep);
@@ -241,7 +653,10 @@ test('remote deployment holds the environment reload lock while shared assets ch
   assert.ok(flock > lock);
   assert.ok(prepare > flock);
   assert.ok(install > prepare);
-  assert.match(remoteStep, /RAG_ENV_RELOAD_LOCK_HELD=1 \\\n+\s*RAG_POSTGRES_PROVISIONER=/);
+  assert.match(
+    remoteStep,
+    /RAG_ENV_RELOAD_LOCK_HELD=1 \\\n+\s*RAG_POSTGRES_PUBLIC_HOST="\$\{RAG_POSTGRES_PUBLIC_HOST\}" \\\n+\s*RAG_POSTGRES_CUTOVER_TOKEN="\$\{RAG_POSTGRES_CUTOVER_TOKEN\}" \\\n+\s*RAG_POSTGRES_CUTOVER_ACTION=activate \\\n+\s*RAG_POSTGRES_PROVISIONER=/
+  );
 });
 
 test('GitHub deployment shell never enables tracing or prints secret values', () => {
@@ -257,6 +672,7 @@ test('GitHub deployment shell never enables tracing or prints secret values', ()
     'POSTGRES_URL',
     'POSTGRES_MIGRATION_URL',
     'POSTGRES_PASSWORD',
+    'PGPASSWORD',
   ]) {
     const unsafeLogLines = workflowWithoutPrivateKeyWrite
       .split('\n')
@@ -319,7 +735,7 @@ test('SSH trusts an audited host key and fails closed for unpinned hosts', () =>
 test('long remote release keeps its SSH transport alive during quiet provisioning', () => {
   const remoteStep = stepBody(
     'Remote atomic release and gateway verification',
-    'Verify public deployment'
+    'Verify released PostgreSQL public contract'
   );
 
   assert.ok(remoteStep, 'Remote atomic release step must exist');
@@ -332,11 +748,11 @@ test('long remote release keeps its SSH transport alive during quiet provisionin
 test('remote gateway and watcher gate remains inside the release transaction', () => {
   const uploadStep = stepBody(
     'Upload release and host scripts',
-    'Remote atomic release and gateway verification'
+    'Provision public PostgreSQL host'
   );
   const remoteStep = stepBody(
     'Remote atomic release and gateway verification',
-    'Verify public deployment'
+    'Verify released PostgreSQL public contract'
   );
 
   assert.ok(uploadStep);
@@ -347,7 +763,7 @@ test('remote gateway and watcher gate remains inside the release transaction', (
   assert.match(remoteStep, /bash -n "\$\{REMOTE_DIR\}\/post-release-gate\.sh"/);
   assert.match(
     remoteStep,
-    /RAG_POST_RELEASE_GATE="\$\{REMOTE_DIR\}\/post-release-gate\.sh" \\\n+\s*RAG_SHARED_ASSET_BACKUP_DIR="\$\{shared_backup_dir\}" \\\n+\s*RAG_SHARED_ASSET_BACKUP_MANIFEST="\$\{shared_backup_manifest\}" \\\n+\s*RAG_RELEASE_GATE_ROOT="\$\{REMOTE_DIR\}" \\\n+\s*RAG_ENV_RELOAD_LOCK_HELD=1/
+    /RAG_POST_RELEASE_GATE="\$\{REMOTE_DIR\}\/post-release-gate\.sh" \\\n+\s*RAG_SHARED_ASSET_BACKUP_DIR="\$\{shared_backup_dir\}" \\\n+\s*RAG_SHARED_ASSET_BACKUP_MANIFEST="\$\{shared_backup_manifest\}" \\\n+\s*RAG_RELEASE_GATE_ROOT="\$\{REMOTE_DIR\}" \\\n+\s*RAG_RELEASE_RECEIPT_ROOT="\$\{REMOTE_DIR\}" \\\n+\s*RAG_RELEASE_RECEIPT="\$\{release_receipt\}" \\\n+\s*RAG_ENV_RELOAD_LOCK_HELD=1/
   );
 
   const releaseInvocation = remoteStep.indexOf('"${REMOTE_DIR}/release-host.sh"');

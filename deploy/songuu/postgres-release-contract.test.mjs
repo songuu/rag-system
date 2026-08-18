@@ -52,7 +52,10 @@ test('host release provisions PostgreSQL before validating production persistenc
   const environmentCreation = script.indexOf('if [[ ! -f "$ENV_FILE" ]]');
   const reloadLock = script.indexOf('flock 9');
   const environmentSnapshot = script.indexOf('  snapshot_database_environment\n');
-  const provision = script.indexOf('"$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"');
+  const provision = script.indexOf(
+    '"$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"',
+    environmentSnapshot
+  );
   const persistenceValidation = script.indexOf('Production RAG environment has incomplete persistence/provider configuration');
 
   assert.ok(reloadLock >= 0);
@@ -62,6 +65,13 @@ test('host release provisions PostgreSQL before validating production persistenc
   assert.ok(environmentCreation >= 0);
   assert.ok(persistenceValidation > provision);
   assert.match(script, /RAG_POSTGRES_PROVISIONER:-/);
+  assert.match(
+    script,
+    /RAG_POSTGRES_CUTOVER_ACTION="\$POSTGRES_CUTOVER_ACTION"\s+\\\s+RAG_POSTGRES_CUTOVER_TOKEN="\$POSTGRES_CUTOVER_TOKEN"/
+  );
+  assert.match(script, /POSTGRES_CUTOVER_ACTION:-verify/);
+  assert.match(script, /case "\$POSTGRES_CUTOVER_ACTION" in[\s\S]*activate\)[\s\S]*verify\)/);
+  assert.match(script, /activation requires a safe transaction token/);
   assert.match(script, /RAG_POSTGRES_MIGRATION_ENV_FILE:-/);
   assert.match(script, /RAG_ENV_RELOAD_LOCK_HELD:-0/);
   assert.match(script, /if \[\[ "\$ENV_RELOAD_LOCK_HELD" = "0" \]\]; then[\s\S]*flock 9/);
@@ -215,7 +225,7 @@ test('optional post-release gate is path constrained and participates in rollbac
   const ready = script.indexOf('if ! ready="$(wait_for_readiness)"');
   const verify = script.indexOf('run_post_release_gate verify "$release" "$previous"');
   const save = script.lastIndexOf('pm2 save');
-  const commit = script.indexOf('release_committed=true');
+  const commit = script.lastIndexOf('\nrelease_committed=true\n');
   const rollback = script.match(/rollback\(\) \{[\s\S]*?\n\}/);
 
   assert.ok(ready >= 0);
@@ -230,6 +240,91 @@ test('optional post-release gate is path constrained and participates in rollbac
   assert.match(script, /Post-release gate must be a direct child of its verified root/);
   assert.match(script, /! -user root -o ! -group root -o -perm \/022/);
   assert.match(rollback[0], /run_post_release_gate rollback "\$previous" "\$release"/);
+});
+
+test('public PostgreSQL activation remains rollbackable until the application release is durable', () => {
+  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const snapshot = script.indexOf('snapshot_database_environment');
+  const activate = script.indexOf('RAG_POSTGRES_CUTOVER_ACTION="$POSTGRES_CUTOVER_ACTION"');
+  const migrate = script.indexOf('node scripts/migrate-postgres.mjs');
+  const readiness = script.indexOf('if ! ready="$(wait_for_readiness)"');
+  const pm2Save = script.indexOf('if ! pm2 save; then');
+  const finalize = script.indexOf('if ! finalize_postgres_cutover; then');
+  const committed = script.lastIndexOf('\nrelease_committed=true\n');
+
+  assert.ok(snapshot >= 0);
+  assert.ok(activate > snapshot);
+  assert.ok(migrate > activate);
+  assert.ok(readiness > migrate);
+  assert.ok(pm2Save > readiness);
+  assert.ok(finalize > pm2Save);
+  assert.ok(committed > finalize);
+  assert.match(script, /RAG_POSTGRES_CUTOVER_ACTION=finalize/);
+  assert.match(script, /RAG_POSTGRES_CUTOVER_TOKEN="\$POSTGRES_CUTOVER_TOKEN"/);
+  assert.match(script, /if \(\( rollback_failed == 0 \)\) && ! pm2 save/);
+});
+
+test('an uncertain PostgreSQL finalize receipt is reconciled before any app rollback', () => {
+  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const trap = script.match(/release_exit_trap\(\) \{[\s\S]*?\n\}/);
+  const reconcile = script.match(/reconcile_postgres_finalize_receipt\(\) \{[\s\S]*?\n\}/);
+  const finalizeAction = script.match(/run_postgres_finalize_action\(\) \{[\s\S]*?\n\}/);
+  const verifyAction = script.match(/run_postgres_verify_action\(\) \{[\s\S]*?\n\}/);
+  const finalizeFailure = script.indexOf('if ! finalize_postgres_cutover; then');
+  const reconcileAfterFailure = script.indexOf('reconcile_postgres_finalize_receipt', finalizeFailure);
+  const rollbackAfterFailure = script.indexOf('if rollback; then', finalizeFailure);
+
+  assert.ok(trap);
+  assert.ok(reconcile);
+  assert.ok(finalizeAction);
+  assert.ok(verifyAction);
+  assert.ok(finalizeFailure >= 0);
+  assert.ok(reconcileAfterFailure > finalizeFailure);
+  assert.ok(rollbackAfterFailure > reconcileAfterFailure);
+  assert.match(reconcile[0], /postgres_finalize_started/);
+  assert.match(reconcile[0], /run_postgres_finalize_action/);
+  assert.match(reconcile[0], /run_postgres_verify_action/);
+  assert.match(finalizeAction[0], /RAG_POSTGRES_CUTOVER_ACTION=finalize/);
+  assert.match(finalizeAction[0], /RAG_POSTGRES_CUTOVER_TOKEN="\$POSTGRES_CUTOVER_TOKEN"/);
+  assert.match(verifyAction[0], /RAG_POSTGRES_CUTOVER_ACTION=verify/);
+  assert.doesNotMatch(verifyAction[0], /RAG_POSTGRES_CUTOVER_TOKEN=/);
+  assert.match(reconcile[0], /release_committed=true/);
+  assert.ok(
+    trap[0].indexOf('reconcile_postgres_finalize_receipt')
+      < trap[0].indexOf('restore_database_environment')
+  );
+  assert.match(trap[0], /reconcile_postgres_finalize_receipt; then[\s\S]*status=0/);
+});
+
+test('a durable app receipt prevents outer recovery from guessing after a hard kill', () => {
+  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const validate = script.match(/validate_release_receipt\(\) \{[\s\S]*?\n\}/);
+  const write = script.match(/write_release_receipt\(\) \{[\s\S]*?\n\}/);
+  const rollback = script.match(/rollback\(\) \{[\s\S]*?\n\}/);
+  const trap = script.match(/release_exit_trap\(\) \{[\s\S]*?\n\}/);
+  const finalize = script.indexOf('if ! finalize_postgres_cutover; then');
+  const committedReceipt = script.indexOf('write_release_receipt app-committed', finalize);
+
+  assert.ok(validate);
+  assert.ok(write);
+  assert.ok(rollback);
+  assert.ok(trap);
+  assert.match(script, /RAG_RELEASE_RECEIPT_ROOT:-/);
+  assert.match(script, /RAG_RELEASE_RECEIPT:-/);
+  assert.match(validate[0], /PostgreSQL activation requires a durable release receipt/);
+  assert.match(validate[0], /readlink -f -- "\$RELEASE_RECEIPT_ROOT"/);
+  assert.match(validate[0], /release-state\.receipt/);
+  assert.match(write[0], /mktemp/);
+  assert.match(write[0], /chmod 600/);
+  assert.match(write[0], /release=%s\\ntoken=%s\\nstate=%s\\n/);
+  assert.match(write[0], /sync -f/);
+  assert.match(write[0], /mv -f/);
+  assert.ok(committedReceipt > finalize);
+  assert.match(rollback[0], /pm2 save[\s\S]*write_release_receipt app-rolled-back/);
+  assert.match(
+    trap[0],
+    /cutover_started" != true[\s\S]*write_release_receipt app-rolled-back/
+  );
 });
 
 test('failed first release removes only its own current link and PM2 process', () => {

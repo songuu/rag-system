@@ -53,8 +53,15 @@ jobs:
       - name: Set deployment defaults
         run: |
           set -euo pipefail
+          DEPLOY_HOST="${DEPLOY_HOST:-47.253.230.197}"
+          if [[ ! "${DEPLOY_HOST}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+            || [[ "${DEPLOY_HOST}" = *..* ]] \
+            || (( ${#DEPLOY_HOST} > 253 )); then
+            echo '::error::Unsafe DEPLOY_HOST; expected an IPv4 address or DNS hostname'
+            exit 2
+          fi
           {
-            echo "DEPLOY_HOST=${DEPLOY_HOST:-47.253.230.197}"
+            echo "DEPLOY_HOST=${DEPLOY_HOST}"
             echo "DEPLOY_USER=${DEPLOY_USER:-root}"
             echo "DOMAIN=${DOMAIN:-songuu.top}"
             echo "BASE_PATH=/rag-system"
@@ -93,6 +100,7 @@ jobs:
           TEST_DATABASE_URL: postgresql://rag_ci_owner:rag_ci_ephemeral_password@127.0.0.1:54329/rag_ci
         run: |
           set -euo pipefail
+          node scripts/verify-postgres-public.test.mjs
           pnpm test
           pnpm test:postgres:integration
           pnpm exec tsc --noEmit --incremental false
@@ -311,6 +319,180 @@ jobs:
           upload_complete=1
           trap - EXIT
 
+      - name: Provision public PostgreSQL host
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' RAG_POSTGRES_PUBLIC_HOST='${DEPLOY_HOST}' RAG_POSTGRES_CUTOVER_TOKEN='${RELEASE_NAME}' bash -s" <<'REMOTE_POSTGRES'
+          set -euo pipefail
+          prepare_succeeded=0
+          shared_root='/opt/rag-system/shared'
+          provisioner="${REMOTE_DIR}/provision-postgres-host.sh"
+
+          validate_preflight_staging() {
+            case "${REMOTE_DIR}" in
+              "${REMOTE_PARENT}"/rag-system.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+              *) echo 'Unsafe PostgreSQL preflight staging path.' >&2; return 2 ;;
+            esac
+            test -d "${REMOTE_DIR}" || return 2
+            test ! -L "${REMOTE_DIR}" || return 2
+            test "$(readlink -f -- "${REMOTE_DIR}")" = "${REMOTE_DIR}" || return 2
+            test "$(stat -c '%U:%G' -- "${REMOTE_DIR}")" = 'root:root' || return 2
+            test "$(stat -c '%a' -- "${REMOTE_DIR}")" = '700' || return 2
+          }
+
+          cleanup_failed_preflight() {
+            status=$?
+            trap - EXIT
+            if [ "${status}" -ne 0 ]; then
+              if validate_preflight_staging; then
+                if [ "${prepare_succeeded}" = '1' ]; then
+                  if [ -f "${provisioner}" ] && [ ! -L "${provisioner}" ] && [ -x "${provisioner}" ]; then
+                    RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+                    RAG_POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN}" \
+                    RAG_POSTGRES_CUTOVER_ACTION=rollback \
+                      "${provisioner}" \
+                      '/opt/rag-system/shared/.env.prod' \
+                      '/opt/rag-system/shared/.postgres-migration.env' \
+                      || status=1
+                  else
+                    status=1
+                  fi
+                fi
+                echo "Preserving protected PostgreSQL preflight staging for token-scoped recovery: ${REMOTE_DIR}" >&2
+              else
+                echo 'Could not validate PostgreSQL preflight staging for recovery.' >&2
+                status=1
+              fi
+            fi
+            exit "${status}"
+          }
+          trap cleanup_failed_preflight EXIT
+
+          validate_preflight_staging
+          if [ -e "${shared_root}" ] || [ -L "${shared_root}" ]; then
+            test -d "${shared_root}"
+            test ! -L "${shared_root}"
+          else
+            install -d -o root -g root -m 0755 -- "${shared_root}"
+          fi
+          test "$(readlink -f -- "${shared_root}")" = "${shared_root}"
+          test "$(stat -c '%U:%G' -- "${shared_root}")" = 'root:root'
+
+          test -f "${provisioner}"
+          test ! -L "${provisioner}"
+          test "$(stat -c '%U:%G' -- "${provisioner}")" = 'root:root'
+          tr -d '\r' < "${provisioner}" > "${provisioner}.normalized"
+          mv -f -- "${provisioner}.normalized" "${provisioner}"
+          chmod 700 -- "${provisioner}"
+          bash -n "${provisioner}"
+
+          RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+          RAG_POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN}" \
+          RAG_POSTGRES_CUTOVER_ACTION=prepare \
+            "${provisioner}" \
+            '/opt/rag-system/shared/.env.prod' \
+            '/opt/rag-system/shared/.postgres-migration.env'
+          prepare_succeeded=1
+          REMOTE_POSTGRES
+
+      - name: Verify public PostgreSQL TLS endpoint
+        run: |
+          set -euo pipefail
+          readonly postgres_public_port='25432'
+          probe_dir="$(mktemp -d "${RUNNER_TEMP}/rag-postgres-public.XXXXXXXXXX")"
+          chmod 700 -- "${probe_dir}"
+          postgres_ca="${probe_dir}/ca.crt"
+          public_client_env="${probe_dir}/rag-app-client.env"
+
+          cleanup_public_postgres_probe() {
+            status=$?
+            trap - EXIT
+            set +e
+            unset PGPASSWORD PGHOST PGPORT PGDATABASE PGUSER PGSSLMODE PGSSLROOTCERT
+            unset POSTGRES_PUBLIC_EXPECTED_HOST POSTGRES_PUBLIC_VERIFY_PHASE
+            rm -f -- "${postgres_ca}" "${public_client_env}" || status=1
+            rmdir -- "${probe_dir}" || status=1
+            if [ "${status}" -ne 0 ]; then
+              if ! ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+                -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' RAG_POSTGRES_PUBLIC_HOST='${DEPLOY_HOST}' RAG_POSTGRES_CUTOVER_TOKEN='${RELEASE_NAME}' bash -s" <<'REMOTE_CLEANUP'
+          set -euo pipefail
+          case "${REMOTE_DIR}" in
+            "${REMOTE_PARENT}"/rag-system.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) exit 2 ;;
+          esac
+          test -d "${REMOTE_DIR}"
+          test ! -L "${REMOTE_DIR}"
+          test "$(readlink -f -- "${REMOTE_DIR}")" = "${REMOTE_DIR}"
+          test "$(stat -c '%U:%G' -- "${REMOTE_DIR}")" = 'root:root'
+          test "$(stat -c '%a' -- "${REMOTE_DIR}")" = '700'
+          provisioner="${REMOTE_DIR}/provision-postgres-host.sh"
+          test -f "${provisioner}"
+          test ! -L "${provisioner}"
+          test -x "${provisioner}"
+          RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+          RAG_POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN}" \
+          RAG_POSTGRES_CUTOVER_ACTION=rollback \
+            "${provisioner}" \
+            '/opt/rag-system/shared/.env.prod' \
+            '/opt/rag-system/shared/.postgres-migration.env'
+          rm -rf -- "${REMOTE_DIR}"
+          REMOTE_CLEANUP
+              then
+                echo '::error::Failed to clean protected staging after PostgreSQL preflight failure'
+                status=1
+              fi
+            fi
+            exit "${status}"
+          }
+          trap cleanup_public_postgres_probe EXIT
+
+          scp -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rag-system/shared/.postgres-host/tls/ca.crt" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rag-system/shared/.postgres-host/tls/rag-app-client.env" \
+            "${probe_dir}/"
+          chmod 600 -- "${postgres_ca}" "${public_client_env}"
+          for protected_file in "${postgres_ca}" "${public_client_env}"; do
+            test -s "${protected_file}"
+            test ! -L "${protected_file}"
+            test "$(stat -c '%a' -- "${protected_file}")" = '600'
+          done
+          if [ "$(wc -l < "${public_client_env}")" -ne 7 ] \
+            || grep -Eqv "^(PGHOST|PGPORT|PGDATABASE|PGUSER|PGPASSWORD|PGSSLMODE|PGSSLROOTCERT)='[A-Za-z0-9._:/-]+'$" "${public_client_env}"; then
+            echo '::error::PostgreSQL public client environment has an unsafe contract'
+            exit 1
+          fi
+          for client_key in PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD PGSSLMODE PGSSLROOTCERT; do
+            if [ "$(grep -c "^${client_key}=" "${public_client_env}")" -ne 1 ]; then
+              echo '::error::PostgreSQL public client environment has duplicate or missing keys'
+              exit 1
+            fi
+          done
+          set -a
+          # This root-owned file was syntax-constrained above before sourcing.
+          . "${public_client_env}"
+          set +a
+          export PGSSLMODE='verify-full'
+          PGSSLROOTCERT="$(readlink -f -- "${postgres_ca}")"
+          export PGSSLROOTCERT
+          POSTGRES_PUBLIC_EXPECTED_HOST="${DEPLOY_HOST}"
+          export POSTGRES_PUBLIC_EXPECTED_HOST
+          POSTGRES_PUBLIC_VERIFY_PHASE='network'
+          export POSTGRES_PUBLIC_VERIFY_PHASE
+
+          if ! timeout 30 node scripts/verify-postgres-public.mjs; then
+            echo "::error::PostgreSQL public network/TLS verification failed on TCP/${postgres_public_port}; confirm the cloud security group allows this port from the runner"
+            exit 1
+          fi
+          unset PGPASSWORD
+          echo "PostgreSQL public network/TLS/auth endpoint verified on TCP/${postgres_public_port}; cutover remains prepared for the locked release transaction"
+
       - name: Remote atomic release and gateway verification
         run: |
           set -euo pipefail
@@ -318,12 +500,14 @@ jobs:
             -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes \
             -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' RELEASE_NAME='${RELEASE_NAME}' DOMAIN='${DOMAIN}' BASE_PATH='${BASE_PATH}' bash -s" <<'REMOTE_SCRIPT'
+            "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' REMOTE_ARCHIVE='${REMOTE_ARCHIVE}' RELEASE_NAME='${RELEASE_NAME}' DOMAIN='${DOMAIN}' BASE_PATH='${BASE_PATH}' RAG_POSTGRES_PUBLIC_HOST='${DEPLOY_HOST}' RAG_POSTGRES_CUTOVER_TOKEN='${RELEASE_NAME}' bash -s" <<'REMOTE_SCRIPT'
           set -euo pipefail
           shared_assets_armed=0
           shared_root='/opt/rag-system/shared'
           shared_backup_dir="${REMOTE_DIR}/shared-assets"
           shared_backup_manifest="${REMOTE_DIR}/shared-assets.manifest"
+          release_receipt="${REMOTE_DIR}/release-state.receipt"
+          app_release_state=''
 
           validate_remote_staging() {
             case "${REMOTE_DIR}" in
@@ -385,11 +569,101 @@ jobs:
             shared_assets_armed=0
           }
 
+          rollback_pending_postgres() {
+            validate_remote_staging || return
+            provisioner="${REMOTE_DIR}/provision-postgres-host.sh"
+            test -f "${provisioner}" || return 2
+            test ! -L "${provisioner}" || return 2
+            test -x "${provisioner}" || return 2
+            test "$(stat -c '%U:%G' -- "${provisioner}")" = 'root:root' || return 2
+            test "$(stat -c '%a' -- "${provisioner}")" = '700' || return 2
+            RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+            RAG_POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN}" \
+            RAG_POSTGRES_CUTOVER_ACTION=rollback \
+              "${provisioner}" \
+              '/opt/rag-system/shared/.env.prod' \
+              '/opt/rag-system/shared/.postgres-migration.env'
+          }
+
+          reconcile_committed_postgres() {
+            validate_remote_staging || return
+            provisioner="${REMOTE_DIR}/provision-postgres-host.sh"
+            test -f "${provisioner}" || return 2
+            test ! -L "${provisioner}" || return 2
+            test -x "${provisioner}" || return 2
+            test "$(stat -c '%U:%G' -- "${provisioner}")" = 'root:root' || return 2
+            test "$(stat -c '%a' -- "${provisioner}")" = '700' || return 2
+            RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+            RAG_POSTGRES_CUTOVER_ACTION=verify \
+              "${provisioner}" \
+              '/opt/rag-system/shared/.env.prod' \
+              '/opt/rag-system/shared/.postgres-migration.env'
+          }
+
+          validate_app_release_receipt() {
+            validate_remote_staging || return
+            test "${release_receipt}" = "${REMOTE_DIR}/release-state.receipt" || return 2
+            test -f "${release_receipt}" || return 2
+            test ! -L "${release_receipt}" || return 2
+            test "$(readlink -f -- "${release_receipt}")" = "${release_receipt}" || return 2
+            test "$(stat -c '%U:%G' -- "${release_receipt}")" = 'root:root' || return 2
+            test "$(stat -c '%a' -- "${release_receipt}")" = '600' || return 2
+            test "$(wc -l < "${release_receipt}" | tr -d '[:space:]')" = '3' || return 2
+            test "$(grep -c '^release=' "${release_receipt}")" = '1' || return 2
+            test "$(grep -c '^token=' "${release_receipt}")" = '1' || return 2
+            test "$(grep -c '^state=' "${release_receipt}")" = '1' || return 2
+            receipt_release="$(awk -F= '$1 == "release" { print substr($0, index($0, "=") + 1) }' "${release_receipt}")"
+            receipt_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1) }' "${release_receipt}")"
+            receipt_state="$(awk -F= '$1 == "state" { print substr($0, index($0, "=") + 1) }' "${release_receipt}")"
+            test "${receipt_release}" = "${RELEASE_NAME}" || return 2
+            test "${receipt_token}" = "${RAG_POSTGRES_CUTOVER_TOKEN}" || return 2
+            case "${receipt_state}" in
+              app-committed|app-rolled-back) ;;
+              *) return 2 ;;
+            esac
+            app_release_state="${receipt_state}"
+          }
+
           remote_exit() {
             status=$?
             cleanup_allowed=1
+            app_recovery_authorized=0
             trap - EXIT
-            if [ "${shared_assets_armed}" = '1' ]; then
+            if [ "${status}" -ne 0 ]; then
+              if ! validate_app_release_receipt; then
+                echo 'No valid durable app receipt exists; preserving PostgreSQL, app/current, shared assets, and protected staging for manual reconciliation.' >&2
+                status=1
+                cleanup_allowed=0
+              elif [ "${app_release_state}" = 'app-committed' ]; then
+                if reconcile_committed_postgres; then
+                  shared_assets_armed=0
+                  cleanup_allowed=0
+                  echo 'Durable app and PostgreSQL receipts confirm the release is committed; preserving the new app environment and shared runtime assets.' >&2
+                else
+                  echo 'The app receipt is committed but PostgreSQL commit proof failed; preserving all release state for manual reconciliation.' >&2
+                  status=1
+                  cleanup_allowed=0
+                fi
+              else
+                app_recovery_authorized=1
+                if ! rollback_pending_postgres; then
+                  echo 'Failed to roll back PostgreSQL after the durable app rollback receipt; preserving protected staging.' >&2
+                  status=1
+                  cleanup_allowed=0
+                  if validate_remote_staging; then
+                    umask 077
+                    if ! {
+                      printf '%s\n' 'PostgreSQL pending cutover rollback failed during remote release cleanup.' \
+                        > "${REMOTE_DIR}/postgres-rollback.failed" \
+                        && chmod 600 -- "${REMOTE_DIR}/postgres-rollback.failed"
+                    }; then
+                      echo 'Could not write the PostgreSQL rollback failure marker.' >&2
+                    fi
+                  fi
+                fi
+              fi
+            fi
+            if [ "${app_recovery_authorized}" = '1' ] && [ "${shared_assets_armed}" = '1' ]; then
               if ! rollback_shared_assets; then
                 echo 'Failed to restore shared runtime assets.' >&2
                 status=1
@@ -406,7 +680,7 @@ jobs:
                 status=1
               fi
             else
-              echo "Preserving protected staging for manual shared-asset recovery: ${REMOTE_DIR}" >&2
+              echo "Preserving protected staging for manual release recovery: ${REMOTE_DIR}" >&2
             fi
             exit "${status}"
           }
@@ -515,12 +789,19 @@ jobs:
           bash -n "${REMOTE_DIR}/reload-rag-system-env.sh"
           bash -n "${REMOTE_DIR}/refresh-rag-nginx-token.sh"
           python3 -m py_compile "${REMOTE_DIR}/patch-nginx.py"
+          test ! -e "${release_receipt}"
+          test ! -L "${release_receipt}"
 
           RAG_POST_RELEASE_GATE="${REMOTE_DIR}/post-release-gate.sh" \
           RAG_SHARED_ASSET_BACKUP_DIR="${shared_backup_dir}" \
           RAG_SHARED_ASSET_BACKUP_MANIFEST="${shared_backup_manifest}" \
           RAG_RELEASE_GATE_ROOT="${REMOTE_DIR}" \
+          RAG_RELEASE_RECEIPT_ROOT="${REMOTE_DIR}" \
+          RAG_RELEASE_RECEIPT="${release_receipt}" \
           RAG_ENV_RELOAD_LOCK_HELD=1 \
+          RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+          RAG_POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN}" \
+          RAG_POSTGRES_CUTOVER_ACTION=activate \
           RAG_POSTGRES_PROVISIONER="${REMOTE_DIR}/provision-postgres-host.sh" \
           RAG_ENV_DEFAULTS_RENDERER="${REMOTE_DIR}/render-host-env-defaults.py" \
           RAG_ENV_DEFAULTS_EXAMPLE="${REMOTE_DIR}/.env.container.example" \
@@ -529,6 +810,68 @@ jobs:
             "${RELEASE_NAME}"
           shared_assets_armed=0
           REMOTE_SCRIPT
+
+      - name: Verify released PostgreSQL public contract
+        run: |
+          set -euo pipefail
+          readonly postgres_public_port='25432'
+          probe_dir="$(mktemp -d "${RUNNER_TEMP}/rag-postgres-public-full.XXXXXXXXXX")"
+          chmod 700 -- "${probe_dir}"
+          postgres_ca="${probe_dir}/ca.crt"
+          public_client_env="${probe_dir}/rag-app-client.env"
+
+          cleanup_released_public_postgres_probe() {
+            status=$?
+            trap - EXIT
+            set +e
+            unset PGPASSWORD PGHOST PGPORT PGDATABASE PGUSER PGSSLMODE PGSSLROOTCERT
+            unset POSTGRES_PUBLIC_EXPECTED_HOST POSTGRES_PUBLIC_VERIFY_PHASE
+            rm -f -- "${postgres_ca}" "${public_client_env}" || status=1
+            rmdir -- "${probe_dir}" || status=1
+            exit "${status}"
+          }
+          trap cleanup_released_public_postgres_probe EXIT
+
+          scp -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rag-system/shared/.postgres-host/tls/ca.crt" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/rag-system/shared/.postgres-host/tls/rag-app-client.env" \
+            "${probe_dir}/"
+          chmod 600 -- "${postgres_ca}" "${public_client_env}"
+          for protected_file in "${postgres_ca}" "${public_client_env}"; do
+            test -s "${protected_file}"
+            test ! -L "${protected_file}"
+            test "$(stat -c '%a' -- "${protected_file}")" = '600'
+          done
+          if [ "$(wc -l < "${public_client_env}")" -ne 7 ] \
+            || grep -Eqv "^(PGHOST|PGPORT|PGDATABASE|PGUSER|PGPASSWORD|PGSSLMODE|PGSSLROOTCERT)='[A-Za-z0-9._:/-]+'$" "${public_client_env}"; then
+            echo '::error::PostgreSQL public client environment has an unsafe contract'
+            exit 1
+          fi
+          for client_key in PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD PGSSLMODE PGSSLROOTCERT; do
+            if [ "$(grep -c "^${client_key}=" "${public_client_env}")" -ne 1 ]; then
+              echo '::error::PostgreSQL public client environment has duplicate or missing keys'
+              exit 1
+            fi
+          done
+          set -a
+          # This root-owned file was syntax-constrained above before sourcing.
+          . "${public_client_env}"
+          set +a
+          export PGSSLMODE='verify-full'
+          PGSSLROOTCERT="$(readlink -f -- "${postgres_ca}")"
+          export PGSSLROOTCERT
+          POSTGRES_PUBLIC_EXPECTED_HOST="${DEPLOY_HOST}"
+          export POSTGRES_PUBLIC_EXPECTED_HOST
+          POSTGRES_PUBLIC_VERIFY_PHASE='full'
+          export POSTGRES_PUBLIC_VERIFY_PHASE
+
+          if ! timeout 30 node scripts/verify-postgres-public.mjs; then
+            echo "::error::Application release completed, but PostgreSQL post-migration public full verification failed on TCP/${postgres_public_port}; the committed release was not automatically rolled back"
+            exit 1
+          fi
+          unset PGPASSWORD
+          echo "Released PostgreSQL public TLS/auth/permission contract verified on TCP/${postgres_public_port}"
 
       - name: Verify public deployment
         run: |
@@ -542,3 +885,102 @@ jobs:
           ui_code="$(curl -k -sS -o /dev/null -w '%{http_code}' "https://${DOMAIN}${BASE_PATH}")"
           echo "public anonymous RAG UI -> ${ui_code}"
           test "${ui_code}" = '302'
+
+      - name: Roll back unfinished public PostgreSQL cutover
+        if: ${{ failure() || cancelled() }}
+        run: |
+          set -euo pipefail
+          if [ ! -f ~/.ssh/rag_system_deploy_key ]; then
+            exit 0
+          fi
+          ssh -i ~/.ssh/rag_system_deploy_key -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "REMOTE_PARENT='${REMOTE_PARENT}' REMOTE_DIR='${REMOTE_DIR}' RELEASE_NAME='${RELEASE_NAME}' RAG_POSTGRES_PUBLIC_HOST='${DEPLOY_HOST}' RAG_POSTGRES_CUTOVER_TOKEN='${RELEASE_NAME}' bash -s" <<'REMOTE_POSTGRES_ROLLBACK'
+          set -euo pipefail
+          if [ ! -e "${REMOTE_DIR}" ] && [ ! -L "${REMOTE_DIR}" ]; then
+            exit 0
+          fi
+          case "${REMOTE_DIR}" in
+            "${REMOTE_PARENT}"/rag-system.[A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9][A-Za-z0-9]) ;;
+            *) exit 2 ;;
+          esac
+          test -d "${REMOTE_DIR}"
+          test ! -L "${REMOTE_DIR}"
+          test "$(readlink -f -- "${REMOTE_DIR}")" = "${REMOTE_DIR}"
+          test "$(stat -c '%U:%G' -- "${REMOTE_DIR}")" = 'root:root'
+          test "$(stat -c '%a' -- "${REMOTE_DIR}")" = '700'
+          lock_file='/run/lock/rag-system-env-reload.lock'
+          if [ -e "${lock_file}" ] || [ -L "${lock_file}" ]; then
+            test -f "${lock_file}"
+            test ! -L "${lock_file}"
+            test "$(stat -c '%U:%G' -- "${lock_file}")" = 'root:root'
+          fi
+          umask 077
+          exec 9>"${lock_file}"
+          chmod 600 -- "${lock_file}"
+          if ! flock -w 120 -x 9; then
+            echo '::error::Timed out waiting for the release transaction lock; preserving all PostgreSQL and app state'
+            exit 1
+          fi
+          release_receipt="${REMOTE_DIR}/release-state.receipt"
+          shared_backup_dir="${REMOTE_DIR}/shared-assets"
+          shared_backup_manifest="${REMOTE_DIR}/shared-assets.manifest"
+          app_release_state=''
+          release_started=0
+          if [ -e "${release_receipt}" ] || [ -L "${release_receipt}" ] \
+            || [ -e "${shared_backup_dir}" ] || [ -L "${shared_backup_dir}" ] \
+            || [ -e "${shared_backup_manifest}" ] || [ -L "${shared_backup_manifest}" ]; then
+            release_started=1
+          fi
+
+          validate_finalizer_release_receipt() {
+            test "${release_receipt}" = "${REMOTE_DIR}/release-state.receipt" || return 2
+            test -f "${release_receipt}" || return 2
+            test ! -L "${release_receipt}" || return 2
+            test "$(readlink -f -- "${release_receipt}")" = "${release_receipt}" || return 2
+            test "$(stat -c '%U:%G' -- "${release_receipt}")" = 'root:root' || return 2
+            test "$(stat -c '%a' -- "${release_receipt}")" = '600' || return 2
+            test "$(wc -l < "${release_receipt}" | tr -d '[:space:]')" = '3' || return 2
+            test "$(grep -c '^release=' "${release_receipt}")" = '1' || return 2
+            test "$(grep -c '^token=' "${release_receipt}")" = '1' || return 2
+            test "$(grep -c '^state=' "${release_receipt}")" = '1' || return 2
+            receipt_release="$(awk -F= '$1 == "release" { print substr($0, index($0, "=") + 1) }' "${release_receipt}")"
+            receipt_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1) }' "${release_receipt}")"
+            receipt_state="$(awk -F= '$1 == "state" { print substr($0, index($0, "=") + 1) }' "${release_receipt}")"
+            test "${receipt_release}" = "${RELEASE_NAME}" || return 2
+            test "${receipt_token}" = "${RAG_POSTGRES_CUTOVER_TOKEN}" || return 2
+            case "${receipt_state}" in
+              app-committed|app-rolled-back) ;;
+              *) return 2 ;;
+            esac
+            app_release_state="${receipt_state}"
+          }
+
+          if [ "${release_started}" = '1' ] && ! validate_finalizer_release_receipt; then
+            echo '::error::Release staging has no valid durable app receipt; preserving PostgreSQL, app/current, shared assets, and staging for manual reconciliation'
+            exit 1
+          fi
+          provisioner="${REMOTE_DIR}/provision-postgres-host.sh"
+          test -f "${provisioner}"
+          test ! -L "${provisioner}"
+          test -x "${provisioner}"
+          test "$(stat -c '%U:%G' -- "${provisioner}")" = 'root:root'
+          test "$(stat -c '%a' -- "${provisioner}")" = '700'
+          if [ "${app_release_state}" = 'app-committed' ]; then
+            RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+            RAG_POSTGRES_CUTOVER_ACTION=verify \
+              "${provisioner}" \
+              '/opt/rag-system/shared/.env.prod' \
+              '/opt/rag-system/shared/.postgres-migration.env'
+            echo 'Committed app/PostgreSQL receipts verified; protected staging was retained for audit'
+            exit 0
+          fi
+          RAG_POSTGRES_PUBLIC_HOST="${RAG_POSTGRES_PUBLIC_HOST}" \
+          RAG_POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN}" \
+          RAG_POSTGRES_CUTOVER_ACTION=rollback \
+            "${provisioner}" \
+            '/opt/rag-system/shared/.env.prod' \
+            '/opt/rag-system/shared/.postgres-migration.env'
+          echo "Pending PostgreSQL cutover rollback finalized; protected staging was retained for audit"
+          REMOTE_POSTGRES_ROLLBACK

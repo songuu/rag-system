@@ -22,12 +22,16 @@ readonly DEFAULTS_RENDERER="${RAG_ENV_DEFAULTS_RENDERER:-$SCRIPT_DIR/render-host
 readonly DEFAULTS_EXAMPLE="${RAG_ENV_DEFAULTS_EXAMPLE:-$SCRIPT_DIR/.env.container.example}"
 readonly POSTGRES_PROVISIONER="${RAG_POSTGRES_PROVISIONER:-}"
 readonly POSTGRES_MIGRATION_ENV_FILE="${RAG_POSTGRES_MIGRATION_ENV_FILE:-$SHARED/.postgres-migration.env}"
+readonly POSTGRES_CUTOVER_ACTION="${RAG_POSTGRES_CUTOVER_ACTION:-verify}"
+readonly POSTGRES_CUTOVER_TOKEN="${RAG_POSTGRES_CUTOVER_TOKEN:-}"
 readonly ENV_RELOAD_LOCK_FILE="/run/lock/rag-system-env-reload.lock"
 readonly ENV_RELOAD_LOCK_HELD="${RAG_ENV_RELOAD_LOCK_HELD:-0}"
 readonly POST_RELEASE_GATE="${RAG_POST_RELEASE_GATE:-}"
 readonly RELEASE_GATE_ROOT="${RAG_RELEASE_GATE_ROOT:-}"
 readonly SHARED_ASSET_BACKUP_DIR="${RAG_SHARED_ASSET_BACKUP_DIR:-}"
 readonly SHARED_ASSET_BACKUP_MANIFEST="${RAG_SHARED_ASSET_BACKUP_MANIFEST:-}"
+readonly RELEASE_RECEIPT_ROOT="${RAG_RELEASE_RECEIPT_ROOT:-}"
+readonly RELEASE_RECEIPT_PATH="${RAG_RELEASE_RECEIPT:-}"
 
 environment_snapshot=''
 migration_environment_snapshot=''
@@ -38,12 +42,15 @@ defaults_existed_before_release=false
 database_environment_snapshot_ready=false
 database_environment_restored=false
 release_committed=false
+postgres_finalize_started=false
 old_process_fenced=false
 cutover_started=false
 legacy_local_runtime=false
 previous=""
 verified_post_release_gate=""
 shared_assets_restored=false
+verified_release_receipt_root=''
+verified_release_receipt=''
 
 cleanup_database_environment_snapshots() {
   [[ -z "$environment_snapshot" || ! -e "$environment_snapshot" ]] \
@@ -123,11 +130,138 @@ restore_database_environment() {
   database_environment_restored=true
 }
 
+validate_release_receipt() {
+  local root_real=''
+
+  if [[ -z "$RELEASE_RECEIPT_ROOT" && -z "$RELEASE_RECEIPT_PATH" ]]; then
+    if [[ "$POSTGRES_CUTOVER_ACTION" = activate ]]; then
+      echo 'PostgreSQL activation requires a durable release receipt' >&2
+      return 1
+    fi
+    return 0
+  fi
+  if [[ -z "$RELEASE_RECEIPT_ROOT" || -z "$RELEASE_RECEIPT_PATH" ]]; then
+    echo 'RAG_RELEASE_RECEIPT_ROOT and RAG_RELEASE_RECEIPT must be configured together' >&2
+    return 1
+  fi
+  [[ "$RELEASE_RECEIPT_ROOT" = /* && "$RELEASE_RECEIPT_PATH" = /* ]] || {
+    echo 'Release receipt paths must be absolute' >&2
+    return 1
+  }
+  [[ -d "$RELEASE_RECEIPT_ROOT" && ! -L "$RELEASE_RECEIPT_ROOT" ]] || {
+    echo 'Release receipt root must be a regular directory' >&2
+    return 1
+  }
+  root_real="$(readlink -f -- "$RELEASE_RECEIPT_ROOT")" || return 1
+  [[ "$root_real" = "$RELEASE_RECEIPT_ROOT" ]] || {
+    echo 'Release receipt root must use its canonical path' >&2
+    return 1
+  }
+  [[ "$(stat -c '%U:%G' -- "$root_real")" = root:root \
+    && "$(stat -c '%a' -- "$root_real")" = 700 ]] || {
+    echo 'Release receipt root must be root:root mode 0700' >&2
+    return 1
+  }
+  [[ "$RELEASE_RECEIPT_PATH" = "$root_real/release-state.receipt" ]] || {
+    echo 'Release receipt must be the fixed direct child release-state.receipt' >&2
+    return 1
+  }
+  [[ ! -e "$RELEASE_RECEIPT_PATH" && ! -L "$RELEASE_RECEIPT_PATH" ]] || {
+    echo 'Release receipt already exists; refusing to overwrite transaction evidence' >&2
+    return 1
+  }
+
+  verified_release_receipt_root="$root_real"
+  verified_release_receipt="$RELEASE_RECEIPT_PATH"
+}
+
+write_release_receipt() {
+  local state="$1"
+  local stage=''
+
+  if [[ -z "$verified_release_receipt" ]]; then
+    if [[ "$POSTGRES_CUTOVER_ACTION" = activate ]]; then
+      return 1
+    fi
+    return 0
+  fi
+  case "$state" in
+    app-committed|app-rolled-back) ;;
+    *) return 2 ;;
+  esac
+
+  stage="$(mktemp "$verified_release_receipt_root/.release-state.next.XXXXXX")" \
+    || return 1
+  chmod 600 -- "$stage" || {
+    rm -f -- "$stage"
+    return 1
+  }
+  if ! printf 'release=%s\ntoken=%s\nstate=%s\n' \
+      "$RELEASE_NAME" "$POSTGRES_CUTOVER_TOKEN" "$state" > "$stage" \
+    || ! sync -f "$stage" \
+    || ! mv -f -- "$stage" "$verified_release_receipt" \
+    || ! chmod 600 -- "$verified_release_receipt" \
+    || ! sync -f "$verified_release_receipt_root"; then
+    rm -f -- "$stage"
+    return 1
+  fi
+}
+
+run_postgres_finalize_action() {
+  [[ "$POSTGRES_CUTOVER_ACTION" = activate ]] || return 0
+  [[ -n "$POSTGRES_PROVISIONER" && -x "$POSTGRES_PROVISIONER" ]] || return 1
+  RAG_POSTGRES_CUTOVER_ACTION=finalize \
+  RAG_POSTGRES_CUTOVER_TOKEN="$POSTGRES_CUTOVER_TOKEN" \
+    "$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"
+}
+
+run_postgres_verify_action() {
+  [[ "$POSTGRES_CUTOVER_ACTION" = activate ]] || return 0
+  [[ -n "$POSTGRES_PROVISIONER" && -x "$POSTGRES_PROVISIONER" ]] || return 1
+  RAG_POSTGRES_CUTOVER_ACTION=verify \
+    "$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"
+}
+
+reconcile_postgres_finalize_receipt() {
+  [[ "$POSTGRES_CUTOVER_ACTION" = activate \
+    && "$postgres_finalize_started" = true ]] || return 1
+  if ! run_postgres_finalize_action; then
+    # Finalize removes its transaction marker only after the rollback container
+    # is gone. A lost acknowledgement can therefore leave no same-token marker;
+    # verify is then the only safe proof that the strict public topology and all
+    # published environment files are the committed state. It fails closed while
+    # any rollback-capable marker/container still exists.
+    run_postgres_verify_action || return 1
+  fi
+
+  # A successful same-token retry proves either that finalize completed now or
+  # that its durable receipt survived a lost acknowledgement. In both cases the
+  # database topology is past its rollback point, so app/env rollback is unsafe.
+  release_committed=true
+}
+
 release_exit_trap() {
   local status="$?"
   local environment_restore_ok=true
   local shared_restore_ok=true
+  local previous_process_restore_ok=true
   trap - EXIT
+  if [[ "$release_committed" != true && "$postgres_finalize_started" = true ]]; then
+    if reconcile_postgres_finalize_receipt; then
+      echo "PostgreSQL finalize receipt was reconciled; preserving the committed release" >&2
+      # All application/gateway gates and pm2 save precede finalize. Once the
+      # durable database receipt proves commit, the interrupted acknowledgement
+      # is not a release failure and must not trigger outer asset rollback.
+      if write_release_receipt app-committed; then
+        status=0
+      else
+        echo "RAG release could not durably publish its committed app receipt" >&2
+        status=1
+      fi
+    else
+      echo "PostgreSQL finalize receipt remains rollbackable; restoring the previous release" >&2
+    fi
+  fi
   if [[ "$release_committed" != true ]]; then
     if ! restore_database_environment; then
       echo "RAG release could not restore its previous database environment" >&2
@@ -145,6 +279,16 @@ release_exit_trap() {
       && "$cutover_started" != true ]]; then
       if ! resume_previous_process_after_backfill_failure; then
         echo "RAG release could not restore the previous process after local-data backfill failure" >&2
+        status=1
+        previous_process_restore_ok=false
+      fi
+    fi
+    if [[ "$environment_restore_ok" = true \
+      && "$shared_restore_ok" = true \
+      && "$previous_process_restore_ok" = true \
+      && "$cutover_started" != true ]]; then
+      if ! write_release_receipt app-rolled-back; then
+        echo "RAG release could not durably publish its rolled-back app receipt" >&2
         status=1
       fi
     fi
@@ -321,13 +465,10 @@ run_post_release_gate() {
   "$verified_post_release_gate" "$@"
 }
 
-case "$RELEASE_NAME" in
-  rag-system-[A-Za-z0-9._-]*) ;;
-  *)
-    echo "Unsafe release name: $RELEASE_NAME" >&2
-    exit 2
-    ;;
-esac
+[[ "$RELEASE_NAME" =~ ^rag-system-[A-Za-z0-9._-]{1,180}$ ]] || {
+  echo "Unsafe release name: $RELEASE_NAME" >&2
+  exit 2
+}
 
 test -f "$ARTIFACT"
 command -v pm2 >/dev/null
@@ -338,8 +479,12 @@ command -v node >/dev/null
 command -v flock >/dev/null
 command -v find >/dev/null
 command -v readlink >/dev/null
+command -v sync >/dev/null
 
 if ! validate_post_release_gate; then
+  exit 2
+fi
+if ! validate_release_receipt; then
   exit 2
 fi
 if ! validate_release_shared_asset_backup; then
@@ -437,12 +582,27 @@ if bash -c '
 fi
 
 if [[ -n "$POSTGRES_PROVISIONER" ]]; then
+  case "$POSTGRES_CUTOVER_ACTION" in
+    activate)
+      [[ "$POSTGRES_CUTOVER_TOKEN" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || {
+        echo "Host release PostgreSQL activation requires a safe transaction token" >&2
+        exit 2
+      }
+      ;;
+    verify) ;;
+    *)
+      echo "Host release PostgreSQL action must be activate or verify" >&2
+      exit 2
+      ;;
+  esac
   if [[ ! -x "$POSTGRES_PROVISIONER" ]]; then
     echo "PostgreSQL host provisioner is missing or not executable" >&2
     exit 2
   fi
   snapshot_database_environment
-  "$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"
+  RAG_POSTGRES_CUTOVER_ACTION="$POSTGRES_CUTOVER_ACTION" \
+  RAG_POSTGRES_CUTOVER_TOKEN="$POSTGRES_CUTOVER_TOKEN" \
+    "$POSTGRES_PROVISIONER" "$ENV_FILE" "$POSTGRES_MIGRATION_ENV_FILE"
 fi
 
 # Defaults are generated below even when no database provisioner is needed.
@@ -971,7 +1131,19 @@ rollback() {
   if ! run_post_release_gate rollback "$previous" "$release"; then
     rollback_failed=1
   fi
+  if (( rollback_failed == 0 )) && ! pm2 save >/dev/null 2>&1; then
+    rollback_failed=1
+  fi
+  if (( rollback_failed == 0 )) && ! write_release_receipt app-rolled-back; then
+    rollback_failed=1
+  fi
   return "$rollback_failed"
+}
+
+finalize_postgres_cutover() {
+  [[ "$POSTGRES_CUTOVER_ACTION" = activate ]] || return 0
+  postgres_finalize_started=true
+  run_postgres_finalize_action
 }
 
 if ! reload_rag_process; then
@@ -1015,8 +1187,23 @@ if ! pm2 save; then
   fi
   exit 1
 fi
+if ! finalize_postgres_cutover; then
+  if reconcile_postgres_finalize_receipt; then
+    echo "PostgreSQL finalize acknowledgement was uncertain; the durable receipt confirms the release is committed" >&2
+  elif rollback; then
+    echo "RAG release could not finalize the PostgreSQL public cutover; restored and verified the previous release" >&2
+    exit 1
+  else
+    echo "RAG release could not finalize the PostgreSQL public cutover and rollback verification failed" >&2
+    exit 1
+  fi
+fi
 
 release_committed=true
+if ! write_release_receipt app-committed; then
+  echo "RAG release committed but could not durably publish its app receipt; preserving recovery state" >&2
+  exit 1
+fi
 cleanup_database_environment_snapshots
 trap - EXIT
 
