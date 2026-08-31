@@ -24,12 +24,30 @@ interface WorkflowStep {
   model?: string;
 }
 
-interface QueryAnalysis {
+interface LegacyQueryAnalysis {
+  analysisMode?: 'legacy';
   intent?: string;
   complexity?: string;
   needsRetrieval?: boolean;
   keywords?: string[];
 }
+
+interface CanonicalCreateAgentQueryAnalysis {
+  analysisMode: 'canonical-create-agent';
+  originalQuery?: string;
+  semanticCategory?: string;
+  intent?: string;
+  confidence?: number;
+  nearestConcepts?: string[];
+  quality?: {
+    queryQualityScore?: number;
+    specificity?: number;
+    ambiguity?: number;
+    retrievability?: number;
+  };
+}
+
+type QueryAnalysis = LegacyQueryAnalysis | CanonicalCreateAgentQueryAnalysis;
 
 interface RetrievalGrade {
   score: number;
@@ -59,6 +77,10 @@ interface LangSmithTraceViewerProps {
 
 // 步骤类型图标映射
 const STEP_TYPE_CONFIG: Record<string, { icon: string; color: string; bgColor: string }> = {
+  'retrieve_original': { icon: 'fa-database', color: 'text-purple-400', bgColor: 'bg-purple-500/20' },
+  'agent_model_request_tool': { icon: 'fa-robot', color: 'text-blue-400', bgColor: 'bg-blue-500/20' },
+  'read_scoped_rag_context': { icon: 'fa-book-open', color: 'text-cyan-400', bgColor: 'bg-cyan-500/20' },
+  'agent_model_answer': { icon: 'fa-magic', color: 'text-green-400', bgColor: 'bg-green-500/20' },
   '查询分析与优化': { icon: 'fa-search-plus', color: 'text-blue-400', bgColor: 'bg-blue-500/20' },
   '文档检索': { icon: 'fa-database', color: 'text-purple-400', bgColor: 'bg-purple-500/20' },
   '检索评估': { icon: 'fa-check-double', color: 'text-cyan-400', bgColor: 'bg-cyan-500/20' },
@@ -100,6 +122,17 @@ function readStringField(value: unknown, key: string): string | undefined {
   return typeof field === 'string' ? field : undefined;
 }
 
+function isCanonicalCreateAgentQueryAnalysis(
+  value: QueryAnalysis
+): value is CanonicalCreateAgentQueryAnalysis {
+  return value.analysisMode === 'canonical-create-agent';
+}
+
+function formatPercentage(value: unknown): string | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return `${(Math.max(0, Math.min(1, value)) * 100).toFixed(0)}%`;
+}
+
 export default function LangSmithTraceViewer({
   workflowSteps = [],
   queryAnalysis,
@@ -112,6 +145,10 @@ export default function LangSmithTraceViewer({
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [selectedStep, setSelectedStep] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<LangSmithViewerTab>('timeline');
+  const canonicalConfidence = queryAnalysis
+    && isCanonicalCreateAgentQueryAnalysis(queryAnalysis)
+    ? formatPercentage(queryAnalysis.confidence)
+    : undefined;
 
   // 计算统计数据
   const stats = useMemo(() => {
@@ -334,38 +371,111 @@ export default function LangSmithTraceViewer({
             <i className="fas fa-search text-blue-400"></i>
             查询分析
           </h4>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-white/50">意图</span>
-              <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded-full">
-                {queryAnalysis.intent}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-white/50">复杂度</span>
-              <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded-full">
-                {queryAnalysis.complexity}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-white/50">需要检索</span>
-              <span className={`text-xs ${queryAnalysis.needsRetrieval ? 'text-green-400' : 'text-yellow-400'}`}>
-                {queryAnalysis.needsRetrieval ? '是' : '否'}
-              </span>
-            </div>
-            {Array.isArray(queryAnalysis.keywords) && queryAnalysis.keywords.length > 0 && (
-              <div>
-                <span className="text-xs text-white/50 block mb-1">关键词</span>
-                <div className="flex flex-wrap gap-1">
-                  {queryAnalysis.keywords.slice(0, 6).map((kw: string, i: number) => (
-                    <span key={i} className="text-xs px-2 py-0.5 bg-white/10 text-white/70 rounded">
-                      {kw}
-                    </span>
-                  ))}
-                </div>
+          {isCanonicalCreateAgentQueryAnalysis(queryAnalysis) ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-white/50">分析契约</span>
+                <span className="text-xs px-2 py-0.5 bg-emerald-500/20 text-emerald-300 rounded-full">
+                  canonical createAgent
+                </span>
               </div>
-            )}
-          </div>
+              {queryAnalysis.originalQuery && (
+                <div>
+                  <span className="text-xs text-white/50 block mb-1">原始问题</span>
+                  <p className="text-xs text-white/80 break-words">{queryAnalysis.originalQuery}</p>
+                </div>
+              )}
+              {queryAnalysis.intent && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-white/50">意图</span>
+                  <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded-full">
+                    {queryAnalysis.intent}
+                  </span>
+                </div>
+              )}
+              {queryAnalysis.semanticCategory && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-white/50">语义类别</span>
+                  <span className="text-xs text-white/80">{queryAnalysis.semanticCategory}</span>
+                </div>
+              )}
+              {canonicalConfidence && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-white/50">置信度</span>
+                  <span className="text-xs text-cyan-300">{canonicalConfidence}</span>
+                </div>
+              )}
+              {Array.isArray(queryAnalysis.nearestConcepts) && queryAnalysis.nearestConcepts.length > 0 && (
+                <div>
+                  <span className="text-xs text-white/50 block mb-1">相关概念</span>
+                  <div className="flex flex-wrap gap-1">
+                    {queryAnalysis.nearestConcepts.slice(0, 6).map((concept, index) => (
+                      <span key={`${concept}-${index}`} className="text-xs px-2 py-0.5 bg-white/10 text-white/70 rounded">
+                        {concept}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {queryAnalysis.quality && (
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-white/10">
+                  {([
+                    ['查询质量', queryAnalysis.quality.queryQualityScore],
+                    ['特异性', queryAnalysis.quality.specificity],
+                    ['歧义度', queryAnalysis.quality.ambiguity],
+                    ['可检索性', queryAnalysis.quality.retrievability],
+                  ] as const).map(([label, value]) => {
+                    const formatted = formatPercentage(value);
+                    return formatted ? (
+                      <div key={label} className="bg-black/20 rounded p-2">
+                        <div className="text-[10px] text-white/40">{label}</div>
+                        <div className="text-sm font-medium text-white/80">{formatted}</div>
+                      </div>
+                    ) : null;
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {queryAnalysis.intent && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-white/50">意图</span>
+                  <span className="text-xs px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded-full">
+                    {queryAnalysis.intent}
+                  </span>
+                </div>
+              )}
+              {queryAnalysis.complexity && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-white/50">复杂度</span>
+                  <span className="text-xs px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded-full">
+                    {queryAnalysis.complexity}
+                  </span>
+                </div>
+              )}
+              {typeof queryAnalysis.needsRetrieval === 'boolean' && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-white/50">需要检索</span>
+                  <span className={`text-xs ${queryAnalysis.needsRetrieval ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {queryAnalysis.needsRetrieval ? '是' : '否'}
+                  </span>
+                </div>
+              )}
+              {Array.isArray(queryAnalysis.keywords) && queryAnalysis.keywords.length > 0 && (
+                <div>
+                  <span className="text-xs text-white/50 block mb-1">关键词</span>
+                  <div className="flex flex-wrap gap-1">
+                    {queryAnalysis.keywords.slice(0, 6).map((kw: string, i: number) => (
+                      <span key={i} className="text-xs px-2 py-0.5 bg-white/10 text-white/70 rounded">
+                        {kw}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

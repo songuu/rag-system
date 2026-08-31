@@ -142,6 +142,17 @@ export function estimateEvidenceContextTokens(value: string): number {
   return Math.ceil(asciiCharacters / 4) + nonAsciiCharacters;
 }
 
+/** Render the strict prompt-visible v2 snapshot used by canonical generation. */
+export function renderCanonicalEvidenceContext(
+  evidence: readonly RagEvidence[]
+): string {
+  assertUniqueEvidenceIds(evidence);
+  for (const item of evidence) assertEvidenceScore(item);
+  return evidence
+    .map((item, index) => formatEvidenceHeader(item, index + 1, true, true) + item.content)
+    .join('\n\n');
+}
+
 function orderEvidence(
   evidence: readonly RagEvidence[],
   order: EvidenceContextOrder

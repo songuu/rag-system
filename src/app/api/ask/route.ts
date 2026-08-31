@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRagSystem } from '@/lib/rag-instance';
-import { analyzeQuery } from '@/lib/semantic-analyzer';
+import {
+  analyzeQuery,
+  type QueryAnalysisResult,
+} from '@/lib/semantic-analyzer';
 import {
   getMilvusInstance,
   createMilvusHybridRuntimeManifest,
@@ -14,6 +17,11 @@ import {
   type AgentState,
   type RetrievedDocument as AgenticRetrievedDocumentBase,
 } from '@/lib/agentic-rag';
+import {
+  SCOPED_RETRIEVAL_AGENT_RUNTIME,
+  invokeScopedRetrievalAgent,
+  type ScopedRetrievalAgentResult,
+} from '@/lib/rag/agents/scoped-retrieval-agent';
 import {
   AdaptiveEntityRAGExecutionError,
   createAdaptiveEntityRAG,
@@ -32,6 +40,7 @@ import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import {
   RagKernel,
   RagKernelExecutionError,
+  RagLaneExecutionError,
   RagRequestAbortedError,
   RagLaneExecutor,
   adaptMilvusSearchResultsToEvidence,
@@ -289,6 +298,7 @@ function createLegacyPolicyTransitions(
 }
 
 type RagFeatureRolloutMode = 'off' | 'shadow' | 'active';
+type AgenticRuntime = 'create-agent' | 'legacy';
 const DEFAULT_HYBRID_PROBE_TIMEOUT_MS = 2_000;
 const DEFAULT_ORDERED_CONTEXT_READ_TIMEOUT_MS = 5_000;
 const DEFAULT_HYBRID_SEARCH_TIMEOUT_MS = 5_000;
@@ -322,6 +332,13 @@ function resolveRagFeatureRolloutMode(
   if (!value) return fallback;
   if (value === 'off' || value === 'shadow' || value === 'active') return value;
   throw new Error(`${name} must be off, shadow, or active.`);
+}
+
+function resolveAgenticRuntime(): AgenticRuntime {
+  const value = process.env.RAG_AGENTIC_RUNTIME?.trim().toLowerCase();
+  if (!value || value === 'create-agent') return 'create-agent';
+  if (value === 'legacy') return 'legacy';
+  throw new Error('RAG_AGENTIC_RUNTIME must be create-agent or legacy.');
 }
 
 function resolveDenseAbstentionThreshold(fallback: number): number {
@@ -1065,10 +1082,9 @@ async function executeAskKernelResponse(input: {
       sessionId,
       fallbackRunId: input.traceId ?? ('ask-' + Date.now()),
       inputs: {
-        question,
+        question_length: question.length,
         topK,
         similarityThreshold,
-        storageBackend,
         useAgenticRAG,
         useAdaptiveEntityRAG,
       },
@@ -1110,6 +1126,7 @@ async function executeAskKernelResponse(input: {
             max_retries: maxRetries,
             enable_reranking: enableReranking,
           },
+          callbacks: langSmithRun.privateLangChainCallbacks,
         },
       });
       throwIfRagRequestAborted(input.signal);
@@ -1187,6 +1204,12 @@ async function executeDurableAskRequest(input: {
       },
       routingProjection: {
         policyId,
+        agenticRuntime: policyId === 'agentic'
+          ? resolveAgenticRuntime()
+          : null,
+        agenticRuntimeVersion: policyId === 'agentic'
+          ? SCOPED_RETRIEVAL_AGENT_RUNTIME
+          : null,
         orderedContextMode: resolveRagFeatureRolloutMode(
           'RAG_ORDERED_CONTEXT_MODE',
           'off'
@@ -1454,6 +1477,31 @@ function sanitizeDurableAskReplayValue(value: unknown): DurableJsonObject {
     }
     output.execution = execution;
   }
+  if (value.agent !== undefined) {
+    output.agent = projectDurableAskScalarObject(
+      value.agent,
+      DURABLE_ASK_REPLAY_AGENT_KEYS,
+      'agent'
+    );
+  }
+  if (value.workflow !== undefined) {
+    if (!isJsonObject(value.workflow)) {
+      throw new Error('Durable ask workflow projection must be a JSON object.');
+    }
+    const workflow = projectDurableAskScalarObject(
+      value.workflow,
+      DURABLE_ASK_REPLAY_WORKFLOW_KEYS,
+      'workflow'
+    );
+    if (value.workflow.steps !== undefined) {
+      workflow.steps = projectDurableAskObjectArray(
+        value.workflow.steps,
+        DURABLE_ASK_REPLAY_WORKFLOW_STEP_KEYS,
+        'workflow.steps'
+      );
+    }
+    output.workflow = workflow;
+  }
   return output;
 }
 
@@ -1526,6 +1574,28 @@ const DURABLE_ASK_REPLAY_TOP_LEVEL_KEYS = [
 ] as const;
 
 const DURABLE_ASK_REPLAY_MODEL_KEYS = ['llm', 'embedding'] as const;
+
+const DURABLE_ASK_REPLAY_AGENT_KEYS = [
+  'runtime',
+  'toolCallCount',
+  'servedEvidenceIds',
+] as const;
+
+const DURABLE_ASK_REPLAY_WORKFLOW_KEYS = [
+  'runtime',
+  'totalDuration',
+  'retryCount',
+] as const;
+
+const DURABLE_ASK_REPLAY_WORKFLOW_STEP_KEYS = [
+  'id',
+  'step',
+  'type',
+  'status',
+  'startTime',
+  'endTime',
+  'duration',
+] as const;
 
 const DURABLE_ASK_REPLAY_EVIDENCE_KEYS = [
   'id',
@@ -1776,6 +1846,10 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
   if (!retrievalScope) {
     throw new Error('milvus-2step requires a server-derived retrieval scope.');
   }
+  const configuredThreadId = policyContext.runnableConfig?.configurable?.thread_id;
+  const agentThreadId = typeof configuredThreadId === 'string' && configuredThreadId.trim()
+    ? configuredThreadId
+    : request.sessionId ?? traceId;
 
   let queryEmbedding: number[] = [];
   let queryEmbeddingPromise: Promise<number[]> | undefined;
@@ -2179,26 +2253,89 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     ...cacheIdentityBase,
     kind: 'answer',
     llmModel,
-    promptVersion: 'milvus-answer-prompt-v2',
+    promptVersion: policyId === 'agentic'
+      ? SCOPED_RETRIEVAL_AGENT_RUNTIME
+      : 'milvus-answer-prompt-v2',
   });
   const generationStartedAt = new Date().toISOString();
   let answer: string;
   let llmTime = 0;
+  let agentResult: ScopedRetrievalAgentResult | undefined;
   if (!context.trim()) {
     answer = '根据当前知识库无法回答该问题。';
   } else if (activeAbstention) {
     answer = '当前检索证据未达到可回答阈值，暂不生成推测性答案。';
   } else {
-    const llm = createLLM(llmModel);
-    const prompt = createMilvusAnswerPrompt({ question, context });
     const llmStartedAt = Date.now();
-    const response = await invokeGenerationWithDeadline({
-      modelKey: `answer:${llmModel}`,
-      timeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
-      signal: policyContext.signal,
-      invoke: signal => llm.invoke(prompt, { signal }),
-    });
-    answer = extractLLMContent(response);
+    if (policyId === 'agentic') {
+      try {
+        const llm = createLLM(llmModel);
+        agentResult = await invokeGenerationWithDeadline({
+          modelKey: `create-agent:${llmModel}`,
+          timeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
+          signal: policyContext.signal,
+          invoke: signal => invokeScopedRetrievalAgent({
+            model: llm,
+            question,
+            contextPack,
+            scope: retrievalScope,
+            traceId,
+            threadId: agentThreadId,
+            signal,
+            callbacks: policyContext.runnableConfig?.callbacks,
+          }),
+        });
+      } catch (error) {
+        if (error instanceof RagRequestAbortedError || policyContext.signal?.aborted) {
+          throw error;
+        }
+        const errorCode = error && typeof error === 'object' && 'code' in error
+          && typeof error.code === 'string'
+          ? error.code
+          : 'RAG_AGENT_GENERATION_FAILED';
+        const stopReason = errorCode === 'RAG_AGENT_MAX_STEPS'
+          || errorCode === 'RAG_AGENT_TOOL_LIMIT'
+          ? 'max_steps' as const
+          : 'failed' as const;
+        throw new RagLaneExecutionError(
+          'agentic-generation',
+          'createAgent generation failed after scoped retrieval.',
+          {
+            evidence: laneResult.evidence,
+            laneExecutions: laneResult.laneExecutions,
+            transitions: [
+              ...laneResult.transitions.filter(transition => transition.to !== 'completed'),
+              {
+                from: laneResult.evidence.length > 0 ? 'evidence_ready' : 'retrieving',
+                to: 'generating',
+                at: generationStartedAt,
+                reason: 'agentic_generation_started',
+              },
+              {
+                from: 'generating',
+                to: 'failed',
+                at: new Date().toISOString(),
+                reason: 'agentic_generation_failed',
+              },
+            ],
+            budget: laneResult.budget,
+            stopReason,
+          },
+          { cause: error, code: errorCode }
+        );
+      }
+      answer = agentResult.answer;
+    } else {
+      const llm = createLLM(llmModel);
+      const prompt = createMilvusAnswerPrompt({ question, context });
+      const response = await invokeGenerationWithDeadline({
+        modelKey: `answer:${llmModel}`,
+        timeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
+        signal: policyContext.signal,
+        invoke: signal => llm.invoke(prompt, { signal }),
+      });
+      answer = extractLLMContent(response);
+    }
     llmTime = Date.now() - llmStartedAt;
   }
   const queryAnalysis = analyzeQuery(
@@ -2216,6 +2353,15 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     completedAt: new Date().toISOString(),
     stopReason: laneResult.stopReason,
   });
+  const agentWorkflow = policyId === 'agentic'
+    ? createScopedAgentWorkflowProjection({
+        generationStartedAt,
+        laneResult,
+        agentResult,
+        activeAbstention,
+        hasContext: Boolean(context.trim()),
+      })
+    : undefined;
   const payload: RagAskSuccessPayload = {
     success: true,
     question,
@@ -2225,6 +2371,17 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       embedding: embeddingModel,
     },
     storageBackend: 'milvus',
+    ...(policyId === 'agentic'
+      ? {
+          agenticMode: true,
+          agent: {
+            runtime: agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
+            toolCallCount: agentResult?.toolCallCount ?? 0,
+            servedEvidenceIds: agentResult?.servedEvidenceIds ?? [],
+          },
+          workflow: agentWorkflow,
+        }
+      : {}),
     evidence: laneResult.evidence,
     laneExecutions: laneResult.laneExecutions,
     execution: {
@@ -2258,6 +2415,15 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       searchTime,
       vectorizationTime,
       llmTime,
+      ...(policyId === 'agentic'
+        ? {
+            generation: {
+              runtime: agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
+              toolCallCount: agentResult?.toolCallCount ?? 0,
+              servedEvidenceIds: agentResult?.servedEvidenceIds ?? [],
+            },
+          }
+        : {}),
       retrievalRoute,
       hybrid: {
         requestedMode: hybridMode,
@@ -2308,7 +2474,9 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       },
       ...(retrievalScope.enforceIsolation ? {} : { milvusStats: stats }),
     },
-    queryAnalysis,
+    queryAnalysis: policyId === 'agentic'
+      ? createScopedAgentQueryAnalysisProjection(queryAnalysis)
+      : queryAnalysis,
     context,
     traceId,
     timestamp: new Date().toISOString(),
@@ -2338,12 +2506,112 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       executed_lane_count: laneResult.laneExecutions.filter(
         lane => lane.status === 'completed'
       ).length,
+      ...(policyId === 'agentic'
+        ? {
+            agent_runtime: agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
+            agent_tool_call_count: agentResult?.toolCallCount ?? 0,
+            agent_served_evidence_ids: agentResult?.servedEvidenceIds ?? [],
+          }
+        : {}),
     },
   };
 }
 
-// Agentic RAG 查询处理
+function createScopedAgentWorkflowProjection(input: {
+  generationStartedAt: string;
+  laneResult: RagLaneExecutorResult;
+  agentResult?: ScopedRetrievalAgentResult;
+  activeAbstention: boolean;
+  hasContext: boolean;
+}) {
+  const retrievalEndTime = Date.parse(input.generationStartedAt);
+  const retrievalDuration = input.laneResult.laneExecutions.reduce(
+    (total, lane) => total + Math.max(0, lane.latencyMs),
+    0
+  );
+  const retrievalStep = {
+    id: 'canonical-scoped-retrieval',
+    step: 'retrieve_original',
+    type: 'retriever',
+    status: 'completed' as const,
+    startTime: Math.max(0, retrievalEndTime - retrievalDuration),
+    endTime: retrievalEndTime,
+    duration: retrievalDuration,
+    metadata: {
+      laneIds: input.laneResult.laneExecutions.map(lane => lane.laneId),
+      evidenceCount: input.laneResult.evidence.length,
+    },
+  };
+  const generationSteps = input.agentResult?.workflowSteps ?? [{
+    id: 'scoped-create-agent-skipped',
+    step: 'agent_model_answer',
+    type: 'llm',
+    status: 'skipped' as const,
+    startTime: retrievalEndTime,
+    endTime: retrievalEndTime,
+    duration: 0,
+    metadata: {
+      reason: input.activeAbstention
+        ? 'evidence_threshold_abstained'
+        : input.hasContext
+          ? 'agent_not_invoked'
+          : 'no_evidence_abstained',
+    },
+  }];
+
+  return {
+    runtime: input.agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
+    steps: [retrievalStep, ...generationSteps],
+    totalDuration: retrievalDuration + (input.agentResult?.totalDuration ?? 0),
+    retryCount: 0,
+  };
+}
+
+function createScopedAgentQueryAnalysisProjection(
+  analysis: QueryAnalysisResult
+) {
+  const semantic = analysis.embedding.semanticAnalysis;
+  return {
+    analysisMode: 'canonical-create-agent' as const,
+    originalQuery: analysis.tokenization.originalText,
+    semanticCategory: semantic.semanticCategory,
+    intent: semantic.intentAnalysis.primaryIntent,
+    confidence: Math.max(0, Math.min(1, semantic.confidence)),
+    nearestConcepts: [...semantic.nearestConcepts],
+    quality: {
+      queryQualityScore: analysis.quality.queryQualityScore,
+      specificity: analysis.quality.specificity,
+      ambiguity: analysis.quality.ambiguity,
+      retrievability: analysis.quality.retrievability,
+    },
+  };
+}
+
+// Agentic RAG 查询处理。默认使用 canonical retrieval + createAgent 叶子生成；
+// legacy 仅作为显式的服务端回滚路径保留。
 async function handleAgenticQuery(
+  policyContext: RagPolicyContext
+) {
+  if (resolveAgenticRuntime() === 'create-agent') {
+    const denseLanes = policyContext.retrievalPlan.lanes.filter(
+      lane => lane.type === 'dense-vector'
+    );
+    if (denseLanes.length !== 1) {
+      throw new Error('createAgent agentic policy requires exactly one dense retrieval lane.');
+    }
+    return handleMilvusQuery({
+      ...policyContext,
+      retrievalPlan: {
+        ...policyContext.retrievalPlan,
+        id: policyContext.retrievalPlan.id + ':create-agent-v1',
+        lanes: denseLanes,
+      },
+    });
+  }
+  return handleLegacyAgenticQuery(policyContext);
+}
+
+async function handleLegacyAgenticQuery(
   policyContext: RagPolicyContext
 ) {
   const { request, traceId, retrievalPlan } = policyContext;

@@ -1,8 +1,10 @@
 # Self-Corrective RAG 架构设计指南
 
+> 当前运行时说明（2026-08-28）：本模块已于 2026-06-15 从 LangGraph StateGraph 迁移为 LangChain RunnableLambda 节点 + 显式有界 rewrite 循环。下文 LangGraph 图示用于解释历史业务拓扑，不代表当前包运行时；完整证据见 [LANGCHAIN_LANGGRAPH_GUIDE.md](LANGCHAIN_LANGGRAPH_GUIDE.md)。
+
 ## 概述
 
-Self-Corrective RAG（自省式修正检索增强生成）是基于 **LangGraph + Milvus** 的 4 节点质量控制闭环架构。与传统 RAG 和 Agentic RAG 不同，它通过独立的 LLM 质检员来确保只有高质量文档才能进入生成阶段。
+Self-Corrective RAG（自省式修正检索增强生成）当前是基于 **LangChain Runnable + Milvus** 的 4 节点质量控制闭环。与传统 RAG 和 Agentic RAG 不同，它通过独立的 LLM 质检员来确保只有高质量文档才能进入生成阶段。
 
 ## 核心架构
 

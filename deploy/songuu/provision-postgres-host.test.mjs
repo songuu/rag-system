@@ -24,6 +24,9 @@ const skip = process.platform === 'win32' && !existsSync(windowsGitBash);
 const ownerPassword = 'a'.repeat(64);
 const appPassword = 'b'.repeat(64);
 const adminPassword = 'c'.repeat(64);
+const directReadonlyPassword = 'd'.repeat(64);
+const directReadonlyRole = 'rag_direct_readonly';
+const directReadonlySource = '103.107.199.27/32';
 const retiredVendorPrefix = ['SUPA', 'BASE_'].join('');
 
 function createFixture() {
@@ -184,9 +187,9 @@ case "$command_name" in
       *RestartPolicy*) printf '%s\\n' 'unless-stopped' ;;
       *'json .Config.Healthcheck.Test'*)
         if [[ "$state" = managed-v3 ]]; then
-          printf '%s\\n' '["CMD-SHELL","pg_isready --host=/run/rag-system-postgresql -U postgres -d rag_system"]'
+          printf '%s\\n' '["CMD-SHELL","gosu postgres pg_isready --host=/run/rag-system-postgresql -U postgres -d rag_system"]'
         else
-          printf '%s\\n' '["CMD-SHELL","pg_isready -U postgres -d rag_system"]'
+          printf '%s\\n' '["CMD-SHELL","gosu postgres pg_isready -U postgres -d rag_system"]'
         fi
         ;;
       *HostConfig.MemorySwap*) [[ "$state" = managed-v3 ]] && printf '%s\\n' '1073741824' || printf '%s\\n' '0' ;;
@@ -319,7 +322,16 @@ esac
 
   const runtime = path.join(shared, '.env.prod');
   const migration = path.join(shared, '.env.postgres-migration');
-  return { temp, root, shared, bin, fakeState, runtime, migration };
+  return {
+    temp,
+    root,
+    shared,
+    bin,
+    fakeState,
+    runtime,
+    migration,
+    directReadonlyConfig: path.join(shared, '.postgres-host', 'direct-readonly.env'),
+  };
 }
 
 function writeExecutable(filename, contents) {
@@ -330,6 +342,22 @@ function writeExecutable(filename, contents) {
 function writeSecretFile(filename, contents) {
   writeFileSync(filename, contents, 'utf8');
   chmodSync(filename, 0o600);
+}
+
+function enableDirectReadonly(fixture, {
+  source = directReadonlySource,
+  password = directReadonlyPassword,
+  role = directReadonlyRole,
+} = {}) {
+  const stateDir = path.dirname(fixture.directReadonlyConfig);
+  mkdirSync(stateDir, { recursive: true });
+  chmodSync(stateDir, 0o700);
+  writeSecretFile(fixture.directReadonlyConfig, [
+    `ROLE=${role}`,
+    `SOURCE=${source}`,
+    `PASSWORD=${password}`,
+    '',
+  ].join('\n'));
 }
 
 function runProvisionerAction(fixture, action) {
@@ -416,13 +444,14 @@ test('publishes PostgreSQL with TLS and SCRAM while keeping host-local DSNs', { 
     assert.match(migration, new RegExp(`^POSTGRES_MIGRATION_URL='postgresql://rag_owner:${ownerPassword}@/rag_system\\?host=%2F`, 'm'));
     assert.doesNotMatch(migration, /127\.0\.0\.1:25432/);
     assert.match(migration, /^POSTGRES_SSL_MODE='disable'$/m);
+    assert.doesNotMatch(migration, /^POSTGRES_DIRECT_READONLY_ROLE=/m);
     assert.match(calls, /--publish 0\.0\.0\.0:25432:5432/);
     assert.match(calls, /--label com\.songuu\.rag-system\.postgres=managed-v3/);
     assert.match(calls, /listen_addresses=\*/);
     assert.match(calls, /ssl=on/);
     assert.match(calls, /password_encryption=scram-sha-256/);
     assert.match(calls, /hba_file=\/var\/lib\/postgresql\/data\/rag-tls\/pg_hba\.conf/);
-    assert.match(calls, /--health-cmd pg_isready --host=\/run\/rag-system-postgresql -U postgres -d rag_system/);
+    assert.match(calls, /--health-cmd gosu postgres pg_isready --host=\/run\/rag-system-postgresql -U postgres -d rag_system/);
     assert.match(calls, /--memory 1g --memory-swap 1g --cpus 1\.5 --shm-size 256m/);
     assert.match(calls, /--log-driver json-file --log-opt max-size=20m --log-opt max-file=3/);
     const initialHba = readFileSync(path.join(fixture.fakeState, 'copied-pg_hba.conf.next-1'), 'utf8');
@@ -437,6 +466,7 @@ test('publishes PostgreSQL with TLS and SCRAM while keeping host-local DSNs', { 
     assert.match(hba, /^hostnossl\s+all\s+all\s+::0\/0\s+reject$/m);
     assert.match(hba, /^hostssl\s+rag_system\s+rag_app\s+::0\/0\s+scram-sha-256$/m);
     assert.match(hba, /^hostssl\s+all\s+all\s+::0\/0\s+reject$/m);
+    assert.doesNotMatch(hba, new RegExp(`^hostssl\\s+rag_system\\s+${directReadonlyRole}\\s+`, 'm'));
     assert.doesNotMatch(hba, /^host(?:ssl|nossl)?\s+\S+\s+(?:rag_owner|postgres)\s+\S+\s+(?!reject)/m);
     assert.doesNotMatch(hba, /^host\s+all\s+all\s+all\s+scram-sha-256$/m);
     const firstHbaCopy = calls.indexOf('pg_hba.conf.next');
@@ -447,6 +477,7 @@ test('publishes PostgreSQL with TLS and SCRAM while keeping host-local DSNs', { 
     const tlsDir = path.join(stateDir, 'tls');
     const ca = path.join(tlsDir, 'ca.crt');
     const externalEnv = path.join(tlsDir, 'rag-app-client.env');
+    const directExternalEnv = path.join(tlsDir, 'rag-direct-readonly-client.env');
     assert.equal(existsSync(ca), true);
     assert.equal(existsSync(path.join(tlsDir, 'ca.key')), true);
     assert.equal(existsSync(path.join(tlsDir, 'server.crt')), true);
@@ -469,12 +500,99 @@ test('publishes PostgreSQL with TLS and SCRAM while keeping host-local DSNs', { 
     assert.equal(client.trim().split(/\r?\n/).length, 7);
     assert.doesNotMatch(client, /rag_owner|postgresql:\/\/postgres:/);
     assertMode(externalEnv, 0o600);
+    assert.equal(existsSync(directExternalEnv), false);
     assertMode(path.join(tlsDir, 'ca.key'), 0o600);
     assert.match(result.stdout, /External PostgreSQL client environment:/);
     assert.match(result.stdout, /TLS CA certificate:/);
     assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${calls}`, new RegExp(`${ownerPassword}|${appPassword}|${adminPassword}`));
   } finally {
     rmSync(fixture.temp, { recursive: true, force: true });
+  }
+});
+
+test('optionally provisions one exact-source TLS direct readonly role and client environment', { skip }, () => {
+  const fixture = createFixture();
+  try {
+    enableDirectReadonly(fixture);
+
+    const result = runProvisioner(fixture);
+
+    assert.equal(result.status, 0, result.stderr);
+    const stateDir = path.join(fixture.shared, '.postgres-host');
+    const tlsDir = path.join(stateDir, 'tls');
+    const migration = readFileSync(fixture.migration, 'utf8');
+    const hba = readFileSync(path.join(fixture.fakeState, 'copied-pg_hba.conf.next'), 'utf8');
+    const directClient = readFileSync(path.join(tlsDir, 'rag-direct-readonly-client.env'), 'utf8');
+    const roleSql = readFileSync(path.join(fixture.fakeState, 'psql-input'), 'utf8');
+
+    assert.equal(readFileSync(fixture.directReadonlyConfig, 'utf8'), [
+      `ROLE=${directReadonlyRole}`,
+      `SOURCE=${directReadonlySource}`,
+      `PASSWORD=${directReadonlyPassword}`,
+      '',
+    ].join('\n'));
+    assert.match(hba, new RegExp(
+      `^hostssl\\s+rag_system\\s+${directReadonlyRole}\\s+103\\.107\\.199\\.27/32\\s+scram-sha-256$`,
+      'm'
+    ));
+    const directRule = hba.indexOf(`hostssl   rag_system ${directReadonlyRole} ${directReadonlySource} scram-sha-256`);
+    const ipv4BroadReject = hba.indexOf('hostssl   all         all       0.0.0.0/0             reject');
+    assert.ok(directRule >= 0 && directRule < ipv4BroadReject, 'direct readonly HBA rule must precede the IPv4 broad reject');
+    assert.doesNotMatch(hba, new RegExp(`^hostnossl\\s+rag_system\\s+${directReadonlyRole}\\s+`, 'm'));
+    assert.doesNotMatch(hba, new RegExp(`^hostssl\\s+rag_system\\s+${directReadonlyRole}\\s+::0/0\\s+`, 'm'));
+
+    assert.match(migration, new RegExp(`^POSTGRES_DIRECT_READONLY_ROLE='${directReadonlyRole}'$`, 'm'));
+    assert.doesNotMatch(migration, new RegExp(directReadonlyPassword));
+    assert.match(directClient, /^PGHOST='db\.songuu\.test'$/m);
+    assert.match(directClient, /^PGPORT='25432'$/m);
+    assert.match(directClient, /^PGDATABASE='rag_system'$/m);
+    assert.match(directClient, new RegExp(`^PGUSER='${directReadonlyRole}'$`, 'm'));
+    assert.match(directClient, new RegExp(`^PGPASSWORD='${directReadonlyPassword}'$`, 'm'));
+    assert.match(directClient, /^PGSSLMODE='verify-full'$/m);
+    assert.match(directClient, /^PGSSLROOTCERT='\/.*\/shared\/\.postgres-host\/tls\/ca\.crt'$/m);
+    assert.equal(directClient.trim().split(/\r?\n/).length, 7);
+    assert.doesNotMatch(directClient, /rag_owner|rag_app|postgresql:\/\/postgres:/);
+    assertMode(path.join(tlsDir, 'rag-direct-readonly-client.env'), 0o600);
+
+    assert.match(roleSql, new RegExp(`CREATE ROLE ${directReadonlyRole} WITH LOGIN`));
+    assert.match(roleSql, new RegExp(
+      `ALTER ROLE ${directReadonlyRole} WITH LOGIN PASSWORD '[a-f0-9]+' CONNECTION LIMIT 2 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT NOBYPASSRLS`
+    ));
+    assert.match(roleSql, new RegExp(`GRANT CONNECT ON DATABASE rag_system TO ${directReadonlyRole}`));
+    assert.match(roleSql, /rag\.direct_readonly_enabled/);
+    assert.match(roleSql, /rag\.direct_readonly_address/);
+    assert.match(roleSql, /WHEN 'temporary' THEN 10 ELSE 9 END[\s\S]+WHEN 'true' THEN 1 ELSE 0 END/);
+    assert.match(roleSql, /user_name = ARRAY\['rag_direct_readonly'\][\s\S]{0,220}netmask = '255\.255\.255\.255'/);
+    assert.match(roleSql, /rule\.user_name = ARRAY\['rag_direct_readonly'\][\s\S]{0,260}rule\.netmask = '255\.255\.255\.255'/);
+    assert.match(roleSql, /PostgreSQL direct readonly role has an unexpected membership/);
+    assert.match(roleSql, /PostgreSQL direct readonly role attributes have drifted/);
+    assert.match(result.stdout, /Direct readonly PostgreSQL client environment:/);
+    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(directReadonlyPassword));
+  } finally {
+    rmSync(fixture.temp, { recursive: true, force: true });
+  }
+});
+
+test('rejects malformed direct readonly configuration before Docker or credential side effects', { skip }, () => {
+  for (const options of [
+    { source: '103.107.199.27/24' },
+    { source: '999.107.199.27/32' },
+    { role: 'unexpected_role' },
+    { password: 'd'.repeat(63) },
+  ]) {
+    const fixture = createFixture();
+    try {
+      enableDirectReadonly(fixture, options);
+
+      const result = runProvisionerAction(fixture, 'prepare');
+
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /PostgreSQL direct readonly (SOURCE|configuration|PASSWORD)/);
+      assert.equal(existsSync(path.join(fixture.fakeState, 'docker-calls')), false);
+      assert.equal(existsSync(path.join(fixture.shared, '.postgres-host', 'credentials.env')), false);
+    } finally {
+      rmSync(fixture.temp, { recursive: true, force: true });
+    }
   }
 });
 
@@ -526,6 +644,8 @@ test('keeps prepare reversible and restores the loopback container without touch
   const fixture = createFixture();
   try {
     const originalRuntime = "KEEP='runtime-before-public-cutover'\n";
+    enableDirectReadonly(fixture);
+    const originalDirectConfig = readFileSync(fixture.directReadonlyConfig, 'utf8');
     writeSecretFile(fixture.runtime, originalRuntime);
 
     const prepared = runProvisionerAction(fixture, 'prepare');
@@ -536,6 +656,11 @@ test('keeps prepare reversible and restores the loopback container without touch
     assert.equal(readFileSync(path.join(fixture.fakeState, 'backup-container'), 'utf8'), 'managed-v2');
     assert.equal(readFileSync(path.join(fixture.shared, '.postgres-host', 'public-cutover.pending'), 'utf8'), 'kind=legacy\nhost=db.songuu.test\nstate=prepared\ntoken=release-test-001\nhba=strict\n');
     assert.equal(existsSync(path.join(fixture.shared, '.postgres-host', 'tls', 'rag-app-client.env')), true);
+    assert.equal(existsSync(path.join(fixture.shared, '.postgres-host', 'tls', 'rag-direct-readonly-client.env')), true);
+    const snapshotDir = path.join(fixture.shared, '.postgres-host', 'public-cutover-snapshot');
+    assert.equal(readFileSync(path.join(snapshotDir, 'manifest'), 'utf8'), 'version=3\ntoken=release-test-001\n');
+    assert.equal(readFileSync(path.join(snapshotDir, 'direct-readonly.env'), 'utf8'), originalDirectConfig);
+    assert.equal(existsSync(path.join(snapshotDir, 'rag-direct-readonly-client.env.absent')), true);
 
     const rolledBack = runProvisionerAction(fixture, 'rollback');
     assert.equal(rolledBack.status, 0, rolledBack.stderr);
@@ -546,6 +671,8 @@ test('keeps prepare reversible and restores the loopback container without touch
     assert.equal(existsSync(fixture.migration), false);
     assert.equal(existsSync(path.join(fixture.shared, '.postgres-host', 'public-cutover.pending')), false);
     assert.equal(existsSync(path.join(fixture.shared, '.postgres-host', 'tls', 'rag-app-client.env')), false);
+    assert.equal(readFileSync(fixture.directReadonlyConfig, 'utf8'), originalDirectConfig);
+    assert.equal(existsSync(path.join(fixture.shared, '.postgres-host', 'tls', 'rag-direct-readonly-client.env')), false);
     const calls = readFileSync(path.join(fixture.fakeState, 'docker-calls'), 'utf8');
     assert.match(calls, /rm --force rag-system-postgres/);
     assert.match(calls, /rename rag-system-postgres-loopback-backup rag-system-postgres/);

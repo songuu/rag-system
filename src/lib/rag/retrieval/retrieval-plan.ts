@@ -105,12 +105,12 @@ function createDefaultLanes(
       createRetrievalLane({
         type: 'dense-vector',
         required: true,
-        description: 'Retrieve candidate chunks from Milvus before agent grading.',
+        description: 'Capture canonical scoped evidence before agent execution.',
       }),
       createRetrievalLane({
         type: 'rerank',
         required: true,
-        description: 'Grade retrieval quality and optionally rewrite the query.',
+        description: 'Legacy rollback only: grade retrieval quality and optionally rewrite.',
       }),
       createRetrievalLane({
         type: 'generation-only',

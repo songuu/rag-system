@@ -16,11 +16,14 @@ const {
   assertDatabaseUrlHasNoSslParameters,
   formatCliError,
   grantApplicationRole,
+  grantDirectReadonlyRole,
   loadMigrations,
   resolveSeedScope,
   resolveDatabaseUrl,
+  resolveDirectReadonlyRole,
   resolveMigrationDatabaseUrl,
   resolveApplicationRole,
+  runMigrationSession,
   seedDefaultScope,
   withMigrationLock,
 } = await import('./migrate-postgres.mjs');
@@ -78,6 +81,80 @@ test('migration runner supports a separate migration DSN and a validated app rol
   assert.ok(calls.some((text) => /revoke insert, update, delete[\s\S]*public\.tenants[\s\S]*public\.corpora/i.test(text)));
   assert.ok(calls.some((text) => /alter default privileges[\s\S]*revoke[\s\S]*on tables/i.test(text)));
   assert.equal(calls.some((text) => /alter default privileges[\s\S]*grant/i.test(text)), false);
+});
+
+test('migration runner grants an optional direct role read-only access to the explicit business-table allowlist', async () => {
+  assert.equal(resolveDirectReadonlyRole({}), null);
+  assert.equal(
+    resolveDirectReadonlyRole({ POSTGRES_DIRECT_READONLY_ROLE: 'rag_direct_readonly' }),
+    'rag_direct_readonly'
+  );
+  assert.throws(
+    () => resolveDirectReadonlyRole({ POSTGRES_DIRECT_READONLY_ROLE: 'rag-direct;drop role' }),
+    /POSTGRES_DIRECT_READONLY_ROLE.*valid PostgreSQL identifier/i
+  );
+
+  const calls = [];
+  await grantDirectReadonlyRole(fakeClient(async (text) => {
+    calls.push(text);
+    return { rows: [], rowCount: 0 };
+  }), 'rag_direct_readonly');
+
+  const statements = calls.filter((text) => !/^(begin|commit)$/i.test(text));
+  assert.ok(statements.every((text) => text.includes('"rag_direct_readonly"')));
+  assert.ok(statements.some((text) => /grant usage on schema public/i.test(text)));
+  const selectGrant = statements.find((text) => /grant select on table/i.test(text));
+  assert.ok(selectGrant);
+  for (const table of [
+    'public.rag_schema_migrations',
+    'public.tenants',
+    'public.corpora',
+    'public.document_assets',
+    'public.object_blobs',
+    'public.index_jobs',
+    'public.traces',
+    'public.observations',
+    'public.trace_scores',
+    'public.maic_courses',
+    'public.maic_classroom_sessions',
+  ]) {
+    assert.match(selectGrant, new RegExp(table.replace('.', '\\.')));
+  }
+  assert.equal(statements.some((text) => /grant[\s\S]*(all tables|all sequences)/i.test(text)), false);
+  assert.equal(statements.some((text) => /alter default privileges[\s\S]*grant/i.test(text)), false);
+  assert.equal(statements.some((text) => /alter default privileges/i.test(text)), false);
+  assert.equal(statements.some((text) => /grant[\s\S]*(insert|update|delete|truncate|references|trigger)/i.test(text)), false);
+  assert.equal(statements.some((text) => /grant[\s\S]*(usage|select|update)[\s\S]*sequence/i.test(text)), false);
+  assert.ok(statements.some((text) => /revoke[\s\S]*all sequences/i.test(text)));
+});
+
+test('migration session leaves grants unchanged until a direct read-only role is configured', async () => {
+  const noRoleCalls = [];
+  const noRoleSummary = await runMigrationSession(fakeClient(async (text) => {
+    noRoleCalls.push(text);
+    return { rows: [], rowCount: 0 };
+  }), {
+    migrations: [],
+    bootstrapSql: 'create table if not exists public.rag_schema_migrations ();',
+  });
+  assert.deepEqual(noRoleSummary, {
+    applied: [],
+    skipped: [],
+    seeded: false,
+    appRoleGranted: false,
+  });
+  assert.equal(noRoleCalls.some((text) => /rag_direct_readonly/i.test(text)), false);
+
+  const directRoleCalls = [];
+  await runMigrationSession(fakeClient(async (text) => {
+    directRoleCalls.push(text);
+    return { rows: [], rowCount: 0 };
+  }), {
+    migrations: [],
+    bootstrapSql: 'create table if not exists public.rag_schema_migrations ();',
+    directReadonlyRole: 'rag_direct_readonly',
+  });
+  assert.ok(directRoleCalls.some((text) => /grant select on table[\s\S]*rag_direct_readonly/i.test(text)));
 });
 
 test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract', async () => {

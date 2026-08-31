@@ -1,4 +1,5 @@
 import { RunTree, uuid7 } from 'langsmith';
+import type { RunnableConfig } from '@langchain/core/runnables';
 import {
   buildLangSmithMetadata,
   createLangSmithThreadId,
@@ -7,12 +8,21 @@ import {
   toLangSmithRecord,
   type LangSmithRuntimeConfig,
 } from './config';
+import {
+  createPrivateLangChainCallbacks,
+  executeWithPrivateLangChainTracing,
+} from './private-tracing';
 
 export interface LangSmithRunContext {
   enabled: boolean;
   runId: string;
   threadId: string;
   projectName: string;
+  /**
+   * Upload-disabled callbacks for every LangChain Runnable/model/tool invoked
+   * by this request. They are intentionally not parented to the external root.
+   */
+  privateLangChainCallbacks: RunnableConfig['callbacks'];
 }
 
 export async function runWithLangSmithRootRun<T>(
@@ -44,11 +54,20 @@ export async function runWithLangSmithRootRun<T>(
     runId,
     threadId,
     projectName: config.projectName,
+    privateLangChainCallbacks: createPrivateLangChainCallbacks(),
   };
 
-  const client = getLangSmithClient(config);
+  let client;
+  try {
+    client = getLangSmithClient(config);
+  } catch (error) {
+    console.warn('[LangSmith] client initialization failed; continuing locally:', error);
+    return executeWithPrivateLangChainTracing(
+      () => execute({ ...context, enabled: false })
+    );
+  }
   if (!client) {
-    return execute(context);
+    return executeWithPrivateLangChainTracing(() => execute(context));
   }
 
   const run = new RunTree({
@@ -58,7 +77,7 @@ export async function runWithLangSmithRootRun<T>(
     run_type: input.runType ?? 'chain',
     project_name: config.projectName,
     client,
-    inputs: input.inputs ?? {},
+    inputs: createContentFreeRootInputs(input.inputs),
     metadata: buildLangSmithMetadata({
       threadId,
       sessionId: input.sessionId,
@@ -72,22 +91,33 @@ export async function runWithLangSmithRootRun<T>(
     start_time: Date.now(),
   });
 
+  let result: T;
   try {
     await run.postRun(true);
   } catch (error) {
     console.warn('[LangSmith] root run create failed; continuing locally:', error);
-    return execute({ ...context, enabled: false });
+    return executeWithPrivateLangChainTracing(
+      () => execute({ ...context, enabled: false })
+    );
   }
 
   try {
-    const result = await execute(context);
-    await run.end(input.output?.(result) ?? { ok: true });
-    await run.patchRun();
-    return result;
+    // LangSmith input/output processors do not sanitize a child run's error or
+    // stack fields. Agent/model/tool spans can therefore leak tenant evidence
+    // through a thrown error even when both payload hiding flags are enabled.
+    // Keep automatic children on a private discard client. A tracingEnabled
+    // boundary alone is insufficient because createAgent/LangGraph can rebuild
+    // a tracer after its async graph context changes.
+    result = await executeWithPrivateLangChainTracing(
+      () => execute(context)
+    );
   } catch (error) {
     await endRunWithError(run, error);
     throw error;
   }
+
+  await endRunWithSuccess(run, input.output?.(result) ?? { ok: true });
+  return result;
 }
 
 export async function recordLangSmithFeedback(input: {
@@ -139,18 +169,46 @@ export function getLangSmithStatus() {
 
 async function endRunWithError(run: RunTree, error: unknown): Promise<void> {
   try {
-    await run.end(
-      { ok: false },
-      error instanceof Error ? error.message : String(error)
-    );
+    // Never send provider/tool/kernel error text to LangSmith: it can contain
+    // prompts, evidence, endpoints, or credential fragments.
+    void error;
+    await run.end({ ok: false }, 'RAG_EXECUTION_FAILED');
     await run.patchRun();
   } catch (patchError) {
     console.warn('[LangSmith] root run error patch failed:', patchError);
   }
 }
 
+async function endRunWithSuccess(
+  run: RunTree,
+  output: Record<string, unknown>
+): Promise<void> {
+  try {
+    await run.end(output);
+    await run.patchRun();
+  } catch (error) {
+    // Telemetry is best-effort and must never turn a completed answer into an
+    // application failure or invite a duplicate provider retry.
+    console.warn('[LangSmith] root run completion patch failed:', error);
+  }
+}
+
 function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function createContentFreeRootInputs(
+  inputs: Record<string, unknown> | undefined
+): Record<string, number | boolean> {
+  const safeInputs: Record<string, number | boolean> = {};
+  for (const [key, value] of Object.entries(inputs ?? {})) {
+    if (typeof value === 'boolean') {
+      safeInputs[key] = value;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      safeInputs[key] = value;
+    }
+  }
+  return safeInputs;
 }
 
 export { toLangSmithRecord };

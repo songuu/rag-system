@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
+import { FakeToolCallingModel } from 'langchain';
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
     try {
@@ -20,6 +22,9 @@ const { createRagPolicy, resolveRagPolicyId } = await import('./policies.ts');
 const { invokeRagKernelWorkflow, prepareRagWorkflowRun } = await import('./workflow.ts');
 const { createDefaultRetrievalPlan } = await import('../retrieval/retrieval-plan.ts');
 const { RagLaneExecutor } = await import('../retrieval/lane-executor.ts');
+const { invokeScopedRetrievalAgent } = await import('../agents/scoped-retrieval-agent.ts');
+const { composeEvidenceContextV2 } = await import('./context-composer.ts');
+const { isPrivateLangSmithTracingClient } = await import('../../langsmith/private-tracing.ts');
 
 test('RAG policy resolver preserves legacy /api/ask mode selection', () => {
   assert.equal(resolveRagPolicyId(createRequest({})), 'memory');
@@ -161,6 +166,83 @@ test('RAG workflow invokes the kernel through a LangChain runnable with trace me
   assert.equal(result.workflow.metadata.rag_policy, 'memory');
 });
 
+test('RAG workflow parents a real createAgent run to the active execute child', async () => {
+  const runs = [];
+  const callback = {
+    name: 'rag-parentage-capture',
+    handleChainStart(_serialized, _inputs, runId, parentRunId, _tags, _metadata, _runType, name) {
+      runs.push({ runId, parentRunId, name });
+    },
+  };
+  const scope = {
+    tenantId: 'tenant-a',
+    corpusId: 'corpus-a',
+    allowedTrustLevels: ['trusted', 'reviewed', 'external'],
+    enforceIsolation: true,
+  };
+  const evidence = {
+    id: 'evidence-parentage',
+    tenantId: scope.tenantId,
+    corpusId: scope.corpusId,
+    documentId: 'doc-parentage',
+    documentVersion: 'v1',
+    content: 'Parented evidence.',
+    source: 'parentage.md',
+    retrievalScore: 0.9,
+    trustLevel: 'reviewed',
+    laneId: 'dense-vector-required',
+  };
+  const contextPack = composeEvidenceContextV2([evidence], { scope });
+  const model = new FakeToolCallingModel({
+    toolCalls: [[{
+      name: 'read_scoped_rag_context',
+      args: {},
+      id: 'parentage-tool-call',
+    }], []],
+  });
+  const kernel = new RagKernel([
+    createRagPolicy({
+      id: 'agentic',
+      description: 'createAgent parentage policy',
+      execute: async context => {
+        const agent = await invokeScopedRetrievalAgent({
+          model,
+          question: context.request.question,
+          contextPack,
+          scope,
+          traceId: context.traceId,
+          callbacks: context.runnableConfig?.callbacks,
+        });
+        return { success: true, answer: agent.answer };
+      },
+    }),
+  ]);
+
+  await invokeRagKernelWorkflow(kernel, {
+    request: createRequest({
+      storageBackend: 'milvus',
+      useAgenticRAG: true,
+      sessionId: 'agent-parentage-thread',
+    }),
+    policyId: 'agentic',
+    context: {
+      name: 'RAG Agent Parentage Workflow',
+      traceId: 'trace-agent-parentage',
+      callbacks: [callback],
+    },
+  });
+
+  const workflowRun = runs.find(run => run.name === 'RAG Agent Parentage Workflow');
+  const executeRun = runs.find(run => run.name === 'rag-kernel.execute');
+  const agentRun = runs.find(run => run.name === 'Scoped RAG createAgent');
+  assert.ok(workflowRun);
+  assert.ok(executeRun);
+  assert.ok(agentRun);
+  assert.equal(executeRun.parentRunId, workflowRun.runId);
+  assert.equal(agentRun.parentRunId, executeRun.runId);
+  assert.notEqual(agentRun.parentRunId, workflowRun.runId);
+});
+
 test('RAG workflow propagates runtime cancellation and never invokes a pre-aborted policy', async () => {
   const controller = new AbortController();
   let policyCalls = 0;
@@ -195,11 +277,13 @@ test('RAG workflow propagates runtime cancellation and never invokes a pre-abort
 });
 
 test('RAG workflow preparation creates deterministic fallback trace ids', () => {
+  const callbacks = [];
   const prepared = prepareRagWorkflowRun({
     request: createRequest({ requestId: 'request-xyz' }),
     policyId: 'memory',
     context: {
       now: new Date('2026-06-11T00:00:00.000Z'),
+      callbacks,
     },
   });
 
@@ -207,6 +291,12 @@ test('RAG workflow preparation creates deterministic fallback trace ids', () => 
   assert.equal(prepared.traceId, 'rag-memory-1781136000000-requestxyz');
   assert.equal(prepared.runnableConfig.configurable.thread_id, 'request-xyz');
   assert.equal(prepared.runnableConfig.configurable.rag_policy, 'memory');
+  assert.notEqual(prepared.runnableConfig.callbacks, callbacks);
+  const privateTracer = prepared.runnableConfig.callbacks.handlers.find(
+    handler => handler.name === 'langchain_tracer'
+  );
+  assert.ok(privateTracer);
+  assert.equal(isPrivateLangSmithTracingClient(privateTracer.client), true);
 });
 
 test('RAG kernel wraps policy failures with traceable execution context', async () => {

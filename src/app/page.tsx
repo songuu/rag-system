@@ -40,6 +40,20 @@ interface Toast {
   type: 'success' | 'error' | 'warning' | 'info';
 }
 
+interface CanonicalCreateAgentQueryAnalysis {
+  analysisMode: 'canonical-create-agent';
+}
+
+function isCanonicalCreateAgentQueryAnalysis(
+  value: unknown
+): value is CanonicalCreateAgentQueryAnalysis {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && (value as Record<string, unknown>).analysisMode === 'canonical-create-agent'
+  );
+}
+
 /**
  * 安全提取 API 响应中的回答内容为字符串
  * 防止 LangChain 对象被传递给 React 组件
@@ -772,6 +786,11 @@ export default function HomePage() {
         let queryAnalysisData: any;
         // 重要：始终使用用户原始输入，防止 LLM 返回错误的 originalQuery
         const userOriginalInput = input.trim();
+        const canonicalCreateAgentResponse = data.agenticMode === true && (
+          isCanonicalCreateAgentQueryAnalysis(data.queryAnalysis)
+          || data.workflow?.runtime === 'langchain-create-agent-v1'
+          || data.agent?.runtime === 'langchain-create-agent-v1'
+        );
         
         // 处理自适应实体 RAG 模式的查询分析数据
         if (data.adaptiveEntityMode && data.queryAnalysis) {
@@ -828,7 +847,15 @@ export default function HomePage() {
             vectorMagnitude: 1.2
           });
         }
-        // 处理 Agentic RAG 模式的查询分析数据
+        // Canonical createAgent 仅保留服务端已经计算的分析字段。
+        // 它不包含 legacy token/vector 契约，因此不能为了旧 UI 伪造这些数据。
+        else if (canonicalCreateAgentResponse) {
+          queryAnalysisData = isCanonicalCreateAgentQueryAnalysis(data.queryAnalysis)
+            ? data.queryAnalysis
+            : null;
+          setRadarChartData(null);
+        }
+        // 处理 legacy Agentic RAG 模式的查询分析数据
         else if (data.agenticMode && data.queryAnalysis) {
           // 将 Agentic RAG 的查询分析转换为标准格式
           const agenticAnalysis = data.queryAnalysis;
@@ -1071,6 +1098,7 @@ export default function HomePage() {
     }
     return queryAnalysis;
   };
+  const currentAnalysis = getCurrentAnalysis();
 
   return (
     <div className="bg-gray-50 min-h-screen">
@@ -1458,7 +1486,9 @@ export default function HomePage() {
                     />
 
                     {/* 显示选中的问题分析 */}
-                    {viewingAnalysisFor && messages.find(m => m.id === viewingAnalysisFor)?.queryAnalysis && (
+                    {viewingAnalysisFor
+                      && currentAnalysis
+                      && !isCanonicalCreateAgentQueryAnalysis(currentAnalysis) && (
                       <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
                         <h4 className="text-sm font-medium text-blue-800 mb-3">
                           <i className="fas fa-cogs mr-2"></i>
@@ -1468,7 +1498,7 @@ export default function HomePage() {
                           </span>
                         </h4>
                         <QueryAnalysis
-                          analysis={messages.find(m => m.id === viewingAnalysisFor)!.queryAnalysis}
+                          analysis={currentAnalysis}
                           radarChartData={radarChartData}
                           topK={topK}
                           threshold={threshold}
@@ -1478,14 +1508,17 @@ export default function HomePage() {
                     )}
 
                     {/* 显示当前查询的分析（如果没有选中历史问题） */}
-                    {!viewingAnalysisFor && showQueryAnalysis && queryAnalysis && (
+                    {!viewingAnalysisFor
+                      && showQueryAnalysis
+                      && currentAnalysis
+                      && !isCanonicalCreateAgentQueryAnalysis(currentAnalysis) && (
                       <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
                         <h4 className="text-sm font-medium text-blue-800 mb-3">
                           <i className="fas fa-cogs mr-2"></i>
                           用户问题处理分析
                         </h4>
                         <QueryAnalysis
-                          analysis={queryAnalysis}
+                          analysis={currentAnalysis}
                           radarChartData={radarChartData}
                           topK={topK}
                           threshold={threshold}
@@ -1658,7 +1691,7 @@ export default function HomePage() {
                 showQueryProcessing={showQueryProcessing}
                 queryProcessingStatus={queryProcessingStatus}
                 isLoading={isLoading}
-                queryAnalysis={queryAnalysis}
+                queryAnalysis={isCanonicalCreateAgentQueryAnalysis(queryAnalysis) ? null : queryAnalysis}
                 retrievalDetails={retrievalDetails}
               />
             )}

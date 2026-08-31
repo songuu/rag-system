@@ -1,3 +1,4 @@
+import type { RunnableConfig } from '@langchain/core/runnables';
 import type { RagRetrievalPlan } from '../retrieval/retrieval-plan';
 import type { RagSecurityContext } from '../../security/request-context';
 import type {
@@ -52,6 +53,8 @@ export interface RagPolicyContext {
   retrievalPlan: RagRetrievalPlan;
   /** Transient request cancellation only. AbortSignal is never serialized. */
   signal?: AbortSignal;
+  /** Transient LangChain execution config; external child trace export is disabled. */
+  runnableConfig?: RunnableConfig;
 }
 
 export interface RagPolicyResult<TOutput> {

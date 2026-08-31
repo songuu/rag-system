@@ -30,6 +30,76 @@ export class AgenticRAGSystem {
   }
 }
 `);
+const scopedAgentStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+export const SCOPED_RETRIEVAL_AGENT_RUNTIME = 'langchain-create-agent-v1';
+let fixture;
+let signals = [];
+export function setScopedAgentFixture(value) {
+  fixture = structuredClone(value);
+  signals = [];
+}
+export function getScopedAgentSignals() { return [...signals]; }
+export async function invokeScopedRetrievalAgent(input) {
+  if (!fixture) throw new Error('Scoped agent route fixture is not configured.');
+  signals.push({
+    signal: input.signal,
+    traceId: input.traceId,
+    threadId: input.threadId,
+    includedEvidenceIds: [...input.contextPack.includedEvidenceIds],
+    context: input.contextPack.context,
+  });
+  if (fixture.waitForAbort) {
+    await new Promise((_resolve, reject) => {
+      const rejectWithAbort = () => reject(input.signal?.reason);
+      if (input.signal?.aborted) rejectWithAbort();
+      else input.signal?.addEventListener('abort', rejectWithAbort, { once: true });
+    });
+  }
+  if (fixture.error) {
+    const error = new Error(fixture.error);
+    if (fixture.code) error.code = fixture.code;
+    throw error;
+  }
+  const completedAt = Date.now();
+  return {
+    answer: fixture.answer ?? 'scoped answer',
+    messages: [],
+    toolCallCount: fixture.toolCallCount ?? 1,
+    servedEvidenceIds: [...input.contextPack.includedEvidenceIds],
+    workflowSteps: fixture.workflowSteps ?? [
+      {
+        id: 'agent-model-tool-request',
+        step: 'agent_model_request_tool',
+        type: 'llm',
+        status: 'completed',
+        startTime: completedAt - 3,
+        endTime: completedAt - 2,
+        duration: 1,
+      },
+      {
+        id: 'agent-read-scoped-context',
+        step: 'read_scoped_rag_context',
+        type: 'tool',
+        status: 'completed',
+        startTime: completedAt - 2,
+        endTime: completedAt - 1,
+        duration: 1,
+      },
+      {
+        id: 'agent-model-grounded-answer',
+        step: 'agent_model_answer',
+        type: 'llm',
+        status: 'completed',
+        startTime: completedAt - 1,
+        endTime: completedAt,
+        duration: 1,
+      },
+    ],
+    totalDuration: fixture.totalDuration ?? 3,
+    runtime: SCOPED_RETRIEVAL_AGENT_RUNTIME,
+  };
+}
+`);
 const milvusStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 const defaultHybridCapability = {
   nativeHybridSearch: true,
@@ -171,14 +241,18 @@ export function getMilvusInstance() { return store; }
 `);
 const modelStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [] };
+let createLLMError;
 export function resetModelSignals() {
   signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [] };
+  createLLMError = undefined;
 }
 export function getModelSignals() { return structuredClone(signals); }
+export function setCreateLLMError(value) { createLLMError = value; }
 export function createEmbedding() {
   return { async embedQuery() { signals.embed += 1; return [0.1, 0.2, 0.3]; } };
 }
 export function createLLM() {
+  if (createLLMError) throw new Error(createLLMError);
   return { async invoke(prompt) {
     const isVisual = Array.isArray(prompt) && prompt.some(message =>
       Array.isArray(message?.content)
@@ -196,6 +270,7 @@ export function createLLM() {
 `);
 const moduleStubs = new Map([
   ['@/lib/agentic-rag', agenticStubUrl],
+  ['@/lib/rag/agents/scoped-retrieval-agent', scopedAgentStubUrl],
   ['@/lib/milvus-client', milvusStubUrl],
   ['@/lib/model-config', modelStubUrl],
   ['@/lib/rag-instance', 'data:text/javascript,' + encodeURIComponent(`
@@ -258,6 +333,7 @@ const environmentKeys = [
   'RAG_DURABLE_WORKFLOW_LEASE_MS',
   'RAG_DURABLE_WORKFLOW_MAX_THREADS',
   'RAG_DURABLE_WORKFLOW_RESULT_MAX_ARTIFACTS',
+  'RAG_AGENTIC_RUNTIME',
   'RAG_VECTOR_BACKEND',
 ];
 const originalEnvironment = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
@@ -270,9 +346,14 @@ Object.assign(process.env, {
   RAG_DEFAULT_CORPUS_ID: 'corpus-a',
   LANGCHAIN_TRACING_V2: 'false',
 });
+delete process.env.RAG_AGENTIC_RUNTIME;
 
 const { NextRequest } = await import('next/server');
 const { setAgenticFixture, getAgenticQuerySignals } = await import('@/lib/agentic-rag');
+const {
+  setScopedAgentFixture,
+  getScopedAgentSignals,
+} = await import('@/lib/rag/agents/scoped-retrieval-agent');
 const { GET, PATCH, POST, invokeGenerationWithDeadline } = await import('./route.ts');
 const {
   setMilvusFixture,
@@ -280,7 +361,11 @@ const {
   getMilvusPendingProviderWork,
   releaseMilvusProviderWork,
 } = await import('@/lib/milvus-client');
-const { resetModelSignals, getModelSignals } = await import('@/lib/model-config');
+const {
+  resetModelSignals,
+  getModelSignals,
+  setCreateLLMError,
+} = await import('@/lib/model-config');
 const {
   FileMiroFishGraphArtifactStore,
   createMiroFishGraphArtifact,
@@ -299,17 +384,11 @@ after(() => {
   }
 });
 
-test('POST executes authenticated agentic policy through Kernel and preserves fallback success', async () => {
-  setAgenticFixture(agenticFixture({
-    workflowSteps: [
-      { step: 'analyze_query', status: 'error', error: 'fast analyzer fallback' },
-      { step: 'retrieve_original', status: 'completed' },
-      { step: 'grade_retrieval', status: 'completed' },
-      { step: 'generate', status: 'completed' },
-    ],
-  }));
+test('POST executes the authenticated agentic policy through createAgent', async () => {
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'scoped answer' });
 
-  const response = await POST(askRequest());
+  const response = await POST(askRequest(undefined, { sessionId: 'agent-thread' }));
   const body = await response.json();
 
   assert.equal(response.status, 200);
@@ -319,10 +398,97 @@ test('POST executes authenticated agentic policy through Kernel and preserves fa
   assert.equal(response.headers.get('x-rag-policy'), 'agentic');
   assert.equal(response.headers.get('x-rag-status'), 'completed');
   assert.equal(response.headers.get('x-rag-trace-id'), body.traceId);
-  const querySignals = getAgenticQuerySignals();
+  assert.equal(body.agent.runtime, 'langchain-create-agent-v1');
+  assert.equal(body.agent.toolCallCount, 1);
+  assert.deepEqual(body.agent.servedEvidenceIds, ['dense-a']);
+  assert.equal(body.workflow.runtime, 'langchain-create-agent-v1');
+  assert.deepEqual(
+    body.workflow.steps.map(step => [step.step, step.status]),
+    [
+      ['retrieve_original', 'completed'],
+      ['agent_model_request_tool', 'completed'],
+      ['read_scoped_rag_context', 'completed'],
+      ['agent_model_answer', 'completed'],
+    ]
+  );
+  assert.equal(body.workflow.retryCount, 0);
+  assert.equal(body.queryAnalysis.analysisMode, 'canonical-create-agent');
+  assert.equal(body.queryAnalysis.originalQuery, 'What is scoped?');
+  assert.equal(typeof body.queryAnalysis.confidence, 'number');
+  assert.equal(typeof body.queryAnalysis.quality.queryQualityScore, 'number');
+  assert.equal(body.queryAnalysis.rewrittenQuery, undefined);
+  assert.equal(body.queryAnalysis.needsRetrieval, undefined);
+  assert.equal(body.retrievalDetails.quality, undefined);
+  assert.equal(body.retrievalDetails.selfReflection, undefined);
+  assert.equal(body.hallucinationCheck, undefined);
+  assert.equal(getMilvusSignals().search, 1);
+  const querySignals = getScopedAgentSignals();
   assert.equal(querySignals.length, 1);
-  assert.equal(querySignals[0] instanceof AbortSignal, true);
-  assert.equal(querySignals[0].aborted, false);
+  assert.equal(querySignals[0].signal instanceof AbortSignal, true);
+  assert.equal(querySignals[0].signal.aborted, false);
+  assert.equal(querySignals[0].threadId, 'agent-thread');
+  assert.deepEqual(querySignals[0].includedEvidenceIds, ['dense-a']);
+});
+
+test('POST reports a skipped createAgent step when scoped retrieval has no context', async () => {
+  setMilvusFixture({ searchResults: [] });
+  setScopedAgentFixture({ answer: 'must not run' });
+
+  const response = await POST(askRequest());
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.answer, '根据当前知识库无法回答该问题。');
+  assert.deepEqual(body.agent, {
+    runtime: 'langchain-create-agent-v1',
+    toolCallCount: 0,
+    servedEvidenceIds: [],
+  });
+  assert.deepEqual(
+    body.workflow.steps.map(step => [step.step, step.status]),
+    [
+      ['retrieve_original', 'completed'],
+      ['agent_model_answer', 'skipped'],
+    ]
+  );
+  assert.equal(body.queryAnalysis.analysisMode, 'canonical-create-agent');
+  assert.equal(getScopedAgentSignals().length, 0);
+});
+
+test('POST keeps the legacy agentic implementation as an explicit server rollback', async () => {
+  process.env.RAG_AGENTIC_RUNTIME = 'legacy';
+  setAgenticFixture(agenticFixture());
+  setScopedAgentFixture({ answer: 'must not run' });
+  try {
+    const response = await POST(askRequest());
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.answer, 'scoped answer');
+    assert.equal(response.headers.get('x-rag-policy'), 'agentic');
+    assert.equal(getAgenticQuerySignals().length, 1);
+    assert.equal(getScopedAgentSignals().length, 0);
+  } finally {
+    delete process.env.RAG_AGENTIC_RUNTIME;
+  }
+});
+
+test('POST rejects an unknown agentic runtime before retrieval or model work', async t => {
+  t.mock.method(console, 'error', () => {});
+  process.env.RAG_AGENTIC_RUNTIME = 'unknown-runtime';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'must not run' });
+  setAgenticFixture(agenticFixture());
+  try {
+    const response = await POST(askRequest());
+
+    assert.equal(response.status, 502);
+    assert.equal(getMilvusSignals().search, 0);
+    assert.equal(getScopedAgentSignals().length, 0);
+    assert.equal(getAgenticQuerySignals().length, 0);
+  } finally {
+    delete process.env.RAG_AGENTIC_RUNTIME;
+  }
 });
 
 test('POST fails closed before vector or model work when the vector backend is disabled', async () => {
@@ -1139,6 +1305,44 @@ test('POST durable execution persists a minimal checkpoint and replays one resul
   assert.equal(getModelSignals().generate, 1);
 });
 
+test('POST durable createAgent replay preserves safe agent and workflow diagnostics', async t => {
+  await configureDurableAskRoute(t, { mode: 'active' });
+  const idempotencyKey = 'durable-agentic-replay-0001';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'durable scoped answer' });
+  resetModelSignals();
+
+  const firstResponse = await POST(durableAgenticAskRequest(idempotencyKey));
+  const firstBody = await firstResponse.json();
+  assert.equal(firstResponse.status, 200);
+  assert.deepEqual(firstBody.agent, {
+    runtime: 'langchain-create-agent-v1',
+    toolCallCount: 1,
+    servedEvidenceIds: ['dense-a'],
+  });
+  assert.equal(firstBody.workflow.runtime, 'langchain-create-agent-v1');
+  assert.deepEqual(
+    firstBody.workflow.steps.map(step => step.step),
+    [
+      'retrieve_original',
+      'agent_model_request_tool',
+      'read_scoped_rag_context',
+      'agent_model_answer',
+    ]
+  );
+  assert.equal(firstBody.workflow.steps[0].metadata, undefined);
+  assert.equal(firstBody.context, undefined);
+  assert.equal(firstBody.retrievalDetails, undefined);
+  const firstAgentSignals = getScopedAgentSignals();
+
+  const replayResponse = await POST(durableAgenticAskRequest(idempotencyKey));
+  const replayBody = await replayResponse.json();
+  assert.equal(replayResponse.status, 200);
+  assert.deepEqual(replayBody, firstBody);
+  assert.equal(replayResponse.headers.get('x-rag-durable-replay'), 'true');
+  assert.deepEqual(getScopedAgentSignals(), firstAgentSignals);
+});
+
 test('POST maps durable result capacity exhaustion to 503', async t => {
   await configureDurableAskRoute(t, {
     mode: 'active',
@@ -1388,23 +1592,28 @@ test('PATCH resumes exact generation A cleanup after generation B starts', async
 test('PATCH cancellation is admin-only and fences a running durable ask', async t => {
   const runtime = await configureDurableAskRoute(t, { mode: 'active' });
   const idempotencyKey = 'durable-cancel-0001';
-  setAgenticFixture(agenticFixture({ waitForAbort: true }));
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ waitForAbort: true });
   const controller = new AbortController();
   const pending = POST(durableAgenticAskRequest(
     idempotencyKey,
     controller.signal
   ));
 
-  const queryStarted = await waitForAgenticQuerySignal();
+  const queryStarted = await waitForScopedAgentSignal();
   if (!queryStarted) {
     controller.abort(new Error('test query-start timeout cleanup'));
     await pending;
   }
   assert.equal(queryStarted, true);
-  assert.equal(getAgenticQuerySignals().length, 1);
+  assert.equal(getScopedAgentSignals().length, 1);
   const runningResponse = await GET(durableAskStatusRequest(idempotencyKey));
   const runningBody = await runningResponse.json();
   assert.equal(runningBody.durable.status, 'running');
+  assert.equal(
+    getScopedAgentSignals()[0].threadId,
+    runningBody.durable.threadId
+  );
   const command = {
     action: 'cancel',
     threadId: runningBody.durable.threadId,
@@ -1679,17 +1888,18 @@ test('generation request cancellation stays distinct from timeout and tracks non
 test('POST propagates NextRequest.signal and returns a stable cancellation envelope', async t => {
   const errorLogs = [];
   t.mock.method(console, 'error', (...values) => errorLogs.push(values));
-  setAgenticFixture(agenticFixture({ waitForAbort: true }));
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ waitForAbort: true });
   const controller = new AbortController();
   const pendingResponse = POST(askRequest(controller.signal));
 
-  const queryStarted = await waitForAgenticQuerySignal();
+  const queryStarted = await waitForScopedAgentSignal();
   if (!queryStarted) {
     controller.abort(new Error('test query-start timeout cleanup'));
     await pendingResponse;
   }
   assert.equal(queryStarted, true);
-  assert.equal(getAgenticQuerySignals().length, 1);
+  assert.equal(getScopedAgentSignals().length, 1);
   controller.abort(new Error('private HTTP disconnect'));
 
   const response = await pendingResponse;
@@ -1700,19 +1910,26 @@ test('POST propagates NextRequest.signal and returns a stable cancellation envel
   assert.equal(body.rag.error.code, 'RAG_REQUEST_ABORTED');
   assert.equal(response.headers.get('x-rag-status'), 'failed');
   assert.equal(serialized.includes('private HTTP disconnect'), false);
-  assert.equal(getAgenticQuerySignals()[0].aborted, true);
+  assert.equal(getScopedAgentSignals()[0].signal.aborted, true);
 });
 
 test('POST maps terminal agentic failure to a content-free partial Kernel envelope', async t => {
   const errorLogs = [];
   t.mock.method(console, 'error', (...values) => errorLogs.push(values));
-  setAgenticFixture(agenticFixture({
+  setMilvusFixture({
+    searchResults: [{
+      ...denseResult(),
+      content: 'private evidence content',
+      metadata: {
+        ...denseResult().metadata,
+        private_metadata: 'must not leak on failure',
+      },
+    }],
+  });
+  setScopedAgentFixture({
     error: 'private provider failure: sk-do-not-leak',
-    workflowSteps: [
-      { step: 'retrieve_original', status: 'completed' },
-      { step: 'generate', status: 'error', error: 'private generation failure' },
-    ],
-  }));
+    code: 'RAG_AGENT_PROVIDER_FAILED',
+  });
 
   const response = await POST(askRequest());
   const body = await response.json();
@@ -1722,13 +1939,24 @@ test('POST maps terminal agentic failure to a content-free partial Kernel envelo
   assert.equal(response.status, 502);
   assert.equal(body.code, 'AGENTIC_QUERY_FAILED');
   assert.equal(body.rag.status, 'failed');
-  assert.equal(body.rag.evidence[0].id.startsWith('legacy-policy-'), true);
+  assert.equal(body.rag.evidence[0].id, 'dense-a');
+  assert.equal(body.rag.execution.stop_reason, 'failed');
+  assert.deepEqual(
+    body.rag.execution.transitions.slice(-2).map(transition => [
+      transition.from,
+      transition.to,
+      transition.reason,
+    ]),
+    [
+      ['evidence_ready', 'generating', 'agentic_generation_started'],
+      ['generating', 'failed', 'agentic_generation_failed'],
+    ]
+  );
   assert.equal(response.headers.get('x-rag-policy'), 'agentic');
   assert.equal(response.headers.get('x-rag-status'), 'failed');
   for (const privateValue of [
     'private evidence content',
     'private provider failure',
-    'private generation failure',
     'sk-do-not-leak',
     'private_metadata',
   ]) {
@@ -1738,15 +1966,64 @@ test('POST maps terminal agentic failure to a content-free partial Kernel envelo
   assert.match(serializedLogs, /RAG_POLICY_EXECUTION_FAILED/);
 });
 
-async function waitForAgenticQuerySignal(timeoutMs = 2000) {
+test('POST preserves the partial agentic envelope when model construction fails', async t => {
+  const errorLogs = [];
+  t.mock.method(console, 'error', (...values) => errorLogs.push(values));
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'must not run' });
+  resetModelSignals();
+  setCreateLLMError('private model factory configuration');
+
+  try {
+    const response = await POST(askRequest());
+    const body = await response.json();
+    const serialized = JSON.stringify({ body, errorLogs });
+
+    assert.equal(response.status, 502);
+    assert.equal(body.code, 'AGENTIC_QUERY_FAILED');
+    assert.equal(body.rag.evidence[0].id, 'dense-a');
+    assert.deepEqual(
+      body.rag.execution.transitions.slice(-2).map(transition => transition.to),
+      ['generating', 'failed']
+    );
+    assert.equal(body.rag.execution.stop_reason, 'failed');
+    assert.equal(getScopedAgentSignals().length, 0);
+    assert.equal(serialized.includes('private model factory configuration'), false);
+  } finally {
+    resetModelSignals();
+  }
+});
+
+test('POST maps terminal createAgent budgets to a max_steps failure envelope', async t => {
+  t.mock.method(console, 'error', () => {});
+
+  for (const code of ['RAG_AGENT_MAX_STEPS', 'RAG_AGENT_TOOL_LIMIT']) {
+    setMilvusFixture({ searchResults: [denseResult()] });
+    setScopedAgentFixture({ error: 'private agent budget detail', code });
+
+    const response = await POST(askRequest());
+    const body = await response.json();
+
+    assert.equal(response.status, 502);
+    assert.equal(body.code, 'AGENTIC_QUERY_FAILED');
+    assert.equal(body.rag.execution.stop_reason, 'max_steps');
+    assert.deepEqual(
+      body.rag.execution.transitions.slice(-2).map(transition => transition.to),
+      ['generating', 'failed']
+    );
+    assert.equal(JSON.stringify(body).includes('private agent budget detail'), false);
+  }
+});
+
+async function waitForScopedAgentSignal(timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs;
   while (
-    getAgenticQuerySignals().length === 0
+    getScopedAgentSignals().length === 0
     && Date.now() < deadline
   ) {
     await new Promise(resolve => setTimeout(resolve, 5));
   }
-  return getAgenticQuerySignals().length > 0;
+  return getScopedAgentSignals().length > 0;
 }
 
 const durableAskRouteEnvironmentKeys = [
@@ -1765,6 +2042,7 @@ const durableAskRouteEnvironmentKeys = [
   'MILVUS_HYBRID_ENABLED',
   'RAG_MIROFISH_GRAPH_MODE',
   'RAG_PDF_VISUAL_MODE',
+  'RAG_AGENTIC_RUNTIME',
   'RAG_SINGLE_TENANT_ROLE',
 ];
 
@@ -2170,7 +2448,7 @@ function configureHybridRouteEnvironment(t, mode) {
   });
 }
 
-function askRequest(signal) {
+function askRequest(signal, overrides = {}) {
   return new NextRequest('http://localhost/api/ask', {
     method: 'POST',
     signal,
@@ -2185,6 +2463,7 @@ function askRequest(signal) {
       useAgenticRAG: true,
       corpusId: 'corpus-a',
       topK: 2,
+      ...overrides,
     }),
   });
 }

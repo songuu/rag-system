@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 
 // 工作流步骤类型
 interface WorkflowStep {
@@ -9,13 +9,13 @@ interface WorkflowStep {
   startTime?: number;
   endTime?: number;
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
 }
 
 // 查询分析结果
-interface QueryAnalysis {
+interface LegacyQueryAnalysis {
   originalQuery: string;
   rewrittenQuery: string;
   intent: string;
@@ -23,6 +23,30 @@ interface QueryAnalysis {
   needsRetrieval: boolean;
   keywords: string[];
   confidence: number;
+}
+
+interface CanonicalQueryAnalysis {
+  analysisMode: 'canonical-create-agent';
+  originalQuery: string;
+  semanticCategory: string;
+  intent: string;
+  confidence: number;
+  nearestConcepts: string[];
+  quality: {
+    queryQualityScore: number;
+    specificity: number;
+    ambiguity: number;
+    retrievability: number;
+  };
+}
+
+type QueryAnalysis = LegacyQueryAnalysis | CanonicalQueryAnalysis;
+
+function isCanonicalQueryAnalysis(
+  analysis: QueryAnalysis
+): analysis is CanonicalQueryAnalysis {
+  return 'analysisMode' in analysis
+    && analysis.analysisMode === 'canonical-create-agent';
 }
 
 // 检索质量
@@ -61,6 +85,7 @@ interface HallucinationCheck {
 
 interface AgenticWorkflowPanelProps {
   workflow?: {
+    runtime?: string;
     steps: WorkflowStep[];
     totalDuration?: number;
     retryCount?: number;
@@ -80,6 +105,9 @@ const STEP_NAMES: Record<string, string> = {
   '查询分析与优化': '🔍 查询分析',
   'analyze_query': '🔍 查询分析',
   'retrieve_original': '📚 原始检索',
+  'agent_model_request_tool': '🤖 模型选择证据工具',
+  'read_scoped_rag_context': '🔒 读取受限证据快照',
+  'agent_model_answer': '✍️ 基于证据生成答案',
   'fan_out_join': '⚡ 并发汇聚',
   'grade_retrieval': '📊 Reranker 评分',
   'retrieve_after_rewrite': '🔄 重试检索',
@@ -258,6 +286,70 @@ export default function AgenticWorkflowPanel({
   // 渲染查询分析
   const renderQueryAnalysis = () => {
     if (!queryAnalysis) return null;
+    if (isCanonicalQueryAnalysis(queryAnalysis)) {
+      const agentInvoked = workflow?.steps.some(step =>
+        step.step === 'agent_model_request_tool' && step.status === 'completed'
+      ) ?? false;
+      const agentSkipped = workflow?.steps.some(step =>
+        step.step === 'agent_model_answer' && step.status === 'skipped'
+      ) ?? false;
+
+      return (
+        <div className="space-y-4">
+          <div className="p-3 bg-gray-50 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">服务端原始查询</div>
+            <div className="text-sm font-medium">{queryAnalysis.originalQuery}</div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="p-3 bg-blue-50 rounded-lg">
+              <div className="text-xs text-blue-500 mb-1">语义类别</div>
+              <div className="font-medium text-blue-700">{queryAnalysis.semanticCategory}</div>
+            </div>
+            <div className="p-3 bg-purple-50 rounded-lg">
+              <div className="text-xs text-purple-500 mb-1">主要意图</div>
+              <div className="font-medium text-purple-700">{queryAnalysis.intent}</div>
+            </div>
+            <div className="p-3 bg-green-50 rounded-lg">
+              <div className="text-xs text-green-500 mb-1">语义置信度</div>
+              <div className="font-medium text-green-700">
+                {(queryAnalysis.confidence * 100).toFixed(0)}%
+              </div>
+            </div>
+          </div>
+
+          {queryAnalysis.nearestConcepts.length > 0 ? (
+            <div>
+              <div className="text-xs text-gray-500 mb-2">最近语义概念</div>
+              <div className="flex flex-wrap gap-2">
+                {queryAnalysis.nearestConcepts.map(concept => (
+                  <span
+                    key={concept}
+                    className="px-2 py-1 bg-gray-100 text-gray-700 text-xs rounded-full"
+                  >
+                    {concept}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            {renderProgressBar(queryAnalysis.quality.queryQualityScore, '查询质量', 'blue')}
+            {renderProgressBar(queryAnalysis.quality.specificity, '具体程度', 'purple')}
+            {renderProgressBar(queryAnalysis.quality.retrievability, '可检索性', 'green')}
+          </div>
+
+          <div className="p-2 rounded-lg text-center text-sm bg-blue-100 text-blue-700">
+            {agentInvoked
+              ? '✅ 已执行 canonical 服务端检索与受限 createAgent'
+              : agentSkipped
+                ? '⏭️ canonical 服务端检索完成；证据门禁跳过 createAgent'
+                : 'ℹ️ canonical 服务端检索 / createAgent 路径'}
+          </div>
+        </div>
+      );
+    }
 
     return (
       <div className="space-y-3">
@@ -582,6 +674,13 @@ export default function AgenticWorkflowPanel({
           <div className="flex items-center gap-2">
             <i className="fas fa-robot text-xl"></i>
             <span className="font-semibold">Agentic RAG 工作流</span>
+            {workflow?.runtime ? (
+              <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
+                {workflow.runtime === 'langchain-create-agent-v1'
+                  ? 'LangChain createAgent'
+                  : workflow.runtime}
+              </span>
+            ) : null}
             {/* 折叠状态时显示简要信息 */}
             {!isExpanded && workflow?.steps && (
               <span className="text-xs opacity-75 ml-2">
@@ -664,11 +763,17 @@ export default function AgenticWorkflowPanel({
           '查询分析',
           'fa-search-plus',
           renderQueryAnalysis(),
-          <span className={`px-2 py-0.5 text-xs rounded-full ${
-            queryAnalysis.needsRetrieval ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
-          }`}>
-            {queryAnalysis.intent}
-          </span>
+          isCanonicalQueryAnalysis(queryAnalysis) ? (
+            <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700">
+              {queryAnalysis.intent}
+            </span>
+          ) : (
+            <span className={`px-2 py-0.5 text-xs rounded-full ${
+              queryAnalysis.needsRetrieval ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'
+            }`}>
+              {queryAnalysis.intent}
+            </span>
+          )
         )}
 
         {/* 检索质量 */}

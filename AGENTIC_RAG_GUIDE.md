@@ -1,25 +1,53 @@
 # Agentic RAG 系统指南
 
+> 当前运行时说明（2026-08-28）：canonical `POST /api/ask` 在 `useAgenticRAG=true` 时，先执行服务端 scope 下的检索与 evidence composition，再用顶层 `langchain` 的 `createAgent` 完成一次受限的模型 → 工具 → 模型循环。`src/lib/agentic-rag.ts` 的 Runnable + 显式状态循环只保留为 `RAG_AGENTIC_RUNTIME=legacy` 回滚路径。下文出现的 StateGraph/Annotation 属于历史设计背景；完整边界见 [LANGCHAIN_LANGGRAPH_GUIDE.md](LANGCHAIN_LANGGRAPH_GUIDE.md)。
+
 ## 概述
 
-Agentic RAG 是基于 LangGraph 构建的代理化检索增强生成系统。它通过引入多个智能节点，实现了自动化的查询优化、检索质量评估、自省评分和幻觉检查。
+Agentic RAG 的 canonical 路径当前使用真实 `createAgent`。检索仍由 `RagKernel`、`RagLaneExecutor` 和服务端 `retrievalScope` 控制；agent 只能调用一次无参数的只读工具，读取已经验证、排序并截断的 evidence snapshot，不能自行提交 tenant、corpus、query 或过滤条件。旧实现仍提供查询分析、检索评分、有限重写和幻觉检查，但不再是默认路径。
 
 ## LangChain / LangGraph v1+ 对齐
 
 截至 2026-05-15，LangChain v1 已将高层 agent 入口收敛到 `createAgent`，并通过 middleware、structured output、model profiles、retry / moderation / summarization middleware 强化生产 agent 开发；LangGraph v1/v1.1 则继续把稳定 Graph API、durable execution、persistence、streaming、human-in-the-loop、typed interrupts 和 `StateSchema` 作为低层编排能力。
 
-本项目的 Agentic RAG 属于“可解释的定制 RAG 工作流”，而不是普通 ReAct 工具循环，因此保留 `StateGraph` 是正确边界:
+本项目没有让通用 agent 接管检索和安全控制面。当前选择是在 canonical RAG 主链末端增加一个最小、可审计的 `createAgent` 叶子循环：
 
 | 最新能力 | 在本模块中的落点 |
 |----------|------------------|
-| `createAgent` | 只适合未来抽出的叶子 agent，例如 query analysis / hallucination checker，不直接替换主工作流 |
-| Structured Output | 后续替换 query analysis、retrieval grade、hallucination check 中的 prompt JSON parsing |
-| Middleware | 将模型重试、内容安全、摘要压缩、人工审批设计为策略层能力，而不是页面层临时逻辑 |
-| StateSchema | 新增 graph 或大改状态定义时优先使用，现有 `Annotation.Root()` 可兼容保留 |
-| Durable execution | 长运行评估、跨请求恢复或人工审批才引入 checkpointer；普通一次查询不强制持久化 |
-| Content blocks | 未来答案、引用、reasoning trace 应进入统一 `RagAnswerEnvelope`，避免提前压成纯文本 |
+| `createAgent` | 已安装 `langchain@1.5.10`；`useAgenticRAG=true` 默认在 `/api/ask` 末端真实执行模型 → `read_scoped_rag_context` → 模型 |
+| Structured Output | 已用于 query analysis、retrieval grade、hallucination check，并保留 JSON fallback |
+| Middleware | `toolCallLimitMiddleware` 限制工具一次，`modelCallLimitMiddleware` 限制模型两次；超限 fail closed |
+| StateSchema | 项目没有手写 StateGraph/StateSchema；`createAgent` 内部使用 LangGraph runtime，业务状态仍由 Kernel/envelope 管理 |
+| Durable execution | 当前自研 durable ask 默认关闭，且不是 LangGraph checkpointer |
+| Content blocks | PDF 视觉消息已使用 content blocks；答案 envelope 的结构化内容仍是后续演进项 |
 
-## 核心特性
+### Canonical 入口与回滚
+
+- 请求入口：`POST /api/ask`，Milvus 后端并设置 `useAgenticRAG=true`。
+- 默认运行时：未设置 `RAG_AGENTIC_RUNTIME` 或设置为 `create-agent`。
+- 显式回滚：`RAG_AGENTIC_RUNTIME=legacy`；其他值会在执行前失败，避免静默选择未知实现。
+- agent 只有在 canonical 检索得到可回答 evidence 时才调用模型；无 evidence 或 active abstention 直接返回受控拒答。
+- 当前生成模型必须支持原生 tool calling。代码与 hermetic 测试已验证 agent 循环合同；具体部署模型仍需单独 canary。
+- scope/integrity 校验后会在首个模型 await 前复制冻结工具快照，调用方后续修改原 context pack 不会改变 agent 可见证据。
+- 包含 evidence 的 LangChain child spans 只绑定 non-networked discard client，不上传 LangSmith；canonical agent 的外部观测只保留 content-free 手工 root。输入/输出隐藏不会清洗 child error/stack，因此不能用“双隐藏”开放 child 外传。
+
+## Canonical `createAgent` 工作流
+
+```text
+POST /api/ask + useAgenticRAG=true
+  → server security context / retrieval scope
+  → required dense lane
+  → canonical evidence validation + context composition
+  → createAgent
+      1. model requests read_scoped_rag_context
+      2. zero-argument tool returns the validated, locally frozen snapshot
+      3. model answers only from that snapshot
+  → Kernel envelope + safe agent diagnostics
+```
+
+## Legacy 回滚路径能力
+
+以下查询分析、评分、重写和幻觉检查属于 `RAG_AGENTIC_RUNTIME=legacy` 的旧 `AgenticRAGSystem`，不代表默认 createAgent 路径会执行这些额外节点。
 
 ### 1. 查询分析与优化 (Query Analysis & Optimization)
 
@@ -72,7 +100,7 @@ Agentic RAG 是基于 LangGraph 构建的代理化检索增强生成系统。它
 - 标记有据可查的声明
 - 计算整体事实性评分
 
-## 工作流程
+## Legacy 工作流程
 
 ```
 ┌─────────────────┐
@@ -127,7 +155,67 @@ Agentic RAG 是基于 LangGraph 构建的代理化检索增强生成系统。它
 
 ## API 使用
 
-### 基本查询
+### Canonical 查询
+
+```typescript
+POST /api/ask
+
+{
+  "question": "什么是人工智能？",
+  "storageBackend": "milvus",
+  "useAgenticRAG": true,
+  "topK": 5,
+  "similarityThreshold": 0.3,
+  "llmModel": "llama3.1",
+  "embeddingModel": "nomic-embed-text"
+}
+```
+
+canonical 响应沿用 `/api/ask` envelope，并增加不含 tool payload 的安全诊断：
+
+```typescript
+{
+  "answer": "人工智能是...",
+  "agenticMode": true,
+  "agent": {
+    "runtime": "langchain-create-agent-v1",
+    "toolCallCount": 1,
+    "servedEvidenceIds": ["evidence-id"]
+  },
+  "workflow": {
+    "runtime": "langchain-create-agent-v1",
+    "steps": [
+      { "step": "retrieve_original", "status": "completed" },
+      { "step": "agent_model_request_tool", "status": "completed" },
+      { "step": "read_scoped_rag_context", "status": "completed" },
+      { "step": "agent_model_answer", "status": "completed" }
+    ],
+    "retryCount": 0
+  },
+  "queryAnalysis": {
+    "analysisMode": "canonical-create-agent",
+    "originalQuery": "什么是人工智能？",
+    "semanticCategory": "conceptual",
+    "intent": "factual",
+    "confidence": 0.9,
+    "nearestConcepts": ["人工智能"],
+    "quality": {
+      "queryQualityScore": 0.8,
+      "specificity": 0.7,
+      "ambiguity": 0.2,
+      "retrievability": 0.9
+    }
+  },
+  "evidence": [...],
+  "rag": {...}
+}
+```
+
+该 `workflow` 是新 runtime 的真实兼容投影，只记录 canonical 检索和实际 model → tool → model 边界；不会伪造 legacy 的 retrieval grader、自省评分或幻觉检查。`queryAnalysis.analysisMode` 是 UI 的判别字段，canonical 消费者不会回读 `rewrittenQuery`、`complexity` 或 `needsRetrieval` 等 legacy 字段。首页面板会显示 `LangChain createAgent` runtime；无 evidence 或 active abstention 时生成步骤为 `skipped`，界面明确显示 agent 未调用。durable 首次结果与 replay 使用严格 allowlist 保留同一组 agent/workflow 标量诊断，不持久化 tool context 或原始 metadata。
+
+### Legacy 演示端点
+
+`POST /api/agentic-rag` 保留旧 workflow 的演示/兼容响应；production 或 authenticated access mode 下 legacy route policy 会 fail closed，主产品调用不要依赖它。
 
 ```typescript
 POST /api/agentic-rag
@@ -142,7 +230,7 @@ POST /api/agentic-rag
 }
 ```
 
-### 响应结构
+### Legacy 响应结构
 
 ```typescript
 {
@@ -207,8 +295,7 @@ POST /api/agentic-rag
 {
   "question": "...",
   "storageBackend": "milvus",
-  "useAgenticRAG": true,
-  "maxRetries": 2
+  "useAgenticRAG": true
 }
 ```
 

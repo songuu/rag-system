@@ -67,7 +67,7 @@ const ARTICLE_CONFIG = {
   'LANGCHAIN_LANGGRAPH_GUIDE.md': {
     category: '系统概览',
     icon: '🔗',
-    description: 'LangChain 与 LangGraph 最新特性在本项目 RAG 架构中的融入指南',
+    description: '当前 rag-system 的查询与写入架构、Kernel/Policy/Lane 实践，以及 LangChain、LangGraph、LangSmith 的真实运行边界',
   },
   'LANGSMITH_LATEST_GUIDE.md': {
     category: '系统概览',

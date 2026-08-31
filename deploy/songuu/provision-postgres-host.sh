@@ -39,6 +39,8 @@ readonly SERVER_KEY_FILE="$TLS_DIR/server.key"
 readonly SERVER_CERT_FILE="$TLS_DIR/server.crt"
 readonly PUBLIC_HOST_FILE="$TLS_DIR/public-host"
 readonly PUBLIC_CLIENT_ENV="$TLS_DIR/rag-app-client.env"
+readonly DIRECT_READONLY_CONFIG_FILE="$STATE_DIR/direct-readonly.env"
+readonly DIRECT_READONLY_CLIENT_ENV="$TLS_DIR/rag-direct-readonly-client.env"
 readonly SOCKET_DIR="$STATE_DIR/socket"
 readonly CUTOVER_PENDING_FILE="$STATE_DIR/public-cutover.pending"
 readonly CUTOVER_SNAPSHOT_DIR="$STATE_DIR/public-cutover-snapshot"
@@ -67,6 +69,7 @@ readonly DATABASE_NAME='rag_system'
 readonly ADMIN_ROLE='postgres'
 readonly OWNER_ROLE='rag_owner'
 readonly APP_ROLE='rag_app'
+readonly DIRECT_READONLY_ROLE='rag_direct_readonly'
 readonly DEFAULT_TENANT='songuu-production'
 readonly DEFAULT_CORPUS='default'
 readonly READY_ATTEMPTS="${RAG_POSTGRES_READY_ATTEMPTS:-60}"
@@ -101,6 +104,7 @@ credentials_stage=''
 tls_stage=''
 hba_stage=''
 client_env_stage=''
+direct_client_env_stage=''
 cutover_stage=''
 snapshot_stage=''
 
@@ -111,6 +115,7 @@ cleanup() {
   [[ -z "$credentials_stage" || ! -e "$credentials_stage" ]] || rm -f -- "$credentials_stage"
   [[ -z "$hba_stage" || ! -e "$hba_stage" ]] || rm -f -- "$hba_stage"
   [[ -z "$client_env_stage" || ! -e "$client_env_stage" ]] || rm -f -- "$client_env_stage"
+  [[ -z "$direct_client_env_stage" || ! -e "$direct_client_env_stage" ]] || rm -f -- "$direct_client_env_stage"
   [[ -z "$cutover_stage" || ! -e "$cutover_stage" ]] || rm -f -- "$cutover_stage"
   [[ -z "$snapshot_stage" || ! -e "$snapshot_stage" ]] || rm -rf -- "$snapshot_stage"
   [[ -z "$tls_stage" || ! -e "$tls_stage" ]] || rm -rf -- "$tls_stage"
@@ -313,6 +318,36 @@ else
 fi
 chmod 700 -- "$TLS_DIR"
 
+direct_readonly_enabled=false
+direct_readonly_source=''
+direct_readonly_address=''
+direct_readonly_password=''
+if [[ -e "$DIRECT_READONLY_CONFIG_FILE" || -L "$DIRECT_READONLY_CONFIG_FILE" ]]; then
+  [[ -f "$DIRECT_READONLY_CONFIG_FILE" && ! -L "$DIRECT_READONLY_CONFIG_FILE" ]] \
+    || die 'PostgreSQL direct readonly configuration must be a regular non-symlink file'
+  assert_secure_file "$DIRECT_READONLY_CONFIG_FILE"
+  [[ "$(wc -l < "$DIRECT_READONLY_CONFIG_FILE" | tr -d '[:space:]')" = 3 \
+    && "$(grep -Ec "^ROLE=$DIRECT_READONLY_ROLE$" "$DIRECT_READONLY_CONFIG_FILE")" = 1 \
+    && "$(grep -Ec '^SOURCE=[^=[:space:]]+$' "$DIRECT_READONLY_CONFIG_FILE")" = 1 \
+    && "$(grep -Ec '^PASSWORD=[0-9a-f]{64}$' "$DIRECT_READONLY_CONFIG_FILE")" = 1 ]] \
+    || die 'PostgreSQL direct readonly configuration must contain exactly ROLE, SOURCE, and PASSWORD'
+  direct_readonly_source="$(awk -F= '$1 == "SOURCE" { print $2 }' "$DIRECT_READONLY_CONFIG_FILE")"
+  direct_readonly_password="$(awk -F= '$1 == "PASSWORD" { print $2 }' "$DIRECT_READONLY_CONFIG_FILE")"
+  [[ "$direct_readonly_source" =~ ^.+/32$ ]] \
+    || die 'PostgreSQL direct readonly SOURCE must be one exact IPv4 /32'
+  direct_readonly_address="${direct_readonly_source%/32}"
+  is_ipv4_address "$direct_readonly_address" \
+    || die 'PostgreSQL direct readonly SOURCE must be one exact IPv4 /32'
+  [[ "$direct_readonly_password" =~ ^[0-9a-f]{64}$ ]] \
+    || die 'PostgreSQL direct readonly PASSWORD must be 64 lowercase hexadecimal characters'
+  if [[ -e "$DIRECT_READONLY_CLIENT_ENV" || -L "$DIRECT_READONLY_CLIENT_ENV" ]]; then
+    [[ -f "$DIRECT_READONLY_CLIENT_ENV" && ! -L "$DIRECT_READONLY_CLIENT_ENV" ]] \
+      || die 'PostgreSQL direct readonly client environment must be a regular non-symlink file'
+    assert_secure_file "$DIRECT_READONLY_CLIENT_ENV"
+  fi
+  direct_readonly_enabled=true
+fi
+
 if [[ -e "$SOCKET_DIR" || -L "$SOCKET_DIR" ]]; then
   [[ -d "$SOCKET_DIR" && ! -L "$SOCKET_DIR" ]] \
     || die 'PostgreSQL Unix socket path must be a non-symlink directory'
@@ -429,7 +464,8 @@ inspect_container_contract() {
   if [[ "$managed_label" = "$LEGACY_CONTAINER_LABEL_VALUE" \
     && "$binding" = "$LOCAL_HOST_ADDRESS|$HOST_PORT" \
     && "$command" = '["postgres"]' \
-    && "$healthcheck" = '["CMD-SHELL","pg_isready -U postgres -d rag_system"]' \
+    && ( "$healthcheck" = '["CMD-SHELL","pg_isready -U postgres -d rag_system"]' \
+      || "$healthcheck" = '["CMD-SHELL","gosu postgres pg_isready -U postgres -d rag_system"]' ) \
     && "$mounts_count" = 1 \
     && -z "$socket_mount" ]]; then
     printf '%s\n' legacy
@@ -438,7 +474,8 @@ inspect_container_contract() {
   if [[ "$managed_label" = "$CONTAINER_LABEL_VALUE" \
     && "$binding" = "$PUBLIC_HOST_ADDRESS|$HOST_PORT" \
     && "$command" = "$EXPECTED_PUBLIC_COMMAND" \
-    && "$healthcheck" = '["CMD-SHELL","pg_isready --host=/run/rag-system-postgresql -U postgres -d rag_system"]' \
+    && ( "$healthcheck" = '["CMD-SHELL","pg_isready --host=/run/rag-system-postgresql -U postgres -d rag_system"]' \
+      || "$healthcheck" = '["CMD-SHELL","gosu postgres pg_isready --host=/run/rag-system-postgresql -U postgres -d rag_system"]' ) \
     && "$mounts_count" = 2 \
     && "$socket_mount" = "bind|$SOCKET_DIR" \
     && "$memory" = "$PUBLIC_MEMORY_BYTES" \
@@ -577,16 +614,19 @@ snapshot_cutover_file() {
 
 validate_cutover_snapshot() {
   local snapshot="$1"
-  local label present absent snapshot_token
+  local label present absent snapshot_token snapshot_version
+  local -a snapshot_labels
   [[ -d "$snapshot" && ! -L "$snapshot" ]] \
     || die 'PostgreSQL public cutover snapshot path must be a non-symlink directory'
   assert_secure_directory "$snapshot"
   [[ -f "$snapshot/manifest" && ! -L "$snapshot/manifest" ]] \
     || die 'PostgreSQL public cutover snapshot manifest is invalid'
   assert_secure_file "$snapshot/manifest"
+  snapshot_version="$(awk -F= '$1 == "version" { print substr($0, index($0, "=") + 1) }' "$snapshot/manifest")"
   snapshot_token="$(awk -F= '$1 == "token" { print substr($0, index($0, "=") + 1) }' "$snapshot/manifest")"
   [[ "$(wc -l < "$snapshot/manifest" | tr -d '[:space:]')" = 2 \
-    && "$(grep -c '^version=2$' "$snapshot/manifest")" = 1 \
+    && ( "$snapshot_version" = 2 || "$snapshot_version" = 3 ) \
+    && "$(grep -c "^version=$snapshot_version$" "$snapshot/manifest")" = 1 \
     && "$(grep -c '^token=' "$snapshot/manifest")" = 1 \
     && "$snapshot_token" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] \
     || die 'PostgreSQL public cutover snapshot manifest is invalid'
@@ -594,7 +634,11 @@ validate_cutover_snapshot() {
     [[ "$snapshot_token" = "$CUTOVER_TOKEN" ]] \
       || die 'RAG_POSTGRES_CUTOVER_TOKEN does not own the PostgreSQL public cutover snapshot'
   fi
-  for label in runtime.env migration.env rag-app-client.env server.key server.crt public-host; do
+  snapshot_labels=(runtime.env migration.env rag-app-client.env server.key server.crt public-host)
+  if [[ "$snapshot_version" = 3 ]]; then
+    snapshot_labels+=(direct-readonly.env rag-direct-readonly-client.env)
+  fi
+  for label in "${snapshot_labels[@]}"; do
     present=false
     absent=false
     [[ ! -e "$snapshot/$label" && ! -L "$snapshot/$label" ]] || present=true
@@ -641,7 +685,7 @@ fi
 if [[ "$CUTOVER_ACTION" = prepare && ! -e "$CUTOVER_SNAPSHOT_DIR" ]]; then
   snapshot_stage="$(mktemp -d "$STATE_DIR/.public-cutover-snapshot.XXXXXX")"
   chmod 700 -- "$snapshot_stage"
-  printf 'version=2\ntoken=%s\n' "$CUTOVER_TOKEN" > "$snapshot_stage/manifest"
+  printf 'version=3\ntoken=%s\n' "$CUTOVER_TOKEN" > "$snapshot_stage/manifest"
   chmod 600 -- "$snapshot_stage/manifest"
   snapshot_cutover_file "$RUNTIME_ENV" runtime.env "$snapshot_stage"
   snapshot_cutover_file "$MIGRATION_ENV" migration.env "$snapshot_stage"
@@ -649,6 +693,8 @@ if [[ "$CUTOVER_ACTION" = prepare && ! -e "$CUTOVER_SNAPSHOT_DIR" ]]; then
   snapshot_cutover_file "$SERVER_KEY_FILE" server.key "$snapshot_stage"
   snapshot_cutover_file "$SERVER_CERT_FILE" server.crt "$snapshot_stage"
   snapshot_cutover_file "$PUBLIC_HOST_FILE" public-host "$snapshot_stage"
+  snapshot_cutover_file "$DIRECT_READONLY_CONFIG_FILE" direct-readonly.env "$snapshot_stage"
+  snapshot_cutover_file "$DIRECT_READONLY_CLIENT_ENV" rag-direct-readonly-client.env "$snapshot_stage"
   validate_cutover_snapshot "$snapshot_stage"
   mv -- "$snapshot_stage" "$CUTOVER_SNAPSHOT_DIR"
   snapshot_stage=''
@@ -755,15 +801,20 @@ if [[ "$CUTOVER_ACTION" = rollback ]]; then
     done
     [[ "$rollback_ready" = true ]] \
       || die 'PostgreSQL loopback container was restored but did not become ready'
-    rm -f -- "$PUBLIC_CLIENT_ENV"
+    rm -f -- "$PUBLIC_CLIENT_ENV" "$DIRECT_READONLY_CLIENT_ENV"
   fi
   if [[ -d "$CUTOVER_SNAPSHOT_DIR" ]]; then
+    rollback_snapshot_version="$(awk -F= '$1 == "version" { print substr($0, index($0, "=") + 1) }' "$CUTOVER_SNAPSHOT_DIR/manifest")"
     restore_cutover_file "$RUNTIME_ENV" runtime.env
     restore_cutover_file "$MIGRATION_ENV" migration.env
     restore_cutover_file "$PUBLIC_CLIENT_ENV" rag-app-client.env
     restore_cutover_file "$SERVER_KEY_FILE" server.key
     restore_cutover_file "$SERVER_CERT_FILE" server.crt
     restore_cutover_file "$PUBLIC_HOST_FILE" public-host
+    if [[ "$rollback_snapshot_version" = 3 ]]; then
+      restore_cutover_file "$DIRECT_READONLY_CONFIG_FILE" direct-readonly.env
+      restore_cutover_file "$DIRECT_READONLY_CLIENT_ENV" rag-direct-readonly-client.env
+    fi
     if [[ "$rollback_was_public" = true && -f "$SERVER_KEY_FILE" && -f "$SERVER_CERT_FILE" ]]; then
       docker cp "$SERVER_KEY_FILE" "$CONTAINER_NAME:$CONTAINER_TLS_DIR/server.key.next" >/dev/null 2>&1 \
         || die 'PostgreSQL rollback server key could not be staged'
@@ -1000,7 +1051,7 @@ if [[ "$container_exists" = false ]]; then
     --publish "$LOCAL_HOST_ADDRESS:$HOST_PORT:$CONTAINER_PORT" \
     --volume "$VOLUME_NAME:/var/lib/postgresql/data" \
     --env-file "$container_env_stage" \
-    --health-cmd "pg_isready -U $ADMIN_ROLE -d $DATABASE_NAME" \
+    --health-cmd "gosu postgres pg_isready -U $ADMIN_ROLE -d $DATABASE_NAME" \
     --health-interval 5s \
     --health-timeout 3s \
     --health-retries 20 \
@@ -1054,6 +1105,13 @@ if ! {
   printf '%s\n' '  ELSE'
   printf "    CREATE ROLE %s WITH LOGIN PASSWORD '%s' CONNECTION LIMIT 40 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT NOBYPASSRLS;\n" "$APP_ROLE" "$app_password"
   printf '%s\n' '  END IF;'
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    printf "  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN\n" "$DIRECT_READONLY_ROLE"
+    printf "    ALTER ROLE %s WITH LOGIN PASSWORD '%s' CONNECTION LIMIT 2 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT NOBYPASSRLS;\n" "$DIRECT_READONLY_ROLE" "$direct_readonly_password"
+    printf '%s\n' '  ELSE'
+    printf "    CREATE ROLE %s WITH LOGIN PASSWORD '%s' CONNECTION LIMIT 2 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT NOBYPASSRLS;\n" "$DIRECT_READONLY_ROLE" "$direct_readonly_password"
+    printf '%s\n' '  END IF;'
+  fi
   printf '%s\n' 'END'
   printf '%s\n' '$rag$;'
   printf 'GRANT %s TO %s WITH ADMIN TRUE, SET FALSE, INHERIT FALSE;\n' "$APP_ROLE" "$OWNER_ROLE"
@@ -1083,6 +1141,25 @@ if ! {
   printf '%s\n' '  ) THEN'
   printf "%s\n" "    RAISE EXCEPTION 'PostgreSQL owner/application membership contract was not applied';"
   printf '%s\n' '  END IF;'
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    printf '%s\n' '  IF NOT EXISTS ('
+    printf '%s\n' '    SELECT 1 FROM pg_roles'
+    printf "    WHERE rolname = '%s' AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb\n" "$DIRECT_READONLY_ROLE"
+    printf '%s\n' '      AND NOT rolcreaterole AND NOT rolreplication AND NOT rolinherit AND NOT rolbypassrls'
+    printf '%s\n' '      AND rolconnlimit = 2'
+    printf '%s\n' '  ) THEN'
+    printf "%s\n" "    RAISE EXCEPTION 'PostgreSQL direct readonly role contract was not applied';"
+    printf '%s\n' '  END IF;'
+    printf '%s\n' '  IF EXISTS ('
+    printf '%s\n' '    SELECT 1'
+    printf '%s\n' '    FROM pg_auth_members membership'
+    printf '%s\n' '    JOIN pg_roles granted_role ON granted_role.oid = membership.roleid'
+    printf '%s\n' '    JOIN pg_roles member_role ON member_role.oid = membership.member'
+    printf "    WHERE granted_role.rolname = '%s' OR member_role.rolname = '%s'\n" "$DIRECT_READONLY_ROLE" "$DIRECT_READONLY_ROLE"
+    printf '%s\n' '  ) THEN'
+    printf "%s\n" "    RAISE EXCEPTION 'PostgreSQL direct readonly role has an unexpected membership';"
+    printf '%s\n' '  END IF;'
+  fi
   printf '%s\n' 'END'
   printf '%s\n' '$verify$;'
   printf 'ALTER DATABASE %s OWNER TO %s;\n' "$DATABASE_NAME" "$OWNER_ROLE"
@@ -1090,6 +1167,9 @@ if ! {
   printf '%s\n' 'REVOKE CREATE ON SCHEMA public FROM PUBLIC;'
   printf 'GRANT CONNECT ON DATABASE %s TO %s;\n' "$DATABASE_NAME" "$OWNER_ROLE"
   printf 'GRANT CONNECT ON DATABASE %s TO %s;\n' "$DATABASE_NAME" "$APP_ROLE"
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    printf 'GRANT CONNECT ON DATABASE %s TO %s;\n' "$DATABASE_NAME" "$DIRECT_READONLY_ROLE"
+  fi
   printf "ALTER ROLE %s WITH LOGIN PASSWORD '%s';\n" "$ADMIN_ROLE" "$admin_password"
   printf '%s\n' 'COMMIT;'
 } | docker exec --user postgres -i "$CONTAINER_NAME" \
@@ -1121,6 +1201,13 @@ EOF
   cat >> "$target" <<EOF
 hostnossl all         all       0.0.0.0/0             reject
 hostssl   $DATABASE_NAME $APP_ROLE 0.0.0.0/0             scram-sha-256
+EOF
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    cat >> "$target" <<EOF
+hostssl   $DATABASE_NAME $DIRECT_READONLY_ROLE $direct_readonly_source scram-sha-256
+EOF
+  fi
+  cat >> "$target" <<EOF
 hostssl   all         all       0.0.0.0/0             reject
 hostnossl all         all       ::0/0                 reject
 hostssl   $DATABASE_NAME $APP_ROLE ::0/0                 scram-sha-256
@@ -1247,7 +1334,7 @@ if [[ "$CUTOVER_ACTION" = prepare && "$container_kind" = legacy ]]; then
     --volume "$VOLUME_NAME:/var/lib/postgresql/data" \
     --volume "$SOCKET_DIR:$CONTAINER_SOCKET_DIR" \
     --env-file "$container_env_stage" \
-    --health-cmd "pg_isready --host=$CONTAINER_SOCKET_DIR -U $ADMIN_ROLE -d $DATABASE_NAME" \
+    --health-cmd "gosu postgres pg_isready --host=$CONTAINER_SOCKET_DIR -U $ADMIN_ROLE -d $DATABASE_NAME" \
     --health-interval 5s \
     --health-timeout 3s \
     --health-retries 20 \
@@ -1292,11 +1379,17 @@ if [[ "$expected_hba_mode" = temporary ]]; then
   is_ipv4_address "$verification_gateway" \
     || die 'Public PostgreSQL candidate has no valid IPv4 Docker gateway'
 fi
+verification_direct_readonly_address='0.0.0.0'
+if [[ "$direct_readonly_enabled" = true ]]; then
+  verification_direct_readonly_address="$direct_readonly_address"
+fi
 
 verify_public_candidate() {
   {
     printf "SET \"rag.expected_gateway\" = '%s';\n" "$verification_gateway"
     printf "SET \"rag.expected_hba_mode\" = '%s';\n" "$expected_hba_mode"
+    printf "SET \"rag.direct_readonly_enabled\" = '%s';\n" "$direct_readonly_enabled"
+    printf "SET \"rag.direct_readonly_address\" = '%s';\n" "$verification_direct_readonly_address"
     cat <<'SQL'
 DO $verify$
 BEGIN
@@ -1312,7 +1405,8 @@ BEGIN
     RAISE EXCEPTION 'PostgreSQL pg_hba.conf contains invalid rules';
   END IF;
   IF (SELECT count(*) FROM pg_hba_file_rules) <>
-      CASE current_setting('rag.expected_hba_mode') WHEN 'temporary' THEN 10 ELSE 9 END THEN
+      (CASE current_setting('rag.expected_hba_mode') WHEN 'temporary' THEN 10 ELSE 9 END
+       + CASE current_setting('rag.direct_readonly_enabled') WHEN 'true' THEN 1 ELSE 0 END) THEN
     RAISE EXCEPTION 'PostgreSQL pg_hba.conf contains an unexpected rule count';
   END IF;
   IF NOT EXISTS (
@@ -1362,6 +1456,15 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'PostgreSQL public rag_app TLS rules are incomplete';
   END IF;
+  IF current_setting('rag.direct_readonly_enabled') = 'true' AND NOT EXISTS (
+    SELECT 1 FROM pg_hba_file_rules
+    WHERE type = 'hostssl' AND database = ARRAY['rag_system']
+      AND user_name = ARRAY['rag_direct_readonly']
+      AND address = current_setting('rag.direct_readonly_address')::inet
+      AND netmask = '255.255.255.255' AND auth_method = 'scram-sha-256'
+  ) THEN
+    RAISE EXCEPTION 'PostgreSQL direct readonly TLS rule does not match the exact configured IPv4 source';
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_hba_file_rules
     WHERE type = 'hostnossl' AND database = ARRAY['all'] AND user_name = ARRAY['all']
@@ -1392,7 +1495,13 @@ BEGIN
     OR (SELECT min(rule_number) FROM pg_hba_file_rules
       WHERE type = 'hostssl' AND user_name = ARRAY['rag_app'] AND address = '::') >=
      (SELECT min(rule_number) FROM pg_hba_file_rules
-      WHERE type = 'hostssl' AND user_name = ARRAY['all'] AND address = '::') THEN
+      WHERE type = 'hostssl' AND user_name = ARRAY['all'] AND address = '::')
+    OR (current_setting('rag.direct_readonly_enabled') = 'true'
+      AND (SELECT min(rule_number) FROM pg_hba_file_rules
+           WHERE type = 'hostssl' AND user_name = ARRAY['rag_direct_readonly']
+             AND address = current_setting('rag.direct_readonly_address')::inet) >=
+          (SELECT min(rule_number) FROM pg_hba_file_rules
+           WHERE type = 'hostssl' AND user_name = ARRAY['all'] AND address = '0.0.0.0')) THEN
     RAISE EXCEPTION 'PostgreSQL HBA first-match rule order is unsafe';
   END IF;
   IF current_setting('rag.expected_hba_mode') = 'temporary' AND
@@ -1412,6 +1521,11 @@ BEGIN
           AND rule.user_name = ARRAY['rag_owner'] AND rule.auth_method = 'scram-sha-256')
         OR (rule.type = 'hostssl' AND rule.database = ARRAY['rag_system']
           AND rule.user_name = ARRAY['rag_app'] AND rule.auth_method = 'scram-sha-256')
+        OR (current_setting('rag.direct_readonly_enabled') = 'true'
+          AND rule.type = 'hostssl' AND rule.database = ARRAY['rag_system']
+          AND rule.user_name = ARRAY['rag_direct_readonly']
+          AND rule.address = current_setting('rag.direct_readonly_address')::inet
+          AND rule.netmask = '255.255.255.255' AND rule.auth_method = 'scram-sha-256')
         OR (current_setting('rag.expected_hba_mode') = 'temporary'
           AND rule.type = 'hostnossl' AND rule.database = ARRAY['rag_system']
           AND rule.user_name = ARRAY['rag_app'] AND rule.address = current_setting('rag.expected_gateway')::inet
@@ -1425,6 +1539,11 @@ BEGIN
         AND rolpassword LIKE 'SCRAM-SHA-256$%') <> 3 THEN
     RAISE EXCEPTION 'PostgreSQL managed role password is not SCRAM';
   END IF;
+  IF current_setting('rag.direct_readonly_enabled') = 'true' AND
+     (SELECT count(*) FROM pg_authid
+      WHERE rolname = 'rag_direct_readonly' AND rolpassword LIKE 'SCRAM-SHA-256$%') <> 1 THEN
+    RAISE EXCEPTION 'PostgreSQL direct readonly role password is not SCRAM';
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_roles
     WHERE rolname = 'rag_owner' AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
@@ -1437,6 +1556,14 @@ BEGIN
       AND rolconnlimit = 40
   ) THEN
     RAISE EXCEPTION 'PostgreSQL managed role attributes have drifted';
+  END IF;
+  IF current_setting('rag.direct_readonly_enabled') = 'true' AND NOT EXISTS (
+    SELECT 1 FROM pg_roles
+    WHERE rolname = 'rag_direct_readonly' AND rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
+      AND NOT rolcreaterole AND NOT rolreplication AND NOT rolinherit AND NOT rolbypassrls
+      AND rolconnlimit = 2
+  ) THEN
+    RAISE EXCEPTION 'PostgreSQL direct readonly role attributes have drifted';
   END IF;
   IF NOT EXISTS (
     SELECT 1
@@ -1455,6 +1582,15 @@ BEGIN
     WHERE member_role.rolname = 'rag_app'
   ) THEN
     RAISE EXCEPTION 'PostgreSQL public application role inherits an unexpected role';
+  END IF;
+  IF current_setting('rag.direct_readonly_enabled') = 'true' AND EXISTS (
+    SELECT 1
+    FROM pg_auth_members membership
+    JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+    JOIN pg_roles member_role ON member_role.oid = membership.member
+    WHERE granted_role.rolname = 'rag_direct_readonly' OR member_role.rolname = 'rag_direct_readonly'
+  ) THEN
+    RAISE EXCEPTION 'PostgreSQL direct readonly role has an unexpected membership';
   END IF;
 END
 $verify$;
@@ -1541,6 +1677,9 @@ POSTGRES_SSL_MODE='disable'
 RAG_DEFAULT_TENANT_ID='$DEFAULT_TENANT'
 RAG_DEFAULT_CORPUS_ID='$DEFAULT_CORPUS'
 EOF
+if [[ "$direct_readonly_enabled" = true ]]; then
+  printf "POSTGRES_DIRECT_READONLY_ROLE='%s'\n" "$DIRECT_READONLY_ROLE" >> "$migration_stage"
+fi
 
 client_env_stage="$(mktemp "$TLS_DIR/.rag-app-client.next.XXXXXX")"
 chmod 600 -- "$client_env_stage"
@@ -1553,10 +1692,27 @@ PGPASSWORD='$app_password'
 PGSSLMODE='verify-full'
 PGSSLROOTCERT='$CA_CERT_FILE'
 EOF
+if [[ "$direct_readonly_enabled" = true ]]; then
+  direct_client_env_stage="$(mktemp "$TLS_DIR/.rag-direct-readonly-client.next.XXXXXX")"
+  chmod 600 -- "$direct_client_env_stage"
+  cat > "$direct_client_env_stage" <<EOF
+PGHOST='$PUBLIC_HOST'
+PGPORT='$HOST_PORT'
+PGDATABASE='$DATABASE_NAME'
+PGUSER='$DIRECT_READONLY_ROLE'
+PGPASSWORD='$direct_readonly_password'
+PGSSLMODE='verify-full'
+PGSSLROOTCERT='$CA_CERT_FILE'
+EOF
+fi
 
 bash -n "$runtime_stage" >/dev/null 2>&1 || die 'Generated runtime environment is not valid shell syntax'
 bash -n "$migration_stage" >/dev/null 2>&1 || die 'Generated migration environment is not valid shell syntax'
 bash -n "$client_env_stage" >/dev/null 2>&1 || die 'Generated public PostgreSQL client environment is not valid shell syntax'
+if [[ "$direct_readonly_enabled" = true ]]; then
+  bash -n "$direct_client_env_stage" >/dev/null 2>&1 \
+    || die 'Generated direct readonly PostgreSQL client environment is not valid shell syntax'
+fi
 
 write_cutover_marker() {
   local state="$1"
@@ -1578,6 +1734,10 @@ if [[ "$CUTOVER_ACTION" = verify ]]; then
     || die 'Finalized PostgreSQL migration environment has drifted'
   cmp -s "$client_env_stage" "$PUBLIC_CLIENT_ENV" \
     || die 'Finalized PostgreSQL public client environment has drifted'
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    cmp -s "$direct_client_env_stage" "$DIRECT_READONLY_CLIENT_ENV" \
+      || die 'Finalized PostgreSQL direct readonly client environment has drifted'
+  fi
   if [[ "$pending_state" = finalizing || "$pending_state" = finalized ]]; then
     cleanup_committed_cutover_state
   fi
@@ -1585,6 +1745,10 @@ if [[ "$CUTOVER_ACTION" = verify ]]; then
   runtime_stage=''
   migration_stage=''
   client_env_stage=''
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    rm -f -- "$direct_client_env_stage"
+    direct_client_env_stage=''
+  fi
   echo "Finalized public PostgreSQL configuration verified at $PUBLIC_HOST:$HOST_PORT"
   exit 0
 fi
@@ -1601,6 +1765,11 @@ if [[ "$CUTOVER_ACTION" = prepare ]]; then
   mv -f -- "$client_env_stage" "$PUBLIC_CLIENT_ENV"
   client_env_stage=''
   chmod 600 -- "$PUBLIC_CLIENT_ENV"
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    mv -f -- "$direct_client_env_stage" "$DIRECT_READONLY_CLIENT_ENV"
+    direct_client_env_stage=''
+    chmod 600 -- "$DIRECT_READONLY_CLIENT_ENV"
+  fi
   pending_kind="$prepared_kind"
   pending_hba="$expected_hba_mode"
   write_cutover_marker prepared \
@@ -1610,6 +1779,9 @@ if [[ "$CUTOVER_ACTION" = prepare ]]; then
   migration_stage=''
   echo "PostgreSQL public cutover is prepared at $PUBLIC_HOST:$HOST_PORT; external verification is required before activate"
   echo "External PostgreSQL client environment: $PUBLIC_CLIENT_ENV"
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    echo "Direct readonly PostgreSQL client environment: $DIRECT_READONLY_CLIENT_ENV"
+  fi
   echo "TLS CA certificate: $CA_CERT_FILE"
   exit 0
 fi
@@ -1635,6 +1807,11 @@ if [[ "$CUTOVER_ACTION" = activate ]]; then
   mv -f -- "$client_env_stage" "$PUBLIC_CLIENT_ENV"
   client_env_stage=''
   chmod 600 -- "$PUBLIC_CLIENT_ENV"
+  if [[ "$direct_readonly_enabled" = true ]]; then
+    mv -f -- "$direct_client_env_stage" "$DIRECT_READONLY_CLIENT_ENV"
+    direct_client_env_stage=''
+    chmod 600 -- "$DIRECT_READONLY_CLIENT_ENV"
+  fi
   write_cutover_marker activated \
     || die 'PostgreSQL public cutover activated environment but could not publish its durable rollback marker'
   echo "PostgreSQL public cutover is activated at $PUBLIC_HOST:$HOST_PORT; rollback remains available until finalize"
@@ -1649,10 +1826,18 @@ cmp -s "$migration_stage" "$MIGRATION_ENV" \
   || die 'Activated PostgreSQL migration environment has drifted before finalize'
 cmp -s "$client_env_stage" "$PUBLIC_CLIENT_ENV" \
   || die 'Activated PostgreSQL public client environment has drifted before finalize'
+if [[ "$direct_readonly_enabled" = true ]]; then
+  cmp -s "$direct_client_env_stage" "$DIRECT_READONLY_CLIENT_ENV" \
+    || die 'Activated PostgreSQL direct readonly client environment has drifted before finalize'
+fi
 rm -f -- "$runtime_stage" "$migration_stage" "$client_env_stage"
 runtime_stage=''
 migration_stage=''
 client_env_stage=''
+if [[ "$direct_readonly_enabled" = true ]]; then
+  rm -f -- "$direct_client_env_stage"
+  direct_client_env_stage=''
+fi
 
 # The durable finalizing receipt is the last reversible operation. For a legacy
 # cutover, the stopped loopback container remains the rollback point until its
@@ -1684,4 +1869,7 @@ cleanup_committed_cutover_state
 echo "Dedicated PostgreSQL is ready locally at $LOCAL_HOST_ADDRESS:$HOST_PORT and publicly at $PUBLIC_HOST:$HOST_PORT"
 echo 'PostgreSQL public cutover finalized; runtime and migration environments remain protected'
 echo "External PostgreSQL client environment: $PUBLIC_CLIENT_ENV"
+if [[ "$direct_readonly_enabled" = true ]]; then
+  echo "Direct readonly PostgreSQL client environment: $DIRECT_READONLY_CLIENT_ENV"
+fi
 echo "TLS CA certificate: $CA_CERT_FILE"

@@ -20,6 +20,12 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses a system font stack so production and container builds do not depend on fetching hosted fonts.
 
+## Architecture and Practice Guides
+
+- [Complete LangChain `createAgent` RAG implementation, architecture, and setup guide](LANGCHAIN_LANGGRAPH_GUIDE.md) — the actual `/api/ask` and ingestion paths, Kernel/Policy/Lane design, scoped model-tool-model loop, privacy boundaries, from-zero setup, deployment, rollback, and verification matrix.
+- [Environment configuration guide](ENV_CONFIG_GUIDE.md)
+- [PostgreSQL deployment guide](docs/deployment/postgresql.md)
+
 
 ## Container Deployment
 

@@ -22,6 +22,7 @@ EMBEDDING_PROVIDER=siliconflow  # 可选: ollama | siliconflow | openai | custom
 | Embedding 模型 | `EMBEDDING_PROVIDER` | 控制向量嵌入模型 |
 | 业务持久化 | `RAG_PERSISTENCE_BACKEND` | `postgres` 使用自建 PostgreSQL；向量仍由 Milvus/Zilliz 配置控制 |
 | API 身份边界 | `RAG_ACCESS_MODE` | 生产当前使用 `single-tenant-token` |
+| Agentic runtime | `RAG_AGENTIC_RUNTIME` | `create-agent`（默认）使用真实 LangChain `createAgent`；`legacy` 仅用于显式回滚 |
 
 ## 自建 PostgreSQL 持久化
 
@@ -96,7 +97,7 @@ S3/MinIO 等对象存储并在数据库保存 key/hash/metadata。详见
 
 ## LangSmith 观测与评估配置
 
-本项目支持 LangSmith 最新 JS SDK 追踪能力。开启后，`/api/ask` 会写入 LangSmith root run，本地 `ObservabilityEngine` 会 mirror Trace/Observation/Score，并通过 `thread_id` 支持 Threads、Insights Agent 和 Multi-turn Evals。
+本项目使用 LangSmith JS SDK 的手写 RunTree、trace mirror 与 feedback。开启后，`/api/ask` 会尝试写入手工 root run；详细 Trace/Observation/Score mirror 只存在于 `LocalRAGSystem.askWithDetails()`，当前没有正常可达的 route 调用它，canonical `/api/ask` 也不走该链。`thread_id` 提供 Threads 聚合前置，但 Insights Agent 和 Multi-turn Evals 尚无 SDK 调用闭环。
 
 ```bash
 # 推荐新变量
@@ -107,9 +108,13 @@ LANGSMITH_PROJECT=rag-system
 # 可选
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 LANGSMITH_WORKSPACE_ID=
+# SDK 原生共同基线：手工 Client 未显式 override 时也会读取
+LANGSMITH_TRACING_SAMPLING_RATE=1
+# 项目手工 Client 的可选 override；若设置应与上一项相同
 LANGSMITH_TRACING_SAMPLE_RATE=1
-LANGSMITH_HIDE_INPUTS=false
-LANGSMITH_HIDE_OUTPUTS=false
+# 手工 root 的纵深隐藏；Runnable/model/tool child 只写 non-networked discard client
+LANGSMITH_HIDE_INPUTS=true
+LANGSMITH_HIDE_OUTPUTS=true
 LANGSMITH_HIDE_METADATA=false
 LANGSMITH_OMIT_RUNTIME_INFO=false
 
@@ -117,14 +122,33 @@ LANGSMITH_OMIT_RUNTIME_INFO=false
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_PROJECT=rag-system
 LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
+# 自动/default SDK Client 还可能读取 LANGSMITH_TRACING_V2、LANGCHAIN_API_KEY 或本地 profile；
+# 项目手工 adapter 不读取 LANGSMITH_TRACING_V2、LANGCHAIN_API_KEY 或 profile。
 ```
 
 关键约定：
 
 - `sessionId` 会映射为 LangSmith `thread_id`、`session_id`、`conversation_id`。
-- 未传 `sessionId` 时，系统会生成 UUIDv7 thread id。
-- 用户反馈接口 `/api/traces/[traceId]/feedback` 会同步到 LangSmith feedback。
-- 未配置 `LANGSMITH_API_KEY` 时，LangSmith 链路自动 no-op，本地行为不变。
+- thread identity 优先级为 `sessionId` → `conversationId` → 调用方 fallback → UUIDv7；`/api/ask` 无 session 时通常会提供 request/ask fallback，而不是直接走 UUIDv7。
+- 用户反馈接口 `/api/traces/[traceId]/feedback` 会在本地/ PostgreSQL 写入后尝试同步 LangSmith feedback；PostgreSQL 前置失败或非 UUID durable traceId 会阻止远端同步。
+- 未配置 `LANGSMITH_API_KEY` 时，项目手写 RunTree adapter、trace mirror 和 feedback helper 会 no-op；RAG workflow 与 canonical agent 仍会把 SDK 环境/profile 自动 tracer 替换为 non-networked discard client。
+- `LANGSMITH_TRACING_SAMPLE_RATE` 与原生 `LANGSMITH_TRACING_SAMPLING_RATE` 都必须限制在 0..1；当前项目只对前者预检查 finite，任一实际生效的越界值都可能在 SDK Client 构造时失败。
+- `LANGSMITH_HIDE_METADATA=true` 会移除 `thread_id`、session、tenant、route、policy 等筛选语义；`LANGSMITH_OMIT_RUNTIME_INFO` 当前只由项目手工 Client 显式传入，不能假设自动 tracer 同步生效。
+- 完整的手工/自动双 trace、隐私、sampling 和云端 readback 边界见 `LANGCHAIN_LANGGRAPH_GUIDE.md`。
+
+## Agentic RAG 运行时
+
+`POST /api/ask` 只有在 Milvus 后端且请求设置 `useAgenticRAG=true` 时才选择 `agentic` policy。运行时选择完全由服务端环境控制：
+
+```bash
+# 默认值；canonical scope/retrieval 后执行真实 createAgent
+RAG_AGENTIC_RUNTIME=create-agent
+
+# 仅用于紧急回滚到旧 Runnable/显式状态循环
+# RAG_AGENTIC_RUNTIME=legacy
+```
+
+`create-agent` 路径只把 canonical context composer 校验后复制的冻结 evidence snapshot 暴露给一个无参数、只读工具，并限制为一次工具调用、两次模型调用和单个请求级生成 deadline。当前 LLM 必须支持原生 tool calling；切换 provider/model 前应做真实 canary。手工 LangSmith root 可独立启用，其 inputs 只保留数值/布尔摘要（问题正文只记录长度），失败只上报稳定错误码；包含 evidence 的 Runnable/model/tool child spans 会在本地执行，但请求级和最内层 agent callback 都强制绑定 non-networked discard client，禁止外部上传。该边界同样覆盖“无手工 client、仅 legacy 自动 tracing 环境变量/profile 生效”和调用方显式传入外部 tracer 的情况。上线仍需评估手工 root metadata 标识和远端保留策略。
 
 这意味着你可以：
 - LLM 用本地 Ollama，Embedding 用云端 SiliconFlow

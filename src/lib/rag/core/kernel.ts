@@ -1,3 +1,4 @@
+import type { RunnableConfig } from '@langchain/core/runnables';
 import { createDefaultRetrievalPlan } from '../retrieval/retrieval-plan';
 import { RagLaneExecutionError } from '../retrieval/lane-executor';
 import {
@@ -24,7 +25,12 @@ export class RagKernel<TOutput> {
   async execute(
     request: RagQueryRequest,
     policyId: RagPolicyId,
-    options: { now?: Date; traceId?: string; signal?: AbortSignal } = {}
+    options: {
+      now?: Date;
+      traceId?: string;
+      signal?: AbortSignal;
+      runnableConfig?: RunnableConfig;
+    } = {}
   ): Promise<RagKernelResult<TOutput>> {
     const policy = this.policies.get(policyId);
     if (!policy) {
@@ -45,6 +51,7 @@ export class RagKernel<TOutput> {
         startedAt,
         retrievalPlan,
         signal: options.signal,
+        runnableConfig: options.runnableConfig,
       });
       throwIfRagRequestAborted(options.signal);
       const outputError = summarizeFailedPolicyOutput(result.output);

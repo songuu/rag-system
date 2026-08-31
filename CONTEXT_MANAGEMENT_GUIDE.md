@@ -1,5 +1,7 @@
 # 上下文管理系统架构指南
 
+> 当前运行时说明（2026-08-28）：`src/lib/context-management.ts` 使用 LangChain Runnable/显式状态处理；本文的 StateGraph、StateSchema 与 MemorySaver 代码是目标架构示例，不是当前 runtime。项目级完整证据见 [LANGCHAIN_LANGGRAPH_GUIDE.md](LANGCHAIN_LANGGRAPH_GUIDE.md)。
+
 ## 一、系统概述
 
 ### 1.1 核心挑战
@@ -18,7 +20,7 @@
 - **查询改写 (Query Rewriting)**: 将包含代词的问题改写为独立完整的问题
 - **窗口管理 (Window Management)**: 动态截断对话历史，控制 Token 消耗
 - **摘要压缩 (Summary Compression)**: 将长历史压缩为简洁摘要
-- **状态持久化 (State Checkpointing)**: 支持会话恢复和无状态扩展
+- **会话文件持久化 (Session Persistence)**: 当前在请求级别保存/恢复本地 JSON 会话；不是节点 checkpoint，也不支持共享无状态扩展
 
 ### 1.3 LangChain / LangGraph v1+ 最新对齐
 
@@ -33,11 +35,11 @@
 
 ---
 
-## 二、宏观架构全景图
+## 二、目标架构全景图（非当前 runtime）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                     Context Management Lifecycle (LangGraph)                     │
+│              Context Management Lifecycle (目标 LangGraph 拓扑)                  │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                  │
 │   ┌──────────────┐                                                              │
@@ -93,7 +95,7 @@
 
 ## 三、核心层级架构
 
-### 3.1 状态层 (State Layer) - LangGraph v1+ Schema-first
+### 3.1 目标状态层 (State Layer) - LangGraph v1+ Schema-first
 
 旧版示例可继续使用 `Annotation.Root()`；新增工作流优先采用 LangGraph v1.1 的 `StateSchema`、`ReducedValue`、`MessagesValue`。这样可以使用 Zod 4、Valibot、ArkType 等 Standard Schema 生态，并获得更好的状态与更新类型推导。
 
@@ -192,7 +194,7 @@ const sysMsg = new SystemMessage('你是一个智能助手');
 
 #### 3.2.1 窗口管理器 - 使用官方 trimMessages
 
-使用 LangGraph 官方的 `trimMessages` 函数进行消息截断：
+使用 LangChain Core 的 `trimMessages` 函数进行消息截断：
 
 ```typescript
 import { trimMessages } from '@langchain/core/messages';
@@ -303,18 +305,22 @@ const relevantDocs = docs.filter(doc => {
 3. **主题连贯**: 保持与对话主题的一致性
 4. **不编造**: 不基于不相关资料强行回答
 
-### 3.4 持久层 (Persistence Layer)
+### 3.4 当前持久层：请求级 JSON 会话
 
-#### Checkpointer 机制
+当前 `src/lib/context-management.ts` 直接使用同步文件 API，将每个会话保存到 `data/context-sessions/{sessionId}.json`。保存内容只有 session metadata、messages 和 summary，在查询或流式请求结束时写回。
 
-LangGraph persistence 的关键不是“把状态存下来”这么简单，而是以 checkpoint 组织每个 `thread_id` 的执行历史。它支持 human-in-the-loop、time travel、故障恢复和长流程续跑。生产环境引入持久 checkpointer 时要满足三个条件:
+它没有节点级 snapshot、CAS/lease、原子跨实例协调、数据库 checkpointer、interrupt/resume 或 time travel；不能据此宣称横向无状态扩展。
+
+如果未来引入 LangGraph persistence，才需要以 checkpoint 组织每个 `thread_id` 的执行历史，并至少满足：
 
 1. 每次执行都传入稳定的 `thread_id`。
 2. 文件写入、数据库写入、外部 API 调用保持幂等，或拆成可重放节点 / task。
 3. checkpoint store 被视为完整性敏感资产，限制写权限并关注官方安全公告。
 
+以下接口只是未来目标草图，当前源码中不存在这个 class，也没有内存或数据库 checkpointer：
+
 ```typescript
-class Checkpointer {
+class TargetCheckpointer {
   // 内存缓存（短时记忆）
   private memoryCache: Map<string, ContextState>;
   
@@ -335,13 +341,13 @@ class Checkpointer {
 }
 ```
 
-**存储层级**：
+**目标可选存储层级（当前只有 L2 文件）**：
 
 | 层级 | 存储介质 | 用途 |
 |------|----------|------|
-| L1 | 内存 (Map) | 热会话快速访问 |
-| L2 | 文件系统 (JSON) | 持久化存储 |
-| L3 | 数据库 (可扩展) | 生产环境大规模存储 |
+| L1 | 内存 (Map) | 目标候选；当前未实现 |
+| L2 | 文件系统 (JSON) | 当前请求级会话存储，不是节点 checkpoint |
+| L3 | 数据库 | 目标候选；当前 context-management 未接入 |
 
 ---
 
@@ -351,7 +357,7 @@ class Checkpointer {
 
 ```
 1. 加载 (Load)
-   └─ 用户发送 "版本是多少呢？" + thread_id=123
+   └─ 用户发送 "版本是多少呢？" + sessionId=123
    └─ 系统加载 ID=123 的历史: [User: Mate60下一代是什么?, AI: 可能是Mate70...]
 
 2. 截断 (Trim)
@@ -517,14 +523,8 @@ interface ContextManagerConfig {
 ```
 src/
 ├── lib/
-│   └── context-management.ts    # 核心库 (使用 LangGraph 官方 API)
-│       ├── ContextGraphState    # Annotation 状态定义
-│       ├── trimMessagesNode     # 消息截断节点 (使用 trimMessages)
-│       ├── rewriteQueryNode     # 查询改写节点
-│       ├── retrieveNode         # 向量检索节点
-│       ├── filterRelevanceNode  # 相关性过滤节点
-│       ├── generateNode         # 响应生成节点
-│       └── ContextManager       # 主类 (使用 StateGraph + MemorySaver)
+│   └── context-management.ts    # 当前核心库：LangChain Runnable/显式状态处理
+│       └── ContextManager       # 当前主类；没有 StateGraph 或 MemorySaver runtime
 │
 ├── app/
 │   ├── api/
@@ -548,8 +548,8 @@ src/
 |------|------|
 | **检索准确性高** | 通过查询改写彻底解决多轮对话中检索失效的问题 |
 | **成本可控** | 通过窗口管理器严格控制 Token 消耗 |
-| **无状态扩展** | 依赖外部持久化的 Checkpointer，支持横向扩缩容 |
-| **可调试性** | 每个节点都保存快照，支持回放和问题定位 |
+| **单机会话恢复** | 当前通过请求级 JSON 保存消息和摘要；多实例共享仍需独立设计 |
+| **可调试性** | 当前返回显式 workflowSteps 便于定位，但不会持久化每个节点快照或提供 time travel |
 | **自动维度适配** | 自动检测并切换兼容的 Embedding 模型 |
 
 ---
@@ -603,7 +603,9 @@ const compressResult = await manager.compressBySummary('session-123');
 await manager.deleteSession('session-123');
 ```
 
-### 9.3 StateGraph 工作流定义 (官方 API)
+### 9.3 StateGraph 目标工作流示例（当前未接入）
+
+以下代码用于说明未来确有跨请求恢复、人工审批或 time travel 需求时的目标形态，不是当前 `src/lib/context-management.ts` 的代码摘录，也不能作为 LangGraph 已上线的证据。
 
 ```typescript
 import { StateGraph, START, END, MemorySaver } from '@langchain/langgraph';

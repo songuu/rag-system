@@ -15,6 +15,20 @@ const SAFE_SCOPE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_ROLE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/;
 const LOCK_SQL = "select pg_advisory_lock(hashtext('rag-system'), hashtext('schema-migrations'))";
 const UNLOCK_SQL = "select pg_advisory_unlock(hashtext('rag-system'), hashtext('schema-migrations'))";
+const DIRECT_READONLY_TABLES = Object.freeze([
+  'public.rag_schema_migrations',
+  'public.tenants',
+  'public.corpora',
+  'public.document_assets',
+  'public.object_blobs',
+  'public.index_jobs',
+  'public.traces',
+  'public.observations',
+  'public.trace_scores',
+  'public.maic_courses',
+  'public.maic_classroom_sessions',
+]);
+const DIRECT_READONLY_TABLE_LIST = DIRECT_READONLY_TABLES.join(', ');
 
 export class MigrationRunnerError extends Error {
   constructor(message) {
@@ -244,13 +258,19 @@ export async function runMigrationSession(client, options = {}) {
   );
   const seedScope = options.seedScope ?? null;
   const appRole = options.appRole ?? null;
+  const directReadonlyRole = options.directReadonlyRole ?? null;
 
   return await withMigrationLock(client, async () => {
     await ensureMigrationLedger(client, bootstrapSql);
     const summary = await applyMigrations(client, migrations);
     if (seedScope) await seedDefaultScope(client, seedScope);
     if (appRole) await grantApplicationRole(client, appRole);
-    return { ...summary, seeded: Boolean(seedScope), appRoleGranted: Boolean(appRole) };
+    if (directReadonlyRole) await grantDirectReadonlyRole(client, directReadonlyRole);
+    return {
+      ...summary,
+      seeded: Boolean(seedScope),
+      appRoleGranted: Boolean(appRole),
+    };
   });
 }
 
@@ -305,6 +325,17 @@ export function resolveApplicationRole(env = process.env) {
   return role;
 }
 
+export function resolveDirectReadonlyRole(env = process.env) {
+  const role = readEnv(env, 'POSTGRES_DIRECT_READONLY_ROLE');
+  if (!role) return null;
+  if (!SAFE_ROLE_IDENTIFIER.test(role)) {
+    throw new MigrationRunnerError(
+      'POSTGRES_DIRECT_READONLY_ROLE must be a valid PostgreSQL identifier.'
+    );
+  }
+  return role;
+}
+
 export async function grantApplicationRole(client, role) {
   if (!SAFE_ROLE_IDENTIFIER.test(role || '')) {
     throw new MigrationRunnerError(
@@ -340,6 +371,37 @@ export async function grantApplicationRole(client, role) {
           statement,
           [],
           'PostgreSQL application role grants failed.'
+        );
+      }
+    }
+  );
+}
+
+export async function grantDirectReadonlyRole(client, role) {
+  if (!SAFE_ROLE_IDENTIFIER.test(role || '')) {
+    throw new MigrationRunnerError(
+      'POSTGRES_DIRECT_READONLY_ROLE must be a valid PostgreSQL identifier.'
+    );
+  }
+  const quotedRole = `"${role}"`;
+  await withTransaction(
+    client,
+    'PostgreSQL direct read-only role grants failed.',
+    async () => {
+      for (const statement of [
+        `revoke create on schema public from ${quotedRole}`,
+        `revoke insert, update, delete, truncate, references, trigger on table
+           ${DIRECT_READONLY_TABLE_LIST}
+         from ${quotedRole}`,
+        `revoke usage, select, update on all sequences in schema public from ${quotedRole}`,
+        `grant usage on schema public to ${quotedRole}`,
+        `grant select on table ${DIRECT_READONLY_TABLE_LIST} to ${quotedRole}`,
+      ]) {
+        await safeQuery(
+          client,
+          statement,
+          [],
+          'PostgreSQL direct read-only role grants failed.'
         );
       }
     }
@@ -414,6 +476,7 @@ async function main() {
   assertDatabaseUrlHasNoSslParameters(databaseUrl);
   const seedScope = resolveSeedScope(process.env);
   const appRole = resolveApplicationRole(process.env);
+  const directReadonlyRole = resolveDirectReadonlyRole(process.env);
   const pgModule = await import('pg');
   const Client = pgModule.Client ?? pgModule.default?.Client;
   if (!Client) throw new MigrationRunnerError('PostgreSQL driver is unavailable.');
@@ -425,7 +488,11 @@ async function main() {
   });
   try {
     await client.connect();
-    const summary = await runMigrationSession(client, { seedScope, appRole });
+    const summary = await runMigrationSession(client, {
+      seedScope,
+      appRole,
+      directReadonlyRole,
+    });
     console.log(
       `[migrate:postgres] applied=${summary.applied.length} skipped=${summary.skipped.length} seeded=${summary.seeded}`
     );

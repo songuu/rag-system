@@ -7,6 +7,7 @@ import {
   buildLangSmithMetadata,
   createLangSmithThreadId,
 } from '../../langsmith/config';
+import { createPrivateLangChainCallbacks } from '../../langsmith/private-tracing';
 import {
   RagKernelExecutionError,
   type RagKernel,
@@ -27,6 +28,8 @@ export interface RagWorkflowContext {
   traceId?: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+  /** Transient local callbacks; upload-capable LangSmith tracers are replaced. */
+  callbacks?: RunnableConfig['callbacks'];
   now?: Date;
 }
 
@@ -71,10 +74,10 @@ export function createRagKernelWorkflow<TOutput>(
   const prepare = RunnableLambda.from<RagWorkflowInput, PreparedRagWorkflowState>((input) => ({
     ...input,
     prepared: input.prepared ?? prepareRagWorkflowRun(input),
-  }));
+  })).withConfig({ runName: 'rag-kernel.prepare' });
 
   const execute = RunnableLambda.from<PreparedRagWorkflowState, RagWorkflowResult<TOutput>>(
-    async (state) => {
+    async (state, activeConfig) => {
       try {
         const result = await kernel.execute(
           state.request,
@@ -83,6 +86,9 @@ export function createRagKernelWorkflow<TOutput>(
             now: state.prepared.startedAtDate,
             traceId: state.prepared.traceId,
             signal: state.signal,
+            // Pass the active Runnable child config so nested LangChain work is
+            // parented to this execute run instead of becoming a root sibling.
+            runnableConfig: activeConfig,
           }
         );
 
@@ -107,7 +113,7 @@ export function createRagKernelWorkflow<TOutput>(
         );
       }
     }
-  );
+  ).withConfig({ runName: 'rag-kernel.execute' });
 
   return RunnableSequence.from([prepare, execute], {
     name: 'rag-kernel-workflow',
@@ -184,6 +190,9 @@ export function prepareRagWorkflowRun(input: RagWorkflowInput): PreparedRagWorkf
       runName: name,
       tags,
       metadata,
+      // Keep every workflow entry point hermetic even when a process-level
+      // LANGSMITH_TRACING profile is enabled or the caller supplies a tracer.
+      callbacks: createPrivateLangChainCallbacks(context.callbacks),
       configurable: {
         thread_id: threadId,
         rag_policy: input.policyId,
