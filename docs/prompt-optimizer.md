@@ -22,6 +22,14 @@
 
 Ollama 仅在 `NODE_ENV != production` 时开放，并强制使用 `localhost`、`127.0.0.1` 或 `::1`。例如本地档案可设置模型 `qwen3:8b`，Base URL `http://127.0.0.1:11434/v1`。
 
+### DeepSeek 官方接口
+
+选择 OpenAI 兼容，Base URL 填 `https://api.deepseek.com`，模型填 `deepseek-v4-flash` 或 `deepseek-v4-pro`，并填写自己的 API Token。生产环境还需在 `PROMPT_OPTIMIZER_ALLOWED_MODEL_ORIGINS` 中加入 `https://api.deepseek.com`。
+
+优化器仅对该官方 HTTPS origin 显式发送 `thinking: { type: 'disabled' }`，避免默认思考过程耗尽输出额度而不返回正文；其他兼容服务和代理不会收到此参数。模型档案中的 Max tokens 上限保持不变，不会自动提高额度或重试。
+
+任意模型返回 `finish_reason: length` 时，接口返回 `422 / MODEL_OUTPUT_TRUNCATED`，页面提示提高 Max tokens；截断结果不会创建工作区或保存新版本，已有版本不受影响。
+
 ## 数据库
 
 迁移 `0003_prompt_optimizer.sql` 创建：
@@ -37,6 +45,7 @@ Ollama 仅在 `NODE_ENV != production` 时开放，并强制使用 `localhost`�
 ## 验证
 
 ```bash
+pnpm test:prompt-optimizer
 node src/lib/prompt-optimizer/contracts.test.mjs
 node src/lib/prompt-optimizer/store.test.mjs
 node src/lib/prompt-optimizer/templates.test.mjs

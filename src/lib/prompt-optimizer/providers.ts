@@ -16,6 +16,15 @@ export class PromptOptimizerBusyError extends Error {
   constructor() { super('Prompt optimizer is busy. Retry shortly.'); this.name = 'PromptOptimizerBusyError'; }
 }
 
+export class PromptOptimizerOutputLimitError extends Error {
+  readonly status = 422;
+  readonly code = 'MODEL_OUTPUT_TRUNCATED';
+  constructor() {
+    super('模型输出已达到 Max tokens 上限，结果被截断且未保存。请在模型设置中提高 Max tokens 后重试。');
+    this.name = 'PromptOptimizerOutputLimitError';
+  }
+}
+
 export function resolveProviderRuntime(profile: ModelProfileRuntimeInput, env: Environment = process.env) {
   const production = env.NODE_ENV === 'production';
   let baseUrl: string;
@@ -57,6 +66,10 @@ export async function requestOptimization(
   fetcher: Fetcher = fetch
 ): Promise<string> {
   const runtime = resolveProviderRuntime(profile, env);
+  // DeepSeek defaults to thinking, which can consume the entire output budget
+  // before producing a prompt. Do not send this vendor option to other hosts.
+  const isOfficialDeepSeek = profile.provider === 'compatible'
+    && new URL(runtime.endpoint).origin === 'https://api.deepseek.com';
   if (activeOptimizationRequests >= MAX_CONCURRENT_OPTIMIZATIONS) throw new PromptOptimizerBusyError();
   activeOptimizationRequests += 1;
   const controller = new AbortController();
@@ -70,14 +83,18 @@ export async function requestOptimization(
       method: 'POST', signal: controller.signal, redirect: 'error',
       headers: { 'Content-Type': 'application/json', ...(runtime.apiKey ? { Authorization: `Bearer ${runtime.apiKey}` } : {}) },
       body: JSON.stringify({ model: profile.model, messages, temperature, top_p: topP, max_tokens: maxTokens,
+        ...(isOfficialDeepSeek ? { thinking: { type: 'disabled' } } : {}),
         ...(profile.provider === 'openai' ? { response_format: { type: 'json_object' } } : {}) }),
     });
     if (!response.ok) throw new Error(`Prompt optimizer model request failed with status ${response.status}.`);
     const responseText = await response.text();
     if (new TextEncoder().encode(responseText).byteLength > 2 * 1024 * 1024) throw new Error('Prompt optimizer model response is too large.');
-    let payload: { choices?: Array<{ message?: { content?: unknown } }> };
+    let payload: { choices?: Array<{ finish_reason?: unknown; message?: { content?: unknown } }> };
     try { payload = JSON.parse(responseText); } catch { throw new Error('Prompt optimizer model returned invalid JSON.'); }
-    const content = payload.choices?.[0]?.message?.content;
+    const choice = payload?.choices?.[0];
+    // Even parseable JSON can be incomplete: never persist a truncated answer.
+    if (choice?.finish_reason === 'length') throw new PromptOptimizerOutputLimitError();
+    const content = choice?.message?.content;
     if (typeof content !== 'string' || !content.trim()) throw new Error('Prompt optimizer model returned no content.');
     return content;
   } catch (error) {
