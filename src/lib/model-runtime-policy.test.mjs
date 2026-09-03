@@ -120,10 +120,17 @@ test('browser request deadline covers the full retrieval and generation budget',
 test('timeout fetch aborts a hung provider body within the configured deadline', async () => {
   const timedFetch = createModelRequestTimeoutFetch(1_000, hangingFetch);
   const startedAt = Date.now();
-  await assert.rejects(
-    timedFetch('http://provider.invalid'),
-    error => error?.name === 'TimeoutError'
-  );
+  // Node 24 intentionally unrefs AbortSignal.timeout's internal timer. A real
+  // fetch keeps the event loop alive; this synthetic hanging fetch does not.
+  const keepAlive = setTimeout(() => {}, 1_500);
+  try {
+    await assert.rejects(
+      timedFetch('http://provider.invalid'),
+      error => error?.name === 'TimeoutError'
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
   assert(Date.now() - startedAt < 2_000);
 });
 

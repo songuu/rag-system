@@ -8,7 +8,7 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, '..', '..');
 
 function read(relativePath) {
-  return readFileSync(path.join(root, relativePath), 'utf8');
+  return readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n');
 }
 
 test('container starts through the runtime environment allowlist', () => {
