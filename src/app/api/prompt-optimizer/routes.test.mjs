@@ -15,7 +15,7 @@ test('every prompt optimizer route resolves the standard security context', asyn
 });
 
 test('route capabilities separate reads, content writes, and runtime management', async () => {
-  assert.match(await route('models'), /GET[\s\S]*capability: 'query'[\s\S]*POST[\s\S]*capability: 'manage-runtime'/);
+  assert.match(await route('models'), /GET[\s\S]*detailed \? 'manage-runtime' : 'query'[\s\S]*POST[\s\S]*capability: 'manage-runtime'/);
   assert.match(await route('workspaces', '[workspaceId]', 'versions'), /GET[\s\S]*capability: 'query'[\s\S]*POST[\s\S]*capability: 'ingest'/);
   assert.match(await route('optimize'), /capability: 'ingest'/);
 });
@@ -26,11 +26,23 @@ test('security scope is injected into every persistent store or service', async 
   }
 });
 
-test('browser client uses the nginx-authenticated /rag-api path and separates lineage from CAS', async () => {
+test('browser client uses authenticated API path, version CAS, and profile editing', async () => {
   const client = await readFile(path.resolve(root, '..', '..', '..', 'components', 'prompt-optimizer', 'PromptOptimizerStudio.tsx'), 'utf8');
   assert.match(client, /const API_ROOT = ["']\/rag-api\/prompt-optimizer["']/);
   assert.doesNotMatch(client, /NEXT_PUBLIC_BASE_PATH[^\n]*\/api\/prompt-optimizer/);
   assert.match(client, /parentVersion:\s*iterate[\s\S]*?activeVersion\?\.versionNumber/);
   assert.match(client, /expectedCurrentVersion: workspace\?\.current_version/);
   assert.match(client, /setInstruction\(latest\?\.instruction \|\| ["']["']\)/);
+  assert.match(client, /profileId: profileDraft\.profileId \|\| undefined/);
+  assert.match(client, /profileDraft\.hasCredential\s*\?/);
+});
+
+test('model profile API gates editable settings behind runtime management and never returns the credential', async () => {
+  const source = await route('models');
+  assert.match(source, /detail.*manage-runtime/);
+  assert.match(source, /sanitizedBaseUrl/);
+  assert.match(source, /sanitizedSettings/);
+  assert.match(source, /profileId, name, provider, model, isDefault, hasCredential/);
+  assert.doesNotMatch(source, /\bcredential\s*[:,]/);
+  assert.doesNotMatch(source, /\btoken\s*[:,]/i);
 });

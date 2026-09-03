@@ -11,6 +11,8 @@ type Profile = {
   name: string;
   provider: string;
   model: string;
+  baseUrl: string | null;
+  settings: Record<string, unknown>;
   isDefault: boolean;
   hasCredential: boolean;
 };
@@ -62,6 +64,7 @@ export default function PromptOptimizerStudio() {
   const [modelOpen, setModelOpen] = useState(false);
   const [tokenVisible, setTokenVisible] = useState(false);
   const [profileDraft, setProfileDraft] = useState({
+    profileId: null as string | null,
     name: "我的优化模型",
     provider: "openai",
     model: "gpt-4.1-mini",
@@ -72,6 +75,7 @@ export default function PromptOptimizerStudio() {
     topP: 1,
     maxTokens: 1800,
     timeoutSeconds: 60,
+    hasCredential: false,
   });
   const workspaceRequestSequence = useRef(0);
 
@@ -115,7 +119,7 @@ export default function PromptOptimizerStudio() {
   async function optimize(iterate = false) {
     if (!prompt.trim()) return setError("先写下需要优化的提示词。");
     if (!selectedProfileId) {
-      setModelOpen(true);
+      void openModelSettings();
       return setError("先添加一个独立的优化模型。");
     }
     setBusy(true);
@@ -202,6 +206,7 @@ export default function PromptOptimizerStudio() {
       const saved = await api<Profile>("/models", {
         method: "POST",
         body: JSON.stringify({
+          profileId: profileDraft.profileId || undefined,
           name: profileDraft.name,
           provider: profileDraft.provider,
           model: profileDraft.model,
@@ -226,6 +231,53 @@ export default function PromptOptimizerStudio() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function openModelSettings() {
+    let selected: Profile | undefined;
+    if (selectedProfileId) {
+      try {
+        const editableProfiles = await api<Profile[]>("/models?detail=1");
+        selected = editableProfiles.find((item) => item.profileId === selectedProfileId);
+      } catch (caught) {
+        setError(messageOf(caught));
+        return;
+      }
+    }
+    if (selected) {
+      setProfileDraft({
+        profileId: selected.profileId,
+        name: selected.name,
+        provider: selected.provider,
+        model: selected.model,
+        baseUrl: selected.baseUrl || "",
+        token: "",
+        isDefault: selected.isDefault,
+        temperature: numericSetting(selected.settings.temperature, 0.3),
+        topP: numericSetting(selected.settings.topP, 1),
+        maxTokens: numericSetting(selected.settings.maxTokens, 1800),
+        timeoutSeconds: numericSetting(selected.settings.timeoutMs, 60000) / 1000,
+        hasCredential: selected.hasCredential,
+      });
+    } else {
+      setProfileDraft({
+        profileId: null,
+        name: "我的优化模型",
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        baseUrl: "",
+        token: "",
+        isDefault: true,
+        temperature: 0.3,
+        topP: 1,
+        maxTokens: 1800,
+        timeoutSeconds: 60,
+        hasCredential: false,
+      });
+    }
+    setTokenVisible(false);
+    setError("");
+    setModelOpen(true);
   }
 
   function startFresh() {
@@ -282,7 +334,7 @@ export default function PromptOptimizerStudio() {
               ))}
             </select>
           </label>
-          <button className={styles.iconButton} onClick={() => setModelOpen(true)} aria-label="模型设置">
+          <button className={styles.iconButton} onClick={() => void openModelSettings()} aria-label="模型设置">
             <Settings2 size={17} />
             模型设置
           </button>
@@ -505,7 +557,7 @@ export default function PromptOptimizerStudio() {
               <X />
             </button>
             <span className={styles.eyebrow}>ISOLATED MODEL PROFILE</span>
-            <h2 id="prompt-model-title">添加优化模型</h2>
+            <h2 id="prompt-model-title">{profileDraft.profileId ? "编辑优化模型" : "添加优化模型"}</h2>
             <p>模型档案与系统 RAG 模型完全独立。Token 会加密保存，接口不会回传明文。</p>
             <div className={styles.formGrid}>
               <label>
@@ -529,7 +581,8 @@ export default function PromptOptimizerStudio() {
                     setProfileDraft({
                       ...profileDraft,
                       provider: event.target.value,
-                      token: event.target.value === "ollama" ? "" : profileDraft.token,
+                      token: event.target.value === profileDraft.provider ? profileDraft.token : "",
+                      hasCredential: event.target.value === profileDraft.provider ? profileDraft.hasCredential : false,
                     })
                   }
                 >
@@ -560,6 +613,8 @@ export default function PromptOptimizerStudio() {
                       setProfileDraft({
                         ...profileDraft,
                         baseUrl: event.target.value,
+                        token: event.target.value === profileDraft.baseUrl ? profileDraft.token : "",
+                        hasCredential: event.target.value === profileDraft.baseUrl ? profileDraft.hasCredential : false,
                       })
                     }
                     placeholder={profileDraft.provider === "ollama" ? "http://127.0.0.1:11434/v1" : "https://models.example.com/v1"}
@@ -592,7 +647,13 @@ export default function PromptOptimizerStudio() {
                       {tokenVisible ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   </span>
-                  <small className={styles.credentialHint}>留空时使用服务端环境变量中配置的凭证。</small>
+                  <small className={styles.credentialHint}>
+                    {profileDraft.hasCredential
+                      ? "已配置 Token；留空保存会保留原凭证。"
+                      : profileDraft.provider === "compatible"
+                        ? "生产兼容端点必须填写 Token。"
+                        : "留空时使用服务端环境变量中配置的凭证。"}
+                  </small>
                 </label>
               )}
               <label>
@@ -710,4 +771,7 @@ function formatTime(value: string) {
         hour: "2-digit",
         minute: "2-digit",
       });
+}
+function numericSetting(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }

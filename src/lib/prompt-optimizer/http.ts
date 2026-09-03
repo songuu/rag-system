@@ -8,7 +8,12 @@ export async function readPromptOptimizerJson(request: Request) { return readJso
 export function promptOptimizerError(error: unknown, requestId = crypto.randomUUID()) {
   if (error instanceof RagSecurityError) return NextResponse.json(error.toResponseBody(), { status: error.status });
   if (error instanceof PromptOptimizerBusyError) return NextResponse.json({ success: false, error: error.message, requestId }, { status: 429 });
-  if (error instanceof PostgresQueryError) return NextResponse.json({ success: false, error: 'Prompt optimizer storage is unavailable.', requestId }, { status: 503 });
+  if (error instanceof PostgresQueryError) {
+    if (error.code === '23505' && error.constraint === 'prompt_optimizer_profile_name_idx') {
+      return NextResponse.json({ success: false, error: 'A model profile with this name already exists.', requestId }, { status: 409 });
+    }
+    return NextResponse.json({ success: false, error: 'Prompt optimizer storage is unavailable.', requestId }, { status: 503 });
+  }
   const message = error instanceof Error ? error.message : 'Prompt optimizer request failed.';
   const expected = /required|invalid|unknown field|must|exceed|missing|conflict|create and select/i.test(message);
   if (!expected) console.error('[prompt-optimizer]', requestId, error instanceof Error ? error.name : 'UnknownError');

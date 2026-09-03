@@ -74,6 +74,7 @@ test('query errors add operation context without exposing SQL parameters', async
     async query() {
       const error = new Error(`connection rejected for ${secret}`);
       error.code = 'ECONNREFUSED';
+      error.constraint = 'api_tokens_token_hash_key';
       throw error;
     },
   };
@@ -84,6 +85,7 @@ test('query errors add operation context without exposing SQL parameters', async
       assert.ok(error instanceof PostgresQueryError);
       assert.equal(error.operation, 'authenticate API token');
       assert.equal(error.code, 'ECONNREFUSED');
+      assert.equal(error.constraint, 'api_tokens_token_hash_key');
       assert.equal(error.message.includes(secret), false);
       assert.equal(error.message.includes('api_tokens'), false);
       return true;

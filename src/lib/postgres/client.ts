@@ -51,12 +51,14 @@ const EXPECTED_SCHEMA_FILENAME = '0004_prompt_optimizer_credentials.sql';
 export class PostgresQueryError extends Error {
   readonly operation: string;
   readonly code?: string;
+  readonly constraint?: string;
 
   constructor(operation: string, cause: unknown) {
     super(`PostgreSQL operation failed: ${operation}`, { cause });
     this.name = 'PostgresQueryError';
     this.operation = operation;
     this.code = readErrorCode(cause);
+    this.constraint = readErrorConstraint(cause);
   }
 }
 
@@ -270,6 +272,12 @@ function readErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' ? code : undefined;
+}
+
+function readErrorConstraint(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object' || !('constraint' in error)) return undefined;
+  const constraint = (error as { constraint?: unknown }).constraint;
+  return typeof constraint === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(constraint) ? constraint : undefined;
 }
 
 function safeErrorCode(error: unknown): string {
