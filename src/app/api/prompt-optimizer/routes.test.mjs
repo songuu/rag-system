@@ -28,9 +28,9 @@ test('security scope is injected into every persistent store or service', async 
 
 test('browser client uses the nginx-authenticated /rag-api path and separates lineage from CAS', async () => {
   const client = await readFile(path.resolve(root, '..', '..', '..', 'components', 'prompt-optimizer', 'PromptOptimizerStudio.tsx'), 'utf8');
-  assert.match(client, /const API_ROOT = '\/rag-api\/prompt-optimizer'/);
+  assert.match(client, /const API_ROOT = ["']\/rag-api\/prompt-optimizer["']/);
   assert.doesNotMatch(client, /NEXT_PUBLIC_BASE_PATH[^\n]*\/api\/prompt-optimizer/);
-  assert.match(client, /parentVersion: iterate \? activeVersion\?\.versionNumber/);
+  assert.match(client, /parentVersion:\s*iterate[\s\S]*?activeVersion\?\.versionNumber/);
   assert.match(client, /expectedCurrentVersion: workspace\?\.current_version/);
-  assert.match(client, /setInstruction\(latest\?\.instruction \|\| ''\)/);
+  assert.match(client, /setInstruction\(latest\?\.instruction \|\| ["']["']\)/);
 });

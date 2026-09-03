@@ -20,11 +20,10 @@ test('Ollama is local-development only and constrained to loopback', () => {
 });
 
 test('production compatible endpoints require an HTTPS origin allowlist', () => {
-  const compatible = { ...profile, provider: 'compatible', baseUrl: 'https://models.example.com/v1' };
+  const compatible = { ...profile, provider: 'compatible', baseUrl: 'https://models.example.com/v1', credential: 'profile-secret' };
   assert.throws(() => resolveProviderRuntime(compatible, { NODE_ENV: 'production' }), /allowlist/i);
   assert.equal(resolveProviderRuntime(compatible, {
     NODE_ENV: 'production', PROMPT_OPTIMIZER_ALLOWED_MODEL_ORIGINS: 'https://models.example.com',
-    PROMPT_OPTIMIZER_COMPATIBLE_API_KEY: 'secret',
   }).endpoint, 'https://models.example.com/v1/chat/completions');
 });
 
@@ -49,6 +48,14 @@ test('requestOptimization sends bounded settings and returns only model content'
   assert.equal(calls[0].url, 'https://api.openai.com/v1/chat/completions');
   assert.equal(JSON.parse(calls[0].init.body).max_tokens, 900);
   assert.equal(calls[0].init.headers.Authorization, 'Bearer secret');
+});
+
+test('profile credential takes precedence over shared server credentials', () => {
+  const runtime = resolveProviderRuntime(
+    { ...profile, provider: 'compatible', baseUrl: 'https://models.example.com/v1', credential: 'profile-secret' },
+    { NODE_ENV: 'production', PROMPT_OPTIMIZER_ALLOWED_MODEL_ORIGINS: 'https://models.example.com', PROMPT_OPTIMIZER_COMPATIBLE_API_KEY: 'shared-secret' },
+  );
+  assert.equal(runtime.apiKey, 'profile-secret');
 });
 
 test('compatible providers do not receive OpenAI-specific JSON response format', async () => {

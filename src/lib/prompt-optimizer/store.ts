@@ -3,10 +3,12 @@ import { getPostgresClient, queryPostgres, type PostgresQueryClient } from '../p
 import { getPostgresRuntimeConfig, type PostgresRuntimeConfig } from '../postgres/env';
 import type { OptimizationAnalysis, PromptOptimizerMode, PromptVariables, VersionKind } from './contracts';
 import type { ModelProfileRuntimeInput } from './providers';
+import { decryptPromptOptimizerCredential, encryptPromptOptimizerCredential } from './credentials';
 
 export interface StoredModelProfile extends ModelProfileRuntimeInput {
   isDefault: boolean;
   archivedAt: string | null;
+  hasCredential: boolean;
 }
 
 export interface PromptVersion {
@@ -80,34 +82,35 @@ export class PostgresPromptOptimizerStore {
 
   async listModelProfiles(): Promise<StoredModelProfile[]> {
     const result = await this.query<Record<string, unknown>>(
-      `select profile_id, name, provider, model, base_url, settings, is_default, archived_at
+      `select profile_id, name, provider, model, base_url, settings, is_default, archived_at,
+              credential_envelope is not null as has_credential
        from public.prompt_optimizer_model_profiles
        where tenant_id = $1 and corpus_id = $2 and archived_at is null
        order by is_default desc, name, profile_id`,
       [this.tenantId, this.corpusId], 'list prompt optimizer model profiles'
     );
-    return result.rows.map(mapProfile);
+    return result.rows.map(row => mapProfile(row, this.scope));
   }
 
   async getModelProfile(profileId: string): Promise<StoredModelProfile | null> {
     const result = await this.query<Record<string, unknown>>(
-      `select profile_id, name, provider, model, base_url, settings, is_default, archived_at
+      `select profile_id, name, provider, model, base_url, settings, is_default, archived_at, credential_envelope
        from public.prompt_optimizer_model_profiles
        where tenant_id = $1 and corpus_id = $2 and profile_id = $3 and archived_at is null`,
       [this.tenantId, this.corpusId, profileId], 'read prompt optimizer model profile'
     );
-    return result.rows[0] ? mapProfile(result.rows[0]) : null;
+    return result.rows[0] ? mapProfile(result.rows[0], this.scope) : null;
   }
 
   async getDefaultModelProfile(): Promise<StoredModelProfile | null> {
     const result = await this.query<Record<string, unknown>>(
-      `select profile_id, name, provider, model, base_url, settings, is_default, archived_at
+      `select profile_id, name, provider, model, base_url, settings, is_default, archived_at, credential_envelope
        from public.prompt_optimizer_model_profiles
        where tenant_id = $1 and corpus_id = $2 and archived_at is null
        order by is_default desc, name, profile_id limit 1`,
       [this.tenantId, this.corpusId], 'read default prompt optimizer model profile'
     );
-    return result.rows[0] ? mapProfile(result.rows[0]) : null;
+    return result.rows[0] ? mapProfile(result.rows[0], this.scope) : null;
   }
 
   async saveModelProfile(profile: StoredModelProfile): Promise<StoredModelProfile> {
@@ -118,19 +121,25 @@ export class PostgresPromptOptimizerStore {
          where tenant_id = $1 and corpus_id = $2 and profile_id <> $3 and is_default and $9::boolean
        ), saved as (
          insert into public.prompt_optimizer_model_profiles
-           (tenant_id, corpus_id, profile_id, name, provider, model, base_url, settings, is_default)
-         values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
+           (tenant_id, corpus_id, profile_id, name, provider, model, base_url, settings, is_default, credential_envelope)
+         values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
          on conflict (tenant_id, corpus_id, profile_id) do update
          set name = excluded.name, provider = excluded.provider, model = excluded.model,
              base_url = excluded.base_url, settings = excluded.settings, is_default = excluded.is_default,
+             credential_envelope = case
+               when excluded.credential_envelope is not null then excluded.credential_envelope
+               when excluded.provider = public.prompt_optimizer_model_profiles.provider
+                 and excluded.base_url is not distinct from public.prompt_optimizer_model_profiles.base_url
+               then public.prompt_optimizer_model_profiles.credential_envelope
+               else null end,
              archived_at = null, version = public.prompt_optimizer_model_profiles.version + 1
-         returning profile_id, name, provider, model, base_url, settings, is_default, archived_at
+         returning profile_id, name, provider, model, base_url, settings, is_default, archived_at, credential_envelope
        ) select * from saved`,
       [this.tenantId, this.corpusId, profile.profileId, profile.name, profile.provider, profile.model,
-        profile.baseUrl, JSON.stringify(profile.settings), profile.isDefault],
+        profile.baseUrl, JSON.stringify(profile.settings), profile.isDefault, profile.credential ? encryptPromptOptimizerCredential(profile.credential, credentialBinding(this.scope, profile)) : null],
       'save prompt optimizer model profile'
     );
-    return mapProfile(result.rows[0]);
+    return mapProfile(result.rows[0], this.scope);
   }
 
   async listVersions(workspaceId: string): Promise<PromptVersion[]> {
@@ -198,7 +207,8 @@ function mapVersion(row: VersionRow): PromptVersion {
   };
 }
 
-function mapProfile(row: Record<string, unknown>): StoredModelProfile {
+function mapProfile(row: Record<string, unknown>, scope: { tenantId: string; corpusId: string }): StoredModelProfile {
+  const envelope = typeof row.credential_envelope === 'string' ? row.credential_envelope : null;
   return {
     profileId: String(row.profile_id), name: String(row.name),
     provider: row.provider as StoredModelProfile['provider'], model: String(row.model),
@@ -206,5 +216,11 @@ function mapProfile(row: Record<string, unknown>): StoredModelProfile {
     settings: typeof row.settings === 'object' && row.settings !== null ? row.settings as Record<string, unknown> : {},
     isDefault: row.is_default === true,
     archivedAt: row.archived_at ? String(row.archived_at) : null,
+    credential: envelope ? decryptPromptOptimizerCredential(envelope, credentialBinding(scope, { profileId: String(row.profile_id), provider: String(row.provider) })) : null,
+    hasCredential: row.has_credential === true || Boolean(envelope),
   };
+}
+
+function credentialBinding(scope: { tenantId: string; corpusId: string }, profile: { profileId: string; provider: string }) {
+  return [scope.tenantId, scope.corpusId, profile.profileId, profile.provider, 'v1'].join('\0');
 }

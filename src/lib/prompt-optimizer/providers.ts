@@ -3,7 +3,7 @@ import type { ModelMessage } from './templates';
 
 export interface ModelProfileRuntimeInput {
   profileId: string; name: string; provider: ModelProvider; model: string; baseUrl: string | null;
-  settings: Record<string, unknown>;
+  settings: Record<string, unknown>; credential?: string | null;
 }
 
 type Environment = Record<string, string | undefined>;
@@ -22,10 +22,10 @@ export function resolveProviderRuntime(profile: ModelProfileRuntimeInput, env: E
   let apiKey = '';
   if (profile.provider === 'openai') {
     baseUrl = 'https://api.openai.com/v1';
-    apiKey = env.PROMPT_OPTIMIZER_OPENAI_API_KEY || env.OPENAI_API_KEY || '';
+    apiKey = profile.credential || env.PROMPT_OPTIMIZER_OPENAI_API_KEY || env.OPENAI_API_KEY || '';
   } else if (profile.provider === 'openrouter') {
     baseUrl = 'https://openrouter.ai/api/v1';
-    apiKey = env.PROMPT_OPTIMIZER_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY || '';
+    apiKey = profile.credential || env.PROMPT_OPTIMIZER_OPENROUTER_API_KEY || env.OPENROUTER_API_KEY || '';
   } else if (profile.provider === 'ollama') {
     if (production) throw new Error('Ollama prompt optimization is development only.');
     baseUrl = profile.baseUrl || 'http://127.0.0.1:11434/v1';
@@ -34,7 +34,7 @@ export function resolveProviderRuntime(profile: ModelProfileRuntimeInput, env: E
   } else {
     if (!profile.baseUrl) throw new Error('Compatible provider requires a base URL.');
     baseUrl = profile.baseUrl;
-    apiKey = env.PROMPT_OPTIMIZER_COMPATIBLE_API_KEY || env.CUSTOM_API_KEY || '';
+    apiKey = profile.credential || (production ? '' : env.PROMPT_OPTIMIZER_COMPATIBLE_API_KEY || env.CUSTOM_API_KEY || '');
     const url = checkedUrl(baseUrl);
     if (production) {
       if (url.protocol !== 'https:') throw new Error('Production compatible model endpoints must use HTTPS.');

@@ -43,18 +43,20 @@ export class PromptOptimizerService {
 
   async saveProfile(raw: unknown): Promise<StoredModelProfile> {
     if (!isRecord(raw)) throw new Error('Model profile must be an object.');
-    const allowed = new Set(['profileId', 'name', 'provider', 'model', 'baseUrl', 'settings', 'isDefault']);
+    const allowed = new Set(['profileId', 'name', 'provider', 'model', 'baseUrl', 'settings', 'isDefault', 'token']);
     for (const key of Object.keys(raw)) if (!allowed.has(key)) throw new Error(`Unknown field: ${key}`);
     const provider = requiredString(raw.provider, 'provider') as ModelProvider;
     if (!MODEL_PROVIDERS.includes(provider)) throw new Error('provider is invalid.');
     const baseUrl = raw.baseUrl == null || raw.baseUrl === '' ? null : safeBaseUrl(requiredString(raw.baseUrl, 'baseUrl'));
     if (baseUrl && baseUrl.length > 2048) throw new Error('baseUrl is too long.');
     const settings = validateModelSettings(raw.settings);
+    const credential = raw.token == null || raw.token === '' ? null : requiredString(raw.token, 'token');
+    if (credential && credential.length > 4096) throw new Error('token exceeds 4096 characters.');
     return this.store.saveModelProfile({
       profileId: raw.profileId == null ? randomUUID() : requiredIdentifier(raw.profileId, 'profileId'),
       name: requiredString(raw.name, 'name').slice(0, 120), provider,
       model: requiredString(raw.model, 'model').slice(0, 200), baseUrl, settings,
-      isDefault: raw.isDefault === true, archivedAt: null,
+      isDefault: raw.isDefault === true, archivedAt: null, credential, hasCredential: Boolean(credential),
     });
   }
 }

@@ -83,7 +83,7 @@ test('real PostgreSQL migration and persistence round trip', {
       appRole,
     });
     assert.deepEqual(repeatedMigration.applied, []);
-    assert.deepEqual(repeatedMigration.skipped, ['0001', '0002', '0003']);
+    assert.deepEqual(repeatedMigration.skipped, ['0001', '0002', '0003', '0004']);
 
     const appDatabaseUrl = new URL(databaseUrl);
     appDatabaseUrl.username = appRole;

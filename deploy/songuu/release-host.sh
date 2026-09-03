@@ -576,6 +576,20 @@ EOF
   ln -s ".env.prod" "$LEGACY_ENV_FILE"
 fi
 
+# Keep credential encryption independent from the access token so auth-token
+# rotation cannot make stored model credentials unreadable.
+if ! grep -q '^PROMPT_OPTIMIZER_CREDENTIAL_KEY=' "$ENV_FILE"; then
+  credential_key=$(openssl rand -hex 32)
+  printf '\nPROMPT_OPTIMIZER_CREDENTIAL_KEY=%s\n' "$credential_key" >> "$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+fi
+credential_key_value=$(bash -c 'set -euo pipefail; set -a; . "$1"; printf "%s" "${PROMPT_OPTIMIZER_CREDENTIAL_KEY:-}"' bash "$ENV_FILE")
+if [[ ! "$credential_key_value" =~ ^[A-Fa-f0-9]{64,}$ ]]; then
+  echo "Production prompt optimizer credential key must be a stable random hex secret" >&2
+  exit 2
+fi
+unset credential_key_value credential_key
+
 # The GitHub host deployment supplies a dedicated provisioner. It upgrades an
 # existing pre-PostgreSQL environment atomically and is intentionally separate
 # from the app runtime so database owner credentials never reach PM2.

@@ -402,6 +402,11 @@ export async function grantDirectReadonlyRole(client, role) {
         `revoke usage, select, update on all sequences in schema public from ${quotedRole}`,
         `grant usage on schema public to ${quotedRole}`,
         `grant select on table ${DIRECT_READONLY_TABLE_LIST} to ${quotedRole}`,
+        `revoke select on table public.prompt_optimizer_model_profiles from ${quotedRole}`,
+        `grant select (
+           tenant_id, corpus_id, profile_id, name, provider, model, base_url,
+           settings, is_default, archived_at, version, created_at, updated_at
+         ) on table public.prompt_optimizer_model_profiles to ${quotedRole}`,
       ]) {
         await safeQuery(
           client,

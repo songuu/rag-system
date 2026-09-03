@@ -126,9 +126,13 @@ test('migration runner grants an optional direct role read-only access to the ex
   assert.equal(statements.some((text) => /grant[\s\S]*(all tables|all sequences)/i.test(text)), false);
   assert.equal(statements.some((text) => /alter default privileges[\s\S]*grant/i.test(text)), false);
   assert.equal(statements.some((text) => /alter default privileges/i.test(text)), false);
-  assert.equal(statements.some((text) => /grant[\s\S]*(insert|update|delete|truncate|references|trigger)/i.test(text)), false);
+  assert.equal(statements.some((text) => /grant[\s\S]*\b(insert|update|delete|truncate|references|trigger)\b/i.test(text)), false);
   assert.equal(statements.some((text) => /grant[\s\S]*(usage|select|update)[\s\S]*sequence/i.test(text)), false);
   assert.ok(statements.some((text) => /revoke[\s\S]*all sequences/i.test(text)));
+  assert.ok(statements.some((text) => /revoke select on table public\.prompt_optimizer_model_profiles/i.test(text)));
+  const profileColumnGrant = statements.find((text) => /grant select \([\s\S]*profile_id[\s\S]*prompt_optimizer_model_profiles/i.test(text));
+  assert.ok(profileColumnGrant);
+  assert.doesNotMatch(profileColumnGrant, /credential_envelope/i);
 });
 
 test('migration session leaves grants unchanged until a direct read-only role is configured', async () => {

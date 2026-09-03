@@ -45,8 +45,8 @@ interface CachedPool {
 
 let cachedPool: CachedPool | null = null;
 let expectedSchemaChecksumPromise: Promise<string> | null = null;
-const EXPECTED_SCHEMA_VERSION = '0003';
-const EXPECTED_SCHEMA_FILENAME = '0003_prompt_optimizer.sql';
+const EXPECTED_SCHEMA_VERSION = '0004';
+const EXPECTED_SCHEMA_FILENAME = '0004_prompt_optimizer_credentials.sql';
 
 export class PostgresQueryError extends Error {
   readonly operation: string;
