@@ -22,7 +22,6 @@ import {
   getMilvusInstance,
 } from './milvus-client';
 import { getMilvusConnectionConfig } from './milvus-config';
-import { v4 as uuidv4 } from 'uuid';
 import * as XLSX from 'xlsx';
 import { createEmbedding, getConfigSummary } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
@@ -786,7 +785,7 @@ export async function splitDocument(
     const endOffset = startOffset + content.length;
     searchCursor = Math.max(startOffset + 1, endOffset - chunkOverlap);
     return {
-      id: `${document.metadata.source}-chunk-${index}-${uuidv4().slice(0, 8)}`,
+      id: createStableDocumentChunkId(document.metadata, index, startOffset, endOffset, content),
       content,
       metadata: {
         ...document.metadata,
@@ -798,7 +797,33 @@ export async function splitDocument(
     };
   });
 }
+function createStableDocumentChunkId(
+  metadata: DocumentMetadata,
+  chunkIndex: number,
+  startOffset: number,
+  endOffset: number,
+  content: string
+): string {
+  const identity = [
+    readDocumentIdentity(metadata, ['tenantId', 'tenant_id']),
+    readDocumentIdentity(metadata, ['corpusId', 'corpus_id']),
+    readDocumentIdentity(metadata, ['documentId', 'document_id', 'source']),
+    readDocumentIdentity(metadata, ['documentVersion', 'document_version', 'sourceHash', 'source_hash']),
+    String(chunkIndex),
+    String(startOffset),
+    String(endOffset),
+    content,
+  ].join('\0');
+  return `chunk-${createHash('sha256').update(identity).digest('hex')}`;
+}
 
+function readDocumentIdentity(metadata: DocumentMetadata, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
 // ============== 嵌入生成器 ==============
 
 /**

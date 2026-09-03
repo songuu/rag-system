@@ -134,6 +134,28 @@ test('repeated text chunks advance monotonically and remain source aligned', asy
   }
 });
 
+test('identical document versions receive stable, scope-bound chunk IDs', async () => {
+  const createDocument = (tenantId) => ({
+    content: 'repeatable source text '.repeat(20),
+    metadata: {
+      source: 'fixture.txt',
+      type: 'raw',
+      tenantId,
+      corpusId: 'corpus-a',
+      documentId: 'doc-a',
+      documentVersion: 'sha256:version-a',
+    },
+  });
+  const config = { chunkSize: 100, chunkOverlap: 10 };
+
+  const first = await splitDocument(createDocument('tenant-a'), config);
+  const second = await splitDocument(createDocument('tenant-a'), config);
+  const foreignScope = await splitDocument(createDocument('tenant-b'), config);
+
+  assert.deepEqual(first.map(chunk => chunk.id), second.map(chunk => chunk.id));
+  assert.notDeepEqual(first.map(chunk => chunk.id), foreignScope.map(chunk => chunk.id));
+  assert.ok(first.every(chunk => /^chunk-[a-f0-9]{64}$/.test(chunk.id)));
+});
 test('pipeline document IDs are bounded and deterministic', () => {
   assert.equal(resolvePipelineDocumentId('doc-1', 'source'), 'doc-1');
   assert.throws(

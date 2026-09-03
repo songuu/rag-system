@@ -26,8 +26,11 @@ const {
   MilvusVectorStore,
   buildMilvusSearchParams,
   createMilvusHybridRuntimeManifest,
+  dedupeMilvusSearchResults,
+  getDeduplicatingSearchFields,
   getScopedSearchFields,
   normalizeMilvusConsistencyLevel,
+  resolveMilvusSearchCandidateLimit,
   resolveMilvusSearchOptions,
 } = await import('./milvus-client.ts');
 
@@ -97,8 +100,126 @@ test('tenant-scoped searches always request evidence provenance fields', () => {
       'tenant_id',
       'corpus_id',
       'document_id',
+      'document_version',
+      'chunk_index',
       'trust_level',
     ]
+  );
+});
+
+test('searches always request duplicate-provenance fields, even for slim payloads', () => {
+  assert.deepEqual(getDeduplicatingSearchFields(['id']), [
+    'id',
+    'metadata_json',
+    'tenant_id',
+    'corpus_id',
+    'document_id',
+    'document_version',
+    'chunk_index',
+  ]);
+});
+
+test('search overfetches candidates and removes duplicate logical chunks before Top-K', () => {
+  assert.equal(resolveMilvusSearchCandidateLimit(3), 12);
+  assert.equal(resolveMilvusSearchCandidateLimit(100), 400);
+  assert.equal(resolveMilvusSearchCandidateLimit(401), 1604);
+
+  const results = dedupeMilvusSearchResults([
+    searchResult('duplicate-old', 0.99, 'doc-a', 'version-a', 5),
+    searchResult('duplicate-new', 0.98, 'doc-a', 'version-a', 5),
+    searchResult('next-chunk', 0.97, 'doc-a', 'version-a', 6),
+    searchResult('other-document', 0.96, 'doc-b', 'version-b', 0),
+  ], 3);
+
+  assert.deepEqual(results.map(result => result.id), [
+    'duplicate-old',
+    'next-chunk',
+    'other-document',
+  ]);
+});
+
+test('search deduplication retains same-version chunks with different source spans', () => {
+  const results = dedupeMilvusSearchResults([
+    searchResult('first-layout', 0.99, 'doc-a', 'version-a', 0, 0, 120),
+    searchResult('rechunked-layout', 0.98, 'doc-a', 'version-a', 0, 0, 240),
+    searchResult('duplicate-layout', 0.97, 'doc-a', 'version-a', 0, 0, 120),
+  ], 3);
+
+  assert.deepEqual(results.map(result => result.id), [
+    'first-layout',
+    'rechunked-layout',
+  ]);
+});
+
+test('dense writes use primary-key upsert and surface failed mutations', async () => {
+  const store = new MilvusVectorStore({
+    ...createConfig(),
+    embeddingDimension: 2,
+    flushOnInsert: false,
+    reloadAfterInsert: false,
+  });
+  store.isInitialized = true;
+  const upserts = [];
+  let insertCalls = 0;
+  attachNativeClient(store, {
+    async upsert(request) {
+      upserts.push(structuredClone(request));
+      return { status: { error_code: 'Success' }, upsert_cnt: request.data.length };
+    },
+    async insert() {
+      insertCalls += 1;
+      return { status: { error_code: 'Success' } };
+    },
+  });
+  const document = createWriteDocument('stable-dense-id');
+
+  assert.deepEqual(await store.insertDocuments([document]), ['stable-dense-id']);
+  assert.deepEqual(await store.insertDocuments([document]), ['stable-dense-id']);
+  assert.equal(insertCalls, 0);
+  assert.deepEqual(upserts.map(request => request.data.map(row => row.id)), [
+    ['stable-dense-id'],
+    ['stable-dense-id'],
+  ]);
+
+  attachNativeClient(store, {
+    async upsert() {
+      return { status: { error_code: 'UnexpectedError', reason: 'write unavailable' } };
+    },
+  });
+  await assert.rejects(() => store.insertDocuments([document]), /Upsert failed: write unavailable/);
+});
+
+test('hybrid writes use primary-key upsert and surface failed mutations', async () => {
+  const store = createHybridTestStore();
+  store.initializeHybridCollection = async () => {};
+  const upserts = [];
+  let insertCalls = 0;
+  attachNativeClient(store, {
+    async upsert(request) {
+      upserts.push(structuredClone(request));
+      return { status: { error_code: 'Success' }, upsert_cnt: request.data.length };
+    },
+    async insert() {
+      insertCalls += 1;
+      return { status: { error_code: 'Success' } };
+    },
+    async flushSync() {},
+  });
+  const document = createWriteDocument('stable-hybrid-id');
+  const manifest = createHybridManifest();
+
+  assert.deepEqual(await store.insertHybridDocuments(manifest, [document]), ['stable-hybrid-id']);
+  assert.equal(insertCalls, 0);
+  assert.deepEqual(upserts[0].data.map(row => row.id), ['stable-hybrid-id']);
+
+  attachNativeClient(store, {
+    async upsert() {
+      return { status: { error_code: 'UnexpectedError', reason: 'shadow unavailable' } };
+    },
+  });
+  await assert.rejects(
+    () => store.insertHybridDocuments(manifest, [document]),
+    /Hybrid shadow insert failed: shadow unavailable/
   );
 });
 
@@ -698,6 +819,42 @@ function createConfig() {
   };
 }
 
+function searchResult(id, score, documentId, documentVersion, chunkIndex, startOffset = chunkIndex * 100, endOffset = startOffset + 80) {
+  return {
+    id,
+    content: id,
+    score,
+    distance: 1 - score,
+    metadata: {
+      tenantId: 'tenant-a',
+      corpusId: 'corpus-a',
+      documentId,
+      documentVersion,
+      chunkIndex,
+      startOffset,
+      endOffset,
+    },
+  };
+}
+
+function createWriteDocument(id) {
+  return {
+    id,
+    content: 'Evidence content.',
+    embedding: [0.1, 0.2],
+    metadata: {
+      source: 'evidence.md',
+      tenantId: 'tenant-a',
+      corpusId: 'corpus-a',
+      documentId: 'document-a',
+      documentVersion: 'version-a',
+      chunkIndex: 0,
+      totalChunks: 1,
+      startOffset: 0,
+      endOffset: 17,
+    },
+  };
+}
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }

@@ -14,7 +14,7 @@ import {
   RANKER_TYPE,
   ConsistencyLevelEnum,
   type HybridSearchReq,
-  type InsertReq,
+  type UpsertReq,
   type QueryReq,
   type SearchSimpleReq,
 } from '@zilliz/milvus2-sdk-node';
@@ -106,6 +106,8 @@ type MilvusHit = {
   corpus_id?: string;
   document_id?: string;
   trust_level?: string;
+  document_version?: string;
+  chunk_index?: number;
 };
 
 export type MilvusQueryRow = Record<string, unknown> & {
@@ -162,20 +164,120 @@ export function getSlimSearchFields(): MilvusSearchOutputField[] {
   return ['id', 'content', 'source'];
 }
 
-export function getScopedSearchFields(
+export function getDeduplicatingSearchFields(
   outputFields: readonly MilvusSearchOutputField[]
 ): MilvusSearchOutputField[] {
   return [
     ...new Set([
       ...outputFields,
+      'id',
+      'metadata_json',
       'tenant_id',
       'corpus_id',
       'document_id',
+      'document_version',
+      'chunk_index',
+    ] as MilvusSearchOutputField[]),
+  ];
+}
+
+export function getScopedSearchFields(
+  outputFields: readonly MilvusSearchOutputField[]
+): MilvusSearchOutputField[] {
+  return [
+    ...new Set([
+      ...getDeduplicatingSearchFields(outputFields),
       'trust_level',
     ] as MilvusSearchOutputField[]),
   ];
 }
 
+/**
+ * Retrieves enough candidates to remove legacy duplicate chunks without making a
+ * normal Top-K request unexpectedly expensive. It must remain at least Top-K
+ * so the public search contract is never silently truncated.
+ */
+export function resolveMilvusSearchCandidateLimit(topK: number): number {
+  if (!Number.isSafeInteger(topK) || topK < 1 || topK > Math.floor(Number.MAX_SAFE_INTEGER / 4)) {
+    throw new Error('Milvus topK must be a positive safe integer.');
+  }
+  return topK * 4;
+}
+
+/**
+ * A document can have multiple historical rows when an older importer generated
+ * random primary keys. Keep the highest-ranked copy of each logical chunk so a
+ * Top-K response represents distinct evidence rather than repeated ingestion.
+ */
+export function dedupeMilvusSearchResults(
+  results: readonly MilvusSearchResult[],
+  topK: number
+): MilvusSearchResult[] {
+  if (!Number.isSafeInteger(topK) || topK < 1) {
+    throw new Error('Milvus topK must be a positive safe integer.');
+  }
+
+  const unique = new Set<string>();
+  const deduplicated: MilvusSearchResult[] = [];
+  for (const [resultIndex, result] of results.entries()) {
+    const identity = getMilvusSearchResultIdentity(result, resultIndex);
+    if (unique.has(identity)) continue;
+    unique.add(identity);
+    deduplicated.push(result);
+    if (deduplicated.length === topK) break;
+  }
+  return deduplicated;
+}
+
+function getMilvusSearchResultIdentity(
+  result: MilvusSearchResult,
+  resultIndex: number
+): string {
+  const tenantId = readSearchMetadataString(result.metadata, ['tenantId', 'tenant_id']);
+  const corpusId = readSearchMetadataString(result.metadata, ['corpusId', 'corpus_id']);
+  const documentId = readSearchMetadataString(result.metadata, ['documentId', 'document_id']);
+  const documentVersion = readSearchMetadataString(result.metadata, [
+    'documentVersion',
+    'document_version',
+    'sourceHash',
+    'source_hash',
+  ]);
+  const startOffset = readSearchMetadataInteger(result.metadata, ['startOffset', 'start_offset']);
+  const endOffset = readSearchMetadataInteger(result.metadata, ['endOffset', 'end_offset']);
+  if (documentId && documentVersion && startOffset !== undefined && endOffset !== undefined
+    && startOffset >= 0 && endOffset > startOffset) {
+    return 'chunk:' + JSON.stringify([
+      tenantId || '',
+      corpusId || '',
+      documentId,
+      documentVersion,
+      startOffset,
+      endOffset,
+    ]);
+  }
+  return result.id ? 'row:' + result.id : 'row:unknown-' + resultIndex;
+}
+
+function readSearchMetadataString(metadata: MilvusMetadata, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function readSearchMetadataInteger(metadata: MilvusMetadata, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = metadata[key];
+    const candidate = typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^-?\d+$/u.test(value.trim())
+        ? Number(value)
+        : undefined;
+    if (candidate !== undefined && Number.isSafeInteger(candidate)) return candidate;
+  }
+  return undefined;
+}
 export function getOrderedDocumentFields(
   metadata: Record<string, unknown> | undefined
 ): {
@@ -1026,18 +1128,18 @@ export class MilvusVectorStore {
       source: data[0].source
     });
 
-    const insertReq: InsertReq = {
+    const upsertReq: UpsertReq = {
       collection_name: collectionName,
       data: data,
     };
 
-    const result = await client.insert(insertReq);
+    const result = await client.upsert(upsertReq);
 
     if (result.status.error_code !== 'Success') {
-      throw new Error(`Insert failed: ${result.status.reason}`);
+      throw new Error(`Upsert failed: ${result.status.reason}`);
     }
 
-    console.log(`[Milvus] Inserted ${result.insert_cnt} documents`);
+    console.log(`[Milvus] Upserted ${result.upsert_cnt} documents`);
 
     if (this.config.flushOnInsert) {
       console.log(`[Milvus] Flushing data...`);
@@ -1314,7 +1416,7 @@ export class MilvusVectorStore {
         ...(endOffset === undefined ? {} : { end_offset: endOffset }),
       };
     });
-    const result = await client.insert({
+    const result = await client.upsert({
       collection_name: manifest.collectionName,
       data,
     });
@@ -1570,15 +1672,15 @@ export class MilvusVectorStore {
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
     const searchOptions = resolveMilvusSearchOptions(this.config, threshold, filter);
-    if (isTenantIsolationRequired()) {
-      searchOptions.outputFields = getScopedSearchFields(searchOptions.outputFields);
-    }
+    searchOptions.outputFields = isTenantIsolationRequired()
+      ? getScopedSearchFields(searchOptions.outputFields)
+      : getDeduplicatingSearchFields(searchOptions.outputFields);
 
     const searchReq = {
       collection_name: collectionName,
       data: [queryEmbedding],
       anns_field: 'embedding',
-      limit: topK,
+      limit: resolveMilvusSearchCandidateLimit(topK),
       output_fields: searchOptions.outputFields,
       params: searchOptions.searchParams,
       filter: searchOptions.filter,
@@ -1695,6 +1797,12 @@ export class MilvusVectorStore {
           ...(hitData.document_id
             ? { document_id: hitData.document_id, documentId: hitData.document_id }
             : {}),
+          ...(hitData.document_version
+            ? { document_version: hitData.document_version, documentVersion: hitData.document_version }
+            : {}),
+          ...(typeof hitData.chunk_index === 'number' && Number.isSafeInteger(hitData.chunk_index)
+            ? { chunk_index: hitData.chunk_index, chunkIndex: hitData.chunk_index }
+            : {}),
           ...(hitData.trust_level
             ? { trust_level: hitData.trust_level, trustLevel: hitData.trust_level }
             : {}),
@@ -1707,9 +1815,16 @@ export class MilvusVectorStore {
     if (filteredCount > 0) {
       console.log(`[Milvus] 阈值过滤: ${filteredCount} 个结果低于阈值 ${searchOptions.threshold}`);
     }
-    console.log(`[Milvus] 返回 ${searchResults.length} 个结果 (threshold=${searchOptions.threshold})`);
+    const deduplicatedResults = dedupeMilvusSearchResults(searchResults, topK);
+    if (deduplicatedResults.length !== searchResults.length) {
+      console.log(
+        `[Milvus] 去重 ${searchResults.length - deduplicatedResults.length} 个重复文档块 `
+        + `(candidates=${searchResults.length}, topK=${topK})`
+      );
+    }
+    console.log(`[Milvus] 返回 ${deduplicatedResults.length} 个结果 (threshold=${searchOptions.threshold})`);
 
-    return searchResults;
+    return deduplicatedResults;
   }
 
   /**
