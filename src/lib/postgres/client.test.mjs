@@ -158,7 +158,7 @@ test('readiness requires the current migration ledger entry and every runtime ta
     connected: true,
     schemaReady: true,
   });
-  assert.equal(calls[0].values[0], '0002');
+  assert.equal(calls[0].values[0], '0003');
   assert.match(calls[0].values[1], /^[0-9a-f]{64}$/);
   assert.deepEqual(calls[0].values.slice(2), ['tenant-a', 'corpus-a']);
   for (const relation of [
@@ -173,6 +173,9 @@ test('readiness requires the current migration ledger entry and every runtime ta
     'trace_scores',
     'maic_courses',
     'maic_classroom_sessions',
+    'prompt_optimizer_model_profiles',
+    'prompt_optimizer_workspaces',
+    'prompt_optimizer_versions',
   ]) {
     assert.match(calls[0].text, new RegExp(`public\\.${relation}`));
   }

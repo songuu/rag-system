@@ -117,6 +117,9 @@ test('migration runner grants an optional direct role read-only access to the ex
     'public.trace_scores',
     'public.maic_courses',
     'public.maic_classroom_sessions',
+    'public.prompt_optimizer_model_profiles',
+    'public.prompt_optimizer_workspaces',
+    'public.prompt_optimizer_versions',
   ]) {
     assert.match(selectGrant, new RegExp(table.replace('.', '\\.')));
   }
@@ -198,6 +201,9 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
     'trace_scores',
     'maic_courses',
     'maic_classroom_sessions',
+    'prompt_optimizer_model_profiles',
+    'prompt_optimizer_workspaces',
+    'prompt_optimizer_versions',
   ]) {
     assert.match(sql, new RegExp(`create table(?: if not exists)? public\\.${table}\\b`, 'i'));
   }
@@ -224,6 +230,10 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
   );
   assert.match(sql, /maic_courses[\s\S]*?payload\s+jsonb[\s\S]*?version\s+bigint/i);
   assert.match(sql, /maic_classroom_sessions[\s\S]*?payload\s+jsonb[\s\S]*?version\s+bigint/i);
+  assert.match(sql, /prompt_optimizer_model_profiles[\s\S]*?provider\s+text[\s\S]*?settings\s+jsonb/i);
+  assert.match(sql, /prompt_optimizer_workspaces[\s\S]*?variables\s+jsonb[\s\S]*?current_version\s+integer/i);
+  assert.match(sql, /prompt_optimizer_versions[\s\S]*?version_number\s+integer[\s\S]*?prompt\s+text/i);
+  assert.match(sql, /unique index prompt_optimizer_one_default_profile_idx/i);
 });
 
 test('migration discovery is ordered, checksummed, and rejects duplicate versions', async () => {

@@ -45,8 +45,8 @@ interface CachedPool {
 
 let cachedPool: CachedPool | null = null;
 let expectedSchemaChecksumPromise: Promise<string> | null = null;
-const EXPECTED_SCHEMA_VERSION = '0002';
-const EXPECTED_SCHEMA_FILENAME = '0002_maic_courses_sessions.sql';
+const EXPECTED_SCHEMA_VERSION = '0003';
+const EXPECTED_SCHEMA_FILENAME = '0003_prompt_optimizer.sql';
 
 export class PostgresQueryError extends Error {
   readonly operation: string;
@@ -182,6 +182,9 @@ export async function checkPostgresReadiness(
          and to_regclass('public.trace_scores') is not null
          and to_regclass('public.maic_courses') is not null
          and to_regclass('public.maic_classroom_sessions') is not null
+         and to_regclass('public.prompt_optimizer_model_profiles') is not null
+         and to_regclass('public.prompt_optimizer_workspaces') is not null
+         and to_regclass('public.prompt_optimizer_versions') is not null
          and exists (
            select 1
            from public.rag_schema_migrations

@@ -1186,6 +1186,10 @@ export default function HomePage() {
                 <i className="fas fa-book-open"></i>
                 <span className="hidden sm:inline">博客</span>
               </Link>
+              <Link href="/prompt-optimizer" className="p-2 text-amber-600 hover:text-amber-800 hover:bg-amber-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="提示词优化台">
+                <i className="fas fa-wand-magic-sparkles"></i>
+                <span className="hidden xl:inline">提示词</span>
+              </Link>
               <div className="w-px h-6 bg-gray-200 mx-1"></div>
               <Link href="/history" className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors" title="历史对话">
                 <i className="fas fa-history"></i>

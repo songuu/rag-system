@@ -27,6 +27,9 @@ const DIRECT_READONLY_TABLES = Object.freeze([
   'public.trace_scores',
   'public.maic_courses',
   'public.maic_classroom_sessions',
+  'public.prompt_optimizer_model_profiles',
+  'public.prompt_optimizer_workspaces',
+  'public.prompt_optimizer_versions',
 ]);
 const DIRECT_READONLY_TABLE_LIST = DIRECT_READONLY_TABLES.join(', ');
 
@@ -349,7 +352,8 @@ export async function grantApplicationRole(client, role) {
     async () => {
       for (const statement of [
         `revoke insert, update, delete, truncate, references, trigger on table
-           public.rag_schema_migrations, public.tenants, public.corpora
+           public.rag_schema_migrations, public.tenants, public.corpora,
+           public.prompt_optimizer_versions
          from ${quotedRole}`,
         `alter default privileges in schema public
          revoke select, insert, update, delete, truncate, references, trigger
@@ -362,8 +366,10 @@ export async function grantApplicationRole(client, role) {
         `grant select, insert, update, delete on table
            public.document_assets, public.object_blobs, public.index_jobs,
            public.traces, public.observations, public.trace_scores,
-           public.maic_courses, public.maic_classroom_sessions
+           public.maic_courses, public.maic_classroom_sessions,
+           public.prompt_optimizer_model_profiles, public.prompt_optimizer_workspaces
          to ${quotedRole}`,
+        `grant select, insert on table public.prompt_optimizer_versions to ${quotedRole}`,
         `grant usage, select on all sequences in schema public to ${quotedRole}`,
       ]) {
         await safeQuery(

@@ -6,8 +6,12 @@ import { fileURLToPath } from 'node:url';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 
+function readScript(filename) {
+  return readFileSync(path.join(directory, filename), 'utf8').replace(/\r\n?/g, '\n');
+}
+
 test('release gates pm2 save on full readiness after liveness', () => {
-  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const script = readScript('release-host.sh');
   const liveGate = script.indexOf('if ! live="$(wait_for_liveness)"');
   const readyProbe = script.indexOf('if ! ready="$(wait_for_readiness)"');
   const readyGate = script.indexOf('RAG release failed readiness', readyProbe);
@@ -20,7 +24,7 @@ test('release gates pm2 save on full readiness after liveness', () => {
 });
 
 test('environment reload verifies readiness before updating last-known-good', () => {
-  const script = readFileSync(path.join(directory, 'reload-rag-system-env.sh'), 'utf8');
+  const script = readScript('reload-rag-system-env.sh');
   const readyGate = script.indexOf('if ! ready="$(wait_for_readiness)"');
   const lastGoodWrite = script.indexOf('cp -a "$ENV_FILE" "${LAST_GOOD_FILE}.next.$$"');
 
@@ -30,9 +34,9 @@ test('environment reload verifies readiness before updating last-known-good', ()
 });
 
 test('first host release defaults to PostgreSQL and requires its runtime scope', () => {
-  const release = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
-  const reload = readFileSync(path.join(directory, 'reload-rag-system-env.sh'), 'utf8');
-  const runner = readFileSync(path.join(directory, 'run-rag-system.sh'), 'utf8');
+  const release = readScript('release-host.sh');
+  const reload = readScript('reload-rag-system-env.sh');
+  const runner = readScript('run-rag-system.sh');
 
   assert.match(release, /^RAG_PERSISTENCE_BACKEND=postgres$/m);
   assert.doesNotMatch(release, /^RAG_PERSISTENCE_BACKEND=local$/m);
@@ -48,7 +52,7 @@ test('first host release defaults to PostgreSQL and requires its runtime scope',
 });
 
 test('host release provisions PostgreSQL before validating production persistence', () => {
-  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const script = readScript('release-host.sh');
   const environmentCreation = script.indexOf('if [[ ! -f "$ENV_FILE" ]]');
   const reloadLock = script.indexOf('flock 9');
   const environmentSnapshot = script.indexOf('  snapshot_database_environment\n');
@@ -249,7 +253,7 @@ test('host defaults participate in the atomic release environment snapshot', () 
 });
 
 test('optional post-release gate is path constrained and participates in rollback', () => {
-  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const script = readScript('release-host.sh');
   const ready = script.indexOf('if ! ready="$(wait_for_readiness)"');
   const verify = script.indexOf('run_post_release_gate verify "$release" "$previous"');
   const save = script.lastIndexOf('pm2 save');
@@ -271,7 +275,7 @@ test('optional post-release gate is path constrained and participates in rollbac
 });
 
 test('public PostgreSQL activation remains rollbackable until the application release is durable', () => {
-  const script = readFileSync(path.join(directory, 'release-host.sh'), 'utf8');
+  const script = readScript('release-host.sh');
   const snapshot = script.indexOf('snapshot_database_environment');
   const activate = script.indexOf('RAG_POSTGRES_CUTOVER_ACTION="$POSTGRES_CUTOVER_ACTION"');
   const migrate = script.indexOf('node scripts/migrate-postgres.mjs');
