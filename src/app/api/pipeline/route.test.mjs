@@ -6,11 +6,25 @@ import test, { after } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const pipelineStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+import { EmbeddingOutputValidationError } from '@/lib/embedding-batch';
 let calls = [];
 let failure;
-export function resetPipelineCalls() { calls = []; failure = undefined; }
+let waitForRelease = false;
+let releasePending;
+export function resetPipelineCalls() {
+  calls = [];
+  failure = undefined;
+  waitForRelease = false;
+  releasePending = undefined;
+}
 export function getPipelineCalls() { return structuredClone(calls); }
 export function setPipelineFailure(value) { failure = value; }
+export function setPipelinePending() { waitForRelease = true; }
+export function releasePipeline() {
+  waitForRelease = false;
+  releasePending?.();
+  releasePending = undefined;
+}
 export const DataSourceType = undefined;
 export class MilvusHybridIngestOperationalError extends Error {
   constructor(code, status, message) {
@@ -33,12 +47,18 @@ export class DocumentPipeline {
       signalIsAbortSignal: options.signal instanceof AbortSignal,
       config: structuredClone(this.config),
     });
+    if (waitForRelease) {
+      await new Promise(resolve => { releasePending = resolve; });
+    }
     if (failure === 'reconciliation') {
       throw new MilvusHybridIngestReconciliationRequiredError(
         'MILVUS_HYBRID_INGEST_RECONCILIATION_REQUIRED',
         503,
         'Milvus hybrid ingest requires reconciliation. reconciliationId=audit-test'
       );
+    }
+    if (failure === 'embedding-output') {
+      throw new EmbeddingOutputValidationError('private invalid vector detail');
     }
     if (failure === 'rolled_back') {
       throw new MilvusHybridIngestOperationalError(
@@ -151,20 +171,66 @@ const { NextRequest } = await import('next/server');
 const { POST } = await import('./route.ts');
 const {
   getPipelineCalls,
+  releasePipeline,
   resetPipelineCalls,
   setPipelineFailure,
+  setPipelinePending,
 } = await import(pipelineStubUrl);
 const {
   getPersistenceCalls,
   resetPersistenceCalls,
   setPersistenceFailure,
 } = await import(persistenceStubUrl);
+const {
+  getVectorIngestSnapshot,
+  resetVectorIngestStateForTests,
+} = await import('@/lib/rag/vector-ingest-state');
 
 after(() => {
+  resetVectorIngestStateForTests();
   for (const [key, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+});
+
+test('text ingest reserves one build slot and rejects concurrent ingestion', async () => {
+  resetPipelineCalls();
+  resetVectorIngestStateForTests();
+  setPipelinePending();
+  const first = POST(pipelineTextRequest('pipeline-ingest-first'));
+
+  try {
+    await waitForVectorIngestStatus('building');
+    assert.equal(getVectorIngestSnapshot().activeOperations, 1);
+
+    const second = await POST(pipelineTextRequest('pipeline-ingest-second'));
+    const body = await second.json();
+    assert.equal(second.status, 429);
+    assert.equal(body.code, 'VECTOR_INGEST_BUSY');
+    assert.equal(body.requestId, 'pipeline-ingest-second');
+    assert.equal(second.headers.get('Retry-After'), '2');
+  } finally {
+    releasePipeline();
+    await first;
+    assert.equal(getVectorIngestSnapshot().status, 'ready');
+    resetVectorIngestStateForTests();
+  }
+});
+
+test('text ingest maps invalid embedding output to a stable 502 response', async () => {
+  resetPipelineCalls();
+  resetVectorIngestStateForTests();
+  setPipelineFailure('embedding-output');
+
+  const response = await POST(pipelineTextRequest('pipeline-invalid-embedding'));
+  const body = await response.json();
+
+  assert.equal(response.status, 502);
+  assert.equal(body.code, 'EMBEDDING_OUTPUT_INVALID');
+  assert.equal(body.error, 'Embedding provider returned invalid vectors.');
+  assert.equal(JSON.stringify(body).includes('private invalid vector detail'), false);
+  assert.equal(getVectorIngestSnapshot().status, 'ready');
 });
 
 test('authenticated multipart PDF reaches the production pipeline seam with server scope', async () => {
@@ -341,3 +407,28 @@ test('completed vector ingest exposes PostgreSQL reconciliation-required failure
   assert.equal(getPipelineCalls().length, 1);
   assert.equal(getPersistenceCalls().length, 1);
 });
+
+function pipelineTextRequest(requestId) {
+  return new NextRequest('http://localhost/api/pipeline', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer pipeline-route-token',
+      'content-type': 'application/json',
+      'x-request-id': requestId,
+    },
+    body: JSON.stringify({
+      action: 'process-text',
+      text: 'bounded vector ingest fixture',
+      source: 'fixture.txt',
+      corpusId: 'corpus-a',
+    }),
+  });
+}
+
+async function waitForVectorIngestStatus(expected) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (getVectorIngestSnapshot().status === expected) return;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  throw new Error('Timed out waiting for vector ingest status: ' + expected);
+}

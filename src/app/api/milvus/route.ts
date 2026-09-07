@@ -51,6 +51,18 @@ import {
   VECTOR_BACKEND_DISABLED_CODE,
   VECTOR_BACKEND_DISABLED_MESSAGE,
 } from '@/lib/rag/vector-backend';
+import {
+  assertVectorSearchReady,
+  beginVectorIngest,
+  getVectorIngestSnapshot,
+  VectorIngestBusyError,
+  VectorIndexBuildingError,
+  type VectorIngestLease,
+} from '@/lib/rag/vector-ingest-state';
+import {
+  EmbeddingOutputValidationError,
+  embedTextsInBatches,
+} from '@/lib/embedding-batch';
 
 export const runtime = 'nodejs';
 
@@ -85,6 +97,16 @@ const GLOBAL_MILVUS_ACTIONS = new Set<MilvusAction>([
   'rebuild-index',
   'update-config',
 ]);
+const VECTOR_MUTATING_ACTIONS = new Set<MilvusAction>([
+  'recreate',
+  'insert',
+  'delete',
+  'clear',
+  'import-files',
+  'rebuild-index',
+  'update-config',
+]);
+const DIRECT_INSERT_EMBEDDING_BATCH_SIZE = 10;
 
 function vectorBackendDisabledResponse(requestId: string) {
   return NextResponse.json({
@@ -174,6 +196,7 @@ function getPublicMilvusRuntimeConfig(config: MilvusConfig = getDefaultMilvusCon
 // POST: 执行 Milvus 操作
 export async function POST(request: NextRequest) {
   const requestId = resolvePublicRequestId(request);
+  let ingestLease: VectorIngestLease | undefined;
   try {
     const body = await readJsonObjectWithLimit(request, REQUEST_LIMITS.milvusJsonBytes);
     const { action, ...params } = body;
@@ -207,6 +230,18 @@ export async function POST(request: NextRequest) {
         409
       );
     }
+    if (VECTOR_MUTATING_ACTIONS.has(milvusAction)) {
+      ingestLease = beginVectorIngest({
+        operationId: requestId,
+        collectionName:
+          getDefaultMilvusConfig().collectionName
+          || getMilvusConnectionConfig().defaultCollection,
+        stage: milvusAction === 'rebuild-index' || milvusAction === 'recreate'
+          ? 'reindexing'
+          : 'preparing',
+      });
+    }
+    if (milvusAction === 'search') assertVectorSearchReady();
 
     switch (milvusAction) {
       // 连接到 Milvus
@@ -336,19 +371,26 @@ export async function POST(request: NextRequest) {
         }
         validateDocumentBatch(documents);
 
-        const milvusDocs = await Promise.all(normalizedDocuments.map(async (doc) => {
-          const embedding = await embeddings.embedQuery(doc.content);
+        ingestLease?.updateStage('embedding');
+        const vectors = await embedTextsInBatches({
+          texts: normalizedDocuments.map(document => document.content),
+          batchSize: DIRECT_INSERT_EMBEDDING_BATCH_SIZE,
+          expectedDimension: collectionDimension,
+          signal: request.signal,
+          embedBatch: batch => embeddings.embedDocuments(batch),
+        });
+        const milvusDocs = normalizedDocuments.map((doc, index) => {
           return {
             id: doc.id || uuidv4(),
             content: doc.content,
-            embedding,
+            embedding: vectors[index],
             metadata: stampDocumentScope(
               doc.metadata,
               retrievalScope,
               'external'
             ),
           };
-        }));
+        });
 
         // 验证生成的向量维度
         const actualDimension = milvusDocs[0]?.embedding?.length || 0;
@@ -364,6 +406,8 @@ export async function POST(request: NextRequest) {
             usedModel: actualModelName,
           }, { status: 400 });
         }
+
+        ingestLease?.updateStage('storing');
 
         console.log(`[Milvus Insert] ✅ 维度匹配，开始插入...`);
         const ids = await milvus.insertDocuments(milvusDocs);
@@ -661,6 +705,7 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
     }
   } catch (error) {
+    ingestLease?.fail(error);
     console.error(`[Milvus API] requestId=${requestId}`, redactErrorForLog(error));
     const mapped = mapMilvusError(error, 'MILVUS_INTERNAL_ERROR', 'Milvus operation failed.', requestId);
     return NextResponse.json({
@@ -668,7 +713,16 @@ export async function POST(request: NextRequest) {
       error: mapped.body.error.message,
       code: mapped.body.error.code,
       requestId: mapped.body.requestId,
-    }, { status: mapped.status });
+    }, {
+      status: mapped.status,
+      headers: error instanceof VectorIngestBusyError
+        ? { 'Retry-After': String(error.retryAfterSeconds) }
+        : error instanceof VectorIndexBuildingError
+          ? { 'Retry-After': String(error.retryAfterSeconds) }
+        : undefined,
+    });
+  } finally {
+    ingestLease?.release();
   }
 }
 
@@ -703,6 +757,7 @@ export async function GET(request: NextRequest) {
           connected: health.healthy,
           health: toPublicServiceHealth(health),
           stats,
+          vectorIngest: getVectorIngestSnapshot(),
           config: getPublicMilvusRuntimeConfig(defaultConfig),
         });
       }
@@ -919,6 +974,36 @@ function mapMilvusError(
       body: {
         error: { code: error.code, message: error.message },
         requestId: error.requestId,
+      },
+    };
+  }
+  if (error instanceof VectorIngestBusyError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
+      },
+    };
+  }
+  if (error instanceof VectorIndexBuildingError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
+      },
+    };
+  }
+  if (error instanceof EmbeddingOutputValidationError) {
+    return {
+      status: error.status,
+      body: {
+        error: {
+          code: error.code,
+          message: 'Embedding provider returned invalid vectors.',
+        },
+        requestId,
       },
     };
   }

@@ -6,7 +6,7 @@
  */
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 
 interface ModelConfig {
   llm: {
@@ -37,6 +37,15 @@ interface ModelInfo {
   category: string;
   sizeFormatted?: string;
   tag?: string;
+  dimension?: number;
+}
+
+interface AvailableModels {
+  success: boolean;
+  isRemoteProvider: boolean;
+  llmModels?: ModelInfo[];
+  embeddingModels?: ModelInfo[];
+  error?: string;
 }
 
 // 提供商显示名称和颜色
@@ -59,7 +68,7 @@ export default function SystemInfo({
   onModelChange
 }: SystemInfoProps) {
   const [showModelSelector, setShowModelSelector] = useState(false);
-  const [availableModels, setAvailableModels] = useState<any>(null);
+  const [availableModels, setAvailableModels] = useState<AvailableModels | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [selectedLLM, setSelectedLLM] = useState(llmModel);
   const [selectedEmbedding, setSelectedEmbedding] = useState(embeddingModel);
@@ -80,13 +89,14 @@ export default function SystemInfo({
         llmModels: [],
         embeddingModels: [],
       });
+      setLoadingModels(false);
       return;
     }
 
     setLoadingModels(true);
     try {
       const response = await fetch('/rag-api/ollama/models');
-      const data = await response.json();
+      const data = await response.json() as Omit<AvailableModels, 'isRemoteProvider'>;
       setAvailableModels({
         ...data,
         isRemoteProvider: false,
@@ -103,14 +113,12 @@ export default function SystemInfo({
     }
   };
 
-  // 打开模型选择器时加载模型
-  useEffect(() => {
-    if (showModelSelector) {
-      loadModels();
-      setSelectedLLM(llmModel);
-      setSelectedEmbedding(embeddingModel);
-    }
-  }, [showModelSelector, llmModel, embeddingModel]);
+  const handleOpenModelSelector = () => {
+    setSelectedLLM(llmModel);
+    setSelectedEmbedding(embeddingModel);
+    setShowModelSelector(true);
+    void loadModels();
+  };
 
   // 应用模型变更
   const handleApplyModelChange = () => {
@@ -199,7 +207,7 @@ export default function SystemInfo({
             {/* 只有 Ollama 提供商时才显示切换按钮 */}
             {(isOllamaLLM || isOllamaEmbedding) ? (
               <button
-                onClick={() => setShowModelSelector(true)}
+                onClick={handleOpenModelSelector}
                 className="w-full mt-3 px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm transition-colors"
               >
                 <i className="fas fa-exchange-alt mr-2"></i>
@@ -414,8 +422,13 @@ export default function SystemInfo({
                                   <div className="font-medium text-sm text-gray-900 truncate">
                                     {model.displayName}
                                   </div>
-                                  <div className="text-xs text-gray-500 mt-0.5">
-                                    {model.sizeFormatted || model.tag}
+                                  <div className="flex items-center gap-1 text-xs text-gray-500 mt-0.5">
+                                    <span>{model.sizeFormatted || model.tag}</span>
+                                    {typeof model.dimension === 'number' ? (
+                                      <span className="font-medium text-blue-600">
+                                        · {model.dimension}D
+                                      </span>
+                                    ) : null}
                                   </div>
                                 </div>
                                 {selectedEmbedding === model.name && (

@@ -38,6 +38,13 @@ import {
   VECTOR_BACKEND_DISABLED_CODE,
   VECTOR_BACKEND_DISABLED_MESSAGE,
 } from '@/lib/rag/vector-backend';
+import {
+  beginVectorIngest,
+  getVectorIngestSnapshot,
+  VectorIngestBusyError,
+  type VectorIngestLease,
+} from '@/lib/rag/vector-ingest-state';
+import { EmbeddingOutputValidationError } from '@/lib/embedding-batch';
 
 export const runtime = 'nodejs';
 
@@ -57,6 +64,12 @@ class PostgresIngestReconciliationRequiredError extends Error {
 // 环境变量配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
+const PIPELINE_INGEST_ACTIONS = new Set([
+  'process-text',
+  'process-url',
+  'process-youtube',
+  'batch-process',
+]);
 
 // 获取 Milvus 配置（使用统一配置系统）
 function getMilvusConfig() {
@@ -80,6 +93,7 @@ function getPublicMilvusConfig() {
 // POST: 处理文档
 export async function POST(request: NextRequest) {
   const requestId = resolvePublicRequestId(request);
+  let ingestLease: VectorIngestLease | undefined;
   try {
     const contentType = request.headers.get('content-type') || '';
     
@@ -123,6 +137,12 @@ export async function POST(request: NextRequest) {
       retrievalScope,
       'external'
     );
+    if (PIPELINE_INGEST_ACTIONS.has(action)) {
+      ingestLease = beginVectorIngest({
+        operationId: requestId,
+        collectionName: getMilvusConfig().collectionName,
+      });
+    }
     
     switch (action) {
       // 处理文本
@@ -149,7 +169,7 @@ export async function POST(request: NextRequest) {
           filename: sourceName,
           metadata: scopeMetadata,
           signal: request.signal,
-        });
+        }, (progress) => ingestLease?.updateStage(progress.stage));
         const postgresAssetId = await persistPipelineResult({
           securityContext,
           result,
@@ -189,7 +209,7 @@ export async function POST(request: NextRequest) {
         const result = await pipeline.processDocument(url, {
           metadata: scopeMetadata,
           signal: request.signal,
-        });
+        }, (progress) => ingestLease?.updateStage(progress.stage));
         const postgresAssetId = await persistPipelineResult({
           securityContext,
           result,
@@ -229,7 +249,7 @@ export async function POST(request: NextRequest) {
           type: 'youtube',
           metadata: scopeMetadata,
           signal: request.signal,
-        });
+        }, (progress) => ingestLease?.updateStage(progress.stage));
         const postgresAssetId = await persistPipelineResult({
           securityContext,
           result,
@@ -307,7 +327,10 @@ export async function POST(request: NextRequest) {
           };
         });
         
-        const results = await pipeline.processDocuments(inputs);
+        const results = await pipeline.processDocuments(
+          inputs,
+          (progress) => ingestLease?.updateStage(progress.stage)
+        );
 
         for (let index = 0; index < results.length; index += 1) {
           const result = results[index];
@@ -355,6 +378,7 @@ export async function POST(request: NextRequest) {
         }, { status: 400 });
     }
   } catch (error) {
+    ingestLease?.fail(error);
     console.error(`[Pipeline API] requestId=${requestId}`, redactErrorForLog(error));
     const mapped = mapPipelineError(error, 'PIPELINE_INTERNAL_ERROR', '文档处理失败', requestId);
     return NextResponse.json({
@@ -362,7 +386,14 @@ export async function POST(request: NextRequest) {
       error: mapped.body.error.message,
       code: mapped.body.error.code,
       requestId,
-    }, { status: mapped.status });
+    }, {
+      status: mapped.status,
+      headers: error instanceof VectorIngestBusyError
+        ? { 'Retry-After': String(error.retryAfterSeconds) }
+        : undefined,
+    });
+  } finally {
+    ingestLease?.release();
   }
 }
 
@@ -418,11 +449,33 @@ function mapPipelineError(
       },
     };
   }
+  if (error instanceof VectorIngestBusyError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
+      },
+    };
+  }
+  if (error instanceof EmbeddingOutputValidationError) {
+    return {
+      status: error.status,
+      body: {
+        error: {
+          code: error.code,
+          message: 'Embedding provider returned invalid vectors.',
+        },
+        requestId,
+      },
+    };
+  }
   return publicErrorPayload(error, fallbackCode, fallbackMessage, requestId);
 }
 
 // 处理文件上传
 async function handleFileUpload(request: NextRequest, requestId: string) {
+  let ingestLease: VectorIngestLease | undefined;
   try {
     const securityContext = await resolveRagSecurityContext(request, {
       capability: 'ingest',
@@ -485,6 +538,10 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
       ollamaBaseUrl: OLLAMA_BASE_URL,
       milvusConfig: getMilvusConfig(),
     });
+    ingestLease = beginVectorIngest({
+      operationId: requestId,
+      collectionName: getMilvusConfig().collectionName,
+    });
     
     const results = [];
     
@@ -518,7 +575,7 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           filename,
           metadata: scopeMetadata,
           signal: request.signal,
-        });
+        }, (progress) => ingestLease?.updateStage(progress.stage));
         const postgresAssetId = await persistPipelineResult({
           securityContext,
           result,
@@ -561,6 +618,7 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
       embeddingModel: modelToUse,
     });
   } catch (error) {
+    ingestLease?.fail(error);
     console.error(`[Pipeline API] file requestId=${requestId}`, redactErrorForLog(error));
     const mapped = mapPipelineError(error, 'FILE_UPLOAD_FAILED', '文件上传处理失败', requestId);
     return NextResponse.json({
@@ -568,7 +626,14 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
       error: mapped.body.error.message,
       code: mapped.body.error.code,
       requestId,
-    }, { status: mapped.status });
+    }, {
+      status: mapped.status,
+      headers: error instanceof VectorIngestBusyError
+        ? { 'Retry-After': String(error.retryAfterSeconds) }
+        : undefined,
+    });
+  } finally {
+    ingestLease?.release();
   }
 }
 
@@ -613,7 +678,8 @@ export async function GET(request: NextRequest) {
               defaultChunkOverlap: 50,
               embeddingModel: EMBEDDING_MODEL,
               milvus: getPublicMilvusConfig(),
-            }
+            },
+            vectorIngest: getVectorIngestSnapshot(),
           }
         });
       }

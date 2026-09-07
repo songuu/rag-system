@@ -110,7 +110,8 @@ test('per-call request policy bounds each attempt and the logical retry budget',
 });
 
 test('browser request deadline covers the full retrieval and generation budget', () => {
-  assert.equal(RAG_CLIENT_REQUEST_TIMEOUT_MS, 75_000);
+  assert.equal(RAG_GENERATION_EXECUTION_BUDGET_MS, 90_000);
+  assert.equal(RAG_CLIENT_REQUEST_TIMEOUT_MS, 135_000);
   assert(
     RAG_CLIENT_REQUEST_TIMEOUT_MS
       > RAG_RETRIEVAL_EXECUTION_BUDGET_MS + RAG_GENERATION_EXECUTION_BUDGET_MS

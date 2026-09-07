@@ -6,7 +6,11 @@ import {
   getCurrentProvider,
   getReasoningProvider,
 } from '@/lib/model-config';
-import { getEmbeddingConfigSummary, getEmbeddingProvider } from '@/lib/embedding-config';
+import {
+  getEmbeddingConfigSummary,
+  getEmbeddingProvider,
+  resolveEmbeddingModelDimension,
+} from '@/lib/embedding-config';
 import {
   OPENMAIC_LATEST_MODEL_NOTES,
   RECOMMENDED_MODELS,
@@ -289,7 +293,7 @@ export async function GET(request: NextRequest) {
             const modelName = model.name;
             const category = categorizeModelName(modelName);
 
-            const modelInfo = {
+            const modelInfo: RuntimeModelInfo = {
               name: modelName,
               displayName: modelName.split(':')[0],
               tag: modelName.split(':')[1] || 'latest',
@@ -299,6 +303,9 @@ export async function GET(request: NextRequest) {
               digest: model.digest,
               category,
               ...getModelCapabilityProfile('ollama', modelName, category),
+              ...(category === 'embedding'
+                ? { dimension: resolveEmbeddingModelDimension(modelName) }
+                : {}),
               isRemote: false,
               provider: 'ollama',
             };

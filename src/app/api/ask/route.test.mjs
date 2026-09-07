@@ -240,10 +240,10 @@ const store = {
 export function getMilvusInstance() { return store; }
 `);
 const modelStubUrl = 'data:text/javascript,' + encodeURIComponent(`
-let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [] };
+let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [] };
 let createLLMError;
 export function resetModelSignals() {
-  signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [] };
+  signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [] };
   createLLMError = undefined;
 }
 export function getModelSignals() { return structuredClone(signals); }
@@ -251,8 +251,12 @@ export function setCreateLLMError(value) { createLLMError = value; }
 export function createEmbedding() {
   return { async embedQuery() { signals.embed += 1; return [0.1, 0.2, 0.3]; } };
 }
-export function createLLM() {
+export function createLLM(modelName, options) {
   if (createLLMError) throw new Error(createLLMError);
+  signals.llmCreations.push({
+    modelName,
+    requestTimeoutMs: options?.requestTimeoutMs,
+  });
   return { async invoke(prompt) {
     const isVisual = Array.isArray(prompt) && prompt.some(message =>
       Array.isArray(message?.content)
@@ -376,11 +380,43 @@ const {
   buildPdfAssetManifest,
   sha256Hex: sha256PdfAsset,
 } = await import('@/lib/rag/multimodal/pdf-asset-manifest');
+const {
+  beginVectorIngest,
+  resetVectorIngestStateForTests,
+} = await import('@/lib/rag/vector-ingest-state');
 
 after(() => {
+  resetVectorIngestStateForTests();
   for (const [key, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
+  }
+});
+
+test('POST rejects immediately while vector ingestion is active', async () => {
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  const lease = beginVectorIngest({
+    operationId: 'private-ingest-request',
+    collectionName: 'rag_documents',
+    stage: 'embedding',
+  });
+
+  try {
+    const response = await POST(askRequest());
+    const body = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(body.success, false);
+    assert.equal(body.code, 'RAG_INDEX_BUILDING');
+    assert.equal(response.headers.get('retry-after'), '2');
+    assert.equal(getMilvusSignals().connect, 0);
+    assert.equal(getMilvusSignals().search, 0);
+    assert.equal(getScopedAgentSignals().length, 0);
+  } finally {
+    lease.release();
+    resetVectorIngestStateForTests();
   }
 });
 
@@ -531,6 +567,10 @@ test('POST activates bounded ordered context before lane execution and skips den
   assert.equal(milvusSignals.search, 0);
   assert.equal(modelSignals.embed, 0);
   assert.equal(modelSignals.generate, 1);
+  assert.deepEqual(modelSignals.llmCreations, [{
+    modelName: 'llama3.1',
+    requestTimeoutMs: 90_000,
+  }]);
   assert.ok(modelSignals.prompts[0].indexOf('raw-a') < modelSignals.prompts[0].indexOf('raw-b'));
   assert.deepEqual(body.laneExecutions.map(item => item.retriever), ['milvus-ordered-corpus-v1']);
 });
@@ -1964,6 +2004,27 @@ test('POST maps terminal agentic failure to a content-free partial Kernel envelo
     assert.equal(serializedLogs.includes(privateValue), false);
   }
   assert.match(serializedLogs, /RAG_POLICY_EXECUTION_FAILED/);
+});
+
+test('POST maps generation timeout to a stable 504 response and stage log', async t => {
+  const errorLogs = [];
+  t.mock.method(console, 'error', (...values) => errorLogs.push(values));
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({
+    error: 'private provider timeout detail',
+    code: 'RAG_GENERATION_TIMEOUT',
+  });
+
+  const response = await POST(askRequest());
+  const body = await response.json();
+  const serialized = JSON.stringify({ body, errorLogs });
+
+  assert.equal(response.status, 504);
+  assert.equal(body.code, 'RAG_GENERATION_TIMEOUT');
+  assert.equal(body.rag.error.code, 'RAG_GENERATION_TIMEOUT');
+  assert.match(JSON.stringify(errorLogs), /"failureStage":"generation"/);
+  assert.match(JSON.stringify(errorLogs), /"innerCode":"RAG_GENERATION_TIMEOUT"/);
+  assert.equal(serialized.includes('private provider timeout detail'), false);
 });
 
 test('POST preserves the partial agentic envelope when model construction fails', async t => {

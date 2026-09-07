@@ -94,11 +94,51 @@ Object.assign(process.env, {
 
 const { NextRequest } = await import('next/server');
 const { GET, POST } = await import('./route.ts');
+const {
+  beginVectorIngest,
+  resetVectorIngestStateForTests,
+} = await import('@/lib/rag/vector-ingest-state');
 
 after(() => {
+  resetVectorIngestStateForTests();
   for (const [key, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
+  }
+});
+
+test('Milvus search is rejected before provider work while vector ingestion is active', async () => {
+  process.env.RAG_VECTOR_BACKEND = 'milvus';
+  resetVectorIngestStateForTests();
+  const lease = beginVectorIngest({
+    operationId: 'milvus-private-ingest',
+    collectionName: 'rag_documents',
+  });
+
+  try {
+    const response = await POST(new NextRequest('http://localhost/api/milvus', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer milvus-route-token',
+        'content-type': 'application/json',
+        'x-rag-corpus-id': 'corpus-a',
+        'x-request-id': 'milvus-search-building-test',
+      },
+      body: JSON.stringify({
+        action: 'search',
+        corpusId: 'corpus-a',
+        query: 'must not reach provider',
+      }),
+    }));
+    const body = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(body.code, 'RAG_INDEX_BUILDING');
+    assert.equal(response.headers.get('Retry-After'), '2');
+  } finally {
+    lease.release();
+    resetVectorIngestStateForTests();
+    process.env.RAG_VECTOR_BACKEND = 'disabled';
   }
 });
 

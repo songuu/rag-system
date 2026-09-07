@@ -51,6 +51,7 @@ import {
 } from './rag/multimodal/pdf-modality-router';
 import { assertSafeZipArchive } from './security/zip-safety';
 import { resolveMilvusHybridRolloutMode } from './rag/retrieval/hybrid-policy';
+import { embedTextsInBatches } from './embedding-batch';
 
 // ============== 类型定义 ==============
 
@@ -831,7 +832,11 @@ function readDocumentIdentity(metadata: DocumentMetadata, keys: readonly string[
  */
 export async function generateEmbeddings(
   chunks: DocumentChunk[],
-  config: { embeddingModel?: string; ollamaBaseUrl?: string } = {},
+  config: {
+    embeddingModel?: string;
+    ollamaBaseUrl?: string;
+    signal?: AbortSignal;
+  } = {},
   onProgress?: (progress: ProcessingProgress) => void
 ): Promise<ProcessedDocument[]> {
   // 使用独立的 Embedding 配置系统
@@ -844,39 +849,29 @@ export async function generateEmbeddings(
   // 使用统一配置系统创建 Embedding 模型 (会根据 EMBEDDING_PROVIDER 自动选择)
   const embeddings = createEmbedding(embeddingModel);
   
-  const results: ProcessedDocument[] = [];
   if (chunks.length > PIPELINE_WORK_LIMITS.maxChunksPerDocument) {
     throw new Error('Embedding request exceeds the document chunk budget.');
   }
 
-  for (
-    let offset = 0;
-    offset < chunks.length;
-    offset += PIPELINE_WORK_LIMITS.embeddingBatchSize
-  ) {
-    const batch = chunks.slice(offset, offset + PIPELINE_WORK_LIMITS.embeddingBatchSize);
-    const vectors = await embeddings.embedDocuments(
-      batch.map(chunk => chunk.embeddingContent ?? chunk.content)
-    );
-    if (vectors.length !== batch.length) {
-      throw new Error('Embedding provider returned an unexpected vector count.');
-    }
-    for (let index = 0; index < batch.length; index += 1) {
-      results.push({
-        ...batch[index],
-        embedding: vectors[index],
+  const vectors = await embedTextsInBatches({
+    texts: chunks.map(chunk => chunk.embeddingContent ?? chunk.content),
+    batchSize: PIPELINE_WORK_LIMITS.embeddingBatchSize,
+    signal: config.signal,
+    embedBatch: batch => embeddings.embedDocuments(batch),
+    onProgress(current, total) {
+      onProgress?.({
+        stage: 'embedding',
+        current,
+        total,
+        message: `正在生成向量 (${current}/${total})...`,
       });
-    }
-    const current = offset + batch.length;
-    onProgress?.({
-      stage: 'embedding',
-      current,
-      total: chunks.length,
-      message: `正在生成向量 (${current}/${chunks.length})...`
-    });
-  }
-  
-  return results;
+    },
+  });
+
+  return chunks.map((chunk, index) => ({
+    ...chunk,
+    embedding: vectors[index],
+  }));
 }
 
 // ============== 向量存储 ==============
@@ -1578,6 +1573,7 @@ export class DocumentPipeline {
     const processedDocs = await generateEmbeddings(chunks, {
       embeddingModel: this.config.embeddingModel,
       ollamaBaseUrl: this.config.ollamaBaseUrl,
+      signal: options.signal,
     }, onProgress);
     
     // 4. 存储

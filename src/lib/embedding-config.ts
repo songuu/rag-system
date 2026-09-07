@@ -212,6 +212,27 @@ export const ALL_EMBEDDING_DIMENSIONS: Record<string, number> = {
   // OpenAI
   ...Object.fromEntries(Object.entries(OPENAI_EMBEDDING_MODELS).map(([k, v]) => [k, v.dimension])),
 };
+const NORMALIZED_EMBEDDING_DIMENSIONS = new Map(
+  Object.entries(ALL_EMBEDDING_DIMENSIONS).map(([name, dimension]) => [
+    name.toLowerCase(),
+    dimension,
+  ])
+);
+
+/**
+ * Resolve only dimensions known by the catalog. Ollama appends tags such as
+ * `:latest`, while the catalog intentionally stores one entry per model family.
+ */
+export function resolveEmbeddingModelDimension(modelName: string): number | undefined {
+  const normalizedName = modelName.trim();
+  if (!normalizedName) return undefined;
+
+  const exactDimension = ALL_EMBEDDING_DIMENSIONS[normalizedName];
+  if (exactDimension !== undefined) return exactDimension;
+
+  const nameWithoutTag = normalizedName.replace(/:[^/:]+$/, '');
+  return NORMALIZED_EMBEDDING_DIMENSIONS.get(nameWithoutTag.toLowerCase());
+}
 
 /** 默认配置 */
 const DEFAULT_CONFIG = {
@@ -482,8 +503,8 @@ export class EmbeddingFactory {
       }
     }
     
-    // 查找维度
-    return ALL_EMBEDDING_DIMENSIONS[actualModel] || 768;
+    // 未知模型保留原有 768D 回退；展示层使用 resolver 区分“未知”和“768D”。
+    return resolveEmbeddingModelDimension(actualModel) ?? 768;
   }
   
   /**

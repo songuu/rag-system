@@ -1,6 +1,7 @@
 /** Server workflow budgets and the browser allowance derived from them. */
 export const RAG_RETRIEVAL_EXECUTION_BUDGET_MS = 30_000;
-export const RAG_GENERATION_EXECUTION_BUDGET_MS = 30_000;
+// Local Ollama models can need more than 30s even after retrieval has completed.
+export const RAG_GENERATION_EXECUTION_BUDGET_MS = 90_000;
 export const RAG_AGENTIC_EXECUTION_BUDGET_MS = 45_000;
 export const RAG_CLIENT_NETWORK_ALLOWANCE_MS = 15_000;
 

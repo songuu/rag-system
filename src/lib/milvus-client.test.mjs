@@ -187,6 +187,16 @@ test('dense writes use primary-key upsert and surface failed mutations', async (
     },
   });
   await assert.rejects(() => store.insertDocuments([document]), /Upsert failed: write unavailable/);
+
+  attachNativeClient(store, {
+    async upsert() {
+      return { status: { error_code: 'Success' }, upsert_cnt: 0 };
+    },
+  });
+  await assert.rejects(
+    () => store.insertDocuments([document]),
+    /Upsert count mismatch: expected 1, received 0/
+  );
 });
 
 test('hybrid writes use primary-key upsert and surface failed mutations', async () => {
@@ -220,6 +230,16 @@ test('hybrid writes use primary-key upsert and surface failed mutations', async 
   await assert.rejects(
     () => store.insertHybridDocuments(manifest, [document]),
     /Hybrid shadow insert failed: shadow unavailable/
+  );
+
+  attachNativeClient(store, {
+    async upsert() {
+      return { status: { error_code: 'Success' }, upsert_cnt: 0 };
+    },
+  });
+  await assert.rejects(
+    () => store.insertHybridDocuments(manifest, [document]),
+    /Hybrid shadow upsert count mismatch: expected 1, received 0/
   );
 });
 

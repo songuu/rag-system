@@ -1138,8 +1138,14 @@ export class MilvusVectorStore {
     if (result.status.error_code !== 'Success') {
       throw new Error(`Upsert failed: ${result.status.reason}`);
     }
+    const upsertCount = Number(result.upsert_cnt);
+    if (!Number.isSafeInteger(upsertCount) || upsertCount !== data.length) {
+      throw new Error(
+        `Upsert count mismatch: expected ${data.length}, received ${result.upsert_cnt}.`
+      );
+    }
 
-    console.log(`[Milvus] Upserted ${result.upsert_cnt} documents`);
+    console.log(`[Milvus] Upserted ${upsertCount} documents`);
 
     if (this.config.flushOnInsert) {
       console.log(`[Milvus] Flushing data...`);
@@ -1422,6 +1428,12 @@ export class MilvusVectorStore {
     });
     if (result.status.error_code !== 'Success') {
       throw new Error('Hybrid shadow insert failed: ' + result.status.reason);
+    }
+    const upsertCount = Number(result.upsert_cnt);
+    if (!Number.isSafeInteger(upsertCount) || upsertCount !== data.length) {
+      throw new Error(
+        `Hybrid shadow upsert count mismatch: expected ${data.length}, received ${result.upsert_cnt}.`
+      );
     }
     if (this.config.flushOnInsert) {
       await client.flushSync({ collection_names: [manifest.collectionName] });

@@ -20,6 +20,7 @@ import { getEmbeddingConfigSummary } from './embedding-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
 import { getEmbeddingCache, normalizeQueryText } from './embedding-cache';
 import { applyPostProcess, type PostProcessPipelineOptions } from './rag/retrieval/post-process';
+import { embedTextsInBatches } from './embedding-batch';
 
 // ==================== 配置常量 ====================
 
@@ -247,7 +248,12 @@ export async function generateEmbeddings(
 
   const missTexts = missIndices.map(i => texts[i]);
   const embeddings = getEmbeddingModel(embeddingModel);
-  const missVectors = await embeddings.embedDocuments(missTexts);
+  const missVectors = await embedTextsInBatches({
+    texts: missTexts,
+    batchSize: DEFAULT_BATCH_SIZE,
+    expectedDimension: getModelDimensionFromConfig(model),
+    embedBatch: batch => embeddings.embedDocuments(batch),
+  });
   cache.setMany('doc', model, missTexts, missVectors);
 
   for (let i = 0; i < missIndices.length; i++) {
@@ -403,36 +409,32 @@ export async function vectorizeAndInsert(
       };
     }
 
-    // 批量处理
+    // 先完成并校验全部向量，再执行单次发布，避免某个 embedding 批次
+    // 失败后留下可查询的半成品索引。
     const embeddings = getEmbeddingModel(embeddingModel);
-    let totalInserted = 0;
+    const tEmbed = Date.now();
+    const vectors = await embedTextsInBatches({
+      texts: chunks.map(chunk => chunk.text),
+      batchSize,
+      expectedDimension: collectionDimension,
+      embedBatch: batch => embeddings.embedDocuments(batch),
+      onProgress(completed, total) {
+        console.log(`[VectorizationUtils] 已生成 ${completed}/${total} 个向量`);
+      },
+    });
+    embedMs = Date.now() - tEmbed;
 
-    for (let i = 0; i < chunks.length; i += batchSize) {
-      const batch = chunks.slice(i, i + batchSize);
-      const texts = batch.map(c => c.text);
-
-      try {
-        const tEmbed = Date.now();
-        const vectors = await embeddings.embedDocuments(texts);
-        embedMs += Date.now() - tEmbed;
-
-        const milvusDocs: MilvusDocument[] = batch.map((chunk, idx) => ({
-          id: `${Date.now()}_${i + idx}_${uuidv4().slice(0, 8)}`,
-          content: chunk.text,
-          embedding: vectors[idx],
-          metadata: chunk.metadata,
-        }));
-
-        const tInsert = Date.now();
-        await milvus.insertDocuments(milvusDocs);
-        insertMs += Date.now() - tInsert;
-        totalInserted += batch.length;
-
-        console.log(`[VectorizationUtils] 已处理 ${totalInserted}/${chunks.length} 个文本块`);
-      } catch (e) {
-        console.error(`[VectorizationUtils] 批次处理失败 (${i}-${i + batch.length}):`, e);
-      }
-    }
+    const publicationId = Date.now();
+    const milvusDocs: MilvusDocument[] = chunks.map((chunk, index) => ({
+      id: `${publicationId}_${index}_${uuidv4().slice(0, 8)}`,
+      content: chunk.text,
+      embedding: vectors[index],
+      metadata: chunk.metadata,
+    }));
+    const tInsert = Date.now();
+    const insertedIds = await milvus.insertDocuments(milvusDocs);
+    insertMs = Date.now() - tInsert;
+    const totalInserted = insertedIds.length;
 
     console.log(`[VectorizationUtils] ✅ 向量化完成: ${totalInserted}/${chunks.length} 个文本块已入库`);
 
@@ -515,7 +517,12 @@ export async function insertDocumentsWithEmbeddings(
 
     const tEmbed = Date.now();
     const texts = documents.map(doc => doc.content);
-    const vectors = await embeddings.embedDocuments(texts);
+    const vectors = await embedTextsInBatches({
+      texts,
+      batchSize: DEFAULT_BATCH_SIZE,
+      expectedDimension: collectionDimension,
+      embedBatch: batch => embeddings.embedDocuments(batch),
+    });
     embedMs = Date.now() - tEmbed;
 
     if (vectors.length !== documents.length) {

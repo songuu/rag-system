@@ -124,6 +124,10 @@ import {
   VECTOR_BACKEND_DISABLED_CODE,
   VECTOR_BACKEND_DISABLED_MESSAGE,
 } from '@/lib/rag/vector-backend';
+import {
+  assertVectorSearchReady,
+  VectorIndexBuildingError,
+} from '@/lib/rag/vector-ingest-state';
 
 export const runtime = 'nodejs';
 
@@ -355,8 +359,16 @@ function resolveDenseAbstentionThreshold(fallback: number): number {
 
 function publicRagPolicyFailure(error: RagKernelExecutionError, requestId: string) {
   const policy = error.envelope.policy_id;
-  const mapped = error.envelope.error?.code === 'RAG_REQUEST_ABORTED'
+  const innerCode = error.envelope.error?.code;
+  const mapped = innerCode === 'RAG_REQUEST_ABORTED'
     ? { status: 499, code: 'RAG_REQUEST_ABORTED', message: 'RAG 请求已取消' }
+    : innerCode === 'RAG_GENERATION_TIMEOUT'
+      ? { status: 504, code: innerCode, message: 'RAG 回答生成超时' }
+      : innerCode === 'RAG_LANE_TIMEOUT'
+        ? { status: 504, code: innerCode, message: 'RAG 检索超时' }
+        : innerCode === 'RAG_GENERATION_PROVIDER_BUSY'
+          || innerCode === 'RAG_LANE_PROVIDER_BUSY'
+          ? { status: 503, code: innerCode, message: 'RAG 服务正忙，请稍后重试' }
     : policy === 'agentic'
     ? { status: 502, code: 'AGENTIC_QUERY_FAILED', message: 'Agentic RAG 查询失败' }
     : policy === 'adaptive-entity'
@@ -545,6 +557,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    assertVectorSearchReady();
+
     if (
       securityContext.enforceIsolation
       && storageBackend !== 'milvus'
@@ -606,6 +620,11 @@ export async function POST(request: NextRequest) {
           status: error.status,
           body: { error: { code: error.code, message: error.message }, requestId: error.requestId },
         }
+      : error instanceof VectorIndexBuildingError
+        ? {
+            status: error.status,
+            body: { error: { code: error.code, message: error.message }, requestId },
+          }
       : kernelFailure
         ?? publicErrorPayload(error, 'ASK_INTERNAL_ERROR', '处理问题时发生错误', requestId);
     const kernelTraceId =
@@ -626,6 +645,9 @@ export async function POST(request: NextRequest) {
     if (error instanceof RagKernelExecutionError) {
       assertRagResponseTrace(kernelTraceId, error.envelope);
       attachRagKernelHeaders(response.headers, error.envelope);
+    }
+    if (error instanceof VectorIndexBuildingError) {
+      response.headers.set('Retry-After', String(error.retryAfterSeconds));
     }
     return response;
   }
@@ -1730,7 +1752,9 @@ async function handleMemoryQuery(policyContext: RagPolicyContext) {
         if (!context.trim()) {
           answer = '根据当前知识库无法回答该问题。';
         } else {
-          const llm = createLLM(ragRequest.llmModel);
+          const llm = createLLM(ragRequest.llmModel, {
+            requestTimeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
+          });
           const response = await llm.invoke(
             `你是一个专业的知识库助手。请只根据下方上下文回答问题；如果上下文不包含答案，请明确说不知道。\n\n上下文：\n${context}\n\n问题：${ragRequest.question}`,
             { signal }
@@ -1756,7 +1780,9 @@ async function handleMemoryQuery(policyContext: RagPolicyContext) {
     budget: {
       maxLanes: retrievalPlan.lanes.length,
       maxEvidence: ragRequest.topK,
-      maxDurationMs: 30_000,
+      maxDurationMs:
+        RAG_RETRIEVAL_EXECUTION_BUDGET_MS
+        + RAG_GENERATION_EXECUTION_BUDGET_MS,
     },
   });
   if (!retrievalDetails) throw new Error('Memory retrieval completed without details.');
@@ -2269,7 +2295,9 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     const llmStartedAt = Date.now();
     if (policyId === 'agentic') {
       try {
-        const llm = createLLM(llmModel);
+        const llm = createLLM(llmModel, {
+          requestTimeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
+        });
         agentResult = await invokeGenerationWithDeadline({
           modelKey: `create-agent:${llmModel}`,
           timeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
@@ -2326,7 +2354,9 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       }
       answer = agentResult.answer;
     } else {
-      const llm = createLLM(llmModel);
+      const llm = createLLM(llmModel, {
+        requestTimeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
+      });
       const prompt = createMilvusAnswerPrompt({ question, context });
       const response = await invokeGenerationWithDeadline({
         modelKey: `answer:${llmModel}`,
@@ -3156,12 +3186,16 @@ async function handleAdaptiveEntityQuery(
 
 function createSafeAskErrorLog(error: unknown): Record<string, unknown> {
   if (error instanceof RagKernelExecutionError) {
+    const innerCode = error.envelope.error?.code;
     return {
       name: 'RagKernelExecutionError',
       code: 'RAG_POLICY_EXECUTION_FAILED',
       policyId: error.envelope.policy_id,
       traceId: error.envelope.trace_id,
       status: error.envelope.status,
+      durationMs: error.envelope.duration_ms,
+      failureStage: resolveRagFailureStage(innerCode),
+      ...(innerCode === undefined ? {} : { innerCode }),
     };
   }
   if (error instanceof RagSecurityError) {
@@ -3182,4 +3216,21 @@ function createSafeAskErrorLog(error: unknown): Record<string, unknown> {
       ? candidateCode
       : 'ASK_INTERNAL_ERROR',
   };
+}
+
+function resolveRagFailureStage(code: string | undefined):
+  | 'request'
+  | 'retrieval'
+  | 'generation'
+  | 'policy' {
+  if (code === 'RAG_REQUEST_ABORTED') return 'request';
+  if (code?.includes('GENERATION')) return 'generation';
+  if (
+    code?.includes('LANE')
+    || code?.includes('RETRIEVAL')
+    || code?.includes('EVIDENCE')
+  ) {
+    return 'retrieval';
+  }
+  return 'policy';
 }
