@@ -1196,18 +1196,19 @@ export default function HomePage() {
               <Link href="/context-management" className="p-2 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors" title="上下文管理">
                 <i className="fas fa-layer-group"></i>
               </Link>
-              <div className="w-px h-6 bg-gray-200 mx-1"></div>
-              <button
-                onClick={handleDeleteAllConversations}
-                className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                title="清空对话"
-              >
-                <i className="fas fa-trash-alt"></i>
-              </button>
             </div>
 
             {/* 右侧: 状态 */}
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                onClick={handleDeleteAllConversations}
+                className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                title="清空对话"
+                aria-label="清空历史对话"
+              >
+                <i className="fas fa-trash-alt"></i>
+              </button>
+              <div className="w-px h-6 bg-gray-200"></div>
               <div className="flex items-center px-2 py-1 bg-gray-50 rounded-lg">
                 <div className={`w-2 h-2 rounded-full mr-2 ${systemStatus === '运行中' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
                 <span className="text-xs text-gray-600">{systemStatus}</span>

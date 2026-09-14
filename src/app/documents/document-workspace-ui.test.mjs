@@ -70,3 +70,12 @@ test('home navigation keeps labels on one line when document links are present',
   assert.match(home, /flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap/);
   assert.match(home, /flex shrink-0 items-center gap-2/);
 });
+
+test('clear conversation action stays in the fixed header action group', () => {
+  const home = fs.readFileSync(path.join(appRoot, 'page.tsx'), 'utf8');
+  const fixedActions = home.indexOf('{/* 右侧: 状态 */}');
+  const clearAction = home.indexOf('title="清空对话"');
+
+  assert.ok(fixedActions >= 0);
+  assert.ok(clearAction > fixedActions);
+});
