@@ -30,6 +30,7 @@ export default function MiroFishPage() {
   const router = useRouter();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   // 创建项目弹窗
   const [showCreate, setShowCreate] = useState(false);
@@ -44,11 +45,13 @@ export default function MiroFishPage() {
       try {
         const response = await fetch('/rag-api/mirofish/project');
         const data = await response.json();
-        if (data.success) {
-          setProjects(data.projects || []);
+        if (!response.ok || !data.success) {
+          throw new Error(data.error || '读取项目列表失败');
         }
-      } catch {
-        // 忽略
+        setProjects(data.projects || []);
+        setLoadError('');
+      } catch (cause) {
+        setLoadError(cause instanceof Error ? cause.message : '读取项目列表失败');
       } finally {
         setLoading(false);
       }
@@ -75,9 +78,11 @@ export default function MiroFishPage() {
       const data = await response.json();
       if (data.success && data.project) {
         router.push(`/mirofish/console/${data.project.id}`);
+      } else {
+        throw new Error(data.error || '创建项目失败');
       }
-    } catch {
-      // 忽略
+    } catch (cause) {
+      setLoadError(cause instanceof Error ? cause.message : '创建项目失败');
     } finally {
       setCreating(false);
     }
@@ -86,10 +91,15 @@ export default function MiroFishPage() {
   // 删除项目
   const handleDelete = async (id: string) => {
     try {
-      await fetch(`/rag-api/mirofish/project/${id}`, { method: 'DELETE' });
+      const response = await fetch(`/rag-api/mirofish/project/${id}`, { method: 'DELETE' });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || '删除项目失败');
+      }
       setProjects(prev => prev.filter(p => p.id !== id));
-    } catch {
-      // 忽略
+      setLoadError('');
+    } catch (cause) {
+      setLoadError(cause instanceof Error ? cause.message : '删除项目失败');
     }
   };
 
@@ -212,6 +222,11 @@ export default function MiroFishPage() {
         </div>
 
         {/* 项目列表 */}
+        {loadError && (
+          <div role="alert" className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            PostgreSQL 项目数据读取失败：{loadError}
+          </div>
+        )}
         {loading ? (
           <div className="text-center py-20">
             <div className="animate-spin w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full mx-auto" />

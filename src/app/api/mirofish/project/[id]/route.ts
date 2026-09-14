@@ -22,7 +22,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
   try {
     const store = getProjectStore();
-    const project = store.get(id);
+    const project = await store.get(id);
 
     if (!project) {
       return NextResponse.json(
@@ -89,7 +89,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     }
 
     const store = getProjectStore();
-    const project = store.update(id, body);
+    const project = await store.update(id, body);
 
     if (!project) {
       return NextResponse.json(
@@ -115,7 +115,7 @@ export async function DELETE(_request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
   try {
     const store = getProjectStore();
-    const deleted = store.delete(id);
+    const deleted = await store.delete(id);
 
     if (!deleted) {
       return NextResponse.json(

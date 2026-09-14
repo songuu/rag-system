@@ -229,7 +229,7 @@ export default function SimulationPage() {
                 🔍 实体抽取
               </Link>
               <Link
-                href="/mirofish/graph-rag"
+                href="/knowledge-graph"
                 className="px-3 py-1 text-sm rounded-lg transition-colors bg-slate-800 text-slate-400 hover:text-white"
               >
                 🕸️ GraphRag

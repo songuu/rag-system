@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const project = getProjectStore().get(projectId);
+    const project = await getProjectStore().get(projectId);
     if (prepare_id && project?.prepare_id !== prepare_id) {
       return NextResponse.json(
         { success: false, error: 'prepare_id 无效或已过期' },

@@ -20,6 +20,10 @@ export interface PostgresQueryResult<T> {
 
 export interface PostgresQueryClient {
   query<T>(text: string, values?: unknown[]): Promise<PostgresQueryResult<T>>;
+  withTransaction?<T>(
+    operation: string,
+    work: (client: PostgresQueryClient) => Promise<T>
+  ): Promise<T>;
 }
 
 interface PostgresPoolLike {
@@ -45,8 +49,8 @@ interface CachedPool {
 
 let cachedPool: CachedPool | null = null;
 let expectedSchemaChecksumPromise: Promise<string> | null = null;
-const EXPECTED_SCHEMA_VERSION = '0004';
-const EXPECTED_SCHEMA_FILENAME = '0004_prompt_optimizer_credentials.sql';
+const EXPECTED_SCHEMA_VERSION = '0007';
+const EXPECTED_SCHEMA_FILENAME = '0007_elasticsearch_lexical_outbox.sql';
 
 export class PostgresQueryError extends Error {
   readonly operation: string;
@@ -187,6 +191,13 @@ export async function checkPostgresReadiness(
          and to_regclass('public.prompt_optimizer_model_profiles') is not null
          and to_regclass('public.prompt_optimizer_workspaces') is not null
          and to_regclass('public.prompt_optimizer_versions') is not null
+         and to_regclass('public.graph_active_snapshots') is not null
+         and to_regclass('public.graph_build_jobs') is not null
+         and to_regclass('public.graph_snapshot_lifecycle') is not null
+         and to_regclass('public.graph_publication_outbox') is not null
+         and to_regclass('public.mirofish_projects') is not null
+         and to_regclass('public.elasticsearch_lexical_chunks') is not null
+         and to_regclass('public.elasticsearch_lexical_outbox') is not null
          and exists (
            select 1
            from public.rag_schema_migrations
@@ -235,7 +246,7 @@ async function getExpectedSchemaChecksum(): Promise<string> {
 }
 
 function wrapPool(pool: PostgresPoolLike): PostgresQueryClient {
-  return {
+  const client: PostgresQueryClient = {
     async query<T>(text: string, values: unknown[] = []): Promise<PostgresQueryResult<T>> {
       const result = await pool.query(text, values);
       return {
@@ -244,6 +255,17 @@ function wrapPool(pool: PostgresPoolLike): PostgresQueryClient {
       };
     },
   };
+  if (isPostgresTransactionPoolLike(pool)) {
+    client.withTransaction = (operation, work) =>
+      withPostgresTransaction(pool, operation, work);
+  }
+  return client;
+}
+
+function isPostgresTransactionPoolLike(
+  pool: PostgresPoolLike
+): pool is PostgresTransactionPoolLike {
+  return typeof (pool as Partial<PostgresTransactionPoolLike>).connect === 'function';
 }
 
 function resolveSsl(config: PostgresRuntimeConfig): PoolConfig['ssl'] {

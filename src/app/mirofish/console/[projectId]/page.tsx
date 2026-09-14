@@ -19,6 +19,7 @@ interface Project {
   status: string;
   current_step: number;
   simulation_requirement: string;
+  texts: string[];
   ontology?: unknown;
   graph_data?: GraphData;
   graph_id?: string;
@@ -106,6 +107,7 @@ export default function MiroFishConsolePage() {
   const [simulationId, setSimulationId] = useState<string | null>(null);
   const [reportId, setReportId] = useState<string | null>(null);
   const [modelOverride, setModelOverride] = useState<ModelOverride | null>(null);
+  const [persistenceError, setPersistenceError] = useState('');
 
   useEffect(() => {
     const fetchProject = async () => {
@@ -136,15 +138,35 @@ export default function MiroFishConsolePage() {
 
   const updateProject = useCallback(async (updates: Record<string, unknown>) => {
     try {
-      await fetch(`/rag-api/mirofish/project/${projectId}`, {
+      const response = await fetch(`/rag-api/mirofish/project/${projectId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
       });
-    } catch {
-      // 忽略更新错误
+      const data = await response.json();
+      if (!response.ok || !data.success || !data.project) {
+        throw new Error(data.error || '保存项目进度失败');
+      }
+      setProject(data.project);
+      setPersistenceError('');
+    } catch (cause) {
+      setPersistenceError(cause instanceof Error ? cause.message : '保存项目进度失败');
     }
   }, [projectId]);
+
+  const handleTextsPersist = useCallback((nextTexts: string[]) => {
+    void updateProject({ texts: nextTexts });
+  }, [updateProject]);
+
+  const handleOntologyGenerated = useCallback((nextOntology: Ontology) => {
+    setOntology(nextOntology);
+    void updateProject({ ontology: nextOntology });
+  }, [updateProject]);
+
+  const handleGraphBuilt = useCallback((nextGraph: GraphData) => {
+    setGraphData(nextGraph);
+    void updateProject({ graph_data: nextGraph, graph_id: nextGraph.graph_id });
+  }, [updateProject]);
 
   const saveModelConfig = useCallback(async (override: ModelOverride | null) => {
     const response = await fetch(`/rag-api/mirofish/project/${projectId}`, {
@@ -277,15 +299,22 @@ export default function MiroFishConsolePage() {
 
       {/* 内容区域 */}
       <div className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        {persistenceError && (
+          <div role="alert" className="mb-5 rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-300">
+            PostgreSQL 项目状态保存失败：{persistenceError}
+          </div>
+        )}
         {currentStep === 0 && (
           <Step1GraphBuild
             projectId={projectId}
             simulationRequirement={project.simulation_requirement}
+            initialTexts={project.texts}
             ontology={ontology}
             graphData={graphData}
             modelOverride={modelOverride}
-            onOntologyGenerated={setOntology}
-            onGraphBuilt={setGraphData}
+            onTextsPersist={handleTextsPersist}
+            onOntologyGenerated={handleOntologyGenerated}
+            onGraphBuilt={handleGraphBuilt}
             onComplete={handleStep1Complete}
           />
         )}

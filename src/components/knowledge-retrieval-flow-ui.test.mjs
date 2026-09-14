@@ -6,7 +6,7 @@ const componentUrl = new URL('./KnowledgeRetrievalFlow.tsx', import.meta.url);
 const templateUrl = new URL('../app/template.tsx', import.meta.url);
 const diagramUrl = new URL('../../public/diagrams/knowledge-retrieval-flow.svg', import.meta.url);
 
-test('home page exposes an accessible knowledge retrieval flow diagram', async () => {
+test('home page opens the accessible knowledge retrieval flow diagram in a new tab', async () => {
   const [component, template, diagram] = await Promise.all([
     readFile(componentUrl, 'utf8'),
     readFile(templateUrl, 'utf8'),
@@ -16,9 +16,11 @@ test('home page exposes an accessible knowledge retrieval flow diagram', async (
   assert.match(template, /import KnowledgeRetrievalFlow from '@\/components\/KnowledgeRetrievalFlow';/);
   assert.match(template, /<KnowledgeRetrievalFlow\s*\/>/);
   assert.match(component, /\/diagrams\/knowledge-retrieval-flow\.svg/);
-  assert.match(component, /role="dialog"/);
-  assert.match(component, /aria-modal="true"/);
-  assert.match(component, /知识库检索流程/);
+  assert.match(component, /href=\{DIAGRAM_PATH\}/);
+  assert.match(component, /target="_blank"/);
+  assert.match(component, /rel="noopener noreferrer"/);
+  assert.match(component, /aria-label="在新标签页查看知识库检索流程图"/);
+  assert.doesNotMatch(component, /role="dialog"/);
 
   for (const label of [
     '安全范围校验',

@@ -30,6 +30,12 @@ const DIRECT_READONLY_TABLES = Object.freeze([
   'public.prompt_optimizer_model_profiles',
   'public.prompt_optimizer_workspaces',
   'public.prompt_optimizer_versions',
+  'public.graph_active_snapshots',
+  'public.graph_build_jobs',
+  'public.graph_snapshot_lifecycle',
+  'public.graph_publication_outbox',
+  'public.elasticsearch_lexical_chunks',
+  'public.elasticsearch_lexical_outbox',
 ]);
 const DIRECT_READONLY_TABLE_LIST = DIRECT_READONLY_TABLES.join(', ');
 
@@ -367,7 +373,17 @@ export async function grantApplicationRole(client, role) {
            public.document_assets, public.object_blobs, public.index_jobs,
            public.traces, public.observations, public.trace_scores,
            public.maic_courses, public.maic_classroom_sessions,
+           public.mirofish_projects,
            public.prompt_optimizer_model_profiles, public.prompt_optimizer_workspaces
+         to ${quotedRole}`,
+        `grant select, insert, update on table
+           public.graph_active_snapshots, public.graph_build_jobs,
+           public.graph_snapshot_lifecycle,
+           public.graph_publication_outbox,
+           public.elasticsearch_lexical_outbox
+         to ${quotedRole}`,
+        `grant select, insert, update, delete on table
+           public.elasticsearch_lexical_chunks
          to ${quotedRole}`,
         `grant select, insert on table public.prompt_optimizer_versions to ${quotedRole}`,
         `grant usage, select on all sequences in schema public to ${quotedRole}`,

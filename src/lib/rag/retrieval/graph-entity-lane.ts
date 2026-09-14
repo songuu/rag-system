@@ -10,9 +10,17 @@ import {
   type MiroFishGraphArtifactStore,
 } from '../../mirofish/graph-artifact-store';
 import type { RagTrustLevel } from '../../security/retrieval-scope';
+import {
+  assertGraphRetrievalEvidence,
+  KnowledgeGraphError,
+  normalizeGraphRetrievalRequest,
+  type GraphRetrievalPort,
+} from '../../knowledge-graph/contracts';
+import { createMiroFishGraphVersion } from '../../knowledge-graph/mirofish-adapter';
 
 export interface GraphEntityLaneOptions {
-  store: MiroFishGraphArtifactStore;
+  store?: MiroFishGraphArtifactStore;
+  retrievalPort?: GraphRetrievalPort;
   defaultMaxHops?: 1 | 2;
   maxEvidence?: number;
   maxSeedNodes?: number;
@@ -86,6 +94,9 @@ const GRAPH_TRAVERSAL_YIELD_INTERVAL = 256;
 export function createGraphEntityLaneHandler(
   options: GraphEntityLaneOptions
 ): RagLaneHandler {
+  if (!options.store && !options.retrievalPort) {
+    throw new Error('Graph entity lane requires a graph store or retrieval port.');
+  }
   const defaultMaxHops = options.defaultMaxHops ?? 2;
   const maxEvidence = options.maxEvidence ?? 20;
   const maxSeedNodes = readBoundedBudget(
@@ -133,7 +144,7 @@ export function createGraphEntityLaneHandler(
 
   return {
     type: 'graph-entity',
-    retriever: 'mirofish-graph-artifact-v2',
+    retriever: options.retrievalPort?.retriever ?? 'mirofish-graph-artifact-v2',
     async execute(context): Promise<RagLaneHandlerResult> {
       throwIfAborted(context.signal);
       const scope = context.request.retrievalScope;
@@ -151,7 +162,76 @@ export function createGraphEntityLaneHandler(
         documentVersion: config.documentVersion,
         trustLevel: config.trustLevel,
       };
-      const artifact = await options.store.get(identity, scope);
+      if (options.retrievalPort) {
+        const graphVersion = createMiroFishGraphVersion(identity);
+        try {
+          const result = await options.retrievalPort.retrieve(
+            normalizeGraphRetrievalRequest({
+              scope,
+              snapshot: {
+                graphVersion,
+                documentId: config.documentId,
+                documentVersion: config.documentVersion,
+                trustLevel: config.trustLevel,
+              },
+              query: context.plan.query,
+              laneId: context.lane.id,
+              topK: Math.min(context.plan.top_k, maxEvidence),
+              maxHops: config.maxHops,
+              seedPassageIds: collectSeedPassageIds(context.priorEvidence),
+              signal: context.signal,
+            })
+          );
+          throwIfAborted(context.signal);
+          for (const evidence of result.evidence) {
+            assertGraphRetrievalEvidence(evidence, scope);
+            assertPinnedGraphEvidence(evidence, {
+              tenantId: scope.tenantId,
+              corpusId: scope.corpusId,
+              documentId: config.documentId,
+              documentVersion: config.documentVersion,
+              trustLevel: config.trustLevel,
+              laneId: context.lane.id,
+              graphVersion,
+            });
+          }
+          if (result.evidence.length === 0) {
+            return noGain('graph_no_passage_gain', {
+              graphBackend: options.retrievalPort.retriever,
+              ...result.diagnostics,
+            });
+          }
+          return {
+            evidence: result.evidence,
+            retrievalQuality: result.evidence[0]?.retrievalScore,
+            stopReason: result.stopReason,
+            metadata: {
+              graphBackend: options.retrievalPort.retriever,
+              graphVersion,
+              maxHops: config.maxHops,
+              passageCount: result.evidence.length,
+              ...result.diagnostics,
+            },
+          };
+        } catch (error) {
+          if (
+            context.lane.required !== true
+            && error instanceof KnowledgeGraphError
+            && (
+              error.code === 'KNOWLEDGE_GRAPH_UNAVAILABLE'
+              || error.code === 'KNOWLEDGE_GRAPH_QUERY_TIMEOUT'
+            )
+          ) {
+            return noGain('graph_backend_degraded', {
+              graphBackend: options.retrievalPort.retriever,
+              degraded: true,
+              degradationReason: error.code,
+            });
+          }
+          throw error;
+        }
+      }
+      const artifact = await options.store!.get(identity, scope);
       throwIfAborted(context.signal);
       if (!artifact) {
         return noGain('graph_artifact_missing', {
@@ -599,6 +679,65 @@ function noGain(
     stopReason: 'no_gain',
     metadata: { reason, ...metadata },
   };
+}
+
+function collectSeedPassageIds(evidence: readonly RagEvidence[]): string[] {
+  const passageIds = new Set<string>();
+  for (const item of evidence) {
+    const candidates = [
+      item.metadata?.graphPassageId,
+      item.metadata?.passageId,
+      item.metadata?.chunkId,
+      item.metadata?.chunk_id,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        passageIds.add(candidate.trim());
+        break;
+      }
+    }
+  }
+  return [...passageIds].sort();
+}
+
+function assertPinnedGraphEvidence(
+  evidence: RagEvidence,
+  expected: {
+    tenantId: string;
+    corpusId: string;
+    documentId: string;
+    documentVersion: string;
+    trustLevel: RagTrustLevel;
+    laneId: string;
+    graphVersion: string;
+  }
+): void {
+  const actualByField: Record<string, unknown> = {
+    tenantId: evidence.tenantId,
+    corpusId: evidence.corpusId,
+    documentId: evidence.documentId,
+    documentVersion: evidence.documentVersion,
+    trustLevel: evidence.trustLevel,
+    laneId: evidence.laneId,
+    'metadata.graphVersion': evidence.metadata?.graphVersion,
+  };
+  const expectedByField: Record<string, unknown> = {
+    tenantId: expected.tenantId,
+    corpusId: expected.corpusId,
+    documentId: expected.documentId,
+    documentVersion: expected.documentVersion,
+    trustLevel: expected.trustLevel,
+    laneId: expected.laneId,
+    'metadata.graphVersion': expected.graphVersion,
+  };
+  for (const [field, expectedValue] of Object.entries(expectedByField)) {
+    if (actualByField[field] !== expectedValue) {
+      throw new KnowledgeGraphError(
+        'KNOWLEDGE_GRAPH_SCOPE_VIOLATION',
+        `Graph evidence ${field} does not match the pinned graph identity.`
+      );
+    }
+  }
 }
 
 function scoreNode(

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import AgenticWorkflowPanel from '@/components/AgenticWorkflowPanel';
 import LangSmithTraceViewer from '@/components/LangSmithTraceViewer';
+import { resolveConfiguredOllamaModel } from '@/lib/ollama-model-name';
 import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
 interface AgentState {
@@ -35,7 +36,9 @@ interface AgentState {
     collectionDimension?: number;
   };
   hallucinationCheck?: any;
+  modelFallbacks?: string[];
   error?: string;
+  errorDetail?: string;
 }
 
 interface ModelInfo {
@@ -48,6 +51,82 @@ interface AvailableModels {
   success: boolean;
   llmModels: ModelInfo[];
   embeddingModels: ModelInfo[];
+}
+
+interface ModelConfigResponse {
+  config?: {
+    llm?: {
+      provider?: string;
+      model?: string;
+    };
+    embedding?: {
+      provider?: string;
+      model?: string;
+      dimension?: number;
+    };
+  };
+}
+
+interface ModelListResponse {
+  success: boolean;
+  error?: string;
+  llmModels?: ModelInfo[];
+  embeddingModels?: ModelInfo[];
+  providerConfig?: {
+    llm?: {
+      provider?: string;
+      model?: string;
+    };
+    embedding?: {
+      provider?: string;
+      model?: string;
+      dimension?: number;
+    };
+  };
+}
+
+type SettledRequest<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: unknown };
+
+async function settleRequest<T>(request: Promise<T>): Promise<SettledRequest<T>> {
+  try {
+    return { ok: true, value: await request };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+async function fetchJson<T>(url: string, label: string, signal: AbortSignal): Promise<T> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) {
+    throw new Error(`${label}请求失败: HTTP ${response.status}`);
+  }
+
+  try {
+    return await response.json() as T;
+  } catch (error) {
+    console.error(`${label}返回了无效 JSON:`, error);
+    throw new Error(`${label}返回了无效 JSON`);
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function formatSimilarityPercent(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${(value * 100).toFixed(1)}%`
+    : '—';
+}
+
+function createConfiguredModel(modelName: string): ModelInfo {
+  return {
+    name: modelName,
+    size: 0,
+    modified_at: new Date().toISOString(),
+  };
 }
 
 // 推荐的 Embedding 模型配置（用于显示维度信息）
@@ -91,6 +170,7 @@ export default function AgenticRAGPage() {
   // 模型列表状态
   const [availableModels, setAvailableModels] = useState<AvailableModels | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
+  const modelLoadControllerRef = useRef<AbortController | null>(null);
   
   // 模型提供商配置
   const [embeddingProvider, setEmbeddingProvider] = useState<string>('ollama');
@@ -99,114 +179,140 @@ export default function AgenticRAGPage() {
 
   // 获取可用模型列表
   const loadAvailableModels = useCallback(async () => {
-    setLoadingModels(true);
-    const loadingFallbackTimer = window.setTimeout(() => {
-      setLoadingModels(false);
-    }, 2000);
+    // Strict Mode、手动刷新或快速导航都可能让旧请求失去意义。
+    modelLoadControllerRef.current?.abort();
+    const controller = new AbortController();
+    modelLoadControllerRef.current = controller;
 
     try {
-      // 先读取统一配置快照,不要把模型选择器绑定到 Ollama 在线状态。
-      const configResponse = await fetch('/rag-api/model-config');
-      const configData = await configResponse.json();
+      // 两个请求互不依赖，并行启动；配置快照仍优先用于离线回退。
+      const configRequest = settleRequest(fetchJson<ModelConfigResponse>(
+        '/rag-api/model-config',
+        '模型配置接口',
+        controller.signal
+      ));
+      const modelsRequest = settleRequest(fetchJson<ModelListResponse>(
+        '/rag-api/ollama/models',
+        '模型列表接口',
+        controller.signal
+      ));
 
-      if (configData.config?.llm?.model) {
-        setLlmModel(configData.config.llm.model);
+      // Effect 启动阶段不做同步 state 写入，避免额外的级联渲染。
+      await Promise.resolve();
+      if (controller.signal.aborted) return;
+      setLoadingModels(true);
+
+      const configResult = await configRequest;
+      if (controller.signal.aborted) return;
+
+      const configData = configResult.ok ? configResult.value : null;
+      if (!configResult.ok && !isAbortError(configResult.error)) {
+        console.error('Failed to load model configuration:', configResult.error);
       }
 
-      if (configData.config?.embedding) {
-        const embConfig = configData.config.embedding;
-        setEmbeddingProvider(embConfig.provider || 'ollama');
-        setEmbeddingDimension(embConfig.dimension || 768);
-        
-        // 如果是远程 Embedding 提供商，使用配置的模型
-        if (embConfig.provider && embConfig.provider !== 'ollama') {
-          setEmbeddingModel(embConfig.model);
-          setAvailableModels(prev => ({
-            ...prev,
-            success: true,
-            llmModels: prev?.llmModels || [],
-            embeddingModels: [{
-              name: embConfig.model,
-              size: 0,
-              modified_at: new Date().toISOString(),
-            }],
-          }));
+      const configuredLlmModel = configData?.config?.llm?.model;
+      const configuredEmbedding = configData?.config?.embedding;
+
+      if (configuredLlmModel) {
+        setLlmModel(configuredLlmModel);
+      }
+
+      if (configuredEmbedding) {
+        setEmbeddingProvider(configuredEmbedding.provider || 'ollama');
+        setEmbeddingDimension(configuredEmbedding.dimension || 768);
+        if (configuredEmbedding.model) {
+          setEmbeddingModel(configuredEmbedding.model);
         }
       }
 
-      if (configData.config?.llm?.model || configData.config?.embedding?.model) {
-        const configuredModels: AvailableModels = {
+      if (configuredLlmModel || configuredEmbedding?.model) {
+        setAvailableModels({
           success: true,
-          llmModels: configData.config?.llm?.model
-            ? [{
-              name: configData.config.llm.model,
-              size: 0,
-              modified_at: new Date().toISOString(),
-            }]
+          llmModels: configuredLlmModel
+            ? [createConfiguredModel(configuredLlmModel)]
             : [],
-          embeddingModels: configData.config?.embedding?.model
-            ? [{
-              name: configData.config.embedding.model,
-              size: 0,
-              modified_at: new Date().toISOString(),
-            }]
+          embeddingModels: configuredEmbedding?.model
+            ? [createConfiguredModel(configuredEmbedding.model)]
             : [],
-        };
-
-        setAvailableModels(prev => ({
-          success: true,
-          llmModels: configuredModels.llmModels.length > 0 ? configuredModels.llmModels : prev?.llmModels || [],
-          embeddingModels: configuredModels.embeddingModels.length > 0 ? configuredModels.embeddingModels : prev?.embeddingModels || [],
-        }));
-        setLoadingModels(false);
-      }
-      
-      // 加载本地 Ollama 模型
-      const response = await fetch('/rag-api/ollama/models');
-      const data = await response.json();
-
-      if (data.providerConfig?.embedding) {
-        setEmbeddingProvider(data.providerConfig.embedding.provider || 'ollama');
-        setEmbeddingDimension(data.providerConfig.embedding.dimension || 768);
-        setEmbeddingModel(data.providerConfig.embedding.model || embeddingModel);
+        });
       }
 
-      if (data.providerConfig?.llm?.model) {
-        setLlmModel(data.providerConfig.llm.model);
+      const modelsResult = await modelsRequest;
+      if (controller.signal.aborted) return;
+
+      if (!modelsResult.ok) {
+        if (!isAbortError(modelsResult.error)) {
+          console.error('Failed to load available models:', modelsResult.error);
+        }
+        return;
       }
 
-      if (data.success) {
-        // 如果是远程 Embedding，保留之前设置的 embeddingModels
-        if (data.providerConfig?.embedding?.provider && data.providerConfig.embedding.provider !== 'ollama') {
-          setAvailableModels(prev => ({
-            ...data,
-            embeddingModels: prev?.embeddingModels || data.embeddingModels,
-          }));
-        } else {
-          setAvailableModels(data);
-        }
-        
-        // 如果当前选中的 LLM 模型不在列表中，选择第一个可用的
-        if (data.llmModels?.length > 0 && !data.llmModels.some((m: ModelInfo) => m.name === llmModel)) {
-          setLlmModel(data.llmModels[0].name);
-        }
-        // 只有 Ollama Embedding 时才自动切换
-        const responseEmbeddingProvider = data.providerConfig?.embedding?.provider || embeddingProvider;
-        if (responseEmbeddingProvider === 'ollama' && data.embeddingModels?.length > 0 && !data.embeddingModels.some((m: ModelInfo) => m.name === embeddingModel)) {
-          setEmbeddingModel(data.embeddingModels[0].name);
-        }
+      const data = modelsResult.value;
+      if (!data.success) {
+        throw new Error(`模型列表接口返回失败: ${data.error || '未知错误'}`);
+      }
+
+      const llmModels = data.llmModels || [];
+      const embeddingModels = data.embeddingModels || [];
+      const responseLlmConfig = data.providerConfig?.llm;
+      const responseEmbeddingConfig = data.providerConfig?.embedding;
+      const llmProvider = responseLlmConfig?.provider || configData?.config?.llm?.provider || 'ollama';
+      const nextConfiguredLlmModel = responseLlmConfig?.model || configuredLlmModel;
+      const nextEmbeddingProvider = responseEmbeddingConfig?.provider || configuredEmbedding?.provider || 'ollama';
+      const nextConfiguredEmbeddingModel = responseEmbeddingConfig?.model || configuredEmbedding?.model;
+
+      setAvailableModels({
+        success: true,
+        llmModels: llmModels.length > 0
+          ? llmModels
+          : nextConfiguredLlmModel
+            ? [createConfiguredModel(nextConfiguredLlmModel)]
+            : [],
+        embeddingModels: embeddingModels.length > 0
+          ? embeddingModels
+          : nextConfiguredEmbeddingModel
+            ? [createConfiguredModel(nextConfiguredEmbeddingModel)]
+            : [],
+      });
+
+      if (nextConfiguredLlmModel || llmModels.length > 0) {
+        setLlmModel(llmProvider === 'ollama'
+          ? resolveConfiguredOllamaModel(nextConfiguredLlmModel, llmModels)
+          : nextConfiguredLlmModel || llmModels[0].name);
+      }
+
+      setEmbeddingProvider(nextEmbeddingProvider);
+      setEmbeddingDimension(responseEmbeddingConfig?.dimension || configuredEmbedding?.dimension || 768);
+      if (nextConfiguredEmbeddingModel || embeddingModels.length > 0) {
+        setEmbeddingModel(nextEmbeddingProvider === 'ollama'
+          ? resolveConfiguredOllamaModel(nextConfiguredEmbeddingModel, embeddingModels)
+          : nextConfiguredEmbeddingModel || embeddingModels[0].name);
       }
     } catch (error) {
-      console.error('Failed to load models:', error);
+      if (!isAbortError(error)) {
+        console.error('Failed to reconcile model configuration and available models:', error);
+      }
     } finally {
-      window.clearTimeout(loadingFallbackTimer);
-      setLoadingModels(false);
+      if (modelLoadControllerRef.current === controller) {
+        modelLoadControllerRef.current = null;
+        setLoadingModels(false);
+      }
     }
-  }, [llmModel, embeddingModel, embeddingProvider]);
+  }, []);
 
   // 初始化时加载模型
   useEffect(() => {
-    loadAvailableModels();
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (!cancelled) {
+        void loadAvailableModels();
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      modelLoadControllerRef.current?.abort();
+    };
   }, [loadAvailableModels]);
 
   // 格式化文件大小
@@ -274,7 +380,11 @@ export default function AgenticRAGPage() {
         retrievalGrade: data.retrievalGrade,
         debugInfo: data.debugInfo,
         hallucinationCheck: data.hallucinationCheck,
+        modelFallbacks: Array.isArray(data.models?.fallbacks)
+          ? data.models.fallbacks.filter((message: unknown): message is string => typeof message === 'string')
+          : undefined,
         error: data.error,
+        errorDetail: data.errorDetail,
       };
 
       setResult(newResult);
@@ -457,7 +567,7 @@ export default function AgenticRAGPage() {
                       LLM 模型
                     </label>
                     <button
-                      onClick={loadAvailableModels}
+                      onClick={() => void loadAvailableModels()}
                       disabled={loadingModels}
                       className="text-xs text-purple-400 hover:text-purple-300 transition-colors disabled:opacity-50"
                     >
@@ -650,6 +760,15 @@ export default function AgenticRAGPage() {
               />
             )}
 
+            {result?.modelFallbacks && result.modelFallbacks.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-amber-800">
+                <div className="font-semibold mb-1">模型已自动回退</div>
+                {result.modelFallbacks.map((message) => (
+                  <div key={message} className="text-sm">{message}</div>
+                ))}
+              </div>
+            )}
+
             {/* 答案展示 */}
             {result?.answer && (
               <div className="bg-white rounded-xl shadow-lg overflow-hidden">
@@ -697,7 +816,7 @@ export default function AgenticRAGPage() {
                             </span>
                           )}
                           <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full">
-                            相似度: {(doc.similarity * 100).toFixed(1)}%
+                            相似度: {formatSimilarityPercent(doc.similarity ?? doc.score)}
                           </span>
                         </div>
                       </div>
@@ -723,6 +842,9 @@ export default function AgenticRAGPage() {
                   <span className="font-semibold">处理出错</span>
                 </div>
                 <p className="text-red-700">{result.error}</p>
+                {result.errorDetail && (
+                  <p className="text-red-600 text-sm mt-2">{result.errorDetail}</p>
+                )}
               </div>
             )}
 

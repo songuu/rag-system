@@ -20,6 +20,8 @@ ARG RAG_BASE_PATH
 ENV RAG_BASE_PATH="${RAG_BASE_PATH}"
 ENV NODE_ENV="production"
 RUN pnpm build
+RUN pnpm graph:control-worker:build
+RUN pnpm search:index-worker:build
 
 FROM base AS runner
 ARG RAG_BASE_PATH=/rag-system
@@ -36,6 +38,8 @@ RUN groupadd --system --gid 1001 nodejs \
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/.next/graph-control-worker.cjs ./graph-control-worker.cjs
+COPY --from=builder --chown=nextjs:nodejs /app/.next/elasticsearch-index-worker.cjs ./elasticsearch-index-worker.cjs
 COPY --from=builder --chown=nextjs:nodejs /app/db/postgres ./db/postgres
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/migrate-postgres.mjs ./scripts/migrate-postgres.mjs
 COPY --from=builder --chown=nextjs:nodejs /app/scripts/backfill-local-postgres.mjs ./scripts/backfill-local-postgres.mjs

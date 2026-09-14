@@ -10,6 +10,7 @@ import {
 } from './metrics';
 import type {
   RagEvalCaseResult,
+  RagEvalAgentTrajectory,
   RagEvalDataset,
   RagEvalRunReport,
   RagEvalTarget,
@@ -81,6 +82,7 @@ export async function runRagEval(
           targetResult.abstained
         ),
         usage: targetResult.usage,
+        ...(targetResult.trajectory === undefined ? {} : { trajectory: targetResult.trajectory }),
         ...(targetResult.policyId === undefined
           ? {}
           : { policyId: targetResult.policyId }),
@@ -94,6 +96,8 @@ export async function runRagEval(
         caseId: evalCase.id,
         status: 'failed',
         error: formatError(error),
+        ...(error instanceof Error && 'trajectory' in error && error.trajectory
+          ? { trajectory: error.trajectory as RagEvalAgentTrajectory } : {}),
       });
     }
   }
@@ -229,6 +233,8 @@ function validateTargetResult(
   for (const [label, value] of [
     ['inputTokens', usage.inputTokens],
     ['outputTokens', usage.outputTokens],
+    ['partialInputTokens', usage.partialInputTokens],
+    ['partialOutputTokens', usage.partialOutputTokens],
     ['costUsd', usage.costUsd],
   ] as const) {
     if (value !== undefined) {

@@ -1229,6 +1229,14 @@ export class EntityExtractor {
       if (isEntityExtractionFatalError(error)) {
         throw error;
       }
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        // Some providers enforce their own request deadline before our wrapper
+        // fires. Normalize that native timeout so callers retry instead of
+        // accepting a silently empty graph as a successful extraction.
+        throw new EntityExtractionProviderTimeoutError(
+          'Entity extraction provider request timed out.'
+        );
+      }
       if (error instanceof Error && error.message.includes('超时')) {
         console.warn(
           '[EntityExtractor] chunk extraction timed out',

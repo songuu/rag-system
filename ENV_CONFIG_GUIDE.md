@@ -1,5 +1,7 @@
 # 环境变量配置指南
 
+**Agentic RAG 配置最后核实：2026-09-07**；其他模块按各节配置说明执行。
+
 ## 快速开始
 
 创建 `.env.local` 文件并配置以下环境变量：
@@ -23,6 +25,10 @@ EMBEDDING_PROVIDER=siliconflow  # 可选: ollama | siliconflow | openai | custom
 | 业务持久化 | `RAG_PERSISTENCE_BACKEND` | `postgres` 使用自建 PostgreSQL；向量仍由 Milvus/Zilliz 配置控制 |
 | API 身份边界 | `RAG_ACCESS_MODE` | 生产当前使用 `single-tenant-token` |
 | Agentic runtime | `RAG_AGENTIC_RUNTIME` | `create-agent`（默认）使用真实 LangChain `createAgent`；`legacy` 仅用于显式回滚 |
+| Agentic 补搜 | `RAG_AGENTIC_RETRIEVAL_MODE` | `snapshot`（默认）只读初始快照；`bounded` 读取后最多两次同 scope 补搜 |
+| Agentic 决策 | `RAG_AGENTIC_DECISION_MODE` | bounded 默认 `structured`；`native-tools` 保留原生工具决策对照，仅服务端可设置 |
+| Canonical 重排 | `RERANK_PROVIDER` / `RERANK_MODEL` | 已配置 provider 且请求未关闭 reranking 时执行 optional lane；未知/未配置 provider 安全跳过 |
+| 词法检索 | `RAG_ELASTICSEARCH_MODE` | `off` / `shadow` / `active`；与 Milvus dense 并行，应用层 RRF 融合 |
 
 ## 自建 PostgreSQL 持久化
 
@@ -95,6 +101,94 @@ schema，仍需业务写入和数据库回读完成最终验收。
 S3/MinIO 等对象存储并在数据库保存 key/hash/metadata。详见
 `docs/deployment/postgresql.md`。
 
+## Milvus + Elasticsearch 双检索
+
+Milvus 是 dense vector 的权威检索后端，Elasticsearch 是 BM25 词法 sidecar；PostgreSQL
+保存业务事实和 ES 投影 outbox。ES 不重复保存 embedding。查询在同一主 lane 内并行执行
+Milvus 与 ES，`active` 使用应用层 RRF 后再进入现有 rerank/abstention；ES 连接故障会降级为
+Milvus-only，但 scope/来源完整性冲突会 fail closed。
+
+```bash
+RAG_ELASTICSEARCH_MODE=shadow  # off | shadow | active
+ELASTICSEARCH_URL=https://search.internal.example:9243
+ELASTICSEARCH_INDEX=rag_chunks_v1
+ELASTICSEARCH_API_KEY=inject-through-runtime-secret-manager
+ELASTICSEARCH_REQUEST_TIMEOUT_MS=3000
+ELASTICSEARCH_RRF_RANK_CONSTANT=60
+```
+
+生产必须使用 HTTPS 和 API key 或 basic auth。只有隔离的本地 Compose 网络可显式设置
+`ELASTICSEARCH_ALLOW_INSECURE=true` 与
+`ELASTICSEARCH_ALLOW_UNAUTHENTICATED=true`；这两个开关在云端 Compose 被固定为 `false`。
+
+发布顺序：
+
+1. 执行 `node scripts/migrate-postgres.mjs`，应用 `0007_elasticsearch_lexical_outbox.sql`。
+2. 启动 ES 与 `search-index-worker`，保持 `RAG_ELASTICSEARCH_MODE=shadow`，重新摄取或回填文档。
+3. 观察 `/api/health` 的 `elasticsearch.indexReady` 和 ask 响应中的
+   `retrievalDetails.elasticsearch.diagnostics`。
+4. 校验召回后切到 `active`；回滚只需设回 `shadow` 或 `off`，Milvus 数据不受影响。
+
+本地完整栈使用：
+
+```bash
+docker compose --env-file .env.container -f docker-compose.yml -f docker-compose.local.yml up -d
+```
+
+本地 Compose 默认启用 active 双检索，并把 ES HTTP 端口仅绑定到 `127.0.0.1`。宿主机必须
+为 Docker/WSL 提供足够内存，并按 Elastic 要求设置 `vm.max_map_count`；生产应使用外部受管
+ES 或完成对应宿主机内核配置。云端 worker 通过 `--profile search-index` 显式启用。
+
+## Neo4j 知识图谱
+
+Neo4j 与 Milvus 并行：Milvus 保存 Passage 向量，Neo4j 保存实体、Claim、社区和路径。
+
+```bash
+RAG_GRAPH_BACKEND=neo4j
+RAG_GRAPH_MODE=off  # off | shadow | active
+
+# 宿主机 pnpm dev 使用 127.0.0.1；Compose 内 app 使用 neo4j 服务名
+NEO4J_URI=neo4j://127.0.0.1:7687
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=inject-through-runtime-secret-manager
+NEO4J_DATABASE=neo4j
+
+RAG_GRAPH_MAX_HOPS=2
+RAG_GRAPH_QUERY_TIMEOUT_MS=3000
+RAG_GRAPH_WRITE_TIMEOUT_MS=120000
+RAG_GRAPH_AUTO_BUILD=true
+# 本机 worker 直接从 Milvus 读原文分块并构建 Neo4j 图谱
+RAG_GRAPH_BUILD_EXECUTOR=local  # local | webhook | disabled
+RAG_GRAPH_LOCAL_BUILD_LEASE_MS=3600000
+NEO4J_MAX_TRANSACTION_RETRY_MS=1000
+RAG_GRAPH_MAX_ENTITIES=100
+RAG_GRAPH_MAX_CLAIMS=300
+# webhook 模式可选：独立 control worker 的可靠下游。
+# 接收方必须使用 Idempotency-Key 头去重。
+# RAG_GRAPH_PUBLICATION_WEBHOOK_URL=https://internal.example/graph/publications
+# RAG_GRAPH_BUILD_WEBHOOK_URL=https://internal.example/graph/builds
+```
+
+正式发布键为 `RAG_GRAPH_MODE`。`shadow` 会执行图检索并输出诊断，但不会让图谱证据进入
+Abstention、LLM 上下文或响应 Evidence；`active` 才影响答案。旧键
+`RAG_MIROFISH_GRAPH_MODE` 仅在正式键未设置时兼容读取。生产连接优先使用 `neo4j+s://`，密码
+只允许通过运行时 Secret 注入。完整启动、导入、发布和回滚步骤见
+`docs/runbooks/neo4j-local.md`。
+
+当 `RAG_GRAPH_BACKEND=neo4j` 时，`RAG_GRAPH_AUTO_BUILD` 默认为 `true`。文档完成 Milvus
+写入并持久化 PostgreSQL 资产后，pipeline 会按服务端 tenant/corpus/documentVersion/trustLevel
+自动提交幂等 Graph BuildJob；设置为 `false` 只暂停新任务入队，不删除或取消已有任务。入队失败
+返回 `KNOWLEDGE_GRAPH_BUILD_ENQUEUE_REQUIRED` 与 reconciliationId，表示向量已写入但图任务需要
+补偿，不能当作完整成功。
+
+镜像包含独立的 `graph-control-worker.cjs`，Compose 会把它作为单独服务运行。本地 Compose 默认
+`RAG_GRAPH_BUILD_EXECUTOR=local`：BuildJob 会精确读取同 tenant/corpus/documentVersion/trustLevel
+的 Milvus 分块，校验首尾覆盖、原文长度和 SHA-256 后调用本机模型抽取并写入 Neo4j。历史分块若
+缺少 `sourceTextLength`/`sourceTextHash` 会拒绝构建，需要重新上传/向量化。`webhook` 模式仍要求 HTTPS URL 和
+共享 Secret；未显式选择模式且凭据不完整时使用 `disabled`，BuildJob 保留在数据库队列。
+云端覆盖把该服务放在 `graph-control` profile 中；只有 Neo4j 与 PostgreSQL Secret 完整时才启用。
+worker 不提供 HTTP 端口，因此 Compose 显式禁用继承自应用镜像的 HTTP healthcheck。
+
 ## LangSmith 观测与评估配置
 
 本项目使用 LangSmith JS SDK 的手写 RunTree、trace mirror 与 feedback。开启后，`/api/ask` 会尝试写入手工 root run；详细 Trace/Observation/Score mirror 只存在于 `LocalRAGSystem.askWithDetails()`，当前没有正常可达的 route 调用它，canonical `/api/ask` 也不走该链。`thread_id` 提供 Threads 聚合前置，但 Insights Agent 和 Multi-turn Evals 尚无 SDK 调用闭环。
@@ -144,20 +238,55 @@ LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 # 默认值；canonical scope/retrieval 后执行真实 createAgent
 RAG_AGENTIC_RUNTIME=create-agent
 
+# 默认只读取初始快照；切换为 bounded 前通过目标模型与语料验收
+RAG_AGENTIC_RETRIEVAL_MODE=snapshot
+# RAG_AGENTIC_RETRIEVAL_MODE=bounded
+# bounded 读后决策；不改变 snapshot 默认
+RAG_AGENTIC_DECISION_MODE=structured
+# RAG_AGENTIC_DECISION_MODE=native-tools
+
 # 仅用于紧急回滚到旧 Runnable/显式状态循环
 # RAG_AGENTIC_RUNTIME=legacy
 ```
 
-`create-agent` 路径只把 canonical context composer 校验后复制的冻结 evidence snapshot 暴露给一个无参数、只读工具，并限制为一次工具调用、两次模型调用和单个请求级生成 deadline。当前 LLM 必须支持原生 tool calling；切换 provider/model 前应做真实 canary。手工 LangSmith root 可独立启用，其 inputs 只保留数值/布尔摘要（问题正文只记录长度），失败只上报稳定错误码；包含 evidence 的 Runnable/model/tool child spans 会在本地执行，但请求级和最内层 agent callback 都强制绑定 non-networked discard client，禁止外部上传。该边界同样覆盖“无手工 client、仅 legacy 自动 tracing 环境变量/profile 生效”和调用方显式传入外部 tracer 的情况。上线仍需评估手工 root metadata 标识和远端保留策略。
+`RAG_AGENTIC_RETRIEVAL_MODE` 由服务端读取，仅作用于 `create-agent`；默认/空值为 `snapshot`，未知值拒绝。snapshot 使用严格空参数 `read_scoped_rag_context({})`，一次工具、两次模型、graph recursion 16。bounded 必须先读取同一快照，再可使用 `search_scoped_rag_context({query})`；query 长度 1–1024，每轮最多一个工具，最多两次补搜、三次工具、四次模型、graph recursion 32。模型不能设置 tenant/corpus/trust、filter、provider 或数据库连接。
+
+初始检索最多 30 秒，整个生成阶段最多 90 秒；bounded 的每次补搜含可选重排最多 5 秒，也计入这 90 秒。累计 context 最多 4000 估算 token，bounded 证据上限为 `min(40, 3 × topK)`。补搜新 query 使用独立 embedding，证据经校验后只追加，原编号与正文不变；无增益/重复 query、容量/时间预算或普通 provider 故障会停止补搜。scope/身份冲突、请求取消和工具合同错误显式失败。
+
+bounded 下 `RAG_AGENTIC_DECISION_MODE` 默认/空值为 `structured`，未知值拒绝；`native-tools` 保留原来的原生工具决策。结构化模式仍先执行原生空参数读取，之后要求 `{action, query, answer, evidenceNumbers}`：action 仅 `search` / `answer` / `abstain`。Ollama 使用 JSON schema 约束，其他模型使用提示词与同一严格本地校验；模型通过 `evidenceNumbers` 选择实际支持的来源，answer 要求至少一个来源，搜索时该数组必须为空；编号唯一、为正整数、最多 40 个且必须属于当前已交付 context。服务端仅渲染模型声明的编号，不自动选择全部证据。非法 JSON、额外字段、非法来源编号、混合工具调用或停止后搜索均显式失败。结构化搜索复用现有工具与调用预算，不增加规划模型调用。snapshot 忽略此配置。对应提示词 `scoped-rag-structured-answer-v5` 与模式一起进入缓存及 durable 身份。
+
+当前 LLM 必须支持原生 tool calling；切换 provider/model 或启用 bounded 前应做真实 canary 和同条件消融。关闭补搜将 `RAG_AGENTIC_RETRIEVAL_MODE` 恢复为 `snapshot`；模式与对应 promptVersion 已绑定缓存及 durable 身份。复现命令及验收边界见[当前架构](docs/architecture/agentic-rag-current.md#验收与复现)。
+
+手工 LangSmith root 可独立启用，其 inputs 只保留数值/布尔摘要（问题正文只记录长度），失败只上报稳定错误码；包含 evidence 的 Runnable/model/tool child spans 会在本地执行，但请求级和最内层 agent callback 都强制绑定 non-networked discard client，禁止外部上传。该边界同样覆盖“无手工 client、仅 legacy 自动 tracing 环境变量/profile 生效”和调用方显式传入外部 tracer 的情况。上线仍需评估手工 root metadata 标识和远端保留策略。
 
 这意味着你可以：
 - LLM 用本地 Ollama，Embedding 用云端 SiliconFlow
 - LLM 用 OpenAI，Embedding 用 SiliconFlow (省钱)
 - 或任意组合
 
+## Canonical Rerank 配置
+
+`/api/ask` canonical 检索在请求 `enableReranking` 未设为 `false` 且不是 ordered-context 时增加 5 秒 optional rerank lane，初始检索与 bounded 补搜共用同一服务端 provider。重排只改变已通过 scope 校验的同一证据集顺序和分数。
+
+| `RERANK_PROVIDER` | 必需凭据 | 可选 endpoint 覆盖 |
+| --- | --- | --- |
+| `siliconflow`（未设置 provider 时的默认值） | `SILICONFLOW_API_KEY`，与 embedding 配置共用 | `SILICONFLOW_BASE_URL` |
+| `cohere` | `COHERE_API_KEY` | `COHERE_BASE_URL` |
+| `voyage` | `VOYAGE_API_KEY` | `VOYAGE_BASE_URL` |
+
+`RERANK_MODEL` 可覆盖所选 provider 的默认模型，应填该 provider 支持的 rerank 模型名。以使用既有 SiliconFlow 配置为例：
+
+```bash
+RERANK_PROVIDER=siliconflow
+# SILICONFLOW_API_KEY 由部署的凭据配置注入
+# RERANK_MODEL=<目标 provider 支持的 rerank 模型>
+```
+
+未配置所选 provider 的凭据或 provider 未识别时，不调用重排服务；普通服务错误、无效排列或超时保持原排序。scope 越界、隔离证据或请求取消不降级。调用方可通过 `enableReranking=false` 禁用；是否实际应用查看 `retrievalDetails.rerank.applied/provider/reason` 和 lane executions。ordered-context 跳过重排以保留文档顺序。
+
 ## E3-E7 分阶段激活配置
 
-会改变生成 evidence、检索主链或持久化路径的能力默认关闭；检索拒答默认只在
+本节列出的分阶段能力默认关闭；Agentic 补搜和 canonical rerank 使用前两节的独立配置，不属于此模式表。检索拒答默认只在
 `shadow` 观察。复制容器样例不会改变现有 dense/text 生产回答。除 Durable Ask
 仅支持 `off | active` 外，其余查询期 rollout 使用 `off | shadow | active`：
 

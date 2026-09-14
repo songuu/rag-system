@@ -32,6 +32,10 @@ import {
 import { redactErrorForLog } from '@/lib/security/error-redaction';
 import { toPublicMilvusConfig } from '@/lib/security/public-config';
 import { recordPipelineDocumentIfConfigured } from '@/lib/persistence/postgres-pipeline-store';
+import {
+  enqueueKnowledgeGraphBuildAfterVectorization,
+  KnowledgeGraphAutoBuildEnqueueError,
+} from '@/lib/knowledge-graph/auto-build';
 import type { JsonValue } from '@/lib/persistence/types';
 import {
   isVectorBackendDisabled,
@@ -45,6 +49,7 @@ import {
   type VectorIngestLease,
 } from '@/lib/rag/vector-ingest-state';
 import { EmbeddingOutputValidationError } from '@/lib/embedding-batch';
+import { ElasticsearchProjectionOutboxError } from '@/lib/elasticsearch/postgres-outbox-store';
 
 export const runtime = 'nodejs';
 
@@ -170,7 +175,7 @@ export async function POST(request: NextRequest) {
           metadata: scopeMetadata,
           signal: request.signal,
         }, (progress) => ingestLease?.updateStage(progress.stage));
-        const postgresAssetId = await persistPipelineResult({
+        const persistence = await persistPipelineResult({
           securityContext,
           result,
           originalName: sourceName,
@@ -183,7 +188,12 @@ export async function POST(request: NextRequest) {
           success: true,
           ...result,
           embeddingModel: modelToUse,
-          ...(postgresAssetId ? { postgresAssetId } : {}),
+          ...(persistence.postgresAssetId
+            ? { postgresAssetId: persistence.postgresAssetId }
+            : {}),
+          ...(persistence.graphBuild.enabled
+            ? { graphBuild: persistence.graphBuild.job }
+            : {}),
         });
       }
       
@@ -210,7 +220,7 @@ export async function POST(request: NextRequest) {
           metadata: scopeMetadata,
           signal: request.signal,
         }, (progress) => ingestLease?.updateStage(progress.stage));
-        const postgresAssetId = await persistPipelineResult({
+        const persistence = await persistPipelineResult({
           securityContext,
           result,
           originalName: url,
@@ -222,7 +232,12 @@ export async function POST(request: NextRequest) {
           success: true,
           ...result,
           embeddingModel: modelToUse,
-          ...(postgresAssetId ? { postgresAssetId } : {}),
+          ...(persistence.postgresAssetId
+            ? { postgresAssetId: persistence.postgresAssetId }
+            : {}),
+          ...(persistence.graphBuild.enabled
+            ? { graphBuild: persistence.graphBuild.job }
+            : {}),
         });
       }
       
@@ -250,7 +265,7 @@ export async function POST(request: NextRequest) {
           metadata: scopeMetadata,
           signal: request.signal,
         }, (progress) => ingestLease?.updateStage(progress.stage));
-        const postgresAssetId = await persistPipelineResult({
+        const persistence = await persistPipelineResult({
           securityContext,
           result,
           originalName: videoUrl,
@@ -262,7 +277,12 @@ export async function POST(request: NextRequest) {
           success: true,
           ...result,
           embeddingModel: modelToUse,
-          ...(postgresAssetId ? { postgresAssetId } : {}),
+          ...(persistence.postgresAssetId
+            ? { postgresAssetId: persistence.postgresAssetId }
+            : {}),
+          ...(persistence.graphBuild.enabled
+            ? { graphBuild: persistence.graphBuild.job }
+            : {}),
         });
       }
       
@@ -338,7 +358,7 @@ export async function POST(request: NextRequest) {
           const item = items[index];
           const input = inputs[index];
           const sourceKind = input.type ?? 'text';
-          const postgresAssetId = await persistPipelineResult({
+          const persistence = await persistPipelineResult({
             securityContext,
             result,
             originalName: input.filename ?? `batch-document-${index + 1}`,
@@ -350,7 +370,12 @@ export async function POST(request: NextRequest) {
               ? undefined
               : [item.content, item.text].find((value): value is string => typeof value === 'string'),
           });
-          if (postgresAssetId) Object.assign(result, { postgresAssetId });
+          if (persistence.postgresAssetId) {
+            Object.assign(result, { postgresAssetId: persistence.postgresAssetId });
+          }
+          if (persistence.graphBuild.enabled) {
+            Object.assign(result, { graphBuild: persistence.graphBuild.job });
+          }
         }
         
         const successCount = results.filter(r => r.success).length;
@@ -441,6 +466,24 @@ function mapPipelineError(
     };
   }
   if (error instanceof PostgresIngestReconciliationRequiredError) {
+    return {
+      status: error.status,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
+      },
+    };
+  }
+  if (error instanceof ElasticsearchProjectionOutboxError) {
+    return {
+      status: 503,
+      body: {
+        error: { code: error.code, message: error.message },
+        requestId,
+      },
+    };
+  }
+  if (error instanceof KnowledgeGraphAutoBuildEnqueueError) {
     return {
       status: error.status,
       body: {
@@ -576,7 +619,7 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           metadata: scopeMetadata,
           signal: request.signal,
         }, (progress) => ingestLease?.updateStage(progress.stage));
-        const postgresAssetId = await persistPipelineResult({
+        const persistence = await persistPipelineResult({
           securityContext,
           result,
           originalName: filename,
@@ -589,12 +632,19 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           filename,
           ...result,
           success: true,
-          ...(postgresAssetId ? { postgresAssetId } : {}),
+          ...(persistence.postgresAssetId
+            ? { postgresAssetId: persistence.postgresAssetId }
+            : {}),
+          ...(persistence.graphBuild.enabled
+            ? { graphBuild: persistence.graphBuild.job }
+            : {}),
         });
       } catch (error) {
         if (
           error instanceof MilvusHybridIngestReconciliationRequiredError
+          || error instanceof ElasticsearchProjectionOutboxError
           || error instanceof PostgresIngestReconciliationRequiredError
+          || error instanceof KnowledgeGraphAutoBuildEnqueueError
         ) throw error;
         results.push({
           filename,
@@ -729,7 +779,7 @@ async function persistPipelineResult(input: {
   contentType: string;
   sourceKind: string;
   source?: string | Buffer;
-}): Promise<string | null> {
+}) {
   const sourceHash = [
     input.result.metadata.sourceHash,
     input.result.metadata.source_hash,
@@ -750,7 +800,7 @@ async function persistPipelineResult(input: {
       throw new Error('Processed document is missing its source hash.');
     }
 
-    return await recordPipelineDocumentIfConfigured({
+    const postgresAssetId = await recordPipelineDocumentIfConfigured({
       tenantId: input.securityContext.tenantId,
       corpusId: input.securityContext.corpusId,
       actorId: input.securityContext.actorId,
@@ -768,7 +818,20 @@ async function persistPipelineResult(input: {
         pdf_visual: input.result.pdfVisual ?? null,
       }),
     });
+    const graphBuild = await enqueueKnowledgeGraphBuildAfterVectorization({
+      tenantId: input.securityContext.tenantId,
+      corpusId: input.securityContext.corpusId,
+      actorId: input.securityContext.actorId,
+      documentId: input.result.documentId,
+      documentVersion: sourceHash,
+      trustLevel: 'external',
+      postgresAssetId,
+      chunkCount: input.result.chunks,
+      sourceName: input.originalName,
+    });
+    return { postgresAssetId, graphBuild };
   } catch (error) {
+    if (error instanceof KnowledgeGraphAutoBuildEnqueueError) throw error;
     throw new PostgresIngestReconciliationRequiredError(reconciliationId, error);
   }
 }

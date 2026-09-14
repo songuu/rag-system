@@ -275,9 +275,20 @@ export default function HomePage() {
         const successful = Number(data.successful || 0);
         const failed = Number(data.failed || 0);
         const totalChunks = Number(data.totalChunks || 0);
+        const graphBuildCount = Array.isArray(data.results)
+          ? data.results.filter((result: { success?: boolean; graphBuild?: unknown }) => (
+              result.success && result.graphBuild
+            )).length
+          : 0;
 
         if (successful > 0) {
-          showToast(`已写入知识库：${successful} 个文件，${totalChunks} 个文档块`, 'success');
+          const graphBuildMessage = graphBuildCount > 0
+            ? `；${graphBuildCount} 个 Neo4j 图谱任务已提交`
+            : '';
+          showToast(
+            `已写入知识库：${successful} 个文件，${totalChunks} 个文档块${graphBuildMessage}`,
+            'success'
+          );
         }
         if (failed > 0) {
           showToast(`${failed} 个文件未能写入知识库，请检查格式、模型和向量服务后重试`, 'warning');
@@ -1217,6 +1228,9 @@ export default function HomePage() {
               </Link>
               <Link href="/entity-extraction" className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors" title="实体抽取">
                 <i className="fas fa-project-diagram"></i>
+              </Link>
+              <Link href="/knowledge-graph" className="p-2 text-cyan-600 hover:text-cyan-800 hover:bg-cyan-50 rounded-lg transition-colors" title="Neo4j 知识图谱">
+                <i className="fas fa-share-alt"></i>
               </Link>
               <Link href="/mirofish" className="p-2 text-pink-500 hover:text-pink-700 hover:bg-pink-50 rounded-lg transition-colors" title="MiroFish 群体模拟">
                 <i className="fas fa-fish"></i>

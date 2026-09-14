@@ -69,9 +69,22 @@ const {
   DELETE,
   PATCH,
   calculateMiroFishGraphChunkUpperBound,
+  shouldRequireDurableGraphBuildApi,
 } = await import('./route.ts');
 
 after(() => restoreEnvironment(originalEnvironment));
+
+test('production Neo4j builds require the durable build API while local file builds stay compatible', () => {
+  assert.equal(shouldRequireDurableGraphBuildApi({
+    NODE_ENV: 'production', RAG_GRAPH_BACKEND: 'neo4j',
+  }), true);
+  assert.equal(shouldRequireDurableGraphBuildApi({
+    NODE_ENV: 'development', RAG_GRAPH_BACKEND: 'neo4j',
+  }), false);
+  assert.equal(shouldRequireDurableGraphBuildApi({
+    NODE_ENV: 'production', RAG_GRAPH_BACKEND: 'file',
+  }), false);
+});
 
 test('POST authorizes ingest and binds only server-owned publication scope', async t => {
   configureSingleTenant('owner');
@@ -144,6 +157,25 @@ test('GET requires authentication through the stable RagSecurityError contract',
   assert.equal(body.code, 'RAG_AUTH_REQUIRED');
   assert.equal(body.error, 'Authentication is required.');
   assert.equal(body.requestId, 'graph-api-test');
+});
+
+test('data and list compatibility queries share the knowledge graph admission gate', async t => {
+  configureSingleTenant('viewer');
+  await configureGraphRouteStore(t);
+  setTemporaryEnvironment(t, {
+    RAG_KG_QUERY_MAX_CONCURRENCY: '8',
+    RAG_KG_QUERY_RATE_PER_MINUTE: '1',
+  });
+  const { resetKnowledgeGraphQueryAdmissionForTests } = await import(
+    '../../../../lib/knowledge-graph/http.ts'
+  );
+  resetKnowledgeGraphQueryAdmissionForTests();
+  t.after(() => resetKnowledgeGraphQueryAdmissionForTests());
+
+  assert.equal((await GET(request('?action=list'))).status, 200);
+  const limited = await GET(request('?action=data&graphId=missing'));
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).code, 'KNOWLEDGE_GRAPH_RATE_LIMITED');
 });
 
 test('status allows the current corpus and hides raw worker errors', async t => {

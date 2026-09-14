@@ -24,6 +24,8 @@ const {
   rankGraphArtifactPassages,
 } = await import('./graph-entity-lane.ts');
 const { RagLaneExecutor } = await import('./lane-executor.ts');
+const { KnowledgeGraphError } = await import('../../knowledge-graph/contracts.ts');
+const { createMiroFishGraphVersion } = await import('../../knowledge-graph/mirofish-adapter.ts');
 
 const identity = {
   tenantId: 'tenant-a',
@@ -32,6 +34,7 @@ const identity = {
   documentVersion: 'sha256:v1',
   trustLevel: 'reviewed',
 };
+const graphVersion = createMiroFishGraphVersion(identity);
 
 test('entity match emits the original passage with graph provenance', async () => {
   const result = await rank('What did Alice do?', { maxHops: 1, topK: 1 });
@@ -284,6 +287,155 @@ test('handler honors an already-aborted request', async () => {
     handler.execute(createContext({}, controller.signal)),
     error => error?.name === 'AbortError'
   );
+});
+
+test('handler delegates to a graph retrieval port and forwards dense passage seeds', async () => {
+  let observed;
+  const handler = createGraphEntityLaneHandler({
+    retrievalPort: {
+      retriever: 'neo4j-knowledge-graph-v1',
+      async retrieve(input) {
+        observed = input;
+        return {
+          evidence: [{
+            id: 'graph:sha256:v1:passage-alice',
+            tenantId: identity.tenantId,
+            corpusId: identity.corpusId,
+            documentId: identity.documentId,
+            documentVersion: identity.documentVersion,
+            content: 'Alice founded Acme.',
+            trustLevel: identity.trustLevel,
+            laneId: input.laneId,
+            retrievalScore: 0.9,
+            metadata: {
+              graphVersion,
+              graphPassageId: 'passage-alice',
+              graphEntityIds: ['entity-alice'],
+            },
+          }],
+          stopReason: 'sufficient',
+          diagnostics: {
+            seedCount: input.seedPassageIds.length,
+            matchedEntityCount: 1,
+            matchedCommunityCount: 0,
+            inspectedPathCount: 1,
+            inspectedClaimCount: 1,
+            truncated: false,
+          },
+        };
+      },
+    },
+  });
+  const context = createContext();
+  context.priorEvidence = [{
+    id: 'dense-1',
+    tenantId: identity.tenantId,
+    corpusId: identity.corpusId,
+    documentId: identity.documentId,
+    documentVersion: identity.documentVersion,
+    content: 'seed',
+    trustLevel: identity.trustLevel,
+    laneId: 'dense',
+    metadata: { passageId: 'passage-alice' },
+  }];
+
+  const result = await handler.execute(context);
+
+  assert.equal(handler.retriever, 'neo4j-knowledge-graph-v1');
+  assert.deepEqual(observed.seedPassageIds, ['passage-alice']);
+  assert.equal(observed.snapshot.graphVersion, graphVersion);
+  assert.equal(result.evidence.length, 1);
+  assert.equal(result.metadata.graphBackend, 'neo4j-knowledge-graph-v1');
+});
+
+test('handler fails closed when a graph retrieval port returns cross-scope evidence', async () => {
+  const handler = createGraphEntityLaneHandler({
+    retrievalPort: {
+      retriever: 'neo4j-knowledge-graph-v1',
+      async retrieve(input) {
+        return {
+          evidence: [{
+            id: 'forged', tenantId: 'tenant-b', corpusId: identity.corpusId,
+            documentId: identity.documentId, documentVersion: identity.documentVersion,
+            content: 'forged', trustLevel: identity.trustLevel, laneId: input.laneId,
+            metadata: { graphVersion: identity.documentVersion, graphPassageId: 'passage-alice' },
+          }],
+          stopReason: 'sufficient',
+          diagnostics: {
+            seedCount: 0, matchedEntityCount: 1, matchedCommunityCount: 0,
+            inspectedPathCount: 1, inspectedClaimCount: 1, truncated: false,
+          },
+        };
+      },
+    },
+  });
+
+  await assert.rejects(handler.execute(createContext()), /tenantId/);
+});
+
+test('handler requires every graph evidence field to match the pinned graph identity', async () => {
+  const validEvidence = {
+    id: 'graph:passage-alice',
+    tenantId: identity.tenantId,
+    corpusId: identity.corpusId,
+    documentId: identity.documentId,
+    documentVersion: identity.documentVersion,
+    content: 'Alice founded Acme.',
+    trustLevel: identity.trustLevel,
+    laneId: 'graph-lane',
+    metadata: { graphVersion, graphPassageId: 'passage-alice' },
+  };
+  const mutations = [
+    ['tenantId', { tenantId: 'tenant-b' }],
+    ['corpusId', { corpusId: 'corpus-b' }],
+    ['documentId', { documentId: 'document-b' }],
+    ['documentVersion', { documentVersion: 'sha256:v2' }],
+    ['trustLevel', { trustLevel: 'trusted' }],
+    ['laneId', { laneId: 'other-lane' }],
+    ['metadata.graphVersion', { metadata: { ...validEvidence.metadata, graphVersion: 'graph-v2' } }],
+  ];
+
+  for (const [field, mutation] of mutations) {
+    const handler = createGraphEntityLaneHandler({
+      retrievalPort: {
+        retriever: 'neo4j-knowledge-graph-v1',
+        async retrieve() {
+          return {
+            evidence: [{ ...validEvidence, ...mutation }],
+            stopReason: 'sufficient',
+            diagnostics: {
+              seedCount: 0, matchedEntityCount: 1, matchedCommunityCount: 0,
+              inspectedPathCount: 1, inspectedClaimCount: 1, truncated: false,
+            },
+          };
+        },
+      },
+    });
+
+    await assert.rejects(
+      handler.execute(createContext()),
+      error => String(error?.message).includes(field),
+      field
+    );
+  }
+});
+
+test('handler degrades optional graph retrieval when Neo4j is unavailable', async () => {
+  const handler = createGraphEntityLaneHandler({
+    retrievalPort: {
+      retriever: 'neo4j-knowledge-graph-v1',
+      async retrieve() {
+        throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', 'Neo4j unavailable');
+      },
+    },
+  });
+
+  const result = await handler.execute(createContext());
+
+  assert.equal(result.evidence.length, 0);
+  assert.equal(result.stopReason, 'no_gain');
+  assert.equal(result.metadata.degraded, true);
+  assert.equal(result.metadata.degradationReason, 'KNOWLEDGE_GRAPH_UNAVAILABLE');
 });
 
 test('optional missing graph records no_gain without replacing dense evidence', async () => {

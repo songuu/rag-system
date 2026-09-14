@@ -114,6 +114,42 @@ export async function recordPipelineDocumentIfConfigured(input) {
 }
 `);
 
+const graphBuildStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+let calls = [];
+let failure;
+export class KnowledgeGraphAutoBuildEnqueueError extends Error {
+  constructor(reconciliationId, cause) {
+    super(
+      'Knowledge graph build enqueue requires reconciliation. reconciliationId=' + reconciliationId,
+      { cause }
+    );
+    this.name = 'KnowledgeGraphAutoBuildEnqueueError';
+    this.code = 'KNOWLEDGE_GRAPH_BUILD_ENQUEUE_REQUIRED';
+    this.status = 503;
+  }
+}
+export function resetGraphBuildCalls() { calls = []; failure = undefined; }
+export function getGraphBuildCalls() { return structuredClone(calls); }
+export function setGraphBuildFailure(value) { failure = value; }
+export async function enqueueKnowledgeGraphBuildAfterVectorization(input) {
+  calls.push(structuredClone(input));
+  if (failure) {
+    throw new KnowledgeGraphAutoBuildEnqueueError(
+      'graph-route-test',
+      new Error('private graph queue detail')
+    );
+  }
+  return {
+    enabled: true,
+    job: {
+      id: '11111111-1111-4111-8111-111111111111',
+      graphVersion: 'kgv1:route-test',
+      status: 'queued',
+    },
+  };
+}
+`);
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@/lib/document-pipeline') {
@@ -121,6 +157,9 @@ registerHooks({
     }
     if (specifier === '@/lib/persistence/postgres-pipeline-store') {
       return { url: persistenceStubUrl, shortCircuit: true };
+    }
+    if (specifier === '@/lib/knowledge-graph/auto-build') {
+      return { url: graphBuildStubUrl, shortCircuit: true };
     }
     if (specifier === 'next/server') return nextResolve('next/server.js', context);
     if (specifier.startsWith('@/')) {
@@ -153,6 +192,7 @@ const environmentKeys = [
   'RAG_DEFAULT_CORPUS_ID',
   'RAG_PDF_VISUAL_MODE',
   'RAG_VECTOR_BACKEND',
+  'RAG_GRAPH_BACKEND',
 ];
 const originalEnvironment = Object.fromEntries(
   environmentKeys.map(key => [key, process.env[key]])
@@ -165,6 +205,7 @@ Object.assign(process.env, {
   RAG_DEFAULT_TENANT_ID: 'tenant-a',
   RAG_DEFAULT_CORPUS_ID: 'corpus-a',
   RAG_PDF_VISUAL_MODE: 'active',
+  RAG_GRAPH_BACKEND: 'neo4j',
 });
 
 const { NextRequest } = await import('next/server');
@@ -181,6 +222,11 @@ const {
   resetPersistenceCalls,
   setPersistenceFailure,
 } = await import(persistenceStubUrl);
+const {
+  getGraphBuildCalls,
+  resetGraphBuildCalls,
+  setGraphBuildFailure,
+} = await import(graphBuildStubUrl);
 const {
   getVectorIngestSnapshot,
   resetVectorIngestStateForTests,
@@ -236,6 +282,7 @@ test('text ingest maps invalid embedding output to a stable 502 response', async
 test('authenticated multipart PDF reaches the production pipeline seam with server scope', async () => {
   resetPipelineCalls();
   resetPersistenceCalls();
+  resetGraphBuildCalls();
   const form = new FormData();
   form.append(
     'files',
@@ -260,6 +307,7 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   const body = await response.json();
   const call = getPipelineCalls()[0];
   const persistenceCall = getPersistenceCalls()[0];
+  const graphBuildCall = getGraphBuildCalls()[0];
 
   assert.equal(response.status, 200);
   assert.equal(body.success, true);
@@ -267,6 +315,8 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   assert.equal(body.results[0].pdfVisual.status, 'published');
   assert.equal(body.results[0].pdfVisual.visualPageCount, 2);
   assert.equal(body.results[0].postgresAssetId, 'asset-route-test');
+  assert.equal(body.results[0].graphBuild.status, 'queued');
+  assert.equal(body.results[0].graphBuild.id, '11111111-1111-4111-8111-111111111111');
   assert.equal(call.inputIsBuffer, true);
   assert.equal(new TextDecoder().decode(new Uint8Array(call.inputBytes)).startsWith('%PDF-1.7'), true);
   assert.equal(call.filename, '测试 visual.pdf');
@@ -281,6 +331,14 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   assert.equal(persistenceCall.documentId, 'pdf:sha256:route-test');
   assert.equal(persistenceCall.sourceHash, 'sha256:route-test');
   assert.equal(new TextDecoder().decode(new Uint8Array(persistenceCall.source)).startsWith('%PDF-1.7'), true);
+  assert.equal(graphBuildCall.tenantId, 'tenant-a');
+  assert.equal(graphBuildCall.corpusId, 'corpus-a');
+  assert.equal(graphBuildCall.actorId, 'actor-a');
+  assert.equal(graphBuildCall.documentId, 'pdf:sha256:route-test');
+  assert.equal(graphBuildCall.documentVersion, 'sha256:route-test');
+  assert.equal(graphBuildCall.trustLevel, 'external');
+  assert.equal(graphBuildCall.postgresAssetId, 'asset-route-test');
+  assert.equal(graphBuildCall.chunkCount, 2);
   assert.equal('tenantId' in body.results[0].pdfVisual, false);
   assert.equal('rootDir' in body.results[0].pdfVisual, false);
 });
@@ -406,6 +464,26 @@ test('completed vector ingest exposes PostgreSQL reconciliation-required failure
   assert.equal(body.requestId, 'pipeline-route-postgres-reconciliation-test');
   assert.equal(getPipelineCalls().length, 1);
   assert.equal(getPersistenceCalls().length, 1);
+});
+
+test('completed vector ingest exposes graph BuildJob reconciliation-required failure', async t => {
+  t.mock.method(console, 'error', () => {});
+  resetPipelineCalls();
+  resetPersistenceCalls();
+  resetGraphBuildCalls();
+  setGraphBuildFailure(true);
+  const response = await POST(pipelineTextRequest('pipeline-route-graph-enqueue-test'));
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.success, false);
+  assert.equal(body.code, 'KNOWLEDGE_GRAPH_BUILD_ENQUEUE_REQUIRED');
+  assert.match(body.error, /reconciliationId=graph-route-test/);
+  assert.equal(body.error.includes('private graph queue detail'), false);
+  assert.equal(body.requestId, 'pipeline-route-graph-enqueue-test');
+  assert.equal(getPipelineCalls().length, 1);
+  assert.equal(getPersistenceCalls().length, 1);
+  assert.equal(getGraphBuildCalls().length, 1);
 });
 
 function pipelineTextRequest(requestId) {

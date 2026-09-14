@@ -19,6 +19,9 @@ import {
 } from '@/lib/agentic-rag';
 import {
   SCOPED_RETRIEVAL_AGENT_RUNTIME,
+  SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION,
+  SCOPED_ITERATIVE_AGENT_PROMPT_VERSION,
+  SCOPED_STRUCTURED_AGENT_PROMPT_VERSION,
   invokeScopedRetrievalAgent,
   type ScopedRetrievalAgentResult,
 } from '@/lib/rag/agents/scoped-retrieval-agent';
@@ -68,6 +71,7 @@ import {
   throwIfRagRequestAborted,
   type DurableJsonObject,
   type RagAnswerEnvelope,
+  type RagEvidence,
   type RagExecutionTransition,
   type RagLaneHandler,
   type RagLaneExecutorResult,
@@ -78,6 +82,14 @@ import {
   type MilvusHybridCapability,
   type MilvusHybridSearchPort,
 } from '@/lib/rag';
+import { createRerankLaneHandler } from '@/lib/rag/retrieval/rerank-lane-handler';
+import {
+  createScopedFollowupRetriever,
+  resolveScopedRetrievalMode,
+  resolveScopedDecisionMode,
+  SCOPED_FOLLOWUP_MAX_SEARCHES,
+  SCOPED_FOLLOWUP_TIMEOUT_MS,
+} from '@/lib/rag/retrieval/scoped-followup-retrieval';
 import { decideRagAbstention } from '@/lib/rag/retrieval/abstention-policy';
 import {
   createAnswerExecutionTransitions,
@@ -96,7 +108,12 @@ import {
 import { createGraphEntityLaneHandler } from '@/lib/rag/retrieval/graph-entity-lane';
 import {
   getMiroFishGraphArtifactRuntime,
+  type MiroFishGraphArtifactRuntime,
 } from '@/lib/mirofish/graph-artifact-runtime';
+import { KnowledgeGraphError } from '@/lib/knowledge-graph/contracts';
+import { resolveKnowledgeGraphRolloutMode } from '@/lib/knowledge-graph/rollout';
+import { Neo4jOperationError } from '@/lib/neo4j/driver';
+import { PostgresQueryError } from '@/lib/postgres/client';
 import {
   assertRagResponseTrace,
   attachRagKernelHeaders,
@@ -128,6 +145,16 @@ import {
   assertVectorSearchReady,
   VectorIndexBuildingError,
 } from '@/lib/rag/vector-ingest-state';
+import {
+  assertElasticsearchConfigured,
+  getElasticsearchRuntimeConfig,
+} from '@/lib/elasticsearch/config';
+import { getElasticsearchClient } from '@/lib/elasticsearch/client';
+import { searchElasticsearchLexical } from '@/lib/elasticsearch/lexical-index';
+import {
+  retrieveMilvusElasticsearch,
+  type MilvusElasticsearchDiagnostics,
+} from '@/lib/rag/retrieval/milvus-elasticsearch-fusion';
 
 export const runtime = 'nodejs';
 
@@ -345,6 +372,18 @@ function resolveAgenticRuntime(): AgenticRuntime {
   throw new Error('RAG_AGENTIC_RUNTIME must be create-agent or legacy.');
 }
 
+function resolveScopedAgentConfiguration() {
+  const retrievalMode = resolveScopedRetrievalMode();
+  // The decision rollout belongs to bounded retrieval; snapshot keeps its existing protocol.
+  const decisionMode = retrievalMode === 'bounded' ? resolveScopedDecisionMode() : 'native-tools';
+  const promptVersion = retrievalMode === 'snapshot'
+    ? SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION
+    : decisionMode === 'structured'
+      ? SCOPED_STRUCTURED_AGENT_PROMPT_VERSION
+      : SCOPED_ITERATIVE_AGENT_PROMPT_VERSION;
+  return { retrievalMode, decisionMode, promptVersion } as const;
+}
+
 function resolveDenseAbstentionThreshold(fallback: number): number {
   const configured = process.env.RAG_DENSE_ABSTAIN_THRESHOLD;
   if (configured === undefined || configured.trim() === '') {
@@ -395,8 +434,8 @@ async function resolveServerMiroFishPolicy(
   question: string,
   scope: RagRetrievalScope
 ): Promise<Pick<RagQueryRequest, 'serverPolicyId' | 'graphArtifactIdentity'>> {
-  const mode = resolveRagFeatureRolloutMode('RAG_MIROFISH_GRAPH_MODE', 'off');
-  if (mode !== 'active') return {};
+  const mode = resolveKnowledgeGraphRolloutMode();
+  if (mode === 'off') return {};
   const queryKind = classifyRetrievalQuery(question).queryKind;
   if (queryKind !== 'global' && queryKind !== 'multi-hop') return {};
 
@@ -424,17 +463,16 @@ async function resolveServerMiroFishPolicy(
     };
   }
 
-  const graphRuntime = getMiroFishGraphArtifactRuntime();
-  const pointer = await graphRuntime.store.getActive(scope);
+  let pointer: Awaited<ReturnType<MiroFishGraphArtifactRuntime['store']['getActive']>>;
+  try {
+    const graphRuntime = getMiroFishGraphArtifactRuntime();
+    pointer = await graphRuntime.store.getActive(scope);
+  } catch (error) {
+    if (isOptionalKnowledgeGraphFailure(error)) return {};
+    throw error;
+  }
   if (!pointer.identity) return {};
   assertMiroFishTrustAllowed(pointer.identity.trustLevel, scope);
-  const artifact = await graphRuntime.store.get(pointer.identity, scope);
-  if (!artifact) {
-    // Expired or tombstoned pointers are optional retrieval state. Dense
-    // retrieval remains authoritative until an administrator activates a
-    // currently readable version.
-    return {};
-  }
   return {
     serverPolicyId: 'mirofish-research',
     graphArtifactIdentity: {
@@ -443,6 +481,17 @@ async function resolveServerMiroFishPolicy(
       trustLevel: pointer.identity.trustLevel,
     },
   };
+}
+
+export function isOptionalKnowledgeGraphFailure(error: unknown): boolean {
+  if (error instanceof Neo4jOperationError || error instanceof PostgresQueryError) {
+    return true;
+  }
+  return error instanceof KnowledgeGraphError && (
+    error.code === 'KNOWLEDGE_GRAPH_UNAVAILABLE'
+    || error.code === 'KNOWLEDGE_GRAPH_QUERY_TIMEOUT'
+    || error.code === 'KNOWLEDGE_GRAPH_NOT_FOUND'
+  );
 }
 
 function assertMiroFishTrustAllowed(
@@ -1204,6 +1253,9 @@ async function executeDurableAskRequest(input: {
       idempotencyKey,
     });
     const policyId = resolveRagPolicyId(input.ragRequest);
+    const agentConfiguration = policyId === 'agentic' && resolveAgenticRuntime() === 'create-agent'
+      ? resolveScopedAgentConfiguration()
+      : undefined;
     const digests = durable.createDurableAskDigests({
       integrityKey: runtime.integrityKey,
       query: input.ragRequest.question,
@@ -1232,16 +1284,20 @@ async function executeDurableAskRequest(input: {
         agenticRuntimeVersion: policyId === 'agentic'
           ? SCOPED_RETRIEVAL_AGENT_RUNTIME
           : null,
+        ...(agentConfiguration
+          ? {
+              agenticRetrievalMode: agentConfiguration.retrievalMode,
+              agenticDecisionMode: agentConfiguration.decisionMode,
+              agenticPromptVersion: agentConfiguration.promptVersion,
+            }
+          : {}),
         orderedContextMode: resolveRagFeatureRolloutMode(
           'RAG_ORDERED_CONTEXT_MODE',
           'off'
         ),
         hybridMode: resolveMilvusHybridRolloutMode(),
         pdfVisualMode: resolvePdfMultimodalMode(),
-        miroFishGraphMode: resolveRagFeatureRolloutMode(
-          'RAG_MIROFISH_GRAPH_MODE',
-          'off'
-        ),
+        miroFishGraphMode: resolveKnowledgeGraphRolloutMode(),
         graphArtifactIdentity: input.ragRequest.graphArtifactIdentity
           ? {
               documentId:
@@ -1500,11 +1556,15 @@ function sanitizeDurableAskReplayValue(value: unknown): DurableJsonObject {
     output.execution = execution;
   }
   if (value.agent !== undefined) {
-    output.agent = projectDurableAskScalarObject(
+    const agent = projectDurableAskScalarObject(
       value.agent,
       DURABLE_ASK_REPLAY_AGENT_KEYS,
       'agent'
     );
+    if (isJsonObject(value.agent) && value.agent.diagnostics !== undefined) {
+      agent.diagnostics = projectScopedAgentDiagnostics(value.agent.diagnostics);
+    }
+    output.agent = agent;
   }
   if (value.workflow !== undefined) {
     if (!isJsonObject(value.workflow)) {
@@ -1525,6 +1585,29 @@ function sanitizeDurableAskReplayValue(value: unknown): DurableJsonObject {
     output.workflow = workflow;
   }
   return output;
+}
+
+// The same allowlist protects live responses and durable replay as diagnostics evolve.
+function projectScopedAgentDiagnostics(value: unknown): DurableJsonObject {
+  const diagnostics = projectDurableAskScalarObject(
+    value,
+    ['version', 'modelResponseCount'],
+    'agent diagnostics'
+  );
+  if (!isJsonObject(value)) {
+    throw new Error('Agent diagnostics must be a JSON object.');
+  }
+  diagnostics.usage = projectDurableAskScalarObject(
+    value.usage,
+    ['measurement', 'measuredModelResponses', 'inputTokenCount', 'outputTokenCount'],
+    'agent usage'
+  );
+  diagnostics.citations = projectDurableAskScalarObject(
+    value.citations,
+    ['validation', 'status', 'citationCount', 'invalidCitationCount', 'citedEvidenceIds'],
+    'agent citations'
+  );
+  return diagnostics;
 }
 
 function projectDurableAskObjectArray(
@@ -1598,6 +1681,11 @@ const DURABLE_ASK_REPLAY_TOP_LEVEL_KEYS = [
 const DURABLE_ASK_REPLAY_MODEL_KEYS = ['llm', 'embedding'] as const;
 
 const DURABLE_ASK_REPLAY_AGENT_KEYS = [
+  'retrievalMode',
+  'decisionMode',
+  'answerDisposition',
+  'searchCallCount',
+  'searchStopReason',
   'runtime',
   'toolCallCount',
   'servedEvidenceIds',
@@ -1877,6 +1965,13 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     ? configuredThreadId
     : request.sessionId ?? traceId;
 
+  const agentConfiguration = policyId === 'agentic'
+    ? resolveScopedAgentConfiguration()
+    : undefined;
+  const retrievalMode = agentConfiguration?.retrievalMode ?? 'snapshot';
+  const decisionMode = agentConfiguration?.decisionMode ?? 'native-tools';
+  const maxAgentEvidence = Math.min(40, topK * (1 + SCOPED_FOLLOWUP_MAX_SEARCHES));
+  const maxContextTokens = Math.min(4_000, baseRetrievalPlan.context_budget_tokens ?? 4_000);
   let queryEmbedding: number[] = [];
   let queryEmbeddingPromise: Promise<number[]> | undefined;
   let searchResults: MilvusSearchResult[] = [];
@@ -1889,9 +1984,16 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     'RAG_ORDERED_CONTEXT_MODE',
     'off'
   );
+  const graphMode = resolveKnowledgeGraphRolloutMode();
+  const elasticsearchConfig = getElasticsearchRuntimeConfig();
+  assertElasticsearchConfigured(elasticsearchConfig);
+  let elasticsearchDiagnostics: MilvusElasticsearchDiagnostics | undefined;
   let orderedSnapshot: OrderedCorpusSnapshot | undefined;
   const queryKind = classifyRetrievalQuery(question).queryKind;
-  const hybridMode = resolveMilvusHybridRolloutMode();
+  const configuredHybridMode = resolveMilvusHybridRolloutMode();
+  // ES owns the lexical lane while enabled; running Milvus BM25 as well would
+  // double-count the same signal and can cause the dense lane to be skipped.
+  const hybridMode = elasticsearchConfig.mode === 'off' ? configuredHybridMode : 'off';
   const orderedReadTimeoutMs = orderedContextMode === 'off'
     ? DEFAULT_ORDERED_CONTEXT_READ_TIMEOUT_MS
     : resolveRagProviderTimeoutMs(
@@ -2024,6 +2126,24 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     pdfVisualUsable: pdfVisualCapabilityUsable,
     pdfVisualIntent,
   });
+  const rerankHandler = request.enableReranking !== false && retrievalRoute.route !== 'ordered-context'
+    ? createRerankLaneHandler() : undefined;
+  if (rerankHandler) {
+    retrievalPlan.lanes.push({
+      id: 'rerank-optional',
+      type: 'rerank',
+      required: false,
+      description: 'Bounded reranking before final evidence composition.',
+      executionBudget: { maxDurationMs: SCOPED_FOLLOWUP_TIMEOUT_MS },
+    });
+  }
+  if (graphMode === 'shadow') {
+    const graphLaneIndex = retrievalPlan.lanes.findIndex(lane => lane.type === 'graph-entity');
+    if (graphLaneIndex >= 0) {
+      const [graphLane] = retrievalPlan.lanes.splice(graphLaneIndex, 1);
+      retrievalPlan.lanes.push(graphLane);
+    }
+  }
   const orderedEvidenceBudget = retrievalRoute.route === 'ordered-context'
     ? orderedSnapshot?.evidence.length ?? 0
     : 0;
@@ -2057,7 +2177,9 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
   const laneHandlers: RagLaneHandler[] = [
     {
       type: 'dense-vector',
-      retriever: 'milvus-dense-v1',
+      retriever: elasticsearchConfig.mode === 'off'
+        ? 'milvus-dense-v1'
+        : 'milvus-elasticsearch-rrf-v1',
       async execute({ lane, signal, priorEvidence }) {
         assertLaneNotAborted(signal);
         if (
@@ -2070,39 +2192,61 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
             metadata: { skippedBecauseHybridSufficient: true },
           };
         }
-        const milvus = getMilvusInstance(milvusConfig);
-        await milvus.connect();
-        assertLaneNotAborted(signal);
-        await milvus.initializeCollection();
-        assertLaneNotAborted(signal);
-
-        queryEmbedding = await getQueryEmbedding(signal);
-
         const searchStartedAt = Date.now();
-        searchResults = await milvus.search(
-          queryEmbedding,
+        const result = await retrieveMilvusElasticsearch({
+          mode: elasticsearchConfig.mode,
           topK,
-          buildScopedMilvusSearchOptions(retrievalScope, {
-            threshold: similarityThreshold,
-          })
-        );
+          laneId: lane.id,
+          rankConstant: elasticsearchConfig.rrfRankConstant,
+          async retrieveDense() {
+            const milvus = getMilvusInstance(milvusConfig);
+            await milvus.connect();
+            assertLaneNotAborted(signal);
+            await milvus.initializeCollection();
+            assertLaneNotAborted(signal);
+            queryEmbedding = await getQueryEmbedding(signal);
+            searchResults = await milvus.search(
+              queryEmbedding,
+              topK,
+              buildScopedMilvusSearchOptions(retrievalScope, {
+                threshold: similarityThreshold,
+              })
+            );
+            assertLaneNotAborted(signal);
+            if (!retrievalScope.enforceIsolation) {
+              stats = await milvus.getCollectionStats();
+              assertLaneNotAborted(signal);
+            }
+            return adaptMilvusSearchResultsToEvidence(searchResults, {
+              laneId: lane.id,
+              scope: retrievalScope,
+            });
+          },
+          async retrieveLexical() {
+            const client = await getElasticsearchClient(elasticsearchConfig);
+            if (!client) throw new Error('Elasticsearch lexical retrieval is disabled.');
+            return searchElasticsearchLexical({
+              client,
+              indexName: elasticsearchConfig.indexName,
+              query: question,
+              topK,
+              laneId: lane.id,
+              scope: retrievalScope,
+              signal,
+            });
+          },
+        });
         assertLaneNotAborted(signal);
         searchTime = Date.now() - searchStartedAt;
-        if (!retrievalScope.enforceIsolation) {
-          stats = await milvus.getCollectionStats();
-          assertLaneNotAborted(signal);
-        }
-
-        const evidence = adaptMilvusSearchResultsToEvidence(searchResults, {
-          laneId: lane.id,
-          scope: retrievalScope,
-        });
+        elasticsearchDiagnostics = result.diagnostics;
+        const evidence = result.evidence;
         return {
           evidence,
           stopReason: evidence.length > 0 ? 'sufficient' : 'no_gain',
           metadata: {
             searchTime,
             vectorizationTime,
+            elasticsearch: result.diagnostics,
           },
         };
       },
@@ -2145,15 +2289,24 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     });
   }
   if (policyId === 'mirofish-research' && request.graphArtifactIdentity) {
-    laneHandlers.push(createGraphEntityLaneHandler({
-      store: getMiroFishGraphArtifactRuntime().store,
-      defaultMaxHops: 2,
-      maxEvidence: topK,
-    }));
+    try {
+      const graphRuntime = getMiroFishGraphArtifactRuntime();
+      laneHandlers.push(createGraphEntityLaneHandler({
+        store: graphRuntime.store,
+        ...(graphRuntime.retrievalPort
+          ? { retrievalPort: graphRuntime.retrievalPort }
+          : {}),
+        defaultMaxHops: 2,
+        maxEvidence: topK,
+      }));
+    } catch (error) {
+      if (!isOptionalKnowledgeGraphFailure(error)) throw error;
+    }
   }
   if (pdfVisualHandler) {
     laneHandlers.push(pdfVisualHandler);
   }
+  if (rerankHandler) laneHandlers.push(rerankHandler);
   const laneExecutor = new RagLaneExecutor(laneHandlers);
 
   const laneResult = await laneExecutor.execute({
@@ -2172,13 +2325,25 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     throw new Error('milvus-2step plan is missing its primary retrieval lane.');
   }
   const graphLaneId = retrievalPlan.lanes.find(lane => lane.type === 'graph-entity')?.id;
+  const answerGraphLaneId = graphMode === 'active' ? graphLaneId : undefined;
+  const graphShadowEvidence = graphMode === 'shadow' && graphLaneId
+    ? laneResult.evidence.filter(item => item.laneId === graphLaneId)
+    : [];
+  if (graphShadowEvidence.length > 0) {
+    // Shadow retrieval is observable, but must not affect abstention, prompts, or responses.
+    laneResult.evidence = laneResult.evidence.filter(item => item.laneId !== graphLaneId);
+  }
   const hybridLaneId = retrievalPlan.lanes.find(lane => lane.type === 'sparse-bm25')?.id;
   const visualLaneId = retrievalPlan.lanes.find(lane => lane.type === 'visual-page')?.id;
   const laneKinds: Record<string, 'dense' | 'ordered' | 'hybrid' | 'graph' | 'visual'> = {
-    ...(denseLaneId ? { [denseLaneId]: 'dense' as const } : {}),
+    ...(denseLaneId ? {
+      [denseLaneId]: elasticsearchConfig.mode === 'active'
+        ? 'hybrid' as const
+        : 'dense' as const,
+    } : {}),
     ...(orderedLaneId ? { [orderedLaneId]: 'ordered' as const } : {}),
     ...(hybridLaneId ? { [hybridLaneId]: 'hybrid' as const } : {}),
-    ...(graphLaneId ? { [graphLaneId]: 'graph' as const } : {}),
+    ...(answerGraphLaneId ? { [answerGraphLaneId]: 'graph' as const } : {}),
     ...(visualLaneId ? { [visualLaneId]: 'visual' as const } : {}),
   };
   const calibrationLanes: Record<
@@ -2187,7 +2352,9 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
   > = {
     ...(denseLaneId ? {
       [denseLaneId]: {
-        minimumScore: resolveDenseAbstentionThreshold(similarityThreshold),
+        minimumScore: elasticsearchConfig.mode === 'active'
+          ? 0
+          : resolveDenseAbstentionThreshold(similarityThreshold),
         scoreField: 'retrieval' as const,
       },
     } : {}),
@@ -2201,8 +2368,8 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     ...(hybridLaneId
       ? { [hybridLaneId]: { minimumScore: 0, scoreField: 'retrieval' as const } }
       : {}),
-    ...(graphLaneId
-      ? { [graphLaneId]: { minimumScore: 0, scoreField: 'retrieval' as const } }
+    ...(answerGraphLaneId
+      ? { [answerGraphLaneId]: { minimumScore: 0, scoreField: 'retrieval' as const } }
       : {}),
     ...(visualLaneId
       ? {
@@ -2214,15 +2381,15 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
         }
       : {}),
   };
-  const abstention = decideRagAbstention({
+  const assessEvidence = (evidence: RagEvidence[]) => decideRagAbstention({
     queryKind: retrievalRoute.queryKind,
-    evidence: laneResult.evidence,
+    evidence,
     laneKinds,
     calibration: {
       version: [
         'milvus',
         orderedLaneId ? 'ordered' : 'dense',
-        graphLaneId ? 'graph' : undefined,
+        answerGraphLaneId ? 'graph' : undefined,
         hybridLaneId ? 'hybrid' : undefined,
         visualLaneId ? 'visual' : undefined,
         'calibration-v1',
@@ -2231,58 +2398,107 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     },
     minimumDistinctDocuments: resolveMinimumDistinctDocuments(retrievalRoute.queryKind),
   });
+  let abstention = assessEvidence(laneResult.evidence);
   const generationContext = prepareMilvusGenerationContext({
     evidence: laneResult.evidence,
     abstentionMode,
     abstention,
-    maxTokens: retrievalPlan.context_budget_tokens ?? 4_000,
+    maxTokens: maxContextTokens,
     order: retrievalRoute.route === 'ordered-context' ? 'document' : 'retrieval',
     scope: retrievalScope,
   });
-  const { contextPack } = generationContext;
-  const context = contextPack.context;
+  let { contextPack } = generationContext;
+  if (retrievalMode === 'bounded') {
+    if (contextPack.includedEvidence.length > maxAgentEvidence) {
+      const omittedIds = contextPack.includedEvidenceIds.slice(maxAgentEvidence);
+      const capped = composeEvidenceContextV2(contextPack.includedEvidence.slice(0, maxAgentEvidence), {
+        maxTokens: maxContextTokens,
+        order: contextPack.order,
+        scope: retrievalScope,
+      });
+      contextPack = {
+        ...capped,
+        excludedEvidenceIds: [...new Set([...contextPack.excludedEvidenceIds, ...omittedIds, ...capped.excludedEvidenceIds])],
+        truncated: true,
+      };
+    }
+    // Answerability must describe the delivered budget, including any lost
+    // document coverage after clipping. Keep full-scope validation before clipping.
+    abstention = assessEvidence(contextPack.includedEvidence);
+  }
+  let context = contextPack.context;
   const activeAbstention = abstentionMode === 'active' && abstention.abstain;
-  const cacheIdentityBase = {
-    tenantId: retrievalScope.tenantId,
-    corpusId: retrievalScope.corpusId,
-    corpusVersion: process.env.RAG_CORPUS_VERSION?.trim() || 'live-corpus-v1',
-    contextDigest: createRagContextDigest(context),
-    documentVersions: generationContext.cacheDimensions.documentVersions,
-    evidenceFingerprints: generationContext.cacheDimensions.evidenceFingerprints,
-    schemaVersion: 'milvus-tenant-schema-v2',
-    indexVersion:
-      process.env.RAG_MILVUS_INDEX_VERSION?.trim() ||
-      [
-        milvusConfig.collectionName,
-        milvusConfig.indexType,
-        milvusConfig.embeddingDimension,
-      ].join(':'),
-    embeddingModel,
-    policyId,
-    fusionVersion: [
-      (orderedLaneId ? 'ordered' : 'dense')
-        + (policyId === 'mirofish-research' ? '-graph-optional-v1' : '-only-v1'),
-      retrievalRoute.version,
-      retrievalRoute.route,
-      `hybrid:${hybridMode}:${hybridCollectionName ?? 'none'}:${hybridCapabilityUsable}`,
-      `pdf-visual:${pdfVisualMode}:${pdfVisualModel ?? 'none'}:${pdfVisualCapabilityUsable}:pdf-asset-manifest-v1`,
-      `abstention:${abstentionMode}:${abstention.calibrationVersion}`,
-    ].join(':'),
-  };
-  const contextCacheIdentity = createRagCacheIdentity({
-    ...cacheIdentityBase,
-    kind: 'context',
-    llmModel: 'none',
-    promptVersion: 'context-composer-v2',
-  });
-  const answerCacheIdentity = createRagCacheIdentity({
-    ...cacheIdentityBase,
-    kind: 'answer',
-    llmModel,
-    promptVersion: policyId === 'agentic'
-      ? SCOPED_RETRIEVAL_AGENT_RUNTIME
-      : 'milvus-answer-prompt-v2',
-  });
+  const executeFollowupSearch = retrievalMode === 'bounded' ? createScopedFollowupRetriever({
+    request,
+    rerankHandler,
+    async retrieve({ query, laneId, scope, signal }) {
+      assertLaneNotAborted(signal);
+      const result = await retrieveMilvusElasticsearch({
+        mode: elasticsearchConfig.mode,
+        topK,
+        laneId,
+        rankConstant: elasticsearchConfig.rrfRankConstant,
+        async retrieveDense() {
+          const milvus = getMilvusInstance(milvusConfig);
+          await milvus.connect();
+          assertLaneNotAborted(signal);
+          await milvus.initializeCollection();
+          assertLaneNotAborted(signal);
+          // A reformulated query must receive its own embedding, never the initial query cache.
+          const embedding = await getEmbeddingModel(embeddingModel).embedQuery(query);
+          assertLaneNotAborted(signal);
+          const results = await milvus.search(embedding, topK,
+            buildScopedMilvusSearchOptions(scope, { threshold: similarityThreshold }));
+          assertLaneNotAborted(signal);
+          return adaptMilvusSearchResultsToEvidence(results, { laneId, scope });
+        },
+        async retrieveLexical() {
+          const client = await getElasticsearchClient(elasticsearchConfig);
+          if (!client) throw new Error('Elasticsearch lexical retrieval is disabled.');
+          return searchElasticsearchLexical({
+            client,
+            indexName: elasticsearchConfig.indexName,
+            query,
+            topK,
+            laneId,
+            scope,
+            signal,
+          });
+        },
+      });
+      return result.evidence;
+    },
+    onExecution(result, plan) {
+      laneResult.laneExecutions.push(...result.laneExecutions);
+      retrievalPlan.lanes.push(...plan.lanes);
+      for (const lane of plan.lanes) {
+        if (lane.type !== 'dense-vector') continue;
+        laneKinds[lane.id] = elasticsearchConfig.mode === 'active' ? 'hybrid' : 'dense';
+        calibrationLanes[lane.id] = {
+          minimumScore: elasticsearchConfig.mode === 'active'
+            ? 0
+            : resolveDenseAbstentionThreshold(similarityThreshold),
+          scoreField: 'retrieval',
+        };
+      }
+    },
+  }) : undefined;
+  const followupSearch = executeFollowupSearch ? async (input: { query: string; signal: AbortSignal }) => {
+    const evidence = await executeFollowupSearch(input);
+    if (abstentionMode !== 'active') return evidence;
+    // Validate the complete provider result in the executor first, then apply
+    // the same active evidence threshold before any follow-up reaches the model.
+    const decision = assessEvidence(evidence);
+    const qualifiedIds = new Set(decision.qualifiedEvidenceIds);
+    return evidence.filter(item => qualifiedIds.has(item.id));
+  } : undefined;
+  if (followupSearch) {
+    laneResult.budget = {
+      maxLanes: budget.maxLanes + SCOPED_FOLLOWUP_MAX_SEARCHES * (rerankHandler ? 2 : 1),
+      maxEvidence: maxAgentEvidence,
+      maxDurationMs: RAG_RETRIEVAL_EXECUTION_BUDGET_MS + RAG_GENERATION_EXECUTION_BUDGET_MS,
+    };
+  }
   const generationStartedAt = new Date().toISOString();
   let answer: string;
   let llmTime = 0;
@@ -2311,6 +2527,13 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
             threadId: agentThreadId,
             signal,
             callbacks: policyContext.runnableConfig?.callbacks,
+            ...(followupSearch ? { retrieval: {
+              search: followupSearch,
+              decisionMode,
+              maxSearches: SCOPED_FOLLOWUP_MAX_SEARCHES,
+              maxContextTokens,
+              maxEvidence: maxAgentEvidence,
+            } } : {}),
           }),
         });
       } catch (error) {
@@ -2353,6 +2576,10 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
         );
       }
       answer = agentResult.answer;
+      contextPack = agentResult.contextPack;
+      context = contextPack.context;
+      laneResult.evidence = [...contextPack.includedEvidence];
+      if (retrievalMode === 'bounded') abstention = assessEvidence(laneResult.evidence);
     } else {
       const llm = createLLM(llmModel, {
         requestTimeoutMs: RAG_GENERATION_EXECUTION_BUDGET_MS,
@@ -2368,6 +2595,58 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     }
     llmTime = Date.now() - llmStartedAt;
   }
+  const cacheIdentityBase = {
+    tenantId: retrievalScope.tenantId,
+    corpusId: retrievalScope.corpusId,
+    corpusVersion: process.env.RAG_CORPUS_VERSION?.trim() || 'live-corpus-v1',
+    contextDigest: createRagContextDigest(context),
+    documentVersions: contextPack.includedEvidence.map(item => item.documentId + ':' + item.documentVersion),
+    evidenceFingerprints: contextPack.includedEvidence.map(item => ({
+      evidenceId: item.id,
+      documentId: item.documentId,
+      documentVersion: item.documentVersion,
+      ...(item.startOffset === undefined ? {} : { startOffset: item.startOffset, endOffset: item.endOffset }),
+    })),
+    schemaVersion: 'milvus-tenant-schema-v2',
+    indexVersion:
+      process.env.RAG_MILVUS_INDEX_VERSION?.trim() ||
+      [
+        milvusConfig.collectionName,
+        milvusConfig.indexType,
+        milvusConfig.embeddingDimension,
+      ].join(':'),
+    embeddingModel,
+    policyId: graphMode === 'shadow' ? 'milvus-2step' : policyId,
+    fusionVersion: [
+      (orderedLaneId ? 'ordered' : 'dense')
+        + (answerGraphLaneId ? '-graph-optional-v1' : '-only-v1'),
+      retrievalRoute.version,
+      retrievalRoute.route,
+      `hybrid:${hybridMode}:${hybridCollectionName ?? 'none'}:${hybridCapabilityUsable}`,
+      `elasticsearch:${elasticsearchConfig.mode}:${elasticsearchConfig.indexName}:${elasticsearchDiagnostics?.status ?? 'not-run'}`,
+      answerGraphLaneId
+        ? `graph:active:${answerGraphLaneId}:neo4j-lane-v1`
+        : 'graph:off:none:neo4j-lane-v1',
+      `pdf-visual:${pdfVisualMode}:${pdfVisualModel ?? 'none'}:${pdfVisualCapabilityUsable}:pdf-asset-manifest-v1`,
+      `abstention:${abstentionMode}:${abstention.calibrationVersion}`,
+      `agent-retrieval:${retrievalMode}:${maxAgentEvidence}:${maxContextTokens}`,
+      `agent-decision:${decisionMode}`,
+      ...laneResult.laneExecutions.filter(lane => lane.retriever.startsWith('rerank:'))
+        .map(lane => `${lane.retriever}:${lane.status}:${lane.stopReason}:${lane.errorCode ?? 'none'}`),
+    ].join(':'),
+  };
+  const contextCacheIdentity = createRagCacheIdentity({
+    ...cacheIdentityBase,
+    kind: 'context',
+    llmModel: 'none',
+    promptVersion: 'context-composer-v2',
+  });
+  const answerCacheIdentity = createRagCacheIdentity({
+    ...cacheIdentityBase,
+    kind: 'answer',
+    llmModel,
+    promptVersion: agentConfiguration?.promptVersion ?? 'milvus-answer-prompt-v2',
+  });
   const queryAnalysis = analyzeQuery(
     question,
     queryEmbedding,
@@ -2392,6 +2671,18 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
         hasContext: Boolean(context.trim()),
       })
     : undefined;
+  const agentDiagnostics = agentResult?.diagnostics
+    ? projectScopedAgentDiagnostics(agentResult.diagnostics)
+    : undefined;
+  const agentDecisionMetadata = retrievalMode === 'bounded' ? {
+    retrievalMode,
+    decisionMode,
+    searchCallCount: agentResult?.searchCallCount ?? 0,
+    searchStopReason: agentResult?.searchStopReason ?? 'no_gain',
+    ...(decisionMode === 'structured'
+      && (agentResult?.answerDisposition === 'answer' || agentResult?.answerDisposition === 'abstain')
+      ? { answerDisposition: agentResult.answerDisposition } : {}),
+  } : {};
   const payload: RagAskSuccessPayload = {
     success: true,
     question,
@@ -2408,6 +2699,8 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
             runtime: agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
             toolCallCount: agentResult?.toolCallCount ?? 0,
             servedEvidenceIds: agentResult?.servedEvidenceIds ?? [],
+            ...agentDecisionMetadata,
+            ...(agentDiagnostics ? { diagnostics: agentDiagnostics } : {}),
           },
           workflow: agentWorkflow,
         }
@@ -2451,12 +2744,26 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
               runtime: agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
               toolCallCount: agentResult?.toolCallCount ?? 0,
               servedEvidenceIds: agentResult?.servedEvidenceIds ?? [],
+            ...agentDecisionMetadata,
+              ...(agentDiagnostics ? { diagnostics: agentDiagnostics } : {}),
             },
           }
         : {}),
       retrievalRoute,
+      rerank: {
+        requested: request.enableReranking !== false,
+        applied: laneResult.laneExecutions.some(lane => lane.laneId === 'rerank-optional'
+          && lane.status === 'completed' && lane.stopReason === 'sufficient'),
+        provider: rerankHandler?.retriever,
+        reason: rerankHandler
+          ? laneResult.laneExecutions.find(lane => lane.laneId === 'rerank-optional')?.metadata?.reason
+            ?? laneResult.laneExecutions.find(lane => lane.laneId === 'rerank-optional')?.errorCode
+          : retrievalRoute.route === 'ordered-context' ? 'document_order_preserved' : 'disabled',
+      },
       hybrid: {
-        requestedMode: hybridMode,
+        requestedMode: configuredHybridMode,
+        effectiveMode: hybridMode,
+        suppressedByElasticsearch: configuredHybridMode !== 'off' && elasticsearchConfig.mode !== 'off',
         probed: hybridCapability !== undefined,
         usable: hybridCapabilityUsable,
         active: retrievalRoute.route === 'hybrid',
@@ -2470,6 +2777,12 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
           reason: hybridCapability.reason,
         },
       },
+      elasticsearch: {
+        requestedMode: elasticsearchConfig.mode,
+        indexName: elasticsearchConfig.indexName,
+        active: elasticsearchConfig.mode === 'active',
+        diagnostics: elasticsearchDiagnostics,
+      },
       pdfVisual: {
         requestedMode: pdfVisualMode,
         requestedVisual: pdfVisualIntent,
@@ -2481,6 +2794,18 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
           : 0,
         diagnostics: visualLaneId
           ? laneResult.laneExecutions.find(item => item.laneId === visualLaneId)?.metadata
+          : undefined,
+      },
+      graph: {
+        requestedMode: graphMode,
+        executed: Boolean(graphLaneId),
+        active: graphMode === 'active' && Boolean(graphLaneId),
+        evidenceCount: graphMode === 'active' && graphLaneId
+          ? laneResult.evidence.filter(item => item.laneId === graphLaneId).length
+          : 0,
+        shadowEvidenceCount: graphShadowEvidence.length,
+        diagnostics: graphLaneId
+          ? laneResult.laneExecutions.find(item => item.laneId === graphLaneId)?.metadata
           : undefined,
       },
       contextPacking: {
@@ -2533,6 +2858,10 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       context_pack_version: contextPack.version,
       abstention_mode: abstentionMode,
       abstention_decision: abstention,
+      graph_mode: graphMode,
+      graph_shadow_evidence_count: graphShadowEvidence.length,
+      elasticsearch_mode: elasticsearchConfig.mode,
+      elasticsearch_status: elasticsearchDiagnostics?.status ?? 'not-run',
       executed_lane_count: laneResult.laneExecutions.filter(
         lane => lane.status === 'completed'
       ).length,
@@ -2541,6 +2870,11 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
             agent_runtime: agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
             agent_tool_call_count: agentResult?.toolCallCount ?? 0,
             agent_served_evidence_ids: agentResult?.servedEvidenceIds ?? [],
+            ...(agentResult?.diagnostics ? {
+              agent_model_response_count: agentResult.diagnostics.modelResponseCount,
+              agent_citation_status: agentResult.diagnostics.citations.status,
+              agent_token_measurement: agentResult.diagnostics.usage.measurement,
+            } : {}),
           }
         : {}),
     },
@@ -2555,7 +2889,7 @@ function createScopedAgentWorkflowProjection(input: {
   hasContext: boolean;
 }) {
   const retrievalEndTime = Date.parse(input.generationStartedAt);
-  const retrievalDuration = input.laneResult.laneExecutions.reduce(
+  const retrievalDuration = input.laneResult.laneExecutions.filter(lane => !lane.laneId.startsWith('agentic-followup-')).reduce(
     (total, lane) => total + Math.max(0, lane.latencyMs),
     0
   );
@@ -2593,7 +2927,7 @@ function createScopedAgentWorkflowProjection(input: {
     runtime: input.agentResult?.runtime ?? SCOPED_RETRIEVAL_AGENT_RUNTIME,
     steps: [retrievalStep, ...generationSteps],
     totalDuration: retrievalDuration + (input.agentResult?.totalDuration ?? 0),
-    retryCount: 0,
+    retryCount: input.agentResult?.searchCallCount ?? 0,
   };
 }
 

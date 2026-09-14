@@ -7,7 +7,7 @@ export type RagEvalDatasetSchemaVersion =
 
 export type RagEvalRelevance = 1 | 2 | 3;
 
-export type RagEvalTokenMeasurement = 'provider' | 'estimated' | 'unavailable';
+export type RagEvalTokenMeasurement = 'provider' | 'partial' | 'estimated' | 'unavailable';
 
 export type RagEvalCostMeasurement =
   | 'provider'
@@ -107,6 +107,9 @@ export interface RagEvalUsage {
   totalLatencyMs: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** Observed subsets, excluded from complete-token aggregate metrics. */
+  partialInputTokens?: number;
+  partialOutputTokens?: number;
   tokenMeasurement: RagEvalTokenMeasurement;
   costUsd?: number;
   costMeasurement: RagEvalCostMeasurement;
@@ -123,6 +126,7 @@ export interface RagEvalTargetResult {
   laneIds?: string[];
   usage: RagEvalUsage;
   traceId?: string;
+  trajectory?: RagEvalAgentTrajectory;
 }
 
 export interface RagEvalTargetInput {
@@ -180,12 +184,14 @@ export interface RagEvalCompletedCaseResult {
   policyId?: string;
   laneIds?: string[];
   traceId?: string;
+  trajectory?: RagEvalAgentTrajectory;
 }
 
 export interface RagEvalFailedCaseResult {
   caseId: string;
   status: 'failed';
   error: string;
+  trajectory?: RagEvalAgentTrajectory;
 }
 
 export type RagEvalCaseResult = RagEvalCompletedCaseResult | RagEvalFailedCaseResult;
@@ -255,4 +261,24 @@ export interface RagEvalRunReport {
   metadata?: Record<string, unknown>;
   cases: RagEvalCaseResult[];
   summary: RagEvalSummary;
+}
+
+export interface RagEvalAgentTrajectory {
+  mode: 'snapshot' | 'rerank' | 'iterative';
+  decisionMode?: 'native-tools' | 'structured';
+  modelCallCount: number;
+  modelResponseCount: number;
+  modelCallMeasurement: 'langchain-callback-start';
+  providerRetryMeasurement: 'disabled' | 'unavailable';
+  toolCallCount: number;
+  retrievalCallCount: number;
+  rerankCallCount: number;
+  searchCallCount: number;
+  searchStopReason: string;
+  contextTokenEstimate: number;
+  deliveredEvidenceCount: number;
+  citationValidation: 'reference-only';
+  abstainDecision: 'empty-context' | 'explicit-text-rule' | 'structured-decision' | 'not-abstained';
+  budget: { maxDurationMs: number; maxContextTokens: number; maxEvidence: number; maxSearches: number };
+  budgetViolations: string[];
 }

@@ -13,6 +13,8 @@ import {
   shouldUsePostgresPersistence,
 } from '@/lib/postgres/env';
 import { redactErrorForLog } from '@/lib/security/error-redaction';
+import { checkElasticsearchReadiness } from '@/lib/elasticsearch/client';
+import { getElasticsearchRuntimeConfig } from '@/lib/elasticsearch/config';
 
 // GET /api/health - 系统健康检查
 export async function GET() {
@@ -21,6 +23,9 @@ export async function GET() {
     const llmConfig = getConfigSummary();
     const embeddingConfig = getEmbeddingConfigSummary();
     const postgresConfig = getPostgresRuntimeConfig();
+    const elasticsearch = await checkElasticsearchReadiness(
+      getElasticsearchRuntimeConfig()
+    );
     const persistence = shouldUsePostgresPersistence(postgresConfig)
       ? await resolvePostgresReadiness(postgresConfig)
       : {
@@ -29,11 +34,15 @@ export async function GET() {
           schemaReady: null,
         };
 
-    if (persistence.backend === 'postgres' && !persistence.schemaReady) {
+    if (
+      (persistence.backend === 'postgres' && !persistence.schemaReady)
+      || (elasticsearch.mode === 'active' && !elasticsearch.indexReady)
+    ) {
       return NextResponse.json({
         success: false,
         status: 'not_ready',
         persistence,
+        elasticsearch,
         modelConfig: publicModelConfig(llmConfig, embeddingConfig),
         timestamp: new Date().toISOString(),
       }, { status: 503 });
@@ -54,6 +63,7 @@ export async function GET() {
           disabled: true,
         },
         persistence,
+        elasticsearch,
         modelConfig: publicModelConfig(llmConfig, embeddingConfig),
         timestamp: new Date().toISOString(),
       });
@@ -74,6 +84,7 @@ export async function GET() {
         disabled: false,
       },
       persistence,
+      elasticsearch,
       // 返回实际的模型配置
       modelConfig: publicModelConfig(llmConfig, embeddingConfig),
       timestamp: new Date().toISOString()

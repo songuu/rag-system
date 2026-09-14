@@ -43,9 +43,11 @@ interface GraphData {
 interface Step1Props {
   projectId: string;
   simulationRequirement: string;
+  initialTexts?: string[];
   ontology: Ontology | null;
   graphData: GraphData | null;
   modelOverride?: ModelOverride | null;
+  onTextsPersist: (texts: string[]) => void;
   onOntologyGenerated: (ontology: Ontology) => void;
   onGraphBuilt: (graphData: GraphData) => void;
   onComplete: () => void;
@@ -60,14 +62,16 @@ interface UploadedPdf {
 export default function Step1GraphBuild({
   projectId,
   simulationRequirement,
+  initialTexts,
   ontology,
   graphData,
   modelOverride,
+  onTextsPersist,
   onOntologyGenerated,
   onGraphBuilt,
   onComplete,
 }: Step1Props) {
-  const [texts, setTexts] = useState('');
+  const [texts, setTexts] = useState(() => initialTexts?.join('\n\n') ?? '');
   const [graphText, setGraphText] = useState('');
   const [ontologyLoading, setOntologyLoading] = useState(false);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -97,6 +101,7 @@ export default function Step1GraphBuild({
       const data = await response.json();
       if (!data.success) throw new Error(data.error || '上传失败');
       setTexts(data.text);
+      onTextsPersist([data.text]);
       setUploadedPdf({ filename: data.filename, pages: data.pages, size: data.size });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'PDF 上传失败');
@@ -122,6 +127,7 @@ export default function Step1GraphBuild({
     if (!texts.trim()) { setError('请输入分析文本'); return; }
     setOntologyLoading(true);
     setError(null);
+    onTextsPersist([texts]);
     try {
       const response = await fetch('/rag-api/mirofish/ontology', {
         method: 'POST',

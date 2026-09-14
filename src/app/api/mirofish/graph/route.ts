@@ -55,6 +55,11 @@ import {
   validateChunking,
   validatePipelineText,
 } from '@/lib/security/request-validation';
+import {
+  acquireKnowledgeGraphQueryPermit,
+  isKnowledgeGraphAdmissionError,
+  knowledgeGraphHttpError,
+} from '@/lib/knowledge-graph/http';
 
 const MIROFISH_GRAPH_TASK_LIMIT = 20;
 const MIROFISH_GRAPH_GLOBAL_TASK_LIMIT = 200;
@@ -101,6 +106,14 @@ export async function POST(request: NextRequest) {
 
     const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
     const ontology = validateGraphOntology(body.ontology);
+
+    if (shouldRequireDurableGraphBuildApi(process.env)) {
+      throw new RequestValidationError(
+        'MIROFISH_DURABLE_GRAPH_BUILD_REQUIRED',
+        '生产 Neo4j 图谱构建必须使用 /api/knowledge-graph/builds 持久任务入口',
+        409
+      );
+    }
 
     const graphRuntime = getMiroFishGraphArtifactRuntime();
     const graphScope = createGraphManagementScope(securityContext);
@@ -232,6 +245,13 @@ export async function POST(request: NextRequest) {
   }
 }
 
+export function shouldRequireDurableGraphBuildApi(
+  env: Partial<Pick<NodeJS.ProcessEnv, 'NODE_ENV' | 'RAG_GRAPH_BACKEND'>>
+): boolean {
+  return env.NODE_ENV?.trim().toLowerCase() === 'production'
+    && env.RAG_GRAPH_BACKEND?.trim().toLowerCase() === 'neo4j';
+}
+
 export async function GET(request: NextRequest) {
   const requestId = resolvePublicRequestId(request);
   const { searchParams } = new URL(request.url);
@@ -274,121 +294,131 @@ export async function GET(request: NextRequest) {
 
     // 获取图谱数据
     if (action === 'data' && graphId) {
-      const graphRuntime = getMiroFishGraphArtifactRuntime();
-      const graphScope = createGraphQueryScope(securityContext);
-      const descriptor = await findGraphDescriptor(
-        graphRuntime.store,
-        graphScope,
-        graphId,
-        searchParams.get('documentVersion'),
-        searchParams.get('trustLevel')
-      );
-      if (descriptor) {
-        const artifact = await graphRuntime.store.get(
-          descriptor.identity,
-          graphScope
+      const release = acquireKnowledgeGraphQueryPermit(securityContext);
+      try {
+        const graphRuntime = getMiroFishGraphArtifactRuntime();
+        const graphScope = createGraphQueryScope(securityContext);
+        const descriptor = await findGraphDescriptor(
+          graphRuntime.store,
+          graphScope,
+          graphId,
+          searchParams.get('documentVersion'),
+          searchParams.get('trustLevel')
         );
-        if (!artifact) {
+        if (descriptor) {
+          const artifact = await graphRuntime.store.get(
+            descriptor.identity,
+            graphScope
+          );
+          if (!artifact) {
+            return graphNotFoundResponse('图谱不存在', requestId);
+          }
+          return boundedGraphDataResponse({
+            success: true,
+            graph: createPublicGraphProjection(artifact.graph),
+            documentVersion: descriptor.identity.documentVersion,
+            trustLevel: descriptor.identity.trustLevel,
+            requestId,
+          });
+        }
+
+        // Compatibility only for direct pre-E5 library callers. HTTP builds now
+        // publish durable artifacts and never retain graphData in TaskManager.
+        const legacyTask = filterMiroFishGraphTasksByScope(
+          getTaskManager().getAllTasks(),
+          securityContext
+        ).find(task =>
+          !isMiroFishGraphTaskQuarantined(task)
+          && task.result?.graphId === graphId
+          && task.result?.graphData
+          && task.result?.trustLevel !== 'quarantined'
+        );
+        const legacyGraph = legacyTask?.result?.graphData as GraphData | undefined;
+        if (!legacyGraph) {
           return graphNotFoundResponse('图谱不存在', requestId);
         }
-        return NextResponse.json({
+        return boundedGraphDataResponse({
           success: true,
-          graph: createPublicGraphProjection(artifact.graph),
-          documentVersion: descriptor.identity.documentVersion,
-          trustLevel: descriptor.identity.trustLevel,
+          graph: createPublicGraphProjection(legacyGraph),
           requestId,
         });
+      } finally {
+        release();
       }
-
-      // Compatibility only for direct pre-E5 library callers. HTTP builds now
-      // publish durable artifacts and never retain graphData in TaskManager.
-      const legacyTask = filterMiroFishGraphTasksByScope(
-        getTaskManager().getAllTasks(),
-        securityContext
-      ).find(task =>
-        !isMiroFishGraphTaskQuarantined(task)
-        && task.result?.graphId === graphId
-        && task.result?.graphData
-        && task.result?.trustLevel !== 'quarantined'
-      );
-      const legacyGraph = legacyTask?.result?.graphData as GraphData | undefined;
-      if (!legacyGraph) {
-        return graphNotFoundResponse('图谱不存在', requestId);
-      }
-      return NextResponse.json({
-        success: true,
-        graph: createPublicGraphProjection(legacyGraph),
-        requestId,
-      });
     }
 
     // 获取所有图谱列表
     if (action === 'list') {
-      const graphRuntime = getMiroFishGraphArtifactRuntime();
-      const graphScope = createGraphQueryScope(securityContext);
-      await graphRuntime.store.gcExpired(graphScope, { limit: 10 });
-      const [descriptors, activePointer] = await Promise.all([
-        graphRuntime.store.list(graphScope, { limit: 1_000 }),
-        graphRuntime.store.getActive(graphScope),
-      ]);
-      const taskManager = getTaskManager();
-      const scopedTasks = filterMiroFishGraphTasksByScope(
-        taskManager.getAllTasks(),
-        securityContext
-      ).filter(task => !isMiroFishGraphTaskQuarantined(task));
-      const durableIds = new Set(
-        descriptors.map(descriptor => descriptor.identity.documentId)
-      );
-      const durableGraphs = descriptors.map(descriptor => {
-        const task = scopedTasks.find(
-          candidate => candidate.result?.graphId === descriptor.identity.documentId
+      const release = acquireKnowledgeGraphQueryPermit(securityContext);
+      try {
+        const graphRuntime = getMiroFishGraphArtifactRuntime();
+        const graphScope = createGraphQueryScope(securityContext);
+        await graphRuntime.store.gcExpired(graphScope, { limit: 10 });
+        const [descriptors, activePointer] = await Promise.all([
+          graphRuntime.store.list(graphScope, { limit: 1_000 }),
+          graphRuntime.store.getActive(graphScope),
+        ]);
+        const taskManager = getTaskManager();
+        const scopedTasks = filterMiroFishGraphTasksByScope(
+          taskManager.getAllTasks(),
+          securityContext
+        ).filter(task => !isMiroFishGraphTaskQuarantined(task));
+        const durableIds = new Set(
+          descriptors.map(descriptor => descriptor.identity.documentId)
         );
-        return {
-          graphId: descriptor.identity.documentId,
-          graphName: descriptor.graphName,
-          documentVersion: descriptor.identity.documentVersion,
-          trustLevel: descriptor.identity.trustLevel,
-          nodeCount: descriptor.nodeCount,
-          edgeCount: descriptor.edgeCount,
-          createdAt: descriptor.createdAt,
-          expiresAt: descriptor.expiresAt,
-          active: Boolean(
-            activePointer.identity
-            && sameGraphIdentity(activePointer.identity, descriptor.identity)
-          ),
-          status: task?.status ?? 'published',
-        };
-      });
-      const legacyGraphs = scopedTasks
-        .filter(task =>
-          typeof task.result?.graphId === 'string'
-          && task.result?.graphData
-          && task.result?.trustLevel !== 'quarantined'
-          && !durableIds.has(task.result.graphId as string)
-        )
-        .map(task => {
-          const result = task.result as Record<string, unknown>;
-          const graphData = result.graphData as {
-            node_count?: number;
-            edge_count?: number;
-          };
+        const durableGraphs = descriptors.map(descriptor => {
+          const task = scopedTasks.find(
+            candidate => candidate.result?.graphId === descriptor.identity.documentId
+          );
           return {
-            graphId: result.graphId,
-            graphName: task.metadata?.graphName,
-            nodeCount: graphData.node_count || 0,
-            edgeCount: graphData.edge_count || 0,
-            createdAt: new Date(task.created_at).toISOString(),
-            active: false,
-            status: task.status,
+            graphId: descriptor.identity.documentId,
+            graphName: descriptor.graphName,
+            documentVersion: descriptor.identity.documentVersion,
+            trustLevel: descriptor.identity.trustLevel,
+            nodeCount: descriptor.nodeCount,
+            edgeCount: descriptor.edgeCount,
+            createdAt: descriptor.createdAt,
+            expiresAt: descriptor.expiresAt,
+            active: Boolean(
+              activePointer.identity
+              && sameGraphIdentity(activePointer.identity, descriptor.identity)
+            ),
+            status: task?.status ?? 'published',
           };
         });
+        const legacyGraphs = scopedTasks
+          .filter(task =>
+            typeof task.result?.graphId === 'string'
+            && task.result?.graphData
+            && task.result?.trustLevel !== 'quarantined'
+            && !durableIds.has(task.result.graphId as string)
+          )
+          .map(task => {
+            const result = task.result as Record<string, unknown>;
+            const graphData = result.graphData as {
+              node_count?: number;
+              edge_count?: number;
+            };
+            return {
+              graphId: result.graphId,
+              graphName: task.metadata?.graphName,
+              nodeCount: graphData.node_count || 0,
+              edgeCount: graphData.edge_count || 0,
+              createdAt: new Date(task.created_at).toISOString(),
+              active: false,
+              status: task.status,
+            };
+          });
 
-      return NextResponse.json({
-        success: true,
-        graphs: [...durableGraphs, ...legacyGraphs],
-        activeRevision: activePointer.revision,
-        requestId,
-      });
+        return NextResponse.json({
+          success: true,
+          graphs: [...durableGraphs, ...legacyGraphs],
+          activeRevision: activePointer.revision,
+          requestId,
+        });
+      } finally {
+        release();
+      }
     }
 
     return graphValidationResponse(
@@ -397,6 +427,9 @@ export async function GET(request: NextRequest) {
       requestId
     );
   } catch (error) {
+    if (isKnowledgeGraphAdmissionError(error)) {
+      return knowledgeGraphHttpError(error, requestId);
+    }
     return graphErrorResponse(
       error,
       'MIROFISH_GRAPH_REQUEST_FAILED',
@@ -405,6 +438,20 @@ export async function GET(request: NextRequest) {
       'query'
     );
   }
+}
+
+const MIROFISH_GRAPH_HTTP_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+function boundedGraphDataResponse(body: Record<string, unknown>): NextResponse {
+  if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MIROFISH_GRAPH_HTTP_RESPONSE_BYTES) {
+    return NextResponse.json({
+      success: false,
+      code: 'MIROFISH_GRAPH_RESPONSE_TOO_LARGE',
+      error: '图谱过大，请使用知识图谱分页查询接口',
+      requestId: body.requestId,
+    }, { status: 413 });
+  }
+  return NextResponse.json(body);
 }
 
 export async function PATCH(request: NextRequest) {

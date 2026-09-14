@@ -1,3 +1,4 @@
+import { RagRequestAbortedError, throwIfRagRequestAborted } from '../core/cancellation';
 import {
   buildReranker,
   isRerankerConfigured,
@@ -17,6 +18,7 @@ export type RerankedDocument<TDocument extends RerankableDocument> = TDocument &
 };
 
 export interface RerankDocumentsOptions {
+  signal?: AbortSignal;
   provider?: RerankerProvider;
   providerId?: RerankerProviderId;
   topK?: number;
@@ -28,6 +30,7 @@ export async function rerankDocuments<TDocument extends RerankableDocument>(
   documents: TDocument[],
   options: RerankDocumentsOptions = {}
 ): Promise<Array<RerankedDocument<TDocument>>> {
+  throwIfRagRequestAborted(options.signal);
   const limit = typeof options.topK === 'number' && options.topK > 0
     ? Math.min(options.topK, documents.length)
     : documents.length;
@@ -48,7 +51,8 @@ export async function rerankDocuments<TDocument extends RerankableDocument>(
       content: document.content,
     }));
 
-    const outputs = await provider.rerank(query, inputs, limit);
+    const outputs = await provider.rerank(query, inputs, limit, { signal: options.signal });
+    throwIfRagRequestAborted(options.signal);
     return outputs
       .filter((output) => output.originalIndex >= 0 && output.originalIndex < documents.length)
       .map((output) => ({
@@ -57,6 +61,9 @@ export async function rerankDocuments<TDocument extends RerankableDocument>(
         rerankScore: output.relevanceScore,
       }));
   } catch (error) {
+    throwIfRagRequestAborted(options.signal);
+    if (error instanceof RagRequestAbortedError
+      || (error instanceof Error && error.name === 'AbortError')) throw error;
     const normalizedError = error instanceof Error ? error : new Error(String(error));
     options.onError?.(normalizedError);
     return documents.slice(0, limit) as Array<RerankedDocument<TDocument>>;

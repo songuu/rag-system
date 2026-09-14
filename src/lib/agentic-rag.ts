@@ -45,6 +45,10 @@ import {
   LegacyEvidenceValidationError,
 } from './rag/retrieval/legacy-evidence-adapter';
 import type { RagRetrievalScope } from './security/retrieval-scope';
+import {
+  describeAgenticModelFailure,
+  resolveAgenticGenerationTimeoutMs,
+} from './agentic-model-runtime';
 
 // LangSmith 追踪配置
 const LANGSMITH_ENABLED = process.env.LANGCHAIN_TRACING_V2 === 'true';
@@ -122,6 +126,7 @@ export interface WorkflowStep {
   input?: unknown;
   output?: unknown;
   error?: string;
+  errorDetail?: string;
 }
 
 export interface RetrievalGradeResult {
@@ -479,6 +484,8 @@ export interface AgenticRAGConfig {
   fastLlmModel?: string;
   /** Reranker 专用模型用于 grade_retrieval (<100ms) */
   rerankerModel?: string;
+  /** 主答案生成允许使用长任务超时，避免本地大模型冷启动被通用短超时中止。 */
+  generationRequestTimeoutMs?: number;
   milvusConfig?: Partial<MilvusConfig>;
   enableHallucinationCheck?: boolean;
   enableSemanticCache?: boolean;
@@ -594,6 +601,11 @@ export class AgenticRAGSystem {
   private graph: AgenticCompiledGraph;
   private requestedEmbeddingModel: string;
   private semanticCache: SemanticCache;
+  private llmModelName: string;
+  private fastLlmModelName: string;
+  private rerankerModelName: string;
+  private generationRequestTimeoutMs: number;
+  private auxiliaryModelRequestTimeoutMs: number;
 
   constructor(config: AgenticRAGConfig = {}) {
     const factory = getModelFactory();
@@ -604,6 +616,7 @@ export class AgenticRAGSystem {
       embeddingModel,
       fastLlmModel,
       rerankerModel,
+      generationRequestTimeoutMs,
       milvusConfig = {},
       enableHallucinationCheck = true,
       enableSemanticCache: requestedSemanticCache,
@@ -625,16 +638,50 @@ export class AgenticRAGSystem {
     const actualLlmModel = llmModel || factory.getConfigSummary().llmModel;
     const actualFastModel = fastLlmModel || envConfig.FAST_LLM_MODEL;
     const actualRerankerModel = rerankerModel || envConfig.RERANKER_MODEL;
+    const actualGenerationTimeoutMs = generationRequestTimeoutMs
+      ?? modelConfig.requestTimeoutMs
+      ?? resolveAgenticGenerationTimeoutMs(
+        envConfig.MODEL_REQUEST_TIMEOUT_MS,
+        envConfig.REASONING_REQUEST_TIMEOUT_MS
+      );
+    const llmRequestOptions = factory.getProvider() === 'ollama'
+      ? { ...modelConfig.options, keepAlive: 0 }
+      : modelConfig.options;
 
-    this.llm = createLLM(actualLlmModel, { ...modelConfig, temperature: 0 });
-    this.fastLlm = createLLM(actualFastModel, { ...modelConfig, temperature: 0 });
+    this.llm = createLLM(actualLlmModel, {
+      ...modelConfig,
+      options: llmRequestOptions,
+      requestTimeoutMs: actualGenerationTimeoutMs,
+      temperature: 0,
+    });
+    this.fastLlm = createLLM(actualFastModel, {
+      ...modelConfig,
+      options: llmRequestOptions,
+      temperature: 0,
+    });
     // Retrieval grading is latency-sensitive classification, not deep reasoning.
-    this.rerankerLlm = createLLM(actualRerankerModel, { ...modelConfig, temperature: 0.1 });
+    this.rerankerLlm = createLLM(actualRerankerModel, {
+      ...modelConfig,
+      options: llmRequestOptions,
+      temperature: 0.1,
+    });
+    this.llmModelName = actualLlmModel;
+    this.fastLlmModelName = actualFastModel;
+    this.rerankerModelName = actualRerankerModel;
+    this.generationRequestTimeoutMs = actualGenerationTimeoutMs;
+    this.auxiliaryModelRequestTimeoutMs = modelConfig.requestTimeoutMs
+      ?? envConfig.MODEL_REQUEST_TIMEOUT_MS;
 
     const embeddingConfig = getEmbeddingConfigSummary();
     const actualEmbeddingModel = embeddingModel || embeddingConfig.model;
     this.requestedEmbeddingModel = actualEmbeddingModel;
-    this.embeddings = createEmbedding(embeddingModel, modelConfig);
+    const embeddingRequestOptions = getEmbeddingProvider() === 'ollama'
+      ? { ...modelConfig.options, keepAlive: 0 }
+      : modelConfig.options;
+    this.embeddings = createEmbedding(embeddingModel, {
+      ...modelConfig,
+      options: embeddingRequestOptions,
+    });
 
     this.semanticCache = new SemanticCache(this.embeddings, {
       ...semanticCacheConfig,
@@ -744,6 +791,10 @@ export class AgenticRAGSystem {
             startTime: stepStart,
             endTime: Date.now(),
             error: 'AGENTIC_ANALYZE_QUERY_FAILED',
+            errorDetail: describeAgenticModelFailure(error, {
+              modelName: this.fastLlmModelName,
+              timeoutMs: this.auxiliaryModelRequestTimeoutMs,
+            }),
           },
         ],
       };
@@ -1006,6 +1057,10 @@ export class AgenticRAGSystem {
             startTime: stepStart,
             endTime: Date.now(),
             error: 'AGENTIC_GRADE_RETRIEVAL_FAILED',
+            errorDetail: describeAgenticModelFailure(error, {
+              modelName: this.rerankerModelName,
+              timeoutMs: this.auxiliaryModelRequestTimeoutMs,
+            }),
           },
         ],
       };
@@ -1064,6 +1119,10 @@ export class AgenticRAGSystem {
             startTime: stepStart,
             endTime: Date.now(),
             error: 'AGENTIC_REWRITE_QUERY_FAILED',
+            errorDetail: describeAgenticModelFailure(error, {
+              modelName: this.fastLlmModelName,
+              timeoutMs: this.auxiliaryModelRequestTimeoutMs,
+            }),
           },
         ],
       };
@@ -1259,6 +1318,10 @@ export class AgenticRAGSystem {
             startTime: stepStart,
             endTime: Date.now(),
             error: 'AGENTIC_GENERATION_FAILED',
+            errorDetail: describeAgenticModelFailure(error, {
+              modelName: this.llmModelName,
+              timeoutMs: this.generationRequestTimeoutMs,
+            }),
           },
         ],
       };

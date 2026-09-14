@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
     }
 
     const store = getProjectStore();
-    const project = store.get(body.project_id);
+    const project = await store.get(body.project_id);
     if (!project) {
       return NextResponse.json(
         { success: false, error: '项目不存在' },
@@ -69,7 +69,7 @@ export async function POST(request: NextRequest) {
       forceRegenerate: body.forceRegenerate,
     });
 
-    store.update(project.id, {
+    await store.update(project.id, {
       agent_profiles: result.profiles,
       simulation_config: result.config,
       prepare_id: result.prepare_id,

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
@@ -59,3 +60,35 @@ test('splitDocument rejects documents that exceed the request chunk budget', asy
     /exceeding the limit of 2/
   );
 });
+
+test('splitDocument preserves separator gaps and records verifiable source identity', async () => {
+  const content = `${'A'.repeat(120)}\n\n${'B'.repeat(120)}`;
+  const expectedHash = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  const chunks = await splitDocument(
+    { content, metadata: { source: 'separator-gap.txt', type: 'raw' } },
+    { chunkSize: 100, chunkOverlap: 10 }
+  );
+
+  assert.equal(chunks[0].metadata.startOffset, 0);
+  assert.equal(chunks.at(-1).metadata.endOffset, content.length);
+  assert.ok(chunks.some(chunk => chunk.content.startsWith('\n\nB')));
+  for (const chunk of chunks) {
+    const { startOffset, endOffset, sourceTextLength, sourceTextHash } = chunk.metadata;
+    assert.equal(chunk.content, content.slice(startOffset, endOffset));
+    assert.equal(sourceTextLength, content.length);
+    assert.equal(sourceTextHash, expectedHash);
+  }
+  assert.equal(reconstructChunks(chunks), content);
+});
+
+function reconstructChunks(chunks) {
+  let text = '';
+  let coveredEnd = 0;
+  for (const chunk of chunks) {
+    const { startOffset, endOffset } = chunk.metadata;
+    assert.ok(startOffset <= coveredEnd, 'chunks must not contain uncovered gaps');
+    text += chunk.content.slice(Math.max(0, coveredEnd - startOffset));
+    coveredEnd = endOffset;
+  }
+  return text;
+}

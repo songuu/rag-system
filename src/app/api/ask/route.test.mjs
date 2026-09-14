@@ -32,6 +32,12 @@ export class AgenticRAGSystem {
 `);
 const scopedAgentStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 export const SCOPED_RETRIEVAL_AGENT_RUNTIME = 'langchain-create-agent-v1';
+export let SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION = 'scoped-rag-answer-v2';
+export const SCOPED_ITERATIVE_AGENT_PROMPT_VERSION = 'scoped-rag-iterative-answer-v1';
+export const SCOPED_STRUCTURED_AGENT_PROMPT_VERSION = 'scoped-rag-structured-answer-v5';
+export function setScopedAgentPromptVersion(value) {
+  SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION = value;
+}
 let fixture;
 let signals = [];
 export function setScopedAgentFixture(value) {
@@ -45,6 +51,7 @@ export async function invokeScopedRetrievalAgent(input) {
     signal: input.signal,
     traceId: input.traceId,
     threadId: input.threadId,
+    decisionMode: input.retrieval?.decisionMode,
     includedEvidenceIds: [...input.contextPack.includedEvidenceIds],
     context: input.contextPack.context,
   });
@@ -60,12 +67,26 @@ export async function invokeScopedRetrievalAgent(input) {
     if (fixture.code) error.code = fixture.code;
     throw error;
   }
+  let finalPack = input.contextPack;
+  if (fixture.followupQuery) {
+    if (!input.retrieval) throw new Error('Follow-up port missing');
+    const additional = await input.retrieval.search({ query: fixture.followupQuery, signal: input.signal });
+    const { composeEvidenceContextV2 } = await import('@/lib/rag/core/context-composer');
+    finalPack = composeEvidenceContextV2([...finalPack.includedEvidence, ...additional], {
+      scope: input.scope, maxTokens: input.retrieval.maxContextTokens,
+    });
+  }
   const completedAt = Date.now();
   return {
+    contextPack: finalPack,
+    searchCallCount: fixture.followupQuery ? 1 : 0,
+    searchStopReason: 'sufficient',
     answer: fixture.answer ?? 'scoped answer',
+    ...(fixture.answerDisposition ? { answerDisposition: fixture.answerDisposition } : {}),
     messages: [],
     toolCallCount: fixture.toolCallCount ?? 1,
-    servedEvidenceIds: [...input.contextPack.includedEvidenceIds],
+    servedEvidenceIds: [...finalPack.includedEvidenceIds],
+    ...(fixture.diagnostics ? { diagnostics: fixture.diagnostics } : {}),
     workflowSteps: fixture.workflowSteps ?? [
       {
         id: 'agent-model-tool-request',
@@ -183,6 +204,7 @@ export function setMilvusFixture(value) {
     hybridProbe: 0,
     hybridSearch: 0,
     hybridRequests: [],
+    searchRequests: [],
   };
 }
 export function getMilvusSignals() { return structuredClone(signals); }
@@ -197,9 +219,10 @@ const store = {
     if (fixture.orderedQueryError) throw new Error(fixture.orderedQueryError);
     return structuredClone(fixture.orderedRows);
   },
-  async search() {
+  async search(embedding, topK, options) {
     signals.search += 1;
-    return structuredClone(fixture.searchResults);
+    signals.searchRequests.push({ embedding, topK, options: structuredClone(options) });
+    return structuredClone(fixture.searchResultsByCall?.[signals.search - 1] ?? fixture.searchResults);
   },
   async getCollectionStats() {
     signals.stats += 1;
@@ -240,16 +263,16 @@ const store = {
 export function getMilvusInstance() { return store; }
 `);
 const modelStubUrl = 'data:text/javascript,' + encodeURIComponent(`
-let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [] };
+let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [], embeddedQueries: [] };
 let createLLMError;
 export function resetModelSignals() {
-  signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [] };
+  signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [], embeddedQueries: [] };
   createLLMError = undefined;
 }
 export function getModelSignals() { return structuredClone(signals); }
 export function setCreateLLMError(value) { createLLMError = value; }
 export function createEmbedding() {
-  return { async embedQuery() { signals.embed += 1; return [0.1, 0.2, 0.3]; } };
+  return { async embedQuery(query) { signals.embed += 1; signals.embeddedQueries.push(query); return [0.1, 0.2, 0.3]; } };
 }
 export function createLLM(modelName, options) {
   if (createLLMError) throw new Error(createLLMError);
@@ -269,6 +292,28 @@ export function createLLM(modelName, options) {
     signals.generate += 1;
     signals.prompts.push(String(prompt));
     return { content: 'generated answer' };
+  } };
+}
+`);
+const rerankProviderStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+let configured = false;
+let calls = 0;
+let shouldFail = false;
+let inputs = [];
+export function setRerankFixture(value = {}) {
+  configured = value.configured === true; calls = 0; shouldFail = value.fail === true; inputs = [];
+}
+export function getRerankCalls() { return calls; }
+export function getRerankInputs() { return structuredClone(inputs); }
+export function isRerankerConfigured() { return configured; }
+export function buildReranker() {
+  return { name: 'fixture', model: 'fixture-v1', async rerank(_query, docs, _topK, options) {
+    calls++; options.signal.throwIfAborted();
+    inputs.push(docs.map(doc => ({ id: doc.id, content: doc.pageContent })));
+    if (shouldFail) throw new Error('fixture-rerank-failed');
+    return docs.map((doc, index) => ({
+      ...doc, originalIndex: index, relevanceScore: (index + 1) / docs.length,
+    })).reverse();
   } };
 }
 `);
@@ -293,6 +338,10 @@ registerHooks({
       && context.parentURL?.endsWith('/rag/multimodal/pdf-visual-lane.ts')
     ) {
       return { url: modelStubUrl, shortCircuit: true };
+    }
+    if (specifier === './rerank-providers'
+      && context.parentURL?.endsWith('/rag/retrieval/rerank-lane-handler.ts')) {
+      return { url: rerankProviderStubUrl, shortCircuit: true };
     }
     if (moduleStubs.has(specifier)) {
       return { url: moduleStubs.get(specifier), shortCircuit: true };
@@ -320,6 +369,7 @@ const environmentKeys = [
   'RAG_SINGLE_TENANT_ACTOR_ID', 'RAG_DEFAULT_TENANT_ID',
   'RAG_DEFAULT_CORPUS_ID', 'LANGCHAIN_TRACING_V2', 'RAG_ORDERED_CONTEXT_MODE',
   'RAG_MIROFISH_GRAPH_MODE', 'RAG_MIROFISH_GRAPH_STORE_ROOT',
+  'RAG_GRAPH_MODE', 'RAG_GRAPH_BACKEND',
   'RAG_MIROFISH_GRAPH_DOCUMENT_ID', 'RAG_MIROFISH_GRAPH_DOCUMENT_VERSION',
   'RAG_MIROFISH_GRAPH_TRUST_LEVEL', 'RAG_MIROFISH_GRAPH_MULTI_INSTANCE',
   'RAG_MIROFISH_GRAPH_REQUIRE_SHARED_CONTROL_PLANE',
@@ -337,8 +387,9 @@ const environmentKeys = [
   'RAG_DURABLE_WORKFLOW_LEASE_MS',
   'RAG_DURABLE_WORKFLOW_MAX_THREADS',
   'RAG_DURABLE_WORKFLOW_RESULT_MAX_ARTIFACTS',
-  'RAG_AGENTIC_RUNTIME',
+  'RAG_AGENTIC_RUNTIME', 'RAG_AGENTIC_RETRIEVAL_MODE', 'RAG_AGENTIC_DECISION_MODE',
   'RAG_VECTOR_BACKEND',
+  'NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD',
 ];
 const originalEnvironment = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
 Object.assign(process.env, {
@@ -351,14 +402,26 @@ Object.assign(process.env, {
   LANGCHAIN_TRACING_V2: 'false',
 });
 delete process.env.RAG_AGENTIC_RUNTIME;
+delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
+delete process.env.RAG_AGENTIC_DECISION_MODE;
 
+const { setRerankFixture, getRerankCalls, getRerankInputs } = await import(rerankProviderStubUrl);
 const { NextRequest } = await import('next/server');
 const { setAgenticFixture, getAgenticQuerySignals } = await import('@/lib/agentic-rag');
 const {
   setScopedAgentFixture,
   getScopedAgentSignals,
+  setScopedAgentPromptVersion,
 } = await import('@/lib/rag/agents/scoped-retrieval-agent');
-const { GET, PATCH, POST, invokeGenerationWithDeadline } = await import('./route.ts');
+const {
+  GET,
+  PATCH,
+  POST,
+  invokeGenerationWithDeadline,
+  isOptionalKnowledgeGraphFailure,
+} = await import('./route.ts');
+const { Neo4jOperationError } = await import('@/lib/neo4j/driver');
+const { PostgresQueryError } = await import('@/lib/postgres/client');
 const {
   setMilvusFixture,
   getMilvusSignals,
@@ -466,6 +529,252 @@ test('POST executes the authenticated agentic policy through createAgent', async
   assert.deepEqual(querySignals[0].includedEvidenceIds, ['dense-a']);
 });
 
+function scopedDiagnosticsFixture() {
+  return {
+    version: 'scoped-agent-diagnostics-v1',
+    modelResponseCount: 2,
+    usage: {
+      measurement: 'provider',
+      measuredModelResponses: 2,
+      inputTokenCount: 120,
+      outputTokenCount: 24,
+    },
+    citations: {
+      validation: 'reference-only',
+      status: 'valid',
+      citationCount: 1,
+      invalidCitationCount: 0,
+      citedEvidenceIds: ['dense-a'],
+    },
+  };
+}
+
+test('POST exposes citation integrity and measured usage without changing answers', async () => {
+  for (const status of ['valid', 'missing', 'invalid']) {
+    setMilvusFixture({ searchResults: [denseResult()] });
+    const diagnostics = scopedDiagnosticsFixture();
+    diagnostics.citations.status = status;
+    diagnostics.citations.citationCount = status === 'missing' ? 0 : 1;
+    diagnostics.citations.invalidCitationCount = status === 'invalid' ? 1 : 0;
+    diagnostics.citations.citedEvidenceIds = status === 'valid' ? ['dense-a'] : [];
+    setScopedAgentFixture({ answer: 'observed answer', diagnostics });
+
+    const response = await POST(askRequest());
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.answer, 'observed answer');
+    assert.deepEqual(body.agent.diagnostics, diagnostics);
+    assert.deepEqual(body.retrievalDetails.generation.diagnostics, diagnostics);
+    assert.equal(body.agent.messages, undefined);
+    assert.equal(body.agent.diagnostics.prompt, undefined);
+  }
+});
+
+test('POST binds the agent answer cache to its prompt version', async t => {
+  t.after(() => setScopedAgentPromptVersion('scoped-rag-answer-v2'));
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'scoped answer' });
+  const first = await (await POST(askRequest())).json();
+
+  setScopedAgentPromptVersion('scoped-rag-answer-next-fixture');
+  const next = await (await POST(askRequest())).json();
+  assert.equal(first.cacheIdentity.context, next.cacheIdentity.context);
+  assert.notEqual(first.cacheIdentity.answer, next.cacheIdentity.answer);
+});
+
+test('POST reranks canonical candidates and falls back without modifying their identity', async t => {
+  t.after(() => setRerankFixture());
+  const first = denseResult();
+  const second = { ...denseResult(), id: 'dense-b', content: 'SECOND_FACT' };
+  setRerankFixture({ configured: true });
+  setMilvusFixture({ searchResults: [first, second] });
+  setScopedAgentFixture({ answer: 'reranked' });
+  const ranked = await (await POST(askRequest())).json();
+  assert.deepEqual(ranked.evidence.map(item => item.id), ['dense-b', 'dense-a']);
+  assert.deepEqual(ranked.agent.servedEvidenceIds, ['dense-b', 'dense-a']);
+  assert.equal(ranked.retrievalDetails.rerank.applied, true);
+  assert.equal(getRerankCalls(), 1);
+
+  setRerankFixture({ configured: true, fail: true });
+  const fallback = await (await POST(askRequest())).json();
+  assert.deepEqual(fallback.evidence.map(item => item.id), ['dense-a', 'dense-b']);
+  assert.equal(fallback.retrievalDetails.rerank.applied, false);
+  assert.notEqual(ranked.cacheIdentity.answer, fallback.cacheIdentity.answer);
+
+  setRerankFixture({ configured: true });
+  await POST(askRequest(undefined, { enableReranking: false }));
+  assert.equal(getRerankCalls(), 0);
+});
+
+test('POST bounded decision mode defaults to structured and isolates native rollback caches', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  t.after(() => {
+    delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
+    delete process.env.RAG_AGENTIC_DECISION_MODE;
+  });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'same answer [1]', answerDisposition: 'answer' });
+  const structuredResponse = await POST(askRequest());
+  const structured = await structuredResponse.json();
+  assert.equal(structuredResponse.status, 200);
+  assert.equal(getScopedAgentSignals()[0].decisionMode, 'structured');
+  assert.equal(structured.agent.decisionMode, 'structured');
+  assert.equal(structured.agent.answerDisposition, 'answer');
+  assert.equal(structured.retrievalDetails.generation.decisionMode, 'structured');
+  assert.equal(structured.retrievalDetails.generation.answerDisposition, 'answer');
+
+  process.env.RAG_AGENTIC_DECISION_MODE = 'native-tools';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'same answer [1]' });
+  const nativeResponse = await POST(askRequest());
+  const native = await nativeResponse.json();
+  assert.equal(nativeResponse.status, 200);
+  assert.equal(getScopedAgentSignals()[0].decisionMode, 'native-tools');
+  assert.equal(native.agent.decisionMode, 'native-tools');
+  assert.equal(native.agent.answerDisposition, undefined);
+  assert.notEqual(native.cacheIdentity.context, structured.cacheIdentity.context);
+  assert.notEqual(native.cacheIdentity.answer, structured.cacheIdentity.answer);
+});
+
+test('POST rejects invalid bounded decision mode before retrieval or model work', async t => {
+  t.mock.method(console, 'error', () => {});
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  process.env.RAG_AGENTIC_DECISION_MODE = 'unsupported-decision';
+  t.after(() => {
+    delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
+    delete process.env.RAG_AGENTIC_DECISION_MODE;
+  });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'must not run' });
+  const response = await POST(askRequest());
+  assert.equal(response.status, 502);
+  assert.equal(getMilvusSignals().search, 0);
+  assert.equal(getScopedAgentSignals().length, 0);
+});
+
+test('POST snapshot ignores bounded decision mode configuration and preserves cache identity', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'snapshot';
+  t.after(() => {
+    delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
+    delete process.env.RAG_AGENTIC_DECISION_MODE;
+  });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'snapshot [1]' });
+  const baseline = await (await POST(askRequest())).json();
+  process.env.RAG_AGENTIC_DECISION_MODE = 'unsupported-bounded-only-setting';
+  const response = await POST(askRequest());
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(getScopedAgentSignals().at(-1).decisionMode, undefined);
+  assert.equal(body.agent.decisionMode, undefined);
+  assert.deepEqual(body.cacheIdentity, baseline.cacheIdentity);
+});
+
+test('POST bounded projection omits invalid answer disposition text', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  t.after(() => { delete process.env.RAG_AGENTIC_RETRIEVAL_MODE; });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setScopedAgentFixture({ answer: 'safe answer [1]', answerDisposition: 'PRIVATE_DECISION_REASON' });
+  const response = await POST(askRequest());
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.agent.answerDisposition, undefined);
+  assert.equal(body.retrievalDetails.generation.answerDisposition, undefined);
+  assert.equal(JSON.stringify(body).includes('PRIVATE_DECISION_REASON'), false);
+});
+
+test('POST bounded agent searches within the original scope and binds final evidence to context/cache', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  t.after(() => { delete process.env.RAG_AGENTIC_RETRIEVAL_MODE; });
+  const first = denseResult();
+  const extra = { ...denseResult(), id: 'followup-b', content: 'FOLLOWUP_FACT' };
+  setMilvusFixture({ searchResults: [first] });
+  setScopedAgentFixture({ answer: 'initial' });
+  const baseline = await (await POST(askRequest())).json();
+
+  setMilvusFixture({ searchResultsByCall: [[first], [extra]] });
+  setScopedAgentFixture({ answer: 'initial and followup [1][2]', followupQuery: 'Expanded related fact' });
+  resetModelSignals();
+  const response = await POST(askRequest());
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.agent.servedEvidenceIds, ['dense-a', 'followup-b']);
+  assert.deepEqual(body.evidence.map(item => item.id), body.agent.servedEvidenceIds);
+  assert.equal(body.agent.searchCallCount, 1);
+  assert.equal(body.agent.retrievalMode, 'bounded');
+  const searchRequests = getMilvusSignals().searchRequests;
+  assert.deepEqual(searchRequests[1].options, searchRequests[0].options);
+  assert.match(searchRequests[1].options.filter, /tenant_id/);
+  assert.equal(searchRequests[1].topK, searchRequests[0].topK);
+  assert.equal(getModelSignals().embeddedQueries.length, 2);
+  assert.equal(getModelSignals().embeddedQueries[1], 'Expanded related fact');
+  assert.match(body.context, /FOLLOWUP_FACT/);
+  assert.equal(getMilvusSignals().search, 2);
+  assert.equal(body.laneExecutions.some(lane => lane.laneId === 'agentic-followup-1'), true);
+  assert.notEqual(body.cacheIdentity.context, baseline.cacheIdentity.context);
+  assert.notEqual(body.cacheIdentity.answer, baseline.cacheIdentity.answer);
+});
+
+test('POST bounded ordered context caps evidence after active selection and reports omissions', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  process.env.RAG_ABSTENTION_MODE = 'active';
+  process.env.RAG_ORDERED_CONTEXT_MODE = 'active';
+  t.after(() => {
+    delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
+    delete process.env.RAG_ABSTENTION_MODE;
+    delete process.env.RAG_ORDERED_CONTEXT_MODE;
+  });
+  const rows = ['doc-a', 'doc-b'].flatMap(doc => Array.from({ length: 4 }, (_, index) =>
+    orderedRow(doc + '-' + index, doc, index, 4, 'piece-' + index)));
+  setMilvusFixture({ orderedRows: rows });
+  setScopedAgentFixture({ answer: 'summary [1]' });
+  const response = await POST(askRequest(undefined, { question: '请按顺序总结全部文档', topK: 2 }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.agent.servedEvidenceIds.length, 6);
+  assert.equal(body.retrievalDetails.contextPacking.truncated, true);
+  assert.equal(body.retrievalDetails.contextPacking.excludedEvidenceIds.length, 2);
+  assert.deepEqual(body.retrievalDetails.abstention.qualifiedEvidenceIds, body.agent.servedEvidenceIds);
+});
+
+test('POST bounded follow-up applies the active dense threshold before generation', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  process.env.RAG_ABSTENTION_MODE = 'active';
+  process.env.RAG_DENSE_ABSTAIN_THRESHOLD = '0.8';
+  t.after(() => {
+    delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
+    delete process.env.RAG_ABSTENTION_MODE;
+    delete process.env.RAG_DENSE_ABSTAIN_THRESHOLD;
+  });
+  const weak = { ...denseResult(), id: 'weak-followup', score: 0.2, content: 'LOW_QUALITY_SHOULD_BE_EXCLUDED' };
+  setMilvusFixture({ searchResultsByCall: [[denseResult()], [weak]] });
+  setScopedAgentFixture({ followupQuery: 'missing fact', answer: 'initial fact [1]' });
+  const response = await POST(askRequest());
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(getMilvusSignals().search, 2);
+  assert.deepEqual(body.agent.servedEvidenceIds, ['dense-a']);
+  assert.doesNotMatch(body.context, /LOW_QUALITY_SHOULD_BE_EXCLUDED/);
+  assert.deepEqual(body.retrievalDetails.abstention.qualifiedEvidenceIds, ['dense-a']);
+});
+
+test('POST bounded follow-up rejects cross-tenant evidence before it reaches the agent result', async t => {
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  t.after(() => { delete process.env.RAG_AGENTIC_RETRIEVAL_MODE; });
+  const forbidden = denseResult();
+  forbidden.metadata = { ...forbidden.metadata, tenant_id: 'forbidden', tenantId: 'forbidden' };
+  forbidden.id = 'forbidden';
+  forbidden.content = 'NEVER_EXPORT_CROSS_TENANT';
+  setMilvusFixture({ searchResultsByCall: [[denseResult()], [forbidden]] });
+  setScopedAgentFixture({ followupQuery: 'attack', answer: 'must not finish' });
+  const response = await POST(askRequest());
+  const body = await response.json();
+  assert.equal(body.success, false);
+  assert.doesNotMatch(JSON.stringify(body), /NEVER_EXPORT_CROSS_TENANT/);
+  assert.equal(getMilvusSignals().search, 2);
+  assert.notEqual(response.status, 200);
+});
+
 test('POST reports a skipped createAgent step when scoped retrieval has no context', async () => {
   setMilvusFixture({ searchResults: [] });
   setScopedAgentFixture({ answer: 'must not run' });
@@ -506,6 +815,7 @@ test('POST keeps the legacy agentic implementation as an explicit server rollbac
     assert.equal(getScopedAgentSignals().length, 0);
   } finally {
     delete process.env.RAG_AGENTIC_RUNTIME;
+delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
   }
 });
 
@@ -524,6 +834,7 @@ test('POST rejects an unknown agentic runtime before retrieval or model work', a
     assert.equal(getAgenticQuerySignals().length, 0);
   } finally {
     delete process.env.RAG_AGENTIC_RUNTIME;
+delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
   }
 });
 
@@ -1109,6 +1420,120 @@ test('POST resolves the scoped active graph pointer into a real graph lane', asy
   assert.match(getModelSignals().prompts.join('\n'), /ACTIVE_GRAPH_EVIDENCE/);
 });
 
+test('POST executes graph shadow retrieval without exposing it to generation', async t => {
+  const fixture = await createMiroFishRouteFixture(t, {
+    documentId: 'graph-shadow-a',
+    marker: 'SHADOW_GRAPH_EVIDENCE',
+    activate: true,
+  });
+  process.env.RAG_GRAPH_MODE = 'shadow';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+
+  const response = await POST(milvusAskRequest('比较方案甲与方案乙的影响'));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.retrievalDetails.graph.requestedMode, 'shadow');
+  assert.equal(body.retrievalDetails.graph.executed, true);
+  assert.equal(body.retrievalDetails.graph.active, false);
+  assert.equal(body.retrievalDetails.graph.shadowEvidenceCount, 1);
+  assert.equal(
+    body.laneExecutions.some(item => item.retriever === 'mirofish-graph-artifact-v2'),
+    true
+  );
+  assert.equal(
+    body.evidence.some(item => item.documentId === fixture.identity.documentId),
+    false
+  );
+  assert.doesNotMatch(getModelSignals().prompts.join('\n'), /SHADOW_GRAPH_EVIDENCE/);
+});
+
+test('POST keeps graph shadow outside rerank, abstention, prompt, evidence, and cache identity', async t => {
+  await createMiroFishRouteFixture(t, {
+    documentId: 'graph-shadow-equivalence',
+    marker: 'SHADOW_MUST_NOT_REACH_RERANK',
+    activate: true,
+  });
+  const question = '比较方案甲与方案乙的影响';
+
+  process.env.RAG_GRAPH_MODE = 'off';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setRerankFixture({ configured: true });
+  resetModelSignals();
+  const offResponse = await POST(milvusAskRequest(question));
+  const offBody = await offResponse.json();
+  const offPrompt = getModelSignals().prompts.join('\n');
+  assert.equal(getRerankCalls(), 1);
+
+  process.env.RAG_GRAPH_MODE = 'shadow';
+  setMilvusFixture({ searchResults: [denseResult()] });
+  setRerankFixture({ configured: true });
+  resetModelSignals();
+  const shadowResponse = await POST(milvusAskRequest(question));
+  const shadowBody = await shadowResponse.json();
+  const shadowPrompt = getModelSignals().prompts.join('\n');
+
+  assert.equal(offResponse.status, 200);
+  assert.equal(shadowResponse.status, 200);
+  assert.equal(getRerankCalls(), 1);
+  assert.doesNotMatch(JSON.stringify(getRerankInputs()), /SHADOW_MUST_NOT_REACH_RERANK/);
+  assert.equal(shadowBody.retrievalDetails.graph.shadowEvidenceCount, 1);
+  assert.deepEqual(shadowBody.evidence, offBody.evidence);
+  assert.equal(shadowBody.answer, offBody.answer);
+  assert.equal(shadowPrompt, offPrompt);
+  assert.deepEqual(shadowBody.cacheIdentity, offBody.cacheIdentity);
+});
+
+test('POST degrades to dense when configured Neo4j is unreachable', async t => {
+  const keys = [
+    'RAG_GRAPH_MODE', 'RAG_GRAPH_BACKEND', 'NEO4J_URI', 'NEO4J_USERNAME',
+    'NEO4J_PASSWORD', 'NEO4J_CONNECTION_TIMEOUT_MS',
+  ];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  Object.assign(process.env, {
+    RAG_GRAPH_MODE: 'shadow',
+    RAG_GRAPH_BACKEND: 'neo4j',
+    NEO4J_URI: 'bolt://127.0.0.1:1',
+    NEO4J_USERNAME: 'neo4j',
+    NEO4J_PASSWORD: 'unreachable-fixture',
+    NEO4J_CONNECTION_TIMEOUT_MS: '100',
+  });
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+
+  const response = await POST(milvusAskRequest('比较方案甲与方案乙的影响'));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-rag-policy'), 'milvus-2step');
+  assert.equal(body.retrievalDetails.graph.requestedMode, 'shadow');
+  assert.equal(body.retrievalDetails.graph.executed, false);
+  assert.equal(getMilvusSignals().search, 1);
+  assert.equal(getModelSignals().generate, 1);
+});
+
+test('optional graph discovery recognizes real Neo4j and Postgres connection error classes', () => {
+  assert.equal(
+    isOptionalKnowledgeGraphFailure(
+      new Neo4jOperationError('verify connectivity', { code: 'ServiceUnavailable' })
+    ),
+    true
+  );
+  assert.equal(
+    isOptionalKnowledgeGraphFailure(
+      new PostgresQueryError('read active graph pointer', { code: 'ECONNREFUSED' })
+    ),
+    true
+  );
+});
+
 test('POST uses dense fallback when active graph mode has no pointer', async t => {
   await configureMiroFishRouteEnvironment(t);
   setMilvusFixture({ searchResults: [denseResult()] });
@@ -1349,7 +1774,16 @@ test('POST durable createAgent replay preserves safe agent and workflow diagnost
   await configureDurableAskRoute(t, { mode: 'active' });
   const idempotencyKey = 'durable-agentic-replay-0001';
   setMilvusFixture({ searchResults: [denseResult()] });
-  setScopedAgentFixture({ answer: 'durable scoped answer' });
+  const diagnostics = scopedDiagnosticsFixture();
+  setScopedAgentFixture({
+    answer: 'durable scoped answer',
+    diagnostics: {
+      ...diagnostics,
+      prompt: 'must-not-persist-diagnostics-prompt',
+      usage: { ...diagnostics.usage, rawProvider: 'must-not-persist-provider' },
+      citations: { ...diagnostics.citations, context: 'must-not-persist-context' },
+    },
+  });
   resetModelSignals();
 
   const firstResponse = await POST(durableAgenticAskRequest(idempotencyKey));
@@ -1359,6 +1793,7 @@ test('POST durable createAgent replay preserves safe agent and workflow diagnost
     runtime: 'langchain-create-agent-v1',
     toolCallCount: 1,
     servedEvidenceIds: ['dense-a'],
+    diagnostics,
   });
   assert.equal(firstBody.workflow.runtime, 'langchain-create-agent-v1');
   assert.deepEqual(
@@ -1381,6 +1816,45 @@ test('POST durable createAgent replay preserves safe agent and workflow diagnost
   assert.deepEqual(replayBody, firstBody);
   assert.equal(replayResponse.headers.get('x-rag-durable-replay'), 'true');
   assert.deepEqual(getScopedAgentSignals(), firstAgentSignals);
+
+  t.after(() => setScopedAgentPromptVersion('scoped-rag-answer-v2'));
+  setScopedAgentPromptVersion('scoped-rag-answer-next-fixture');
+  const changedPromptResponse = await POST(durableAgenticAskRequest(idempotencyKey));
+  assert.equal(changedPromptResponse.status, 409);
+  assert.deepEqual(getScopedAgentSignals(), firstAgentSignals);
+});
+
+test('POST durable bounded replay preserves the final evidence and rejects a mode change', async t => {
+  await configureDurableAskRoute(t, { mode: 'active' });
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'bounded';
+  t.after(() => { delete process.env.RAG_AGENTIC_RETRIEVAL_MODE; });
+  const key = 'durable-bounded-replay-0001';
+  setMilvusFixture({ searchResultsByCall: [[denseResult()], [{ ...denseResult(), id: 'followup-b', content: 'FOLLOWUP_FACT' }]] });
+  setScopedAgentFixture({ answer: 'final [1][2]', followupQuery: 'Expanded fact', answerDisposition: 'answer' });
+  const firstResponse = await POST(durableAgenticAskRequest(key));
+  const first = await firstResponse.json();
+  assert.equal(firstResponse.status, 200);
+  assert.equal(first.agent.retrievalMode, 'bounded');
+  assert.equal(first.agent.decisionMode, 'structured');
+  assert.equal(first.agent.answerDisposition, 'answer');
+  assert.equal(first.agent.searchCallCount, 1);
+  assert.deepEqual(first.agent.servedEvidenceIds, ['dense-a', 'followup-b']);
+  assert.equal(first.context, undefined);
+  assert.equal(first.retrievalDetails, undefined);
+  const calls = getMilvusSignals().search;
+  const replayResponse = await POST(durableAgenticAskRequest(key));
+  assert.deepEqual(await replayResponse.json(), first);
+  assert.equal(replayResponse.headers.get('x-rag-durable-replay'), 'true');
+  assert.equal(getMilvusSignals().search, calls);
+  process.env.RAG_AGENTIC_DECISION_MODE = 'native-tools';
+  const changedDecision = await POST(durableAgenticAskRequest(key));
+  assert.equal(changedDecision.status, 409);
+  assert.equal(getMilvusSignals().search, calls);
+  delete process.env.RAG_AGENTIC_DECISION_MODE;
+  process.env.RAG_AGENTIC_RETRIEVAL_MODE = 'snapshot';
+  const changed = await POST(durableAgenticAskRequest(key));
+  assert.equal(changed.status, 409);
+  assert.equal(getMilvusSignals().search, calls);
 });
 
 test('POST maps durable result capacity exhaustion to 503', async t => {
@@ -2103,7 +2577,7 @@ const durableAskRouteEnvironmentKeys = [
   'MILVUS_HYBRID_ENABLED',
   'RAG_MIROFISH_GRAPH_MODE',
   'RAG_PDF_VISUAL_MODE',
-  'RAG_AGENTIC_RUNTIME',
+  'RAG_AGENTIC_RUNTIME', 'RAG_AGENTIC_RETRIEVAL_MODE', 'RAG_AGENTIC_DECISION_MODE',
   'RAG_SINGLE_TENANT_ROLE',
 ];
 
@@ -2379,6 +2853,7 @@ function pdfDenseResult(identity) {
 }
 
 const miroFishRouteEnvironmentKeys = [
+  'RAG_GRAPH_MODE',
   'RAG_MIROFISH_GRAPH_MODE',
   'RAG_MIROFISH_GRAPH_STORE_ROOT',
   'RAG_MIROFISH_GRAPH_DOCUMENT_ID',

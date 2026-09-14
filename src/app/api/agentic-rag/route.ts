@@ -6,10 +6,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { AgenticRAGSystem } from '@/lib/agentic-rag';
+import {
+  AgenticModelUnavailableError,
+  discoverInstalledOllamaModels,
+  reconcileAgenticOllamaModels,
+  type ResolvedAgenticModels,
+} from '@/lib/agentic-model-runtime';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
+import {
+  createModelRequestTimeoutFetch,
+  getConfigSummary,
+  getCurrentProvider,
+} from '@/lib/model-config';
 import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
+const MODEL_DISCOVERY_TIMEOUT_MS = 5_000;
 
 // 获取 Milvus 配置（使用统一配置系统）
 function getMilvusConfig() {
@@ -28,6 +40,8 @@ let agenticRAGInstance: AgenticRAGSystem | null = null;
 function getAgenticRAG(config?: {
   llmModel?: string;
   embeddingModel?: string;
+  fastLlmModel?: string;
+  rerankerModel?: string;
 }): AgenticRAGSystem {
   if (!agenticRAGInstance || config) {
     const milvusConfig = getMilvusConfig();
@@ -35,12 +49,42 @@ function getAgenticRAG(config?: {
       ollamaBaseUrl: OLLAMA_BASE_URL,
       llmModel: config?.llmModel || DEFAULT_RUNTIME_MODELS.llm,
       embeddingModel: config?.embeddingModel || DEFAULT_RUNTIME_MODELS.embedding,
+      fastLlmModel: config?.fastLlmModel,
+      rerankerModel: config?.rerankerModel,
       milvusConfig,
       enableHallucinationCheck: true,
       enableSemanticCache: true,
     });
   }
   return agenticRAGInstance;
+}
+
+async function resolveAgenticRuntimeModels(
+  requestedLlmModel: string,
+  signal: AbortSignal
+): Promise<ResolvedAgenticModels> {
+  const config = getConfigSummary();
+
+  if (getCurrentProvider() !== 'ollama') {
+    return {
+      llmModel: requestedLlmModel,
+      fastLlmModel: config.fastLlmModel,
+      rerankerModel: config.rerankerModel,
+      fallbacks: [],
+    };
+  }
+
+  const installedModels = await discoverInstalledOllamaModels(OLLAMA_BASE_URL, {
+    signal,
+    fetchImplementation: createModelRequestTimeoutFetch(MODEL_DISCOVERY_TIMEOUT_MS),
+  });
+
+  return reconcileAgenticOllamaModels({
+    requestedLlmModel,
+    configuredFastLlmModel: config.fastLlmModel,
+    configuredRerankerModel: config.rerankerModel,
+    installedModels,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -66,10 +110,32 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    if (!llmModel || typeof llmModel !== 'string') {
+      return NextResponse.json(
+        { success: false, error: '请提供有效的 LLM 模型' },
+        { status: 400 }
+      );
+    }
+    if (!embeddingModel || typeof embeddingModel !== 'string') {
+      return NextResponse.json(
+        { success: false, error: '请提供有效的 Embedding 模型' },
+        { status: 400 }
+      );
+    }
 
-    console.log(`[Agentic RAG] 查询: "${question}", 模型: LLM=${llmModel}, Embedding=${embeddingModel}`);
+    const runtimeModels = await resolveAgenticRuntimeModels(llmModel, request.signal);
+    for (const fallback of runtimeModels.fallbacks) {
+      console.warn(`[Agentic RAG] ${fallback}`);
+    }
 
-    const agenticRAG = getAgenticRAG({ llmModel, embeddingModel });
+    console.log(`[Agentic RAG] 查询: "${question}", 模型: LLM=${runtimeModels.llmModel}, Embedding=${embeddingModel}`);
+
+    const agenticRAG = getAgenticRAG({
+      llmModel: runtimeModels.llmModel,
+      embeddingModel,
+      fastLlmModel: runtimeModels.fastLlmModel,
+      rerankerModel: runtimeModels.rerankerModel,
+    });
 
     // 流式响应 (SSE 流式输出)
     if (stream) {
@@ -132,9 +198,16 @@ export async function POST(request: NextRequest) {
       maxRetries: parseInt(maxRetries),
       skipSemanticCache,
     });
+    const generationFailure = result.workflowSteps.find(
+      step => step.step === 'generate' && step.status === 'error'
+    );
+    const responseError = result.error
+      ?? (generationFailure
+        ? generationFailure.error ?? 'AGENTIC_GENERATION_FAILED'
+        : undefined);
 
     return NextResponse.json({
-      success: !result.error,
+      success: !responseError,
       question,
       answer: result.answer,
 
@@ -152,6 +225,7 @@ export async function POST(request: NextRequest) {
           content: doc.content,
           metadata: doc.metadata,
           score: doc.score,
+          similarity: doc.score,
           relevanceScore: doc.relevanceScore,
         })),
         retrievalGrade: result.retrievalGrade,
@@ -170,14 +244,28 @@ export async function POST(request: NextRequest) {
       debugInfo: result.debugInfo,
       context: result.context,
 
-      models: { llm: llmModel, embedding: embeddingModel },
+      models: {
+        llm: runtimeModels.llmModel,
+        requestedLlm: llmModel,
+        embedding: embeddingModel,
+        fastLlm: runtimeModels.fastLlmModel,
+        reranker: runtimeModels.rerankerModel,
+        fallbacks: runtimeModels.fallbacks,
+      },
 
       timestamp: new Date().toISOString(),
-      error: result.error,
+      error: responseError,
+      errorDetail: generationFailure?.errorDetail,
     });
 
   } catch (error) {
     console.error('[Agentic RAG Error]:', error);
+    if (error instanceof AgenticModelUnavailableError) {
+      return NextResponse.json(
+        { success: false, code: error.code, error: error.message },
+        { status: 400 }
+      );
+    }
     return NextResponse.json(
       {
         success: false,

@@ -361,28 +361,6 @@ export class MiroFishGraphBuilder {
     // destructive whitespace normalization would make passage offsets forged.
     const sourceText = text;
 
-    // 2. 创建实体提取器（注入运行时模型覆盖）
-    const llmInstance = createLLMFromOverride(this.modelOverride, {
-      temperature: 0.1,
-      ollamaOptions: MIROFISH_GRAPH_OLLAMA_OPTIONS,
-    });
-    const extractor = new EntityExtractor(
-      createMiroFishGraphExtractionConfig(this.config),
-      {
-        llmInstance,
-        providerKey: this.modelOverride
-          ? [
-              this.modelOverride.provider,
-              this.modelOverride.modelName,
-              this.modelOverride.baseUrl ?? 'server-default',
-            ].join(':')
-          : undefined,
-      }
-    );
-
-    // 设置进度回调
-    extractor.onProgress(reportProgress);
-
     reportProgress({
       stage: 'extracting',
       current: 0,
@@ -390,14 +368,18 @@ export class MiroFishGraphBuilder {
       message: '开始实体抽取...',
     });
 
-    // 3. 执行实体抽取
+    // 2. 执行实体抽取
     const documentId = createMiroFishGraphDocumentId();
-    const graph = await extractor.extract(sourceText, documentId);
+    const graphData = await extractMiroFishGraphData({
+      text: sourceText,
+      documentId,
+      chunkSize: this.config.chunkSize,
+      chunkOverlap: this.config.chunkOverlap,
+      modelOverride: this.modelOverride,
+      onProgress: reportProgress,
+    });
 
-    // 4. 转换为 GraphData 格式
-    const graphData = convertKnowledgeGraphToGraphData(graph);
-
-    // 5. 应用本体约束（过滤）
+    // 3. 应用本体约束（过滤）
     const filteredData = this.applyOntologyFilter(graphData);
 
     // Complete only after the same hard resource budget used by durable graph
@@ -839,6 +821,40 @@ export function createMiroFishGraphExtractionConfig(config: {
     maxProviderInputCharacters: MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT,
     ...MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS,
   };
+}
+
+/** Build GraphData without allocating a TaskManager task. */
+export async function extractMiroFishGraphData(input: {
+  text: string;
+  documentId: string;
+  chunkSize?: number;
+  chunkOverlap?: number;
+  modelOverride?: ModelOverride;
+  onProgress?: (progress: ExtractionProgress) => void;
+}): Promise<GraphData> {
+  const chunkSize = input.chunkSize ?? MIROFISH_GRAPH_DEFAULTS.chunkSize;
+  const chunkOverlap = input.chunkOverlap ?? MIROFISH_GRAPH_DEFAULTS.chunkOverlap;
+  const llmInstance = createLLMFromOverride(input.modelOverride, {
+    temperature: 0.1,
+    ollamaOptions: MIROFISH_GRAPH_OLLAMA_OPTIONS,
+  });
+  const extractor = new EntityExtractor(
+    createMiroFishGraphExtractionConfig({ chunkSize, chunkOverlap }),
+    {
+      llmInstance,
+      providerKey: input.modelOverride
+        ? [
+            input.modelOverride.provider,
+            input.modelOverride.modelName,
+            input.modelOverride.baseUrl ?? 'server-default',
+          ].join(':')
+        : undefined,
+    }
+  );
+  if (input.onProgress) extractor.onProgress(input.onProgress);
+  return convertKnowledgeGraphToGraphData(
+    await extractor.extract(input.text, input.documentId)
+  );
 }
 
 function calculateGraphProgress(progress: ExtractionProgress): number {

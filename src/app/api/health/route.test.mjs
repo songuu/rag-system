@@ -37,6 +37,14 @@ const vectorStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 export function isVectorBackendDisabled() { return true; }
 export function resolveRagVectorBackend() { return 'disabled'; }
 `);
+const elasticsearchClientStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+export async function checkElasticsearchReadiness() {
+  return { mode: 'off', connected: null, indexReady: null, indexName: 'rag_chunks_v1' };
+}
+`);
+const elasticsearchConfigStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+export function getElasticsearchRuntimeConfig() { return { mode: 'off' }; }
+`);
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -47,6 +55,8 @@ registerHooks({
       ['@/lib/embedding-config', embeddingStubUrl],
       ['@/lib/rag-instance', ragStubUrl],
       ['@/lib/rag/vector-backend', vectorStubUrl],
+      ['@/lib/elasticsearch/client', elasticsearchClientStubUrl],
+      ['@/lib/elasticsearch/config', elasticsearchConfigStubUrl],
     ]);
     if (stubs.has(specifier)) return { url: stubs.get(specifier), shortCircuit: true };
     if (specifier === 'next/server') return nextResolve('next/server.js', context);

@@ -1,3 +1,5 @@
+import { RagRequestAbortedError, throwIfRagRequestAborted } from '../core/cancellation';
+
 /**
  * Reranker provider 抽象
  *
@@ -22,7 +24,7 @@ export interface RerankerInput {
 export interface RerankerOutput {
   id: string;
   content: string;
-  /** 0~1，新打分（reranker 给出的相关性分） */
+  /** Provider relevance score; finite, model-specific, not calibrated confidence. */
   relevanceScore: number;
   /** 原数组中的索引，便于回填 metadata */
   originalIndex: number;
@@ -34,7 +36,11 @@ export interface RerankerProvider {
   /** 用于日志 / cost 估算 */
   readonly model: string;
 
-  rerank(query: string, docs: RerankerInput[], topK?: number): Promise<RerankerOutput[]>;
+  rerank(query: string, docs: RerankerInput[], topK?: number, options?: RerankerRequestOptions): Promise<RerankerOutput[]>;
+}
+
+export interface RerankerRequestOptions {
+  signal?: AbortSignal;
 }
 
 export type RerankerProviderId = 'siliconflow' | 'cohere' | 'voyage';
@@ -45,7 +51,7 @@ export type RerankerProviderId = 'siliconflow' | 'cohere' | 'voyage';
  * SiliconFlow rerank API
  *
  * Endpoint: POST {base}/rerank
- * Docs: https://docs.siliconflow.cn/cn/api-reference/rerank/create-rerank
+ * Docs: https://docs.siliconflow.com/en/api-reference/rerank/create-rerank
  * Default model: BAAI/bge-reranker-v2-m3（多语言；4 项目主流的 embedding family）
  */
 export class SiliconFlowReranker implements RerankerProvider {
@@ -63,7 +69,8 @@ export class SiliconFlowReranker implements RerankerProvider {
     this.baseUrl = config.baseUrl ?? 'https://api.siliconflow.cn/v1';
   }
 
-  async rerank(query: string, docs: RerankerInput[], topK?: number): Promise<RerankerOutput[]> {
+  async rerank(query: string, docs: RerankerInput[], topK?: number, options: RerankerRequestOptions = {}): Promise<RerankerOutput[]> {
+    throwIfRagRequestAborted(options.signal);
     if (docs.length === 0) return [];
 
     const body: Record<string, unknown> = {
@@ -74,30 +81,15 @@ export class SiliconFlowReranker implements RerankerProvider {
     };
     if (typeof topK === 'number' && topK > 0) body.top_n = Math.min(topK, docs.length);
 
-    const response = await fetch(`${this.baseUrl}/rerank`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
+    return requestRerank({
+      provider: this.name,
+      url: `${this.baseUrl}/rerank`,
+      apiKey: this.apiKey,
+      body,
+      docs,
+      responseKey: 'results',
+      signal: options.signal,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`SiliconFlow rerank API error (${response.status}): ${errorText}`);
-    }
-
-    const data = (await response.json()) as {
-      results?: Array<{ index: number; relevance_score: number }>;
-    };
-    const results = Array.isArray(data.results) ? data.results : [];
-    return results.map(r => ({
-      id: docs[r.index]?.id ?? `unknown-${r.index}`,
-      content: docs[r.index]?.content ?? '',
-      relevanceScore: r.relevance_score,
-      originalIndex: r.index,
-    }));
   }
 }
 
@@ -125,7 +117,8 @@ export class CohereReranker implements RerankerProvider {
     this.baseUrl = config.baseUrl ?? 'https://api.cohere.com/v2';
   }
 
-  async rerank(query: string, docs: RerankerInput[], topK?: number): Promise<RerankerOutput[]> {
+  async rerank(query: string, docs: RerankerInput[], topK?: number, options: RerankerRequestOptions = {}): Promise<RerankerOutput[]> {
+    throwIfRagRequestAborted(options.signal);
     if (docs.length === 0) return [];
 
     const body: Record<string, unknown> = {
@@ -135,30 +128,15 @@ export class CohereReranker implements RerankerProvider {
     };
     if (typeof topK === 'number' && topK > 0) body.top_n = Math.min(topK, docs.length);
 
-    const response = await fetch(`${this.baseUrl}/rerank`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
+    return requestRerank({
+      provider: this.name,
+      url: `${this.baseUrl}/rerank`,
+      apiKey: this.apiKey,
+      body,
+      docs,
+      responseKey: 'results',
+      signal: options.signal,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Cohere rerank API error (${response.status}): ${errorText}`);
-    }
-
-    const data = (await response.json()) as {
-      results?: Array<{ index: number; relevance_score: number }>;
-    };
-    const results = Array.isArray(data.results) ? data.results : [];
-    return results.map(r => ({
-      id: docs[r.index]?.id ?? `unknown-${r.index}`,
-      content: docs[r.index]?.content ?? '',
-      relevanceScore: r.relevance_score,
-      originalIndex: r.index,
-    }));
   }
 }
 
@@ -188,7 +166,8 @@ export class VoyageReranker implements RerankerProvider {
     this.baseUrl = config.baseUrl ?? 'https://api.voyageai.com/v1';
   }
 
-  async rerank(query: string, docs: RerankerInput[], topK?: number): Promise<RerankerOutput[]> {
+  async rerank(query: string, docs: RerankerInput[], topK?: number, options: RerankerRequestOptions = {}): Promise<RerankerOutput[]> {
+    throwIfRagRequestAborted(options.signal);
     if (docs.length === 0) return [];
 
     const body: Record<string, unknown> = {
@@ -199,30 +178,15 @@ export class VoyageReranker implements RerankerProvider {
     };
     if (typeof topK === 'number' && topK > 0) body.top_k = Math.min(topK, docs.length);
 
-    const response = await fetch(`${this.baseUrl}/rerank`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
+    return requestRerank({
+      provider: this.name,
+      url: `${this.baseUrl}/rerank`,
+      apiKey: this.apiKey,
+      body,
+      docs,
+      responseKey: 'data',
+      signal: options.signal,
     });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Voyage rerank API error (${response.status}): ${errorText}`);
-    }
-
-    const data = (await response.json()) as {
-      data?: Array<{ index: number; relevance_score: number }>;
-    };
-    const results = Array.isArray(data.data) ? data.data : [];
-    return results.map(r => ({
-      id: docs[r.index]?.id ?? `unknown-${r.index}`,
-      content: docs[r.index]?.content ?? '',
-      relevanceScore: r.relevance_score,
-      originalIndex: r.index,
-    }));
   }
 }
 
@@ -290,4 +254,72 @@ export function isRerankerConfigured(providerId?: RerankerProviderId): boolean {
     default:
       return false;
   }
+}
+
+/** Keep provider-owned response and transport text out of durable diagnostics. */
+async function requestRerank(input: {
+  provider: RerankerProviderId;
+  url: string;
+  apiKey: string;
+  body: Record<string, unknown>;
+  docs: RerankerInput[];
+  responseKey: 'results' | 'data';
+  signal?: AbortSignal;
+}): Promise<RerankerOutput[]> {
+  const documents = input.docs.map(({ id, content }) => ({ id, content }));
+  let response: Response;
+  try {
+    response = await fetch(input.url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${input.apiKey}` },
+      body: JSON.stringify(input.body),
+      signal: input.signal,
+    });
+  } catch (error) {
+    throwIfRagRequestAborted(input.signal);
+    if (error instanceof Error && error.name === 'AbortError') throw new RagRequestAbortedError();
+    throw new Error(`Reranker provider=${input.provider} request failed.`);
+  }
+  throwIfRagRequestAborted(input.signal);
+  if (!response.ok) {
+    const providerError = new Error(`Reranker provider=${input.provider} HTTP status=${response.status}.`);
+    try {
+      // Keep socket cleanup inside the lane promise so its deadline/orphan fence still owns it.
+      await response.body?.cancel();
+    } catch {
+      // Cleanup errors can contain provider data; preserve only the safe HTTP failure or cancellation.
+      throwIfRagRequestAborted(input.signal);
+      throw providerError;
+    }
+    throwIfRagRequestAborted(input.signal);
+    throw providerError;
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throwIfRagRequestAborted(input.signal);
+    throw new Error(`Reranker provider=${input.provider} invalid response.`);
+  }
+  throwIfRagRequestAborted(input.signal);
+  const rows = payload && typeof payload === 'object'
+    ? (payload as Record<string, unknown>)[input.responseKey]
+    : undefined;
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > documents.length) {
+    throw new Error(`Reranker provider=${input.provider} invalid response.`);
+  }
+  const seen = new Set<number>();
+  return rows.map(row => {
+    if (!row || typeof row !== 'object') {
+      throw new Error(`Reranker provider=${input.provider} invalid response.`);
+    }
+    const { index, relevance_score: score } = row as Record<string, unknown>;
+    if (typeof index !== 'number' || !Number.isInteger(index)
+      || index < 0 || index >= documents.length || seen.has(index)
+      || typeof score !== 'number' || !Number.isFinite(score)) {
+      throw new Error(`Reranker provider=${input.provider} invalid response.`);
+    }
+    seen.add(index);
+    return { ...documents[index], relevanceScore: score, originalIndex: index };
+  });
 }

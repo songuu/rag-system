@@ -65,3 +65,13 @@ test('rerankDocuments falls back to original order when provider fails', async (
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }
+
+test('rerankDocuments forwards cancellation and never falls back after abort', async () => {
+  const controller = new AbortController(); const errors = [];
+  const provider = { name: 'unit', model: 'unit', async rerank(_query, docs, _topK, options) { assert.equal(options.signal, controller.signal); controller.abort(new Error('private disconnect reason')); return [{ ...docs[0], originalIndex: 0, relevanceScore: 1 }]; } };
+  await assert.rejects(rerankDocuments('query', [{ id: 'a', content: 'content' }], { provider, signal: controller.signal, onError: error => errors.push(error) }), error => error.code === 'RAG_REQUEST_ABORTED');
+  assert.deepEqual(errors, []);
+});
+test('rerankDocuments propagates explicit abort errors from a provider', async () => {
+  await assert.rejects(rerankDocuments('query', [{ id: 'a', content: 'content' }], { provider: { name: 'unit', model: 'unit', rerank: async () => { throw new DOMException('Aborted', 'AbortError'); } } }), error => error.name === 'AbortError');
+});

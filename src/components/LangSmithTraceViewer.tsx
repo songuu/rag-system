@@ -18,6 +18,7 @@ interface WorkflowStep {
   input?: unknown;
   output?: unknown;
   error?: string;
+  errorDetail?: string;
   tokens?: { input: number; output: number; total: number };
   cost?: number;
   metadata?: Record<string, unknown>;
@@ -165,11 +166,11 @@ export default function LangSmithTraceViewer({
       id: step.id ?? `workflow-${index}`,
       parentId: step.parentId,
       label: step.step ?? step.name ?? `Step ${index + 1}`,
-      description: step.error ?? readStringField(step.output, 'summary') ?? readStringField(step.metadata, 'description'),
+      description: step.errorDetail ?? step.error ?? readStringField(step.output, 'summary') ?? readStringField(step.metadata, 'description'),
       kind: inferFlowKind(step.step ?? step.name ?? step.type),
       status: normalizeFlowStatus(step.status),
       duration: typeof step.duration === 'number' ? step.duration : undefined,
-      error: step.error,
+      error: step.errorDetail ?? step.error,
       layer: index,
       metadata: {
         type: step.type,
@@ -267,6 +268,9 @@ export default function LangSmithTraceViewer({
                       <i className="fas fa-exclamation-triangle"></i> 错误信息
                     </div>
                     <div className="text-xs text-red-300 mt-1">{step.error}</div>
+                    {step.errorDetail && (
+                      <div className="text-xs text-red-200 mt-1">{step.errorDetail}</div>
+                    )}
                   </div>
                 )}
               </div>

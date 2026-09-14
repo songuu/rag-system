@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Link from 'next/link';
+import { resolveEmbeddingModelSelection } from './embedding-model-selection';
 
 interface MilvusStats {
   name: string;
@@ -183,6 +184,8 @@ export default function MilvusPage() {
   const loadOllamaModels = useCallback(async () => {
     setLoadingModels(true);
     try {
+      let configuredModel: string | undefined;
+
       // 首先获取统一模型配置，确定使用哪个提供商
       const configResponse = await fetch('/rag-api/model-config');
       const configData = await configResponse.json();
@@ -191,6 +194,7 @@ export default function MilvusPage() {
         const embConfig = configData.config.embedding;
         setEmbeddingProvider(embConfig.provider || 'ollama');
         setEmbeddingDimension(embConfig.dimension || 768);
+        configuredModel = embConfig.model;
         
         // 如果是远程提供商，直接使用配置的模型
         if (embConfig.provider && embConfig.provider !== 'ollama') {
@@ -200,7 +204,6 @@ export default function MilvusPage() {
             size: 0,
             modified_at: new Date().toISOString(),
           }]);
-          setLoadingModels(false);
           return;
         }
       }
@@ -213,25 +216,26 @@ export default function MilvusPage() {
         const embConfig = data.providerConfig.embedding;
         setEmbeddingProvider(embConfig.provider || 'ollama');
         setEmbeddingDimension(embConfig.dimension || 768);
-        setSelectedEmbeddingModel(embConfig.model || selectedEmbeddingModel);
+        configuredModel = embConfig.model || configuredModel;
       }
 
       if (data.success && data.embeddingModels) {
-        setEmbeddingModels(data.embeddingModels);
-        // 如果当前选择的模型不在列表中，选择第一个
-        if (data.embeddingModels.length > 0) {
-          const modelNames = data.embeddingModels.map((m: OllamaModel) => m.name);
-          if (!modelNames.includes(selectedEmbeddingModel)) {
-            setSelectedEmbeddingModel(data.embeddingModels[0].name);
-          }
-        }
+        const availableModels = data.embeddingModels as OllamaModel[];
+        setEmbeddingModels(availableModels);
+        setSelectedEmbeddingModel((currentModel) =>
+          resolveEmbeddingModelSelection({
+            currentModel,
+            configuredModel,
+            availableModels,
+          }),
+        );
       }
     } catch (err) {
       console.error('Failed to load Ollama models:', err);
     } finally {
       setLoadingModels(false);
     }
-  }, [selectedEmbeddingModel]);
+  }, []);
 
   // 加载状态
   const loadStatus = useCallback(async () => {

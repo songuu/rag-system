@@ -12,6 +12,7 @@ interface WorkflowStep {
   input?: unknown;
   output?: unknown;
   error?: string;
+  errorDetail?: string;
 }
 
 // 查询分析结果
@@ -252,9 +253,12 @@ export default function AgenticWorkflowPanel({
                 )}
               </div>
               {step.error && (
-                <p className="mt-2 text-xs text-red-600 bg-red-100 p-2 rounded">
-                  {step.error}
-                </p>
+                <div className="mt-2 text-xs text-red-600 bg-red-100 p-2 rounded">
+                  <div>{step.error}</div>
+                  {step.errorDetail && (
+                    <div className="mt-1 text-red-700">{step.errorDetail}</div>
+                  )}
+                </div>
               )}
             </div>
           );

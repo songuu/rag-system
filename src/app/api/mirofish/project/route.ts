@@ -13,7 +13,7 @@ import type { CreateProjectRequest } from '@/lib/mirofish/types';
 export async function GET() {
   try {
     const store = getProjectStore();
-    const projects = store.list().map(createPublicProjectProjection);
+    const projects = (await store.list()).map(createPublicProjectProjection);
 
     return NextResponse.json({ success: true, projects });
   } catch (error) {
@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     }
 
     const store = getProjectStore();
-    const project = store.create(body);
+    const project = await store.create(body);
 
     return NextResponse.json({ success: true, project: createPublicProjectProjection(project) });
   } catch (error) {

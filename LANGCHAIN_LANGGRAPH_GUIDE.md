@@ -1,9 +1,11 @@
 # LangChain / LangGraph / LangSmith：完整实现、架构与搭建指南
 
-> 当前事实快照：2026-08-31
+> 完整指南基线：2026-08-31；局部架构核实与更新：2026-09-07
 > 适用仓库：rag-system
 > 主查询入口：`POST /api/ask`
 > 文档目标：解释项目现在如何运行，并给出从零搭建、数据导入、真实 `createAgent` 联调、部署、验收和排障的完整过程；历史演进仅放在附录
+
+2026-09-07 的当前架构、可选重排、有界补搜、引用/用量诊断与评测入口见[当前 Agentic RAG 架构](docs/architecture/agentic-rag-current.md)。本文同步更新模式、预算、工具合同和回滚配置；第 9.17、10 章的测试数字及环境结论仍是 **2026-08-31 历史记录**，不代表本次重新验证或当前部署状态。
 
 本文以当前源码、依赖锁、测试和运行配置为权威。框架官网能力、旧指南、历史类名和未来规划都不能覆盖当前调用链。
 
@@ -185,7 +187,7 @@ sequenceDiagram
 | `memory` | `handleMemoryQuery` | memory retrieval → generation-only | `Document`、Embedding、ChatModel invoke | 只适合未强制 tenant/corpus 隔离的本地开发 |
 | `milvus-2step` | `handleMilvusQuery` | dense 或 ordered/hybrid/PDF visual → context pack → generation | Embedding、ChatModel、Prompt/Message | 当前默认的 Milvus 基线策略；实际线上流量分布需要部署侧观测确认 |
 | `mirofish-research` | 同样使用 `handleMilvusQuery` | dense 必选；global/multi-hop 时可增加 server-scoped graph-entity lane | ChatModel + 项目 MiroFish artifact runtime | graph lane 可选且必须绑定 document/version/trust scope |
-| `agentic` | `handleAgenticQuery` | 默认 dense required lane → canonical context pack → `createAgent` 模型/工具/模型；`legacy` 环境值回滚旧 workflow | `createAgent`、无参数 tool、tool/model call limit middleware | agent 只能读取服务端已限定的 evidence snapshot；不拥有数据库、tenant/corpus/query 参数 |
+| `agentic` | `handleAgenticQuery` | scoped retrieval → optional rerank → context pack → `createAgent`；默认 snapshot，服务端 bounded 可补搜；`legacy` 回滚旧 workflow | `createAgent`、读取/补搜工具、tool/model call limit middleware | 先读取冻结证据；bounded 仅能提供 query，数据库与 tenant/corpus/trust 仍由服务端控制 |
 | `adaptive-entity` | `handleAdaptiveEntityQuery` | metadata-filter 可选 → dense → rerank 可配 → generation | 结构化实体提取、显式 class/state pipeline | 约束和证据都必须绑定 request-local scope |
 
 Self-Corrective、Reasoning 和 Adaptive 等专用旧 routes 仍可作为本地演示/兼容入口，但 legacy route policy 会在 production 或 authenticated access mode 下 fail closed。主产品链应以 `/api/ask` 为准。
@@ -409,15 +411,21 @@ RunnableConfig 当前包含：
 
 `src/lib/rag/agents/scoped-retrieval-agent.ts` 是 canonical Agentic policy 的真实 agent 叶子：
 
-1. `/api/ask` 先完成服务端身份、tenant/corpus scope、dense retrieval、证据校验和 context composition。
-2. agent 注册唯一的 `read_scoped_rag_context` 工具；schema 是严格空对象，模型不能提供 query、filter、tenant 或 corpus。
-3. scope/integrity 校验后、任何模型 await 前，工具字段会复制为本地冻结快照；工具只返回该快照中的 evidence IDs、token/truncation metadata 和 context，调用方并发修改原 pack 不会改变工具结果。
-4. `toolCallLimitMiddleware(runLimit=1)`、`modelCallLimitMiddleware(runLimit=2)` 和 graph `recursionLimit=16` 共同阻止失控循环。
-5. 调用前、工具中、调用后都检查请求 AbortSignal；整个 agent 循环仍受 `/api/ask` 单个 generation deadline 约束。
-6. 模型跳过工具、请求任意额外/未知工具、重复调用、空回答或 scope/integrity 不一致都会 fail closed；全局单工具预算与两次模型预算之外仍保留 graph recursion guard。响应只公开 runtime、调用次数、evidence IDs 和无正文的真实阶段计时，不公开内部 messages/tool payload。
-7. canonical success 同时投影 `retrieve_original -> agent_model_request_tool -> read_scoped_rag_context -> agent_model_answer`，供既有首页 workflow/trace 面板展示；legacy grader、自省与幻觉检查未执行，因此不会伪造。durable 首次结果与 replay 通过严格 allowlist 保留相同 agent/workflow 诊断。
+1. `/api/ask` 先完成服务端身份、tenant/corpus/trust scope、canonical retrieval、optional rerank 和 context composition。
+2. `RAG_AGENTIC_RETRIEVAL_MODE=snapshot` 为默认，仅注册严格空 schema 的 `read_scoped_rag_context({})`，最多读取一次后回答；读取工具不能附带 query。
+3. `bounded` 另注册 `search_scoped_rag_context({query})`；必须先读快照，每轮最多一个工具调用，query 长度 1–1024。模型不能修改 filter、tenant、corpus、trust、provider 或数据库连接。
+4. 第一次模型 await 前校验、复制并冻结初始 scope/context；补搜结果再次验证，只在尾部追加，原证据编号、正文、文档版本和 span 保持不变。重复相同证据去重，同 ID 冲突 fail closed。
+5. snapshot 最多 1 次工具、2 次模型、graph recursion 16；bounded 最多 3 次工具、4 次模型、graph recursion 32，实际补搜最多 2 次。累计 context 最多 4000 估算 token，bounded evidence 最多 `min(40, 3 × topK)`。
+6. 整个 agent 受单个 90 秒 generation deadline 约束；每次补搜含可选重排最多 5 秒。重复 query/无增益、预算耗尽或普通 provider 不可用停止补搜并使用已有证据；scope/integrity、工具合同失败或请求取消 fail closed。
+7. 返回最终交付的 context pack、served IDs、真实模型/工具计时和诊断，随后重建 cache identity；durable 通过 allowlist 保留 mode、search count/stop reason、workflow 与诊断。不公开内部 messages/tool payload，不伪造 legacy grader、自省或幻觉检查。引用检查只验证编号对应证据，不证明语义支持。
 
 `RAG_AGENTIC_RUNTIME` 默认/空值为 `create-agent`，只有显式 `legacy` 才回滚旧 `AgenticRAGSystem`。无 evidence 或 active abstention 时直接返回受控拒答，不为形式上的 agent 调用消耗模型预算。真实部署还必须确认所选模型支持原生 tool calling。
+
+bounded 默认 `RAG_AGENTIC_DECISION_MODE=structured`，首次原生读取后以严格 JSON 明确选择 answer/search/abstain；Ollama 使用 JSON schema，其他 provider 使用提示词和本地校验。模型以 `evidenceNumbers` 显式选择支持来源，服务端校验并渲染引用，完整来源链仍由模型选择；合法 search 复用现有检索工具及预算，非法结构或停止后继续搜索显式失败。`native-tools` 保留原生决策对照，snapshot 忽略该配置；模式与提示词共同隔离缓存和 durable replay。
+
+create-agent 分支从初始 dense lane 进入 canonical 检索路由，再根据 `enableReranking` 和路由类型增加 5 秒 optional rerank；ordered-context 保持文档顺序。provider 未配置时跳过，普通错误/超时保持原候选排序，scope 越界或请求取消不降级。用 `retrievalDetails.rerank.applied/provider/reason` 及 lane executions 确认是否执行。bounded 补搜使用同一冻结 scope，每个新 query 独立生成 embedding。
+
+2026-09-07 新增诊断版本为 `scoped-agent-diagnostics-v1`，同步投影到 `retrievalDetails.generation.diagnostics` 并由 durable replay 保留。`modelResponseCount` 统计返回的 AI messages，不含 provider 内部重试；缺失 token 元数据标为 `partial`/`unavailable`，不估算成本。snapshot 的 `promptVersion=scoped-rag-answer-v3`、bounded 默认结构化决策的 `scoped-rag-structured-answer-v5` 和原生对照的 `scoped-rag-iterative-answer-v2` 分别进入 answer cache 与 durable 路由身份；最终证据、context hash、模式/预算和重排状态也参与缓存身份，runtime 仍为 `langchain-create-agent-v1`。字段和验收边界见[新增诊断合同](docs/architecture/agentic-rag-current.md#新增诊断合同)。
 
 ### 4.5 显式状态节点
 
@@ -755,6 +763,7 @@ langsmith 0.7.3 的 `RunTree.postRun/patchRun` 会在 SDK 内部吞掉多数远�
 | MiroFish Graph | off/shadow/active；只有 `active` 会被 `/api/ask` 选为 server policy，`shadow` 不改写当前查询主路径 |
 | Abstention | 默认 shadow |
 | Agentic runtime | `RAG_AGENTIC_RUNTIME=create-agent` 为默认；`legacy` 只用于显式回滚，不是 rollout percentage |
+| Agentic 补搜 | `RAG_AGENTIC_RETRIEVAL_MODE=snapshot` 为默认；`bounded` 在首次读取后允许最多两次 scoped 补搜，先通过目标模型/索引/质量验收 |
 
 代码存在不代表部署已 active。生产真实状态必须读取部署环境和执行 metadata。
 
@@ -981,7 +990,7 @@ canonical agent 只在全部条件满足时运行：
 1. 请求入口是 `POST /api/ask`。
 2. `storageBackend="milvus"`。
 3. `useAgenticRAG=true`，且不能同时设置 `useAdaptiveEntityRAG=true`。
-4. `RAG_AGENTIC_RUNTIME` 为空或 `create-agent`；`legacy` 只用于显式回滚，其他值直接拒绝。
+4. `RAG_AGENTIC_RUNTIME` 为空或 `create-agent`；`legacy` 只用于显式回滚，其他值直接拒绝。9.9 的基础 canary 使用 `RAG_AGENTIC_RETRIEVAL_MODE=snapshot`；补搜验收才切换 `bounded`。
 5. `RAG_VECTOR_BACKEND` 未禁用。
 6. 服务端认证与 tenant/corpus scope 已建立。
 7. 检索返回当前 scope 内、非 quarantined 的有效 evidence，且未被 active abstention 门禁拒绝。
@@ -991,6 +1000,8 @@ canonical agent 只在全部条件满足时运行：
 `createAgent` 故障，也不能用来证明模型 tool-calling 已通过。
 
 ### 9.9 执行真实 canonical `createAgent` canary
+
+先将服务端 `RAG_AGENTIC_RETRIEVAL_MODE` 设为 `snapshot`，按下面的固定工具次数验证基础闭环。
 
 使用与导入相同的认证头，提问刚写入的确定性事实：
 
@@ -1036,33 +1047,41 @@ $askResponse.Headers
 这条 canary 同时证明真实模型完成了“模型 → 工具 → 模型”两轮循环。普通 chat 成功、
 `bindTools` 方法存在、FakeToolCallingModel 测试通过或页面显示 Agentic 标签都不能替代它。
 
+验证 bounded 时在服务端切换 `RAG_AGENTIC_RETRIEVAL_MODE=bounded`，使用已知初始 topK 缺少必要事实的固定多跳案例。检查读取发生在补搜前、`agent.searchCallCount <= 2`、`agent.toolCallCount <= 3`，以及最终 `context`、`servedEvidenceIds`、引用、缓存身份和 durable replay 一致；若未发生补搜，只证明该次基础回答成功。对比完整答案、拒答、延迟与 provider 用量后再决定是否启用目标流量。内置三种 variant CLI 的检索仍是 fixture，不能替代这里的真实 Milvus canary。
+
 ### 9.10 Agent 内部合同与失败门禁
 
-Agent 不拥有检索控制权。它只有一个严格空参数工具：
+服务端始终控制数据库与检索 scope。默认 snapshot 只有严格空参数读取工具；bounded 在首次读取后允许用有界 query 补搜：
 
 ~~~text
 read_scoped_rag_context({})
+search_scoped_rag_context({query: "缺失事实的检索词"})  // 仅 bounded
 ~~~
 
-工具读取的是在第一次模型 await 之前复制、校验并冻结的 snapshot：
+读取工具不能附带 query。初始工具读取的是在第一次模型 await 之前复制、校验并冻结的 snapshot：
 
 - evidence ID 顺序必须和 canonical context 一致；
 - evidence ID 必须唯一；
 - context 必须能由 included evidence 完整重建；
 - evidence 必须在服务端 tenant/corpus/trust scope 内；
 - quarantined evidence 永远拒绝；
-- 工具不能接收 query、filter、tenant、corpus 或数据库连接参数。
+- 读取工具不能接收 query；两个工具都不能接收 filter、tenant、corpus、trust 或数据库连接参数；
+- 补搜结果只追加新证据，原有编号和正文不改变；同 ID 内容/版本/span 冲突直接失败。
 
 执行预算：
 
 | 预算 | 当前值 | 超限结果 |
 | --- | --- | --- |
-| 工具调用 | 1 | `RAG_AGENT_TOOL_LIMIT` |
-| 模型调用 | 2 | `RAG_AGENT_MAX_STEPS` |
-| graph recursion | 16 | 归一为 `RAG_AGENT_MAX_STEPS` |
-| generation deadline | `/api/ask` 统一 30 秒预算 | 失败 envelope，不返回未受控答案 |
+| 工具调用 | snapshot 1；bounded 3（实际补搜最多 2） | `RAG_AGENT_TOOL_LIMIT` |
+| 模型调用 | snapshot 2；bounded 4 | `RAG_AGENT_MAX_STEPS` |
+| graph recursion | snapshot 16；bounded 32 | 归一为 `RAG_AGENT_MAX_STEPS` |
+| bounded 累计证据 | 最多 4000 估算 token、`min(40, 3 × topK)` 条 | 停止补搜，使用已交付证据 |
+| 每次补搜 | 含可选重排共 5 秒 | `budget` 停止补搜；保留已交付证据 |
+| generation deadline | `/api/ask` 统一 90 秒预算，包含模型和补搜，见 [request-budgets.ts](src/lib/rag/core/request-budgets.ts) | 失败 envelope，不返回未受控答案 |
 
-模型跳过工具、调用未知/额外工具、重复调用、返回空答案、scope 越界、请求取消或 deadline
+canonical 检索另有 30 秒预算；显式 legacy Agentic workflow 使用 45 秒预算。90 秒是整个 create-agent 生成阶段的预算，不是每次模型调用各有 90 秒。
+
+模型跳过必需读取、调用未知工具、提供额外参数、同轮多个工具、重复读取、返回空答案、scope 越界、请求取消或 generation deadline
 超时都会 fail closed。失败 envelope 会保留已经检索到的无正文证据身份、lane execution 和
 `evidence_ready → generating → failed` transition，但不会把内部 messages、tool payload 或 provider stack 暴露给客户端。
 
@@ -1110,6 +1129,7 @@ RAG_ACCESS_MODE=local-dev
 RAG_PERSISTENCE_BACKEND=local
 RAG_VECTOR_BACKEND=milvus
 RAG_AGENTIC_RUNTIME=create-agent
+RAG_AGENTIC_RETRIEVAL_MODE=snapshot
 ~~~
 
 `local-dev` 只允许非 production。若要验证生产认证、隔离和 PostgreSQL-only 行为，应继续使用
@@ -1117,10 +1137,10 @@ RAG_AGENTIC_RUNTIME=create-agent
 
 ### 9.13 自动测试与构建门禁
 
-先跑变更最相关的定向测试：
+先跑变更最相关的定向测试（`test:rag-agentic` 已包含 scoped agent、append、rerank、followup、HTTP 与评测 adapter/CLI）：
 
 ~~~powershell
-node src/lib/rag/agents/scoped-retrieval-agent.test.mjs
+pnpm test:rag-agentic
 node src/lib/langsmith/config.test.mjs
 node src/lib/rag/core/kernel.test.mjs
 node src/app/api/ask/route.test.mjs
@@ -1130,6 +1150,8 @@ node node_modules/typescript/bin/tsc --noEmit --pretty false --incremental false
 pnpm exec eslint src/lib/rag/agents/scoped-retrieval-agent.ts src/lib/langsmith/private-tracing.ts src/lib/langsmith/tracing.ts src/lib/rag/core/workflow.ts src/app/api/ask/route.ts
 git diff --check
 ~~~
+
+Agent 消融入口为 `pnpm rag:eval:agent`，默认 fake 模型，比较 snapshot/rerank/iterative；`--provider ollama` 才测真实本地模型，`--gate` 追加严格 E1b 质量门禁。安全、预算和执行检查始终生效。固定 fixture、参数及真实/生产测量边界见[当前架构的验收](docs/architecture/agentic-rag-current.md#验收与复现)。
 
 准备合并/发布时再执行仓库门禁：
 
@@ -1195,6 +1217,7 @@ insert/search、canonical pipeline→ask、答案质量和 LangSmith Cloud readb
 
 | 场景 | 动作 | 边界 |
 | --- | --- | --- |
+| 补搜质量或延迟不达标 | `RAG_AGENTIC_RETRIEVAL_MODE=snapshot` 后受控 reload | 关闭补搜，保留初始检索、可选重排和快照读取 |
 | 新 agent 与真实 provider 不兼容 | `RAG_AGENTIC_RUNTIME=legacy` 后受控 reload | 仅回滚 Agentic 叶子，不回滚 security/scope/Kernel |
 | Agentic 全部流量需暂停 | 调用方停止发送 `useAgenticRAG=true` | Milvus 2-step 仍可继续；先验证默认 policy |
 | 向量后端事故 | `RAG_VECTOR_BACKEND=disabled` | scoped ask/ingest fail closed，不降级到未隔离 memory |
@@ -1215,7 +1238,7 @@ insert/search、canonical pipeline→ask、答案质量和 LangSmith Cloud readb
 | 3. 依赖对齐 | 引入顶层 `langchain` 与 Zod，并对齐 core/langgraph/adapters | `package.json`、lockfile | frozen install、类型、结构化输出/迁移回归 |
 | 4. TDD agent 叶子 | 先用 FakeToolCallingModel 写失败/成功合同，再实现真实 `createAgent` + strict no-arg tool | `rag/agents/scoped-retrieval-agent.*` | 必须真实出现 tool request/result/final model turn |
 | 5. Scope 与快照 | 在任何模型 await 前校验 evidence、复制并冻结 context snapshot | agent、context composer、安全 scope | tenant/corpus/trust/identity/integrity 与并发篡改测试 |
-| 6. 预算和取消 | 工具 1、模型 2、graph 16、30 秒 generation deadline、AbortSignal | agent、ask route、cancellation | 未知/重复工具、max steps、deadline、499/partial failure |
+| 6. 预算和取消 | 工具 1、模型 2、graph 16、当前 90 秒 generation deadline、AbortSignal | agent、ask route、[request-budgets.ts](src/lib/rag/core/request-budgets.ts)、cancellation | 未知/重复工具、max steps、deadline、499/partial failure |
 | 7. Canonical 接线 | `agentic` policy 默认选择 create-agent；`legacy` 仅环境回滚 | `ask/route.ts`、policies | 默认/空值成功、legacy 回滚、未知 runtime 拒绝 |
 | 8. 响应/UI/durable | 只投影真实 agent 阶段和安全诊断；durable replay 使用 allowlist | route、UI、durable ask | 不伪造 legacy grader/score，不序列化 messages/tool context |
 | 9. LangSmith 隐私 | 手工 content-free root；自动 child 全部重新绑定 discard client | `langsmith/tracing.ts`、`private-tracing.ts` | env/outer/caller tracer 都不能上传 evidence child spans |
@@ -1224,9 +1247,9 @@ insert/search、canonical pipeline→ask、答案质量和 LangSmith Cloud readb
 任何后续扩展都应从相同顺序开始：先写失败合同和安全不变量，再扩工具/模型能力；不要先把数据库、
 tenant、query 或任意 URL 暴露成 agent 参数后再试图补 guardrail。
 
-### 9.17 交付验收清单
+### 9.17 交付验收清单（2026-08-31 记录）
 
-| 层 | 必须看到的证据 | 当前文档快照状态 |
+| 层 | 必须看到的证据 | 2026-08-31 文档快照状态 |
 | --- | --- | --- |
 | 依赖 | frozen install；锁定版本一致 | 已有本地/CI 合同 |
 | 源码 | 顶层 `createAgent` + 唯一 strict tool | 已实现 |
@@ -1242,9 +1265,11 @@ tenant、query 或任意 URL 暴露成 agent 参数后再试图补 guardrail。
 
 只有前九层按目标环境逐项闭环后，才能声明“真实 createAgent RAG 已在该环境完成搭建”。
 
-## 10. 当前验证证据
+## 10. 历史验证证据（2026-08-31）
 
-### 10.1 本轮定向测试
+本章保留当时的执行记录。测试数量、构建阻塞和外部环境状态均未因 2026-09-07 的文档更新自动刷新；当前变更的验证入口见[当前架构的验收](docs/architecture/agentic-rag-current.md#验收与复现)。
+
+### 10.1 当时的定向测试
 
 | 测试组 | 结果 | 验证范围 |
 | --- | --- | --- |
@@ -1314,13 +1339,13 @@ node scripts/generate-articles.mjs
 
 ### 11.2 LangChain 直接 import 文件
 
-当前直接引用共 38 个，按责任分组：
+直接 import 文件按责任分组如下；引用总数随源码变更，以当前仓库扫描为准：
 
 | 分组 | 文件 |
 | --- | --- |
 | 模型/Embedding | `model-config.ts`、`embedding-config.ts` |
 | Kernel/编排 | ask route、`rag/core/workflow.ts`、`langchain-state-workflow.ts`、`intent-router.ts` |
-| RAG 工作流 | `rag/agents/scoped-retrieval-agent.ts`、`agentic-rag.ts`、`self-corrective-rag.ts`、`reasoning-rag.ts`、`adaptive-entity-rag.ts` |
+| RAG 工作流 | `rag/agents/scoped-retrieval-agent.ts`、`rag/agents/agent-output-diagnostics.ts`（消息类型）、`agentic-rag.ts`、`self-corrective-rag.ts`、`reasoning-rag.ts`、`adaptive-entity-rag.ts` |
 | 基础 RAG | `rag-system.ts`、`rag-milvus.ts` |
 | 文档/切分 | `document-pipeline.ts`、`vectorization-utils.ts` |
 | 上下文/对话 | `context-management.ts`、`contextual-retrieval.ts`、`conversation-expansion.ts` |

@@ -68,6 +68,37 @@ test('query client delegates parameterized SQL without rewriting values', async 
   assert.equal(listeners[0]?.event, 'error');
 });
 
+test('query client exposes transactions on one checked-out connection', async () => {
+  const calls = [];
+  let released = false;
+  const connection = {
+    async query(text, values = []) {
+      calls.push({ text, values });
+      return { rows: [{ ok: true }], rowCount: 1 };
+    },
+    release() { released = true; },
+  };
+  const pool = {
+    async query() { throw new Error('transaction must not use pool.query'); },
+    async connect() { return connection; },
+    async end() {},
+  };
+  const client = createPostgresQueryClient(BASE_CONFIG, () => pool);
+
+  const result = await client.withTransaction('enqueue graph job', async transaction => {
+    await transaction.query('select pg_advisory_xact_lock($1)', [7]);
+    return 'locked';
+  });
+
+  assert.equal(result, 'locked');
+  assert.deepEqual(calls.map(call => call.text), [
+    'begin',
+    'select pg_advisory_xact_lock($1)',
+    'commit',
+  ]);
+  assert.equal(released, true);
+});
+
 test('query errors add operation context without exposing SQL parameters', async () => {
   const secret = 'do-not-leak';
   const client = {
@@ -160,7 +191,7 @@ test('readiness requires the current migration ledger entry and every runtime ta
     connected: true,
     schemaReady: true,
   });
-  assert.equal(calls[0].values[0], '0004');
+  assert.equal(calls[0].values[0], '0007');
   assert.match(calls[0].values[1], /^[0-9a-f]{64}$/);
   assert.deepEqual(calls[0].values.slice(2), ['tenant-a', 'corpus-a']);
   for (const relation of [
@@ -178,6 +209,13 @@ test('readiness requires the current migration ledger entry and every runtime ta
     'prompt_optimizer_model_profiles',
     'prompt_optimizer_workspaces',
     'prompt_optimizer_versions',
+    'graph_active_snapshots',
+    'graph_build_jobs',
+    'graph_snapshot_lifecycle',
+    'graph_publication_outbox',
+    'mirofish_projects',
+    'elasticsearch_lexical_chunks',
+    'elasticsearch_lexical_outbox',
   ]) {
     assert.match(calls[0].text, new RegExp(`public\\.${relation}`));
   }

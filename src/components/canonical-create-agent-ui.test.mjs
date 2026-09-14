@@ -12,6 +12,7 @@ const traceViewerSource = await readFile(
 );
 
 function sliceBetween(source, startMarker, endMarker) {
+  source = source.replace(/\r\n/g, '\n');
   const start = source.indexOf(startMarker);
   assert.notEqual(start, -1, `missing start marker: ${startMarker}`);
   const end = source.indexOf(endMarker, start + startMarker.length);

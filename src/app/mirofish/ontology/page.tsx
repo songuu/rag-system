@@ -141,7 +141,7 @@ export default function OntologyPage() {
                 🔍 实体抽取
               </Link>
               <Link
-                href="/mirofish/graph-rag"
+                href="/knowledge-graph"
                 className="px-3 py-1 text-sm rounded-lg transition-colors bg-slate-800 text-slate-400 hover:text-white"
               >
                 🕸️ GraphRag
@@ -325,7 +325,7 @@ export default function OntologyPage() {
                     </p>
                     <div className="flex justify-center gap-3">
                       <Link
-                        href="/mirofish/graph-rag"
+                        href="/knowledge-graph"
                         className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 transition-colors"
                       >
                         🕸️ 构建图谱

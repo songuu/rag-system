@@ -10,11 +10,76 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag-local-dev-only}@postgres:5432/${POSTGRES_DB:-rag_system}
       POSTGRES_URL: ""
       POSTGRES_SSL_MODE: disable
+      RAG_GRAPH_BACKEND: ${RAG_GRAPH_BACKEND:-neo4j}
+      RAG_GRAPH_MODE: ${RAG_GRAPH_MODE:-off}
+      RAG_GRAPH_AUTO_BUILD: ${RAG_GRAPH_AUTO_BUILD:-true}
+      NEO4J_URI: ${NEO4J_URI:-neo4j://neo4j:7687}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j-local-dev-only}
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+      # This exception is confined to the private Compose network. Production
+      # deployments must use neo4j+s/bolt+s and omit this flag.
+      NEO4J_ALLOW_INSECURE: "true"
+      RAG_ELASTICSEARCH_MODE: ${RAG_ELASTICSEARCH_MODE:-active}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-rag_chunks_v1}
+      ELASTICSEARCH_ALLOW_INSECURE: "true"
+      ELASTICSEARCH_ALLOW_UNAUTHENTICATED: "true"
     depends_on:
       postgres:
         condition: service_healthy
       milvus:
         condition: service_started
+      neo4j:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+  graph-control-worker:
+    environment:
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-ollama}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      MILVUS_PROVIDER: local
+      MILVUS_LOCAL_ADDRESS: milvus:19530
+      RAG_PERSISTENCE_BACKEND: ${RAG_PERSISTENCE_BACKEND:-postgres}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag-local-dev-only}@postgres:5432/${POSTGRES_DB:-rag_system}
+      POSTGRES_URL: ""
+      POSTGRES_SSL_MODE: disable
+      RAG_GRAPH_BACKEND: ${RAG_GRAPH_BACKEND:-neo4j}
+      RAG_GRAPH_BUILD_EXECUTOR: ${RAG_GRAPH_BUILD_EXECUTOR:-local}
+      RAG_GRAPH_LOCAL_BUILD_LEASE_MS: ${RAG_GRAPH_LOCAL_BUILD_LEASE_MS:-3600000}
+      NEO4J_URI: ${NEO4J_URI:-neo4j://neo4j:7687}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j-local-dev-only}
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+      NEO4J_ALLOW_INSECURE: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      milvus:
+        condition: service_started
+      neo4j:
+        condition: service_healthy
+
+  search-index-worker:
+    environment:
+      RAG_PERSISTENCE_BACKEND: ${RAG_PERSISTENCE_BACKEND:-postgres}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rag}:${POSTGRES_PASSWORD:-rag-local-dev-only}@postgres:5432/${POSTGRES_DB:-rag_system}
+      POSTGRES_URL: ""
+      POSTGRES_SSL_MODE: disable
+      RAG_DEFAULT_TENANT_ID: ${RAG_DEFAULT_TENANT_ID:-00000000-0000-0000-0000-000000000001}
+      RAG_DEFAULT_CORPUS_ID: ${RAG_DEFAULT_CORPUS_ID:-00000000-0000-0000-0000-000000000002}
+      RAG_ELASTICSEARCH_MODE: ${RAG_ELASTICSEARCH_MODE:-active}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-rag_chunks_v1}
+      ELASTICSEARCH_ALLOW_INSECURE: "true"
+      ELASTICSEARCH_ALLOW_UNAUTHENTICATED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
 
   postgres:
     image: postgres:17-bookworm
@@ -71,8 +136,57 @@ services:
       - etcd
       - minio
 
+  neo4j:
+    image: neo4j:5.26.30-community
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-neo4j-local-dev-only}
+      NEO4J_initial_dbms_default__database: ${NEO4J_DATABASE:-neo4j}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL_SIZE:-512m}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX_SIZE:-1G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-512m}
+      # Health credentials use non-Neo4j-prefixed names so the image does not
+      # interpret them as database configuration keys.
+      RAG_NEO4J_HEALTH_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      RAG_NEO4J_HEALTH_PASSWORD: ${NEO4J_PASSWORD:-neo4j-local-dev-only}
+    ports:
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - rag_neo4j:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a neo4j://127.0.0.1:7687 -u \"$${RAG_NEO4J_HEALTH_USERNAME}\" -p \"$${RAG_NEO4J_HEALTH_PASSWORD}\" 'RETURN 1' >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-9.5.3}
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: ${ELASTICSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    ports:
+      - "127.0.0.1:${ELASTICSEARCH_HTTP_PORT:-9200}:9200"
+    volumes:
+      - rag_elasticsearch:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS 'http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    restart: unless-stopped
+
 volumes:
   rag_postgres:
   rag_etcd:
   rag_minio:
   rag_milvus:
+  rag_neo4j:
+  rag_elasticsearch:

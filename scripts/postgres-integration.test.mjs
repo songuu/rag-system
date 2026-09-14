@@ -29,6 +29,10 @@ const { PostgresPipelineStore } = await import('../src/lib/persistence/postgres-
 const { PostgresTraceStore } = await import('../src/lib/persistence/postgres-trace-store.ts');
 const { PostgresMaicStore } = await import('../src/lib/maic/course-store.ts');
 const { checkPostgresReadiness } = await import('../src/lib/postgres/client.ts');
+const { createRetrievalScope } = await import('../src/lib/security/retrieval-scope.ts');
+const { PostgresKnowledgeGraphBuildJobStore } = await import('../src/lib/knowledge-graph/postgres-graph-build-store.ts');
+const { PostgresKnowledgeGraphPublicationStore } = await import('../src/lib/knowledge-graph/postgres-publication-store.ts');
+const { dispatchKnowledgeGraphOutbox } = await import('../src/lib/knowledge-graph/graph-outbox-dispatcher.ts');
 const { applyLocalBackfill, buildLocalBackfillPlan, inspectLocalBackfill } = await import('./backfill-local-postgres.mjs');
 const { grantApplicationRole, runMigrationSession } = await import('./migrate-postgres.mjs');
 const {
@@ -83,7 +87,7 @@ test('real PostgreSQL migration and persistence round trip', {
       appRole,
     });
     assert.deepEqual(repeatedMigration.applied, []);
-    assert.deepEqual(repeatedMigration.skipped, ['0001', '0002', '0003', '0004']);
+    assert.deepEqual(repeatedMigration.skipped, ['0001', '0002', '0003', '0004', '0005']);
 
     const appDatabaseUrl = new URL(databaseUrl);
     appDatabaseUrl.username = appRole;
@@ -404,6 +408,204 @@ test('real PostgreSQL migration and persistence round trip', {
     await client.query(`drop role if exists "${appRole}"`).catch(() => {});
     await client.end();
     await rm(backfillRoot, { recursive: true, force: true });
+  }
+});
+
+test('real PostgreSQL graph control plane enforces CAS, leases, outbox, and app-role DML', {
+  skip: databaseUrl ? false : 'TEST_DATABASE_URL is not configured',
+}, async () => {
+  const suffix = randomUUID().replaceAll('-', '').slice(0, 12);
+  const tenantId = `graph-${suffix}`;
+  const corpusId = `corpus-${suffix}`;
+  const appRole = `rag_graph_${suffix}`;
+  const appPassword = `runtime_${suffix}_A1`;
+  const owner = new pg.Client({ connectionString: databaseUrl, ssl: false });
+  const clients = [];
+  await owner.connect();
+  try {
+    await owner.query(`create role "${appRole}" login password '${appPassword}'`);
+    await runMigrationSession(owner, {
+      seedScope: { tenantId, corpusId },
+      appRole,
+    });
+    const appDatabaseUrl = new URL(databaseUrl);
+    appDatabaseUrl.username = appRole;
+    appDatabaseUrl.password = appPassword;
+    const createAppClient = async () => {
+      const client = new pg.Client({ connectionString: appDatabaseUrl.toString(), ssl: false });
+      await client.connect();
+      clients.push(client);
+      const appClient = {
+        async query(text, values = []) {
+          const result = await client.query(text, values);
+          return { rows: result.rows, rowCount: result.rowCount };
+        },
+        async withTransaction(_operation, work) {
+          await client.query('begin');
+          try {
+            const result = await work(appClient);
+            await client.query('commit');
+            return result;
+          } catch (error) {
+            try {
+              await client.query('rollback');
+            } catch {
+              // Preserve the original failure; the test closes this client in finally.
+            }
+            throw error;
+          }
+        },
+      };
+      return appClient;
+    };
+    const [queryA, queryB] = await Promise.all([createAppClient(), createAppClient()]);
+    const publicationA = new PostgresKnowledgeGraphPublicationStore(queryA);
+    const publicationB = new PostgresKnowledgeGraphPublicationStore(queryB);
+    const scope = createRetrievalScope({
+      tenantId,
+      corpusId,
+      allowedTrustLevels: ['reviewed'],
+      enforceIsolation: true,
+    });
+    const graphVersion = `graph-${suffix}`;
+
+    await assert.rejects(
+      publicationA.acquireSnapshotLease(scope, `unregistered-${suffix}`, 'activate'),
+      error => error?.code === 'KNOWLEDGE_GRAPH_CONFLICT'
+    );
+    await publicationA.registerStagedSnapshot(scope, graphVersion);
+
+    const activationLease = await publicationA.acquireSnapshotLease(
+      scope,
+      graphVersion,
+      'activate'
+    );
+    await assert.rejects(
+      publicationB.acquireSnapshotLease(scope, graphVersion, 'delete'),
+      error => error?.code === 'KNOWLEDGE_GRAPH_CONFLICT'
+    );
+    const activated = await publicationA.compareAndSetActiveWithLease(
+      scope,
+      graphVersion,
+      0,
+      activationLease
+    );
+    assert.equal(activated.revision, 1);
+    assert.equal(
+      await publicationA.resolveSnapshotLease(scope, activationLease, 'release'),
+      true
+    );
+    await assert.rejects(
+      publicationB.acquireSnapshotLease(scope, graphVersion, 'delete'),
+      error => error?.code === 'KNOWLEDGE_GRAPH_CONFLICT'
+    );
+
+    const nextGraphVersion = `graph-next-${suffix}`;
+    await publicationA.registerStagedSnapshot(scope, nextGraphVersion);
+    const nextLease = await publicationA.acquireSnapshotLease(scope, nextGraphVersion, 'activate');
+    const nextPointer = await publicationA.compareAndSetActiveWithLease(
+      scope,
+      nextGraphVersion,
+      1,
+      nextLease
+    );
+    assert.equal(nextPointer.revision, 2);
+    assert.equal(await publicationA.resolveSnapshotLease(scope, nextLease, 'release'), true);
+
+    const rollbackLease = await publicationA.acquireSnapshotLease(scope, graphVersion, 'activate');
+    const rolledBack = await publicationA.compareAndSetActiveWithLease(
+      scope,
+      graphVersion,
+      2,
+      rollbackLease
+    );
+    assert.equal(rolledBack.graphVersion, graphVersion);
+    assert.equal(rolledBack.revision, 3);
+    assert.equal(await publicationA.resolveSnapshotLease(scope, rollbackLease, 'release'), true);
+
+    const concurrent = await Promise.allSettled([
+      publicationA.compareAndSetActive(scope, null, 3),
+      publicationB.compareAndSetActive(scope, null, 3),
+    ]);
+    const concurrentSummary = concurrent.map(result => result.status === 'fulfilled'
+      ? { status: result.status }
+      : {
+          status: result.status,
+          name: result.reason?.name,
+          code: result.reason?.code,
+          operation: result.reason?.operation,
+          causeCode: result.reason?.cause?.code,
+        });
+    assert.equal(
+      concurrent.filter(result => result.status === 'fulfilled').length,
+      1,
+      JSON.stringify(concurrentSummary)
+    );
+    assert.equal(concurrent.filter(result => result.status === 'rejected').length, 1);
+    assert.equal((await publicationA.getActive(scope)).revision, 4);
+
+    const deleteLease = await publicationA.acquireSnapshotLease(scope, graphVersion, 'delete');
+    await assert.rejects(
+      publicationB.acquireSnapshotLease(scope, graphVersion, 'activate'),
+      error => error?.code === 'KNOWLEDGE_GRAPH_CONFLICT'
+    );
+    assert.equal(await publicationA.resolveSnapshotLease(scope, deleteLease, 'deleted'), true);
+    await assert.rejects(
+      publicationA.acquireSnapshotLease(scope, graphVersion, 'activate'),
+      error => error?.code === 'KNOWLEDGE_GRAPH_CONFLICT'
+    );
+
+    const buildStore = new PostgresKnowledgeGraphBuildJobStore(queryA);
+    const build = await buildStore.enqueue(scope, graphVersion, { source: 'integration' });
+    const cancelled = await buildStore.transition({
+      jobId: build.id,
+      expectedStatus: 'queued',
+      status: 'cancelled',
+      progress: 0,
+      metadata: { reason: 'integration-complete' },
+    });
+    assert.equal(cancelled.status, 'cancelled');
+
+    const validatedBuild = await buildStore.enqueue(scope, graphVersion + '-validated', {
+      source: 'integration-validated',
+    });
+    const claimedBuild = await buildStore.claimNext({ leaseMs: 180_000 });
+    assert.equal(claimedBuild?.id, validatedBuild.id);
+    assert.ok(claimedBuild?.leaseToken);
+    const completedBuild = await buildStore.completeValidated({
+      jobId: claimedBuild.id,
+      progress: 1,
+      artifactDigest: `sha256:${'a'.repeat(64)}`,
+      leaseToken: claimedBuild.leaseToken,
+    });
+    assert.equal(completedBuild.status, 'validated');
+    await assert.rejects(
+      buildStore.enqueue(scope, graphVersion + '-capacity', {}, { maxPendingJobs: 1 }),
+      error => error?.code === 'KNOWLEDGE_GRAPH_CAPACITY'
+    );
+
+    const delivered = [];
+    let published = 0;
+    let retried = 0;
+    for (let iteration = 0; iteration < 10; iteration += 1) {
+      const dispatch = await dispatchKnowledgeGraphOutbox({
+        store: publicationA,
+        publish: async event => { delivered.push(event.id); },
+        limit: 100,
+      });
+      published += dispatch.published;
+      retried += dispatch.retried;
+      if (dispatch.claimed === 0) break;
+    }
+    assert.ok(published >= 2);
+    assert.equal(retried, 0);
+    assert.equal(new Set(delivered).size, delivered.length);
+  } finally {
+    await Promise.all(clients.map(client => client.end().catch(() => {})));
+    await owner.query('delete from tenants where id = $1', [tenantId]).catch(() => {});
+    await owner.query(`drop owned by "${appRole}"`).catch(() => {});
+    await owner.query(`drop role if exists "${appRole}"`).catch(() => {});
+    await owner.end();
   }
 });
 

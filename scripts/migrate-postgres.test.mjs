@@ -76,6 +76,15 @@ test('migration runner supports a separate migration DSN and a validated app rol
   assert.ok(calls.some((text) => /grant select on table public\.rag_schema_migrations/i.test(text)));
   assert.ok(calls.some((text) => /grant select on table[\s\S]*public\.tenants[\s\S]*public\.corpora/i.test(text)));
   assert.ok(calls.some((text) => /public\.maic_courses[\s\S]*public\.maic_classroom_sessions/i.test(text)));
+  assert.ok(calls.some((text) => /public\.graph_snapshot_lifecycle/i.test(text)));
+  const graphGrant = calls.find((text) => /grant select, insert, update on table[\s\S]*public\.graph_snapshot_lifecycle/i.test(text));
+  assert.ok(graphGrant);
+  assert.doesNotMatch(graphGrant, /\bdelete\b/i);
+  const lexicalDeleteGrant = calls.find((text) =>
+    /grant select, insert, update, delete on table[\s\S]*public\.elasticsearch_lexical_chunks/i.test(text)
+  );
+  assert.ok(lexicalDeleteGrant);
+  assert.doesNotMatch(lexicalDeleteGrant, /public\.elasticsearch_lexical_outbox/i);
   assert.equal(calls.some((text) => /insert.*rag_schema_migrations/i.test(text)), false);
   assert.equal(calls.some((text) => /grant select, insert, update, delete on table[\s\S]*public\.tenants/i.test(text)), false);
   assert.ok(calls.some((text) => /revoke insert, update, delete[\s\S]*public\.tenants[\s\S]*public\.corpora/i.test(text)));
@@ -120,6 +129,12 @@ test('migration runner grants an optional direct role read-only access to the ex
     'public.prompt_optimizer_model_profiles',
     'public.prompt_optimizer_workspaces',
     'public.prompt_optimizer_versions',
+    'public.graph_active_snapshots',
+    'public.graph_build_jobs',
+    'public.graph_snapshot_lifecycle',
+    'public.graph_publication_outbox',
+    'public.elasticsearch_lexical_chunks',
+    'public.elasticsearch_lexical_outbox',
   ]) {
     assert.match(selectGrant, new RegExp(table.replace('.', '\\.')));
   }
@@ -208,6 +223,12 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
     'prompt_optimizer_model_profiles',
     'prompt_optimizer_workspaces',
     'prompt_optimizer_versions',
+    'graph_active_snapshots',
+    'graph_build_jobs',
+    'graph_snapshot_lifecycle',
+    'graph_publication_outbox',
+    'elasticsearch_lexical_chunks',
+    'elasticsearch_lexical_outbox',
   ]) {
     assert.match(sql, new RegExp(`create table(?: if not exists)? public\\.${table}\\b`, 'i'));
   }
@@ -237,6 +258,9 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
   assert.match(sql, /prompt_optimizer_model_profiles[\s\S]*?provider\s+text[\s\S]*?settings\s+jsonb/i);
   assert.match(sql, /prompt_optimizer_workspaces[\s\S]*?variables\s+jsonb[\s\S]*?current_version\s+integer/i);
   assert.match(sql, /prompt_optimizer_versions[\s\S]*?version_number\s+integer[\s\S]*?prompt\s+text/i);
+  assert.match(sql, /graph_snapshot_lifecycle[\s\S]*?state\s+text[\s\S]*?operation_id\s+uuid[\s\S]*?lease_expires_at\s+timestamptz/i);
+  assert.match(sql, /graph_publication_outbox[\s\S]*?attempts\s+integer[\s\S]*?available_at\s+timestamptz[\s\S]*?dead_lettered_at\s+timestamptz/i);
+  assert.match(sql, /graph_build_jobs[\s\S]*?lease_token\s+uuid[\s\S]*?attempts\s+integer/i);
   assert.match(sql, /unique index prompt_optimizer_one_default_profile_idx/i);
 });
 

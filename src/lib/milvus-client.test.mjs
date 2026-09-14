@@ -199,6 +199,95 @@ test('dense writes use primary-key upsert and surface failed mutations', async (
   );
 });
 
+test('document graph reads use exact server-scoped identity and one-row lookahead', async () => {
+  const store = new MilvusVectorStore(createConfig());
+  store.isInitialized = true;
+  store.supportsOrderedContext = true;
+  let request;
+  attachNativeClient(store, {
+    async query(input) {
+      request = structuredClone(input);
+      return {
+        status: { error_code: 'Success' },
+        data: [
+          {
+            id: 'chunk-b', content: 'Beta Gamma', tenant_id: 'tenant-a',
+            corpus_id: 'corpus-a', document_id: 'document-a',
+            document_version: 'version-a', trust_level: 'reviewed',
+            chunk_index: '1', total_chunks: '2', metadata_json: '{}',
+          },
+          {
+            id: 'chunk-a', content: 'Alpha Beta', tenant_id: 'tenant-a',
+            corpus_id: 'corpus-a', document_id: 'document-a',
+            document_version: 'version-a', trust_level: 'reviewed',
+            chunk_index: '0', total_chunks: '2', metadata_json: '{}',
+          },
+        ],
+      };
+    },
+  });
+
+  const rows = await store.queryDocumentRows(
+    {
+      tenantId: 'tenant-a', corpusId: 'corpus-a',
+      allowedTrustLevels: ['trusted', 'reviewed'], enforceIsolation: true,
+    },
+    {
+      tenantId: 'tenant-a', corpusId: 'corpus-a',
+      documentId: 'document-a', documentVersion: 'version-a', trustLevel: 'reviewed',
+    },
+    2
+  );
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => row.id), ['chunk-a', 'chunk-b']);
+  assert.equal(request.limit, 3);
+  assert.equal(request.filter, [
+    'tenant_id == {tenantId}',
+    'corpus_id == {corpusId}',
+    'trust_level in {allowedTrustLevels}',
+    'document_id == {documentId}',
+    'document_version == {documentVersion}',
+    'trust_level == {documentTrustLevel}',
+  ].join(' && '));
+  assert.deepEqual(request.exprValues, {
+    tenantId: 'tenant-a', corpusId: 'corpus-a',
+    allowedTrustLevels: ['trusted', 'reviewed'],
+    documentId: 'document-a', documentVersion: 'version-a',
+    documentTrustLevel: 'reviewed',
+  });
+  assert.deepEqual(request.order_by_fields, [
+    { field: 'chunk_index', order: 'asc' },
+    { field: 'id', order: 'asc' },
+  ]);
+});
+
+test('document graph reads reject identity outside the retrieval scope before Milvus I/O', async () => {
+  const store = new MilvusVectorStore(createConfig());
+  store.isInitialized = true;
+  store.supportsOrderedContext = true;
+  let queryCalls = 0;
+  attachNativeClient(store, {
+    async query() { queryCalls += 1; return { status: { error_code: 'Success' }, data: [] }; },
+  });
+
+  await assert.rejects(
+    () => store.queryDocumentRows(
+      {
+        tenantId: 'tenant-a', corpusId: 'corpus-a',
+        allowedTrustLevels: ['trusted'], enforceIsolation: true,
+      },
+      {
+        tenantId: 'tenant-a', corpusId: 'corpus-a',
+        documentId: 'document-a', documentVersion: 'version-a', trustLevel: 'reviewed',
+      },
+      2
+    ),
+    /trust level is outside/
+  );
+  assert.equal(queryCalls, 0);
+});
+
 test('hybrid writes use primary-key upsert and surface failed mutations', async () => {
   const store = createHybridTestStore();
   store.initializeHybridCollection = async () => {};

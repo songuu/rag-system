@@ -674,6 +674,20 @@ test('entity extraction keeps timed-out provider work reserved until real settle
   assert.match(serializedLogs, /ENTITY_EXTRACTION_PROVIDER_BUSY/);
 });
 
+test('entity extraction normalizes provider-native TimeoutError and fails closed', async () => {
+  const extractor = createExtractor({
+    async invoke() {
+      throw new DOMException('provider request timed out', 'TimeoutError');
+    },
+  }, `provider-native-timeout:${Date.now()}`, 1_000);
+
+  await assert.rejects(
+    () => extractor.extract('Alice works with Bob.', 'provider-native-timeout-document'),
+    error => error instanceof EntityExtractionProviderTimeoutError
+      && error.code === 'ENTITY_EXTRACTION_PROVIDER_TIMEOUT'
+  );
+});
+
 test('entity extraction releases a provider only after every concurrent orphan settles', async t => {
   const providerKey = `test-provider-multi:${Date.now()}:${Math.random()}`;
   const releases = [];

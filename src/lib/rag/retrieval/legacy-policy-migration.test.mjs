@@ -69,7 +69,7 @@ test('MiroFish graph activation is server-owned and version-bound', () => {
   assert.match(askRouteSource, /function resolveServerMiroFishPolicy/);
   assert.match(
     askRouteSource,
-    /resolveRagFeatureRolloutMode\('RAG_MIROFISH_GRAPH_MODE', 'off'\)/
+    /function resolveServerMiroFishPolicy[\s\S]*?const mode = resolveKnowledgeGraphRolloutMode\(\)/
   );
   assert.match(askRouteSource, /graphArtifactIdentity:/);
 });

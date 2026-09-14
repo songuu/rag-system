@@ -29,6 +29,7 @@ import {
   isServerDerivedScope,
   isTenantIsolationRequired,
   type RagRetrievalScope,
+  type RagTrustLevel,
 } from './security/retrieval-scope';
 import type {
   MilvusHybridCapability,
@@ -123,6 +124,14 @@ export type MilvusQueryRow = Record<string, unknown> & {
   chunk_index?: number;
   total_chunks?: number;
 };
+
+export interface MilvusDocumentQueryIdentity {
+  tenantId: string;
+  corpusId: string;
+  documentId: string;
+  documentVersion: string;
+  trustLevel: RagTrustLevel;
+}
 
 // Milvus 配置接口（保持向后兼容）
 export interface MilvusConfig {
@@ -1658,6 +1667,97 @@ export class MilvusVectorStore {
     return Array.isArray(result.data) ? result.data as MilvusQueryRow[] : [];
   }
 
+  /** Read one exact document revision for a durable local graph build. */
+  async queryDocumentRows(
+    scope: RagRetrievalScope,
+    identity: MilvusDocumentQueryIdentity,
+    expectedChunks: number
+  ): Promise<MilvusQueryRow[]> {
+    if (!Number.isSafeInteger(expectedChunks) || expectedChunks < 1 || expectedChunks > 1_000) {
+      throw new Error('Milvus document query expectedChunks must be between 1 and 1000.');
+    }
+    if (!scope.enforceIsolation) {
+      throw new Error('Milvus document query requires an isolated server-derived scope.');
+    }
+    if (identity.tenantId !== scope.tenantId || identity.corpusId !== scope.corpusId) {
+      throw new Error('Milvus document identity is outside the retrieval scope.');
+    }
+    if (!scope.allowedTrustLevels.includes(identity.trustLevel)) {
+      throw new Error('Milvus document trust level is outside the retrieval scope.');
+    }
+    const documentId = requiredMilvusDocumentQueryValue(identity.documentId, 'documentId');
+    const documentVersion = requiredMilvusDocumentQueryValue(
+      identity.documentVersion,
+      'documentVersion'
+    );
+    if (!this.isInitialized) {
+      await this.initializeCollection();
+    }
+    if (!this.supportsOrderedContext) {
+      throw new Error('Milvus ordered context scalar schema is unavailable.');
+    }
+
+    const scopedFilter = buildScopedMilvusFilter(scope);
+    if (!isServerDerivedScope(scopedFilter)) {
+      throw new Error('Milvus document query requires a server-derived scope.');
+    }
+    const client = await this.ensureConnected();
+    const result = await client.query({
+      collection_name: this.config.collectionName,
+      output_fields: [
+        'id',
+        'content',
+        'source',
+        'metadata_json',
+        'tenant_id',
+        'corpus_id',
+        'document_id',
+        'trust_level',
+        'document_version',
+        'chunk_index',
+        'total_chunks',
+      ],
+      // One-row lookahead makes duplicate or stale extra chunks observable.
+      limit: expectedChunks + 1,
+      filter: [
+        scopedFilter.filter,
+        'document_id == {documentId}',
+        'document_version == {documentVersion}',
+        'trust_level == {documentTrustLevel}',
+      ].join(' && '),
+      exprValues: {
+        ...scopedFilter.exprValues,
+        documentId,
+        documentVersion,
+        documentTrustLevel: identity.trustLevel,
+      },
+      consistency_level: normalizeMilvusConsistencyLevel(this.config.consistencyLevel),
+      order_by_fields: [
+        { field: 'chunk_index', order: 'asc' },
+        { field: 'id', order: 'asc' },
+      ],
+    } as QueryReq);
+    if (result.status.error_code !== 'Success') {
+      throw new Error('Milvus document query failed: ' + result.status.reason);
+    }
+    if (!Array.isArray(result.data)) return [];
+    // Milvus does not consistently honor order_by_fields across SDK/server
+    // versions. Re-establish deterministic chunk order at the trust boundary;
+    // the executor separately rejects duplicate or malformed indices.
+    return [...result.data as MilvusQueryRow[]].sort((left, right) => {
+      const leftIndex = Number(left.chunk_index);
+      const rightIndex = Number(right.chunk_index);
+      if (
+        Number.isSafeInteger(leftIndex)
+        && Number.isSafeInteger(rightIndex)
+        && leftIndex !== rightIndex
+      ) {
+        return leftIndex - rightIndex;
+      }
+      return String(left.id ?? '').localeCompare(String(right.id ?? ''));
+    });
+  }
+
   /**
    * 相似度搜索
    */
@@ -2263,6 +2363,17 @@ function requiredNativeHybridString(value: unknown, field: string): string {
     );
   }
   return value.trim();
+}
+
+function requiredMilvusDocumentQueryValue(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`Milvus document query ${field} is required.`);
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 512 || /[\u0000-\u001f]/u.test(normalized)) {
+    throw new Error(`Milvus document query ${field} is invalid.`);
+  }
+  return normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

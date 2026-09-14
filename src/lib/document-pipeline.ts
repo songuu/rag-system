@@ -52,6 +52,11 @@ import {
 import { assertSafeZipArchive } from './security/zip-safety';
 import { resolveMilvusHybridRolloutMode } from './rag/retrieval/hybrid-policy';
 import { embedTextsInBatches } from './embedding-batch';
+import {
+  ElasticsearchProjectionOutboxError,
+  enqueueElasticsearchProjection,
+  type ElasticsearchProjectionChunk,
+} from './elasticsearch/postgres-outbox-store';
 
 // ============== 类型定义 ==============
 
@@ -70,6 +75,10 @@ export interface DocumentMetadata {
   documentId?: string;
   documentVersion?: string;
   sourceHash?: string;
+  /** UTF-16 length of the canonical parsed text used by source offsets. */
+  sourceTextLength?: number;
+  /** SHA-256 of the canonical parsed text, independent from the raw file hash. */
+  sourceTextHash?: string;
   startOffset?: number;
   endOffset?: number;
   totalChunks?: number;
@@ -255,6 +264,8 @@ export const PIPELINE_WORK_LIMITS = {
   maxChunksPerBatch: 2_000,
   embeddingBatchSize: 32,
 } as const;
+
+const MAX_PERSISTED_CHUNK_TEXT_LENGTH = 65_000;
 
 // ============== 文档加载器 ==============
 
@@ -774,17 +785,31 @@ export async function splitDocument(
     );
   }
   
+  const sourceTextLength = document.content.length;
+  const sourceTextHash = `sha256:${createHash('sha256').update(document.content).digest('hex')}`;
   let searchCursor = 0;
-  return chunks.map((content, index) => {
-    const startOffset = document.content.indexOf(
-      content,
+  let coveredEnd = 0;
+  return chunks.map((splitContent, index) => {
+    const splitStartOffset = document.content.indexOf(
+      splitContent,
       searchCursor
     );
-    if (startOffset < 0) {
+    if (splitStartOffset < 0) {
       throw new Error('Document chunk cannot be aligned to its source content.');
     }
-    const endOffset = startOffset + content.length;
-    searchCursor = Math.max(startOffset + 1, endOffset - chunkOverlap);
+    const splitEndOffset = splitStartOffset + splitContent.length;
+    searchCursor = Math.max(splitStartOffset + 1, splitEndOffset - chunkOverlap);
+
+    // LangChain trims separator-only gaps (for example "\n\n"). Include those
+    // exact source characters in the next persisted chunk so offsets remain a
+    // complete, independently verifiable cover of the canonical source text.
+    const startOffset = splitStartOffset > coveredEnd ? coveredEnd : splitStartOffset;
+    const endOffset = index === chunks.length - 1 ? sourceTextLength : splitEndOffset;
+    const content = document.content.slice(startOffset, endOffset);
+    if (!content || content.length > MAX_PERSISTED_CHUNK_TEXT_LENGTH) {
+      throw new Error('Document separator gap exceeds the safe persisted chunk bounds.');
+    }
+    coveredEnd = Math.max(coveredEnd, endOffset);
     return {
       id: createStableDocumentChunkId(document.metadata, index, startOffset, endOffset, content),
       content,
@@ -794,6 +819,8 @@ export async function splitDocument(
         totalChunks: chunks.length,
         startOffset,
         endOffset,
+        sourceTextLength,
+        sourceTextHash,
       },
     };
   });
@@ -1029,6 +1056,21 @@ export async function storeToMilvus(
     }
   }
 
+  try {
+    await enqueueElasticsearchProjection(
+      createElasticsearchProjectionChunks(documents)
+    );
+  } catch (error) {
+    if (error instanceof ElasticsearchProjectionOutboxError && error.mode === 'shadow') {
+      console.warn(
+        '[Pipeline] Elasticsearch shadow projection was not enqueued; Milvus remains authoritative:',
+        error.code
+      );
+    } else {
+      throw error;
+    }
+  }
+
   
   onProgress?.({
     stage: 'storing',
@@ -1038,6 +1080,80 @@ export async function storeToMilvus(
   });
   
   return ids;
+}
+
+export function createElasticsearchProjectionChunks(
+  documents: ProcessedDocument[]
+): ElasticsearchProjectionChunk[] {
+  return documents.map((document, index) => {
+    const tenantId = strictMetadataAlias(
+      document.metadata.tenantId,
+      document.metadata.tenant_id,
+      process.env.RAG_DEFAULT_TENANT_ID || 'local',
+      'tenant'
+    );
+    const corpusId = strictMetadataAlias(
+      document.metadata.corpusId,
+      document.metadata.corpus_id,
+      process.env.RAG_DEFAULT_CORPUS_ID || 'default',
+      'corpus'
+    );
+    const documentId = strictMetadataAlias(
+      document.metadata.documentId,
+      document.metadata.document_id,
+      document.metadata.source,
+      'document'
+    );
+    const documentVersion = strictMetadataAlias(
+      document.metadata.documentVersion,
+      document.metadata.document_version,
+      String(document.metadata.sourceHash ?? document.metadata.source_hash ?? ''),
+      'document version'
+    );
+    const trustLevelValue = strictMetadataAlias(
+      document.metadata.trustLevel,
+      document.metadata.trust_level,
+      'external',
+      'trust'
+    );
+    if (!['trusted', 'reviewed', 'external', 'quarantined'].includes(trustLevelValue)) {
+      throw new Error(`Pipeline Elasticsearch chunk ${index} has an invalid trust level.`);
+    }
+    const startOffset = readOptionalNonNegativeInteger(
+      document.metadata.startOffset ?? document.metadata.start_offset,
+      `chunks[${index}].startOffset`
+    );
+    const endOffset = readOptionalNonNegativeInteger(
+      document.metadata.endOffset ?? document.metadata.end_offset,
+      `chunks[${index}].endOffset`
+    );
+    const page = readOptionalNonNegativeInteger(
+      document.metadata.pageNumber ?? document.metadata.page,
+      `chunks[${index}].page`
+    );
+    return {
+      id: document.id,
+      tenantId,
+      corpusId,
+      documentId,
+      documentVersion,
+      trustLevel: trustLevelValue as RagTrustLevel,
+      content: document.content,
+      source: document.metadata.source,
+      ...(page === undefined ? {} : { page }),
+      ...(startOffset === undefined ? {} : { startOffset }),
+      ...(endOffset === undefined ? {} : { endOffset }),
+      metadata: { ...document.metadata },
+    };
+  });
+}
+
+function readOptionalNonNegativeInteger(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error(`Pipeline Elasticsearch ${field} must be a non-negative integer.`);
+  }
+  return Number(value);
 }
 
 function createMilvusHybridIngestCompensationContext(
@@ -1664,7 +1780,10 @@ export class DocumentPipeline {
         results.push({ ...result, success: true });
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') throw error;
-        if (error instanceof MilvusHybridIngestReconciliationRequiredError) throw error;
+        if (
+          error instanceof MilvusHybridIngestReconciliationRequiredError
+          || (error instanceof ElasticsearchProjectionOutboxError && error.mode === 'active')
+        ) throw error;
         results.push({
           documentId: filename || `document-${i}`,
           chunks: 0,
