@@ -87,10 +87,14 @@ export async function searchElasticsearchLexical(input: {
   topK: number;
   laneId: string;
   scope: RagRetrievalScope;
+  documentId?: string;
   signal?: AbortSignal;
 }): Promise<RagEvidence[]> {
   const query = requiredScalar(input.query, 'query', 8_000);
   const topK = boundedTopK(input.topK);
+  const documentId = input.documentId === undefined
+    ? undefined
+    : requiredScalar(input.documentId, 'documentId', 256);
   const response = await input.client.search({
     index: input.indexName,
     size: topK,
@@ -112,6 +116,7 @@ export async function searchElasticsearchLexical(input: {
           { term: { tenant_id: input.scope.tenantId } },
           { term: { corpus_id: input.scope.corpusId } },
           { terms: { trust_level: [...input.scope.allowedTrustLevels] } },
+          ...(documentId ? [{ term: { document_id: documentId } }] : []),
         ],
       },
     },

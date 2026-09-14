@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import AnswerProcessingPanel from '@/components/AnswerProcessingPanel';
+import type { AnswerProcessingDetails } from '@/lib/rag/answer-processing';
 
 interface Message {
   id: string;
@@ -11,6 +13,7 @@ interface Message {
   storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
+  processingDetails?: AnswerProcessingDetails;
 }
 
 /**
@@ -415,9 +418,12 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
   
   const searchResults = message.retrievalDetails?.searchResults || [];
   const hasRetrievalDetails = message.type === 'assistant' && searchResults.length > 0;
+  const isDirectMessage = message.processingDetails?.mode === 'direct';
   const isMilvusMessage =
-    message.storageBackend === 'milvus' ||
-    (message.storageBackend === undefined && message.traceId?.startsWith('milvus'));
+    !isDirectMessage && (
+      message.storageBackend === 'milvus' ||
+      (message.storageBackend === undefined && message.traceId?.startsWith('milvus'))
+    );
   
   return (
     <>
@@ -438,6 +444,11 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
               <span>{message.timestamp.toLocaleTimeString()}</span>
               {message.traceId && (
                 <span className="flex items-center gap-1.5 font-mono">
+                  {isDirectMessage && (
+                    <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                      直接回复
+                    </span>
+                  )}
                   {isMilvusMessage && (
                     <span className="px-1.5 py-0.5 bg-purple-100 text-purple-600 rounded text-[10px] font-medium">
                       Milvus
@@ -448,6 +459,12 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
               )}
             </div>
           </div>
+
+          {message.type === 'assistant' && message.processingDetails && (
+            <div className="border-t border-gray-100 px-3 py-3">
+              <AnswerProcessingPanel details={message.processingDetails} />
+            </div>
+          )}
           
           {/* 检索结果摘要（助手消息） */}
           {hasRetrievalDetails && (

@@ -84,6 +84,10 @@ import {
 } from '@/lib/rag';
 import { createRerankLaneHandler } from '@/lib/rag/retrieval/rerank-lane-handler';
 import {
+  createDirectConversationReply,
+  createRagAnswerProcessing,
+} from '@/lib/rag/answer-processing';
+import {
   createScopedFollowupRetriever,
   resolveScopedRetrievalMode,
   resolveScopedDecisionMode,
@@ -594,6 +598,38 @@ export async function POST(request: NextRequest) {
       corpusId: securityContext.corpusId,
       enforceIsolation: securityContext.enforceIsolation,
     });
+    const directConversation = executionMode === 'sync'
+      ? createDirectConversationReply(question)
+      : null;
+    if (directConversation) {
+      const traceId = `conversation-${requestId}`;
+      const response = NextResponse.json({
+        success: true,
+        question,
+        answer: directConversation.answer,
+        conversationMode: 'direct',
+        conversationIntent: directConversation.intent,
+        storageBackend,
+        models: {
+          llm: llmModel,
+          embedding: embeddingModel,
+        },
+        modelUsage: {
+          llm: false,
+          embedding: false,
+        },
+        evidence: [],
+        laneExecutions: [],
+        processing: directConversation.processing,
+        traceId,
+        requestId,
+        timestamp: new Date().toISOString(),
+      });
+      response.headers.set('x-rag-trace-id', traceId);
+      response.headers.set('x-rag-route', 'direct-conversation');
+      response.headers.set('x-request-id', requestId);
+      return response;
+    }
     const vectorBackendDisabled = isVectorBackendDisabled();
     // Request identity is server-derived. Legacy body.userId/body.tenantId are ignored.
     const userId = securityContext.actorId;
@@ -2653,13 +2689,14 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
     embeddingModel,
     vectorizationTime
   );
+  const completedAt = new Date().toISOString();
   const transitions = createAnswerExecutionTransitions({
     laneTransitions: laneResult.transitions,
     hasEvidence: laneResult.evidence.length > 0,
     hasContext: Boolean(context.trim()),
     activeAbstention,
     generationStartedAt,
-    completedAt: new Date().toISOString(),
+    completedAt,
     stopReason: laneResult.stopReason,
   });
   const agentWorkflow = policyId === 'agentic'
@@ -2711,6 +2748,11 @@ async function handleMilvusQuery(policyContext: RagPolicyContext) {
       budget: laneResult.budget,
       stopReason: laneResult.stopReason,
     },
+    processing: createRagAnswerProcessing({
+      transitions,
+      laneExecutions: laneResult.laneExecutions,
+      evidenceCount: laneResult.evidence.length,
+    }),
     cacheIdentity: {
       version: answerCacheIdentity.version,
       context: contextCacheIdentity.key,

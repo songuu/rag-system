@@ -100,6 +100,28 @@ test('lexical search always sends tenant, corpus, and trust filters', async () =
   assert.equal(evidence[0].documentId, 'doc-1');
 });
 
+test('lexical search can narrow results to one server-validated document', async () => {
+  const calls = [];
+  const client = {
+    async search(input) {
+      calls.push(input);
+      return { hits: { hits: [] } };
+    },
+  };
+  await searchElasticsearchLexical({
+    client,
+    indexName: 'rag_chunks_v1',
+    query: 'ERR-42',
+    topK: 5,
+    laneId: 'document-search',
+    scope,
+    documentId: 'doc-1',
+  });
+  assert.deepEqual(calls[0].query.bool.filter.at(-1), {
+    term: { document_id: 'doc-1' },
+  });
+});
+
 test('lexical search rejects cross-scope or conflicting provenance hits', async () => {
   const client = {
     async search() {

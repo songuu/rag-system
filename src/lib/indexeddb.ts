@@ -1,4 +1,5 @@
 // IndexedDB 工具类，用于存储历史对话
+import type { AnswerProcessingDetails } from '@/lib/rag/answer-processing';
 
 export interface ConversationMessage {
   id: string;
@@ -9,6 +10,7 @@ export interface ConversationMessage {
   storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
+  processingDetails?: AnswerProcessingDetails;
 }
 
 export interface Conversation {

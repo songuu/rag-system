@@ -456,6 +456,41 @@ after(() => {
   }
 });
 
+test('POST answers a greeting without vector or model work and returns public processing stages', async () => {
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+
+  const response = await POST(milvusAskRequest('你好'));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.conversationMode, 'direct');
+  assert.match(body.answer, /知识库助手/);
+  assert.equal(body.processing.mode, 'direct');
+  assert.equal(body.processing.retrievalSkipped, true);
+  assert.deepEqual(body.evidence, []);
+  assert.equal(body.retrievalDetails, undefined);
+  assert.equal(getMilvusSignals().connect, 0);
+  assert.equal(getMilvusSignals().search, 0);
+  assert.equal(getModelSignals().embed, 0);
+  assert.equal(getModelSignals().generate, 0);
+});
+
+test('POST does not treat a greeting-prefixed knowledge question as direct chat', async () => {
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+
+  const response = await POST(milvusAskRequest('你好，请总结文档中的主要结论'));
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.conversationMode, undefined);
+  assert.equal(getMilvusSignals().search, 1);
+  assert.equal(getModelSignals().generate, 1);
+});
+
 test('POST rejects immediately while vector ingestion is active', async () => {
   resetVectorIngestStateForTests();
   setMilvusFixture({ searchResults: [denseResult()] });
@@ -492,6 +527,12 @@ test('POST executes the authenticated agentic policy through createAgent', async
 
   assert.equal(response.status, 200);
   assert.equal(body.answer, 'scoped answer');
+  assert.equal(body.processing.mode, 'rag');
+  assert.equal(body.processing.retrievalSkipped, false);
+  assert.deepEqual(
+    body.processing.steps.map(step => step.id),
+    ['route', 'retrieve', 'rerank', 'generate']
+  );
   assert.equal(body.evidence[0].tenantId, 'tenant-a');
   assert.equal(body.evidence[0].corpusId, 'corpus-a');
   assert.equal(response.headers.get('x-rag-policy'), 'agentic');

@@ -4,10 +4,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { dbManager, type ConversationMessage } from '@/lib/indexeddb';
 import ChatMessage from '@/components/ChatMessage';
+import AnswerProcessingPanel from '@/components/AnswerProcessingPanel';
 import QueryAnalysis from '@/components/QueryAnalysis';
 import QuestionSelector from '@/components/QuestionSelector';
 import ParameterControls from '@/components/ParameterControls';
-import FileUpload from '@/components/FileUpload';
 import RealtimeMonitoring from '@/components/RealtimeMonitoring';
 import RetrievalDetailsPanel from '@/components/RetrievalDetailsPanel';
 import SystemInfo from '@/components/SystemInfo';
@@ -21,6 +21,12 @@ import SuggestedQuestions from '@/components/SuggestedQuestions';
 import ConversationExpansionWorkflow from '@/components/ConversationExpansionWorkflow';
 import { ModelConfigPanel } from '@/components/ModelConfigPanel';
 import { RAG_CLIENT_REQUEST_TIMEOUT_MS } from '@/lib/rag/core/request-budgets';
+import {
+  classifyDirectConversation,
+  createPendingAnswerProcessing,
+  resolveAnswerProcessing,
+  type AnswerProcessingDetails,
+} from '@/lib/rag/answer-processing';
 const ASK_SLOW_HINT_MS = 8_000;
 
 interface Message {
@@ -32,6 +38,7 @@ interface Message {
   storageBackend?: 'memory' | 'milvus';
   retrievalDetails?: any;
   queryAnalysis?: any;
+  processingDetails?: AnswerProcessingDetails;
 }
 
 interface Toast {
@@ -89,6 +96,7 @@ export default function HomePage() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isRequestSlow, setIsRequestSlow] = useState(false);
+  const [activeProcessing, setActiveProcessing] = useState<AnswerProcessingDetails | null>(null);
   const [topK, setTopK] = useState(3);
   const [threshold, setThreshold] = useState(0.0);
   const [llmModel, setLlmModel] = useState('llama3.1');
@@ -103,8 +111,6 @@ export default function HomePage() {
   const [docCount, setDocCount] = useState(0);
   const [embeddingDim, setEmbeddingDim] = useState(0);
   const [systemStatus, setSystemStatus] = useState('检查中...');
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
   const [vectorizationProgress, setVectorizationProgress] = useState(0);
   const [vectorizationStatus, setVectorizationStatus] = useState('');
   const [showVectorization, setShowVectorization] = useState(false);
@@ -236,80 +242,6 @@ export default function HomePage() {
     setRuntimeStatusLoaded(true);
   }, [checkMilvusStatus, checkSystemHealth]);
 
-  // 文件上传
-  const handleFileUpload = async () => {
-    if (selectedFiles.length === 0) {
-      showToast('请先选择文件', 'warning');
-      return;
-    }
-
-    // Canonical ingestion requires Milvus. Avoid submitting a file when the
-    // dependency check has already established that the scoped corpus is down.
-    if (vectorBackendDisabled) {
-      showToast('知识库维护中：向量检索已临时关闭，暂不支持上传。', 'info');
-      return;
-    }
-
-    if (!milvusConnected) {
-      showToast('知识库暂不可用：向量服务未连接，恢复后即可继续上传。', 'error');
-      return;
-    }
-
-    setIsUploading(true);
-    try {
-      const formData = new FormData();
-      selectedFiles.forEach(file => {
-        formData.append('files', file);
-      });
-      formData.append('chunkSize', '500');
-      formData.append('chunkOverlap', '50');
-      formData.append('embeddingModel', embeddingModel);
-
-      const response = await fetch('/rag-api/pipeline', {
-        method: 'POST',
-        body: formData
-      });
-
-      const data = await response.json();
-      if (response.ok && data.success) {
-        const successful = Number(data.successful || 0);
-        const failed = Number(data.failed || 0);
-        const totalChunks = Number(data.totalChunks || 0);
-        const graphBuildCount = Array.isArray(data.results)
-          ? data.results.filter((result: { success?: boolean; graphBuild?: unknown }) => (
-              result.success && result.graphBuild
-            )).length
-          : 0;
-
-        if (successful > 0) {
-          const graphBuildMessage = graphBuildCount > 0
-            ? `；${graphBuildCount} 个 Neo4j 图谱任务已提交`
-            : '';
-          showToast(
-            `已写入知识库：${successful} 个文件，${totalChunks} 个文档块${graphBuildMessage}`,
-            'success'
-          );
-        }
-        if (failed > 0) {
-          showToast(`${failed} 个文件未能写入知识库，请检查格式、模型和向量服务后重试`, 'warning');
-        }
-        if (successful === 0) {
-          showToast('所选文件未能写入知识库，请检查后重试', 'error');
-          return;
-        }
-
-        setSelectedFiles([]);
-        await refreshRuntimeStatus();
-      } else {
-        showToast(data.error || '文件写入知识库失败', 'error');
-      }
-    } catch (error) {
-      showToast('上传文件时发生错误', 'error');
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
   // 处理模型切换
   const handleModelChange = async (newLlmModel: string, newEmbeddingModel: string) => {
     if (newLlmModel === llmModel && newEmbeddingModel === embeddingModel) {
@@ -417,7 +349,8 @@ export default function HomePage() {
               traceId: msg.traceId,
               storageBackend: msg.storageBackend,
               retrievalDetails: msg.retrievalDetails || null,
-              queryAnalysis: msg.queryAnalysis || null
+              queryAnalysis: msg.queryAnalysis || null,
+              processingDetails: msg.processingDetails
             };
           });
 
@@ -496,6 +429,7 @@ export default function HomePage() {
       setQueryAnalysis(null);
       setRadarChartData(null);
       setRetrievalDetails(null);
+      setActiveProcessing(null);
       
       // 清空对话延伸引擎相关状态
       setSuggestedQuestions([]);
@@ -680,16 +614,18 @@ export default function HomePage() {
   // 提交问题
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    const submittedQuestion = input.trim();
+    if (!submittedQuestion || isLoading) return;
+    const isDirectConversation = classifyDirectConversation(submittedQuestion) !== null;
 
-    // Every production ask uses the scoped Milvus retrieval lane. Failing
-    // locally gives the user an actionable status instead of a generic 500.
-    if (vectorBackendDisabled) {
+    // Knowledge questions require Milvus, while self-contained conversational
+    // turns are answered without touching the vector or model providers.
+    if (vectorBackendDisabled && !isDirectConversation) {
       showToast('知识库维护中：向量检索已临时关闭，暂不支持知识库提问。', 'info');
       return;
     }
 
-    if (!milvusConnected) {
+    if (!milvusConnected && !isDirectConversation) {
       showToast('知识库暂不可用：向量服务未连接，恢复后即可继续提问。', 'error');
       return;
     }
@@ -698,12 +634,13 @@ export default function HomePage() {
     const userMessage: Message = {
       id: userMessageId,
       type: 'user',
-      content: input.trim(),
+      content: submittedQuestion,
       timestamp: new Date()
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setCurrentQuery(input.trim());
+    setCurrentQuery(submittedQuestion);
+    setActiveProcessing(createPendingAnswerProcessing(submittedQuestion));
     setIsLoading(true);
     setShowQueryAnalysis(false);
     setShowQueryProcessing(true);
@@ -721,7 +658,7 @@ export default function HomePage() {
       await saveMessageToDB({
         id: userMessageId,
         type: 'user',
-        content: input.trim(),
+        content: submittedQuestion,
         timestamp: new Date()
       });
 
@@ -734,7 +671,7 @@ export default function HomePage() {
         setAgenticHallucinationCheck(null);
         setAgenticRetrievalGrade(null);
         setAgenticDebugInfo(null);
-        setShowAgenticPanel(true);
+        setShowAgenticPanel(!isDirectConversation);
       }
 
       // 清空之前的自适应实体 RAG 状态
@@ -744,7 +681,7 @@ export default function HomePage() {
         setAdaptiveEntityValidation(null);
         setAdaptiveEntityRoutingDecision(null);
         setAdaptiveEntityRetrievalDetails(null);
-        setShowAdaptiveEntityPanel(true);
+        setShowAdaptiveEntityPanel(!isDirectConversation);
       }
 
       const response = await fetch('/rag-api/ask', {
@@ -754,7 +691,7 @@ export default function HomePage() {
         },
         signal: requestSignal,
         body: JSON.stringify({
-          question: input.trim(),
+          question: submittedQuestion,
           topK,
           similarityThreshold: threshold,
           llmModel,
@@ -795,16 +732,25 @@ export default function HomePage() {
 
       if (data.success) {
         let queryAnalysisData: any;
+        const processingDetails = resolveAnswerProcessing(data) || undefined;
         // 重要：始终使用用户原始输入，防止 LLM 返回错误的 originalQuery
-        const userOriginalInput = input.trim();
+        const userOriginalInput = submittedQuestion;
         const canonicalCreateAgentResponse = data.agenticMode === true && (
           isCanonicalCreateAgentQueryAnalysis(data.queryAnalysis)
           || data.workflow?.runtime === 'langchain-create-agent-v1'
           || data.agent?.runtime === 'langchain-create-agent-v1'
         );
         
+        // 直接对话没有执行向量化，不能伪造 token/vector 分析数据。
+        if (data.conversationMode === 'direct') {
+          queryAnalysisData = null;
+          setRadarChartData(null);
+          setSuggestedQuestions([]);
+          setSuggestionAnchor(null);
+          setSuggestionTimings(null);
+        }
         // 处理自适应实体 RAG 模式的查询分析数据
-        if (data.adaptiveEntityMode && data.queryAnalysis) {
+        else if (data.adaptiveEntityMode && data.queryAnalysis) {
           const adaptiveAnalysis = data.queryAnalysis;
           // 使用增强的 Token 生成，突出显示实体和关键词
           const enhancedTokens = generateEnhancedTokens(
@@ -928,10 +874,10 @@ export default function HomePage() {
           // 默认数据
           queryAnalysisData = {
             tokenization: {
-              tokenCount: Math.floor(input.trim().length / 2),
-              tokens: generateMockTokens(input.trim()),
+              tokenCount: Math.floor(submittedQuestion.length / 2),
+              tokens: generateMockTokens(submittedQuestion),
               processingTime: 15,
-              originalText: input.trim()
+              originalText: submittedQuestion
             },
             embedding: {
               embeddingDimension: 768,
@@ -994,16 +940,14 @@ export default function HomePage() {
           timestamp: new Date(),
           traceId: data.traceId,
           storageBackend: data.storageBackend,
-          retrievalDetails: data.retrievalDetails
+          retrievalDetails: data.retrievalDetails,
+          processingDetails,
         };
 
         setMessages(prev => [...prev, assistantMessage]);
         setShowQueryAnalysis(true);
         setQueryAnalysis(queryAnalysisData);
-
-        if (data.retrievalDetails) {
-          setRetrievalDetails(data.retrievalDetails);
-        }
+        setRetrievalDetails(data.retrievalDetails || null);
 
         await saveMessageToDB({
           id: assistantMessage.id,
@@ -1012,13 +956,14 @@ export default function HomePage() {
           timestamp: new Date(),
           traceId: data.traceId,
           storageBackend: data.storageBackend,
-          retrievalDetails: data.retrievalDetails
+          retrievalDetails: data.retrievalDetails,
+          processingDetails,
         });
 
         // 异步生成推荐问题（不阻塞主流程）
         if (enableSuggestions && data.retrievalDetails?.searchResults?.length > 0) {
           generateSuggestedQuestions(
-            input.trim(),
+            submittedQuestion,
             answerContent,
             data.retrievalDetails.searchResults
           );
@@ -1046,6 +991,7 @@ export default function HomePage() {
         askAbortControllerRef.current = null;
       }
       setIsRequestSlow(false);
+      setActiveProcessing(null);
       setIsLoading(false);
       setInput('');
       setShowQueryProcessing(false);
@@ -1115,17 +1061,17 @@ export default function HomePage() {
     <div className="bg-gray-50 min-h-screen">
       {/* 导航栏 - 简洁设计 */}
       <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-14">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex h-14 items-center gap-4">
             {/* 左侧: Logo + 受保护的检索存储 */}
-            <div className="flex items-center gap-6">
-              <div className="flex items-center">
+            <div className="flex shrink-0 items-center gap-6">
+              <div className="flex shrink-0 items-center whitespace-nowrap">
                 <i className="fas fa-brain text-blue-600 text-xl mr-2"></i>
                 <h1 className="text-lg font-semibold text-gray-900">RAG 知识库</h1>
               </div>
 
               <div
-                className={`flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-medium ${
+                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1 text-xs font-medium ${
                   vectorBackendDisabled
                     ? 'bg-amber-50 text-amber-700'
                     : 'bg-purple-50 text-purple-700'
@@ -1145,7 +1091,7 @@ export default function HomePage() {
 
               {/* RAG 模式开关 - 仅在 Milvus 模式下显示 */}
               {storageBackend === 'milvus' && !vectorBackendDisabled && (
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   {/* Agentic RAG 开关 */}
                   <button
                     onClick={() => {
@@ -1192,7 +1138,16 @@ export default function HomePage() {
             </div>
 
             {/* 中间: 导航链接 - 图标为主 */}
-            <div className="flex items-center gap-1">
+            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <Link href="/documents" className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="文档管理">
+                <i className="fas fa-file-lines"></i>
+                <span className="hidden lg:inline">文档管理</span>
+              </Link>
+              <Link href="/document-search" className="p-2 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="文档搜索">
+                <i className="fas fa-magnifying-glass"></i>
+                <span className="hidden lg:inline">文档搜索</span>
+              </Link>
+              <div className="w-px h-6 bg-gray-200 mx-1"></div>
               <Link href="/blog" className="p-2 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="技术博客">
                 <i className="fas fa-book-open"></i>
                 <span className="hidden sm:inline">博客</span>
@@ -1252,7 +1207,7 @@ export default function HomePage() {
             </div>
 
             {/* 右侧: 状态 */}
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <div className="flex items-center px-2 py-1 bg-gray-50 rounded-lg">
                 <div className={`w-2 h-2 rounded-full mr-2 ${systemStatus === '运行中' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
                 <span className="text-xs text-gray-600">{systemStatus}</span>
@@ -1336,7 +1291,7 @@ export default function HomePage() {
                     <i className={`fas ${vectorBackendDisabled ? 'fa-pause-circle text-amber-500' : 'fa-comments'} text-2xl mb-2`}></i>
                     <p>
                       {vectorBackendDisabled
-                        ? '知识库维护中：向量检索已临时关闭，恢复后可继续上传和提问。'
+                        ? '知识库维护中：文档检索暂不可用，但仍可以发送问候。'
                         : '开始提问吧！我会根据已上传的文档来回答您的问题。'}
                     </p>
                   </div>
@@ -1351,18 +1306,18 @@ export default function HomePage() {
                   ))
                 )}
 
-                {isLoading && (
+                {isLoading && activeProcessing && (
                   <div className="flex justify-start">
-                    <div className="bg-gray-100 rounded-lg px-4 py-2">
-                      <div className="flex items-center space-x-2">
-                        <div className="typing-indicator"></div>
-                        <span className="text-sm text-gray-600">
-                          {isRequestSlow ? '当前模型响应较慢，可取消后切换轻量模型' : 'AI 正在思考...'}
-                        </span>
-                        <button type="button" onClick={handleCancelRequest} className="text-xs text-red-600 hover:text-red-800">
-                          取消
-                        </button>
-                      </div>
+                    <div className="w-full max-w-[85%]">
+                      <AnswerProcessingPanel
+                        details={activeProcessing}
+                        defaultExpanded
+                        isLive
+                        slowMessage={isRequestSlow
+                          ? '当前模型响应较慢，可取消后切换轻量模型'
+                          : undefined}
+                        onCancel={handleCancelRequest}
+                      />
                     </div>
                   </div>
                 )}
@@ -1414,9 +1369,11 @@ export default function HomePage() {
                           type="text"
                           value={input}
                           onChange={(e) => setInput(e.target.value)}
-                          placeholder={vectorBackendDisabled ? '知识库维护中，暂不可提问' : '请输入您的问题...'}
+                          placeholder={vectorBackendDisabled
+                            ? '知识库维护中；仍可发送“你好”等问候'
+                            : '请输入您的问题...'}
                           className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          disabled={isLoading || vectorBackendDisabled}
+                          disabled={isLoading}
                           required
                         />
                       </div>
@@ -1461,7 +1418,7 @@ export default function HomePage() {
                       )}
                       <button
                         type="submit"
-                        disabled={isLoading || vectorBackendDisabled || !input.trim()}
+                        disabled={isLoading || !input.trim()}
                         className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <i className="fas fa-paper-plane mr-2"></i>
@@ -1659,16 +1616,24 @@ export default function HomePage() {
               </div>
             )}
 
-            <FileUpload
-              selectedFiles={selectedFiles}
-              isUploading={isUploading}
-              canUpload={milvusConnected && !vectorBackendDisabled}
-              unavailableMessage={vectorBackendDisabled
-                ? '知识库维护中：向量检索已临时关闭，暂不支持上传。'
-                : undefined}
-              onFileSelect={setSelectedFiles}
-              onUpload={handleFileUpload}
-            />
+            <section className="rounded-lg border border-blue-200 bg-blue-50/60 shadow-sm">
+              <div className="border-b border-blue-200 px-6 py-4">
+                <h3 className="text-lg font-medium text-gray-900">文档工作区</h3>
+                <p className="mt-1 text-sm text-gray-600">上传与原文检索已迁移到独立页面</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3 p-4">
+                <Link href="/documents" className="rounded-lg border border-blue-200 bg-white p-3 text-sm font-medium text-blue-700 transition-colors hover:border-blue-400 hover:bg-blue-50">
+                  <i className="fas fa-file-arrow-up mr-2"></i>
+                  文档管理
+                  <span className="mt-1 block text-[10px] font-normal text-gray-500">文件、URL 与文本导入</span>
+                </Link>
+                <Link href="/document-search" className="rounded-lg border border-emerald-200 bg-white p-3 text-sm font-medium text-emerald-700 transition-colors hover:border-emerald-400 hover:bg-emerald-50">
+                  <i className="fas fa-magnifying-glass mr-2"></i>
+                  文档搜索
+                  <span className="mt-1 block text-[10px] font-normal text-gray-500">Milvus + ES 融合检索</span>
+                </Link>
+              </div>
+            </section>
 
             <section className="rounded-lg border bg-white shadow-sm">
               <div className="flex items-center justify-between border-b px-6 py-4">
