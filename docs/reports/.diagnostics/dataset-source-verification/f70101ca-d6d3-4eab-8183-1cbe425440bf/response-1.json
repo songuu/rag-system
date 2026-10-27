@@ -1,0 +1,8 @@
+{
+  "success": false,
+  "error": {
+    "code": "DATASET_GENERATION_TIMEOUT",
+    "message": "生成测试集超时，请减少题数或资料长度后重试。"
+  },
+  "requestId": "bdb31d96-151c-4c09-9f80-ea4fec05be84"
+}

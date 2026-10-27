@@ -57,8 +57,20 @@ const nextConfig: NextConfig = {
     },
   } : {}),
 
-  // 排除某些原生模块，确保 pdf-parse 正常工作
-  serverExternalPackages: ['pdf-parse', '@llamaindex/liteparse', '@napi-rs/canvas', 'pdfjs-dist', 'canvas'],
+
+  // Do not import every model route before unrelated requests can run. Keep
+  // Next's normal request-time entry loading; static export has no server.
+  ...(!isStaticExport ? {
+    experimental: { preloadEntriesOnStart: false },
+  } : {}),
+
+  // Provider SDKs use Node APIs. Loading them natively avoids traversing their
+  // large dependency graphs while compiling even a direct-answer API request.
+  serverExternalPackages: [
+    'pdf-parse', '@llamaindex/liteparse', '@napi-rs/canvas', 'pdfjs-dist', 'canvas',
+    'langchain', '@langchain/core', '@langchain/langgraph', '@langchain/ollama',
+    '@langchain/openai', '@langchain/textsplitters', '@zilliz/milvus2-sdk-node',
+  ],
 
   // File-backed runtime stores use dynamic paths. Next's file tracer can
   // conservatively collect the stores' neighboring source and test files as
@@ -74,9 +86,22 @@ const nextConfig: NextConfig = {
     '/api/pipeline': excludeRawStandaloneSources(
       'src/lib/rag/multimodal'
     ),
+    '/api/document-search': excludeRawStandaloneSources(
+      'src/lib/rag/core',
+      'src/lib/rag/multimodal'
+    ),
     '/api/mirofish/graph': excludeRawStandaloneSources(
       'src/lib/mirofish'
     ),
+  },
+  // Turbopack emits native require() calls for external SDKs, while tracing
+  // can select their ESM exports only. Carry both distributions and the
+  // transitive LangChain packages so standalone has the CJS entry points too.
+  outputFileTracingIncludes: {
+    '/api/ask': [
+      'node_modules/.pnpm/sharp@*/node_modules/sharp/build/Release/*.dll',
+      'node_modules/.pnpm/onnxruntime-node@*/node_modules/onnxruntime-node/bin/napi-v3/win32/**/*',
+    ],
   },
   
   // Turbopack 配置（Next.js 16+ 默认使用 Turbopack）

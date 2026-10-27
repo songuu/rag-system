@@ -1,26 +1,59 @@
 import { NextResponse } from 'next/server';
-import { createContextManager, ContextManager, ContextManagerConfig, StreamEvent } from '@/lib/context-management';
+import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import type { ContextSessionError, ContextManager, ContextManagerConfig, StreamEvent } from '@/lib/context-management';
+
+type ContextRuntime = typeof import('@/lib/context-management');
+let contextRuntime: ContextRuntime | null = null;
+
+async function getContextRuntime(): Promise<ContextRuntime> {
+  // Disabled routes must answer before loading model and retrieval dependencies.
+  if (!contextRuntime) contextRuntime = await import('@/lib/context-management');
+  return contextRuntime;
+}
+
+function isContextSessionError(error: unknown): error is ContextSessionError {
+  return contextRuntime !== null && error instanceof contextRuntime.ContextSessionError;
+}
 
 // 全局实例
 let contextManager: ContextManager | null = null;
 
-function getContextManager(config?: Partial<ContextManagerConfig>): ContextManager {
+async function getContextManager(config?: Partial<ContextManagerConfig>): Promise<ContextManager> {
+  const { createContextManager } = await getContextRuntime();
   if (!contextManager || config) {
     contextManager = createContextManager(config);
   }
   return contextManager;
 }
 
+function errorResponse(error: unknown) {
+  const sessionError = isContextSessionError(error);
+  return NextResponse.json(
+    {
+      success: false,
+      error: error instanceof Error ? error.message : '未知错误',
+      ...(sessionError ? { code: error.code } : {}),
+    },
+    { status: sessionError ? error.status : 500 }
+  );
+}
+
 /**
  * GET - 获取会话列表、详情、配置等
  */
 export async function GET(request: Request) {
+  const blocked = createLegacyRagRouteResponse();
+  if (blocked) return blocked;
   try {
     const { searchParams } = new URL(request.url);
     const action = searchParams.get('action');
     const sessionId = searchParams.get('sessionId');
+    if (action === 'session') {
+      const assertContextSessionId: ContextRuntime['assertContextSessionId'] = (await getContextRuntime()).assertContextSessionId;
+      assertContextSessionId(sessionId);
+    }
     
-    const manager = getContextManager();
+    const manager = await getContextManager();
     
     switch (action) {
       case 'sessions': {
@@ -73,10 +106,7 @@ export async function GET(request: Request) {
     }
   } catch (error) {
     console.error('[ContextManagement API] GET error:', error);
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '未知错误' },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }
 
@@ -84,11 +114,17 @@ export async function GET(request: Request) {
  * POST - 处理查询、创建会话等
  */
 export async function POST(request: Request) {
+  const blocked = createLegacyRagRouteResponse();
+  if (blocked) return blocked;
   try {
     const body = await request.json();
     const { action, ...params } = body;
+    if (action === 'query' || action === 'stream-query' || action === 'delete-session' || action === 'compress') {
+      const assertContextSessionId: ContextRuntime['assertContextSessionId'] = (await getContextRuntime()).assertContextSessionId;
+      assertContextSessionId(params.sessionId);
+    }
     
-    let manager = getContextManager();
+    const manager = await getContextManager();
     
     switch (action) {
       case 'query': {
@@ -197,17 +233,22 @@ export async function POST(request: Request) {
         }
         
         console.log(`[ContextManagement] Stream Query: sessionId=${sessionId}, question="${question}"`);
+        const streamGenerator = manager.streamQuery(sessionId, question, {
+          userId,
+          topK,
+          similarityThreshold,
+        });
+        // Initial storage failures must remain HTTP errors, before SSE headers exist.
+        const firstItem = await streamGenerator.next();
         
         // 创建 SSE 流
         const encoder = new TextEncoder();
         const stream = new ReadableStream({
           async start(controller) {
             try {
-              const streamGenerator = manager.streamQuery(sessionId, question, {
-                userId,
-                topK,
-                similarityThreshold,
-              });
+              if (!firstItem.done) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify(firstItem.value)}\n\n`));
+              }
               
               for await (const event of streamGenerator) {
                 const sseData = `data: ${JSON.stringify(event)}\n\n`;
@@ -220,7 +261,10 @@ export async function POST(request: Request) {
               console.error('[Stream Query] Error:', error);
               const errorEvent: StreamEvent = {
                 type: 'error',
-                data: { error: error instanceof Error ? error.message : String(error) },
+                data: {
+                  error: error instanceof Error ? error.message : String(error),
+                  ...(isContextSessionError(error) ? { code: error.code } : {}),
+                },
               };
               controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorEvent)}\n\n`));
             } finally {
@@ -297,10 +341,7 @@ export async function POST(request: Request) {
     }
   } catch (error) {
     console.error('[ContextManagement API] POST error:', error);
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '未知错误' },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }
 
@@ -308,15 +349,19 @@ export async function POST(request: Request) {
  * DELETE - 删除会话
  */
 export async function DELETE(request: Request) {
+  const blocked = createLegacyRagRouteResponse();
+  if (blocked) return blocked;
   try {
     const { searchParams } = new URL(request.url);
     const sessionId = searchParams.get('sessionId');
+    const assertContextSessionId: ContextRuntime['assertContextSessionId'] = (await getContextRuntime()).assertContextSessionId;
+    assertContextSessionId(sessionId);
     
     if (!sessionId) {
       return NextResponse.json({ success: false, error: '缺少 sessionId' }, { status: 400 });
     }
     
-    const manager = getContextManager();
+    const manager = await getContextManager();
     const deleted = await manager.deleteSession(sessionId);
     
     return NextResponse.json({
@@ -325,9 +370,6 @@ export async function DELETE(request: Request) {
     });
   } catch (error) {
     console.error('[ContextManagement API] DELETE error:', error);
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '未知错误' },
-      { status: 500 }
-    );
+    return errorResponse(error);
   }
 }

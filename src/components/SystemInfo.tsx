@@ -7,6 +7,8 @@
 'use client';
 
 import React, { useState } from 'react';
+import { isSameModel } from '@/lib/model-selection';
+import type { DocumentChunkCounts } from '@/lib/documents/document-counts';
 
 interface ModelConfig {
   llm: {
@@ -21,14 +23,17 @@ interface ModelConfig {
 }
 
 interface SystemInfoProps {
-  docCount: number;
+  docCount: number | null;
+  documentCounts?: DocumentChunkCounts | null;
   embeddingDim: number;
   systemStatus: string;
   llmModel: string;
   embeddingModel: string;
   modelConfig?: ModelConfig;
+  modelReadiness?: { model: string; phase: 'loading' | 'ready' | 'failed'; detail?: string } | null;
+  onRetryModelWarmup?: () => void;
   onRefresh: () => void;
-  onModelChange: (llmModel: string, embeddingModel: string) => void;
+  onModelChange: (llmModel: string, embeddingModel: string, onProgress?: (message: string) => void) => Promise<void>;
 }
 
 interface ModelInfo {
@@ -59,11 +64,14 @@ const PROVIDER_INFO: Record<string, { name: string; color: string; bgColor: stri
 
 export default function SystemInfo({ 
   docCount, 
+  documentCounts,
   embeddingDim, 
   systemStatus, 
   llmModel,
   embeddingModel,
   modelConfig,
+  modelReadiness,
+  onRetryModelWarmup,
   onRefresh,
   onModelChange
 }: SystemInfoProps) {
@@ -72,12 +80,17 @@ export default function SystemInfo({
   const [loadingModels, setLoadingModels] = useState(false);
   const [selectedLLM, setSelectedLLM] = useState(llmModel);
   const [selectedEmbedding, setSelectedEmbedding] = useState(embeddingModel);
+  const [applyingModelChange, setApplyingModelChange] = useState(false);
+  const [modelChangeError, setModelChangeError] = useState('');
+  const [modelChangeProgress, setModelChangeProgress] = useState('');
 
   // 获取提供商信息
   const llmProvider = modelConfig?.llm?.provider || 'ollama';
   const embeddingProvider = modelConfig?.embedding?.provider || 'ollama';
   const isOllamaLLM = llmProvider === 'ollama';
   const isOllamaEmbedding = embeddingProvider === 'ollama';
+  const hasModelChanges = !isSameModel(selectedLLM, llmModel, llmProvider)
+    || !isSameModel(selectedEmbedding, embeddingModel, embeddingProvider);
 
   // 加载可用模型（仅 Ollama 时可用）
   const loadModels = async () => {
@@ -116,17 +129,24 @@ export default function SystemInfo({
   const handleOpenModelSelector = () => {
     setSelectedLLM(llmModel);
     setSelectedEmbedding(embeddingModel);
+    setModelChangeError('');
     setShowModelSelector(true);
     void loadModels();
   };
 
   // 应用模型变更
-  const handleApplyModelChange = () => {
-    if (selectedLLM !== llmModel || selectedEmbedding !== embeddingModel) {
-      onModelChange(selectedLLM, selectedEmbedding);
+  const handleApplyModelChange = async () => {
+    setApplyingModelChange(true);
+    setModelChangeError('');
+    setModelChangeProgress('');
+    try {
+      await onModelChange(selectedLLM, selectedEmbedding, setModelChangeProgress);
       setShowModelSelector(false);
-    } else {
-      setShowModelSelector(false);
+    } catch (error) {
+      setModelChangeError(error instanceof Error ? error.message : '模型切换失败，请重试');
+    } finally {
+      setApplyingModelChange(false);
+      setModelChangeProgress('');
     }
   };
 
@@ -164,9 +184,10 @@ export default function SystemInfo({
         
         <div className="p-6 space-y-3">
           <div className="flex justify-between text-sm">
-            <span className="text-gray-600">文档数量:</span>
-            <span className="font-medium">{docCount || '-'}</span>
+            <span className="text-gray-600">可检索文档块:</span>
+            <span className="font-medium">{docCount === null ? '统计暂不可用' : docCount.toLocaleString('zh-CN')}</span>
           </div>
+          {documentCounts ? <p className="text-xs text-gray-500">已存储 {documentCounts.chunkCount.toLocaleString('zh-CN')} 块 · 已停用 {documentCounts.disabledChunkCount.toLocaleString('zh-CN')} 块</p> : null}
           <div className="flex justify-between text-sm">
             <span className="text-gray-600">向量维度:</span>
             <span className="font-medium">{embeddingDim || '-'}</span>
@@ -194,6 +215,16 @@ export default function SystemInfo({
             </div>
             
             {/* Embedding 模型 */}
+            {modelReadiness && (
+              <p role="status" className={`text-xs mb-2 ${modelReadiness.phase === 'failed' ? 'text-red-600' : 'text-gray-600'}`}>
+                {modelReadiness.phase === 'loading' ? '模型准备中：首次加载可能需要较长时间。'
+                  : modelReadiness.phase === 'ready' ? '模型已预加载。' : '模型预加载失败。'}
+                {modelReadiness.detail && ` ${modelReadiness.detail}`}
+                {modelReadiness.phase === 'failed' && onRetryModelWarmup && (
+                  <button type="button" className="ml-2 text-blue-600 underline" onClick={onRetryModelWarmup}>重试加载</button>
+                )}
+              </p>
+            )}
             <div className="flex justify-between items-center text-sm">
               <span className="text-gray-600">嵌入模型:</span>
               <div className="flex items-center gap-2">
@@ -241,6 +272,7 @@ export default function SystemInfo({
               <h3 className="text-lg font-semibold text-gray-900">选择模型</h3>
               <button
                 onClick={() => setShowModelSelector(false)}
+                disabled={applyingModelChange}
                 className="text-gray-400 hover:text-gray-600 transition-colors"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -351,8 +383,9 @@ export default function SystemInfo({
                             <button
                               key={model.name}
                               onClick={() => setSelectedLLM(model.name)}
+                              disabled={applyingModelChange}
                               className={`p-3 rounded-lg border-2 text-left transition-all ${
-                                selectedLLM === model.name
+                                isSameModel(selectedLLM, model.name, llmProvider)
                                   ? 'border-purple-500 bg-purple-50'
                                   : 'border-gray-200 hover:border-purple-300 bg-white'
                               }`}
@@ -366,7 +399,7 @@ export default function SystemInfo({
                                     {model.sizeFormatted || model.tag}
                                   </div>
                                 </div>
-                                {selectedLLM === model.name && (
+                                {isSameModel(selectedLLM, model.name, llmProvider) && (
                                   <svg className="w-5 h-5 text-purple-600 ml-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                                   </svg>
@@ -411,8 +444,10 @@ export default function SystemInfo({
                             <button
                               key={model.name}
                               onClick={() => setSelectedEmbedding(model.name)}
+                              disabled={applyingModelChange}
+                              title={isSameModel(model.name, embeddingModel, embeddingProvider) ? '当前知识库嵌入模型' : '更换嵌入模型需要重新构建知识库索引'}
                               className={`p-3 rounded-lg border-2 text-left transition-all ${
-                                selectedEmbedding === model.name
+                                isSameModel(selectedEmbedding, model.name, embeddingProvider)
                                   ? 'border-blue-500 bg-blue-50'
                                   : 'border-gray-200 hover:border-blue-300 bg-white'
                               }`}
@@ -431,7 +466,7 @@ export default function SystemInfo({
                                     ) : null}
                                   </div>
                                 </div>
-                                {selectedEmbedding === model.name && (
+                                {isSameModel(selectedEmbedding, model.name, embeddingProvider) && (
                                   <svg className="w-5 h-5 text-blue-600 ml-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                                   </svg>
@@ -445,6 +480,7 @@ export default function SystemInfo({
                           未检测到 Embedding 模型，请先安装模型
                         </div>
                       )}
+                      <p className="mt-2 text-xs text-gray-500">更换向量模型会重新计算现有文档的向量；新索引验证成功后切换，旧索引保留。</p>
                     </div>
                   )}
                   
@@ -485,13 +521,19 @@ export default function SystemInfo({
               )}
             </div>
 
+            {modelChangeError && (
+              <p role="alert" className="px-6 py-3 text-sm text-red-700 bg-red-50">{modelChangeError}</p>
+            )}
+            {modelChangeProgress && (
+              <p role="status" aria-live="polite" className="px-6 py-3 text-sm text-blue-700 bg-blue-50">{modelChangeProgress}</p>
+            )}
             {/* 底部按钮 */}
             <div className="px-6 py-4 border-t bg-gray-50 flex items-center justify-between">
               <div className="text-xs text-gray-500">
                 {availableModels?.isRemoteProvider ? (
                   <span className="text-blue-600 font-medium">ℹ️ 远程模型通过环境变量配置</span>
-                ) : selectedLLM !== llmModel || selectedEmbedding !== embeddingModel ? (
-                  <span className="text-yellow-600 font-medium">⚠️ 应用后将重新初始化系统</span>
+                ) : hasModelChanges ? (
+                  <span className="text-yellow-600 font-medium">{!isSameModel(selectedEmbedding, embeddingModel, embeddingProvider) ? '应用后重建向量索引，原文档和旧索引保留' : '应用后用于当前会话的后续问答'}</span>
                 ) : (
                   <span>未做任何更改</span>
                 )}
@@ -499,6 +541,7 @@ export default function SystemInfo({
               <div className="flex gap-3">
                 <button
                   onClick={() => setShowModelSelector(false)}
+                  disabled={applyingModelChange}
                   className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 text-sm transition-colors"
                 >
                   {availableModels?.isRemoteProvider ? '关闭' : '取消'}
@@ -506,10 +549,10 @@ export default function SystemInfo({
                 {!availableModels?.isRemoteProvider && (isOllamaLLM || isOllamaEmbedding) && (
                   <button
                     onClick={handleApplyModelChange}
-                    disabled={!availableModels?.success || (selectedLLM === llmModel && selectedEmbedding === embeddingModel)}
+                    disabled={applyingModelChange || !availableModels?.success || !hasModelChanges}
                     className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    应用更改
+                    {applyingModelChange ? '正在应用...' : '应用更改'}
                   </button>
                 )}
               </div>

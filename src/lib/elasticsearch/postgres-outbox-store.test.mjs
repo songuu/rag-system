@@ -43,6 +43,8 @@ test('atomically stages exact lexical chunks and an idempotent upsert event', as
   assert.match(client.calls[0].text, /insert into public\.elasticsearch_lexical_outbox/i);
   assert.match(client.calls[0].text, /on conflict \(tenant_id, corpus_id, document_id, document_version, event_type\)/i);
   assert.match(client.calls[0].text, /published_at = null/i);
+  assert.match(client.calls[0].text, /sequence = nextval\(pg_get_serial_sequence/);
+  assert.doesNotMatch(client.calls[0].text, /lease_token = null/);
   assert.equal(client.calls[0].values[1], 'tenant-a');
   assert.equal(client.calls[0].values[3], 'doc-1');
 });
@@ -71,7 +73,7 @@ test('accepts normal multiline source text while rejecting identity control char
   );
 });
 
-test('qualifies delete conflict references so PostgreSQL does not see ambiguous columns', async () => {
+test('delete events preserve in-flight leases and keep conflict references unambiguous', async () => {
   const client = fakeClient([{ rows: [{ id: 'event-delete' }], rowCount: 1 }]);
   const store = new PostgresElasticsearchOutboxStore(client);
 
@@ -88,8 +90,10 @@ test('qualifies delete conflict references so PostgreSQL does not see ambiguous 
   );
   assert.match(
     client.calls[0].text,
-    /public\.elasticsearch_lexical_outbox\.lease_token is null/i
+    /public\.elasticsearch_lexical_outbox\.attempts/i
   );
+  assert.doesNotMatch(client.calls[0].text, /lease_token = null/);
+  assert.match(client.calls[0].text, /sequence = nextval\(pg_get_serial_sequence/);
   assert.doesNotMatch(client.calls[0].text, /case when lease_token is null/i);
 });
 
@@ -107,6 +111,7 @@ test('claims events with skip locked and carries a lease token', async () => {
   assert.equal(event.leaseToken, 'lease-1');
   assert.match(client.calls[0].text, /for update skip locked/i);
   assert.match(client.calls[0].text, /earlier\.sequence < candidate\.sequence/i);
+  assert.match(client.calls[0].text, /active\.lease_expires_at > now\(\)/);
 });
 
 test('acknowledges only the exact leased projection digest', async () => {
@@ -130,6 +135,8 @@ test('acknowledges only the exact leased projection digest', async () => {
   assert.equal(acknowledged, true);
   assert.match(client.calls[0].text, /projection_digest = \$3/i);
   assert.equal(client.calls[0].values[2], 'sha256:projection-1');
+  assert.match(client.calls[0].text, /sequence = \$4/);
+  assert.equal(client.calls[0].values[3], 3);
 });
 
 function chunk(id) {

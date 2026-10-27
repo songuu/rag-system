@@ -4,6 +4,7 @@ import type {
   RagTrustLevel,
 } from '../security/retrieval-scope';
 import type { ElasticsearchClientPort } from './client';
+import { listRetrievableDocumentIds } from '../documents/document-visibility';
 
 export const ELASTICSEARCH_LEXICAL_MAPPING_VERSION = 'elasticsearch-lexical/v1' as const;
 
@@ -95,6 +96,8 @@ export async function searchElasticsearchLexical(input: {
   const documentId = input.documentId === undefined
     ? undefined
     : requiredScalar(input.documentId, 'documentId', 256);
+  const retrievableDocumentIds = await listRetrievableDocumentIds(input.scope);
+  if (retrievableDocumentIds?.length === 0) return [];
   const response = await input.client.search({
     index: input.indexName,
     size: topK,
@@ -116,6 +119,7 @@ export async function searchElasticsearchLexical(input: {
           { term: { tenant_id: input.scope.tenantId } },
           { term: { corpus_id: input.scope.corpusId } },
           { terms: { trust_level: [...input.scope.allowedTrustLevels] } },
+          ...(retrievableDocumentIds === null ? [] : [{ terms: { document_id: retrievableDocumentIds } }]),
           ...(documentId ? [{ term: { document_id: documentId } }] : []),
         ],
       },
@@ -244,7 +248,7 @@ export async function replaceElasticsearchDocument(input: {
   const deletion = unwrapBody(await input.client.deleteByQuery({
     index: input.indexName,
     conflicts: 'abort',
-    refresh: false,
+    refresh: input.documents.length === 0,
     query: {
       bool: {
         filter: [
@@ -255,7 +259,8 @@ export async function replaceElasticsearchDocument(input: {
       },
     },
   }, { signal: input.signal }));
-  if (isRecord(deletion) && Array.isArray(deletion.failures) && deletion.failures.length > 0) {
+  if (isRecord(deletion) && (deletion.timed_out === true || Number(deletion.version_conflicts ?? 0) > 0
+    || (Array.isArray(deletion.failures) && deletion.failures.length > 0))) {
     throw new Error('Elasticsearch document replacement deletion failed.');
   }
   return bulkIndexElasticsearchDocuments({

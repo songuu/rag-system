@@ -109,14 +109,14 @@ export default function CognitiveParsingPanel({
   const [expandedSection, setExpandedSection] = useState<string | null>('transform');
 
   // 计算实体统计
+  const entities = queryAnalysis?.entities;
   const entityStats = useMemo(() => {
-    if (!queryAnalysis?.entities) return {};
-    const stats: Record<EntityType, number> = {} as any;
-    queryAnalysis.entities.forEach(e => {
+    const stats: Partial<Record<EntityType, number>> = {};
+    entities?.forEach(e => {
       stats[e.type] = (stats[e.type] || 0) + 1;
     });
     return stats;
-  }, [queryAnalysis?.entities]);
+  }, [entities]);
 
   // 加载状态
   if (isLoading) {

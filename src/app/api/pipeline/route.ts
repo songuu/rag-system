@@ -17,6 +17,8 @@ import {
   validateBatchItems,
   validateChunking,
   validateEmbeddingModelSelection,
+  resolveRuntimeEmbeddingModel,
+  resolveRuntimeEmbeddingProvider,
   validateExternalUrlInput,
   validatePipelineText,
   validateUploadedFiles,
@@ -50,6 +52,8 @@ import {
 } from '@/lib/rag/vector-ingest-state';
 import { EmbeddingOutputValidationError } from '@/lib/embedding-batch';
 import { ElasticsearchProjectionOutboxError } from '@/lib/elasticsearch/postgres-outbox-store';
+import { EbookParseError } from '@/lib/ebook-parser-error';
+import { isSameModel } from '@/lib/model-selection';
 
 export const runtime = 'nodejs';
 
@@ -68,7 +72,6 @@ class PostgresIngestReconciliationRequiredError extends Error {
 
 // 环境变量配置
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434';
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
 const PIPELINE_INGEST_ACTIONS = new Set([
   'process-text',
   'process-url',
@@ -157,10 +160,10 @@ export async function POST(request: NextRequest) {
         const sourceName = validateSourceName(source, 'text-input');
         const { chunkSize, chunkOverlap } = validateChunking({ chunkSize: rawChunkSize, chunkOverlap: rawChunkOverlap });
         
-        console.log(`[Pipeline] process-text with model: ${embeddingModel || EMBEDDING_MODEL}`);
+        console.log(`[Pipeline] process-text with model: ${embeddingModel || resolveRuntimeEmbeddingModel()}`);
         
         // 使用页面选择的模型，如果没有则使用环境变量默认值
-        const modelToUse = validateEmbeddingModelSelection(embeddingModel);
+        const modelToUse = validatePipelineEmbeddingSelection(embeddingModel);
         
         const pipeline = new DocumentPipeline({
           chunkSize,
@@ -203,10 +206,10 @@ export async function POST(request: NextRequest) {
         const url = validateExternalUrlInput(rawUrl);
         const { chunkSize, chunkOverlap } = validateChunking({ chunkSize: rawChunkSize, chunkOverlap: rawChunkOverlap });
         
-        console.log(`[Pipeline] process-url with model: ${embeddingModel || EMBEDDING_MODEL}`);
+        console.log(`[Pipeline] process-url with model: ${embeddingModel || resolveRuntimeEmbeddingModel()}`);
         
         // 使用页面选择的模型，如果没有则使用环境变量默认值
-        const modelToUse = validateEmbeddingModelSelection(embeddingModel);
+        const modelToUse = validatePipelineEmbeddingSelection(embeddingModel);
         
         const pipeline = new DocumentPipeline({
           chunkSize,
@@ -247,10 +250,10 @@ export async function POST(request: NextRequest) {
         const videoUrl = validateExternalUrlInput(rawVideoUrl, 'videoUrl');
         const { chunkSize, chunkOverlap } = validateChunking({ chunkSize: rawChunkSize, chunkOverlap: rawChunkOverlap });
         
-        console.log(`[Pipeline] process-youtube with model: ${embeddingModel || EMBEDDING_MODEL}`);
+        console.log(`[Pipeline] process-youtube with model: ${embeddingModel || resolveRuntimeEmbeddingModel()}`);
         
         // 使用页面选择的模型，如果没有则使用环境变量默认值
-        const modelToUse = validateEmbeddingModelSelection(embeddingModel);
+        const modelToUse = validatePipelineEmbeddingSelection(embeddingModel);
         
         const pipeline = new DocumentPipeline({
           chunkSize,
@@ -317,10 +320,10 @@ export async function POST(request: NextRequest) {
         const items = validateBatchItems(rawItems);
         const { chunkSize, chunkOverlap } = validateChunking({ chunkSize: rawChunkSize, chunkOverlap: rawChunkOverlap });
         
-        console.log(`[Pipeline] batch-process with model: ${embeddingModel || EMBEDDING_MODEL}`);
+        console.log(`[Pipeline] batch-process with model: ${embeddingModel || resolveRuntimeEmbeddingModel()}`);
         
         // 使用页面选择的模型，如果没有则使用环境变量默认值
-        const modelToUse = validateEmbeddingModelSelection(embeddingModel);
+        const modelToUse = validatePipelineEmbeddingSelection(embeddingModel);
         
         const pipeline = new DocumentPipeline({
           chunkSize,
@@ -422,6 +425,21 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function validatePipelineEmbeddingSelection(value: unknown): string {
+  const activeModel = resolveRuntimeEmbeddingModel();
+  const requestedModel = validateEmbeddingModelSelection(value);
+  // Uploads must stay in the collection's embedding space. Only the explicit
+  // model-switch/reindex workflow may publish a different model and collection.
+  if (!isSameModel(requestedModel, activeModel, resolveRuntimeEmbeddingProvider())) {
+    throw new RequestValidationError(
+      'EMBEDDING_MODEL_REQUIRES_REINDEX',
+      '上传模型与当前知识库不一致，请刷新页面使用当前模型；切换嵌入模型需要重建索引。',
+      409
+    );
+  }
+  return activeModel;
+}
+
 function validateSourceName(value: unknown, fallback: string): string {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value !== 'string' || !value.trim() || value.length > 512 || /[\u0000-\u001f]/.test(value)) {
@@ -433,7 +451,7 @@ function validateSourceName(value: unknown, fallback: string): string {
 function validateDataSourceType(value: unknown): DataSourceType | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const supported: DataSourceType[] = [
-    'text', 'pdf', 'docx', 'xlsx', 'csv', 'json', 'markdown', 'url', 'youtube', 'raw',
+    'text', 'pdf', 'docx', 'xlsx', 'csv', 'json', 'markdown', 'epub', 'mobi', 'url', 'youtube', 'raw',
   ];
   if (typeof value !== 'string' || !supported.includes(value as DataSourceType)) {
     throw new RequestValidationError('UNSUPPORTED_SOURCE_TYPE', 'Unsupported document source type.', 400);
@@ -447,6 +465,12 @@ function mapPipelineError(
   fallbackMessage: string,
   requestId: string
 ) {
+  if (error instanceof EbookParseError) {
+    return {
+      status: error.status,
+      body: { error: { code: error.code, message: error.message }, requestId },
+    };
+  }
   if (error instanceof RagSecurityError) {
     return {
       status: error.status,
@@ -567,11 +591,11 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
     });
     const embeddingModel = formData.get('embeddingModel');
     
-    console.log(`[Pipeline] handleFileUpload with model: ${embeddingModel || EMBEDDING_MODEL}`);
+    console.log(`[Pipeline] handleFileUpload with model: ${embeddingModel || resolveRuntimeEmbeddingModel()}`);
     
-    // 使用页面选择的模型，如果没有则使用环境变量默认值
-    const modelToUse = validateEmbeddingModelSelection(
-      typeof embeddingModel === 'string' && embeddingModel ? embeddingModel.split(':')[0] : undefined
+    // 普通上传必须沿用活动索引模型，避免页面缓存配置改变现有索引。
+    const modelToUse = validatePipelineEmbeddingSelection(
+      typeof embeddingModel === 'string' && embeddingModel ? embeddingModel : undefined
     );
     
     const pipeline = new DocumentPipeline({
@@ -591,10 +615,11 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
     for (const file of files) {
       const filename = file.name;
       const ext = filename.toLowerCase().split('.').pop();
+      let processingStage = 'validation';
       
       try {
         const supportedExtensions = new Set([
-          'txt', 'pdf', 'docx', 'xlsx', 'xls', 'csv', 'json', 'md', 'markdown',
+          'txt', 'pdf', 'docx', 'xlsx', 'xls', 'csv', 'json', 'md', 'markdown', 'epub', 'mobi',
         ]);
         if (!ext || !supportedExtensions.has(ext)) {
           throw new RequestValidationError(
@@ -610,15 +635,21 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
         else if (ext === 'xlsx' || ext === 'xls' || ext === 'csv') type = 'xlsx';
         else if (ext === 'json') type = 'json';
         else if (ext === 'md' || ext === 'markdown') type = 'markdown';
+        else if (ext === 'epub' || ext === 'mobi') type = ext;
         
         const buffer = Buffer.from(await file.arrayBuffer());
+        processingStage = 'loading';
         
         const result = await pipeline.processDocument(buffer, {
           type,
           filename,
           metadata: scopeMetadata,
           signal: request.signal,
-        }, (progress) => ingestLease?.updateStage(progress.stage));
+        }, (progress) => {
+          processingStage = progress.stage;
+          ingestLease?.updateStage(progress.stage);
+        });
+        processingStage = 'persistence';
         const persistence = await persistPipelineResult({
           securityContext,
           result,
@@ -640,6 +671,9 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
             : {}),
         });
       } catch (error) {
+        console.error(`[Pipeline API] file processing failed requestId=${requestId} ${JSON.stringify({
+          filename, stage: processingStage, error: redactErrorForLog(error),
+        })}`);
         if (
           error instanceof MilvusHybridIngestReconciliationRequiredError
           || error instanceof ElasticsearchProjectionOutboxError
@@ -649,8 +683,8 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
         results.push({
           filename,
           success: false,
-          error: 'File processing failed',
-          code: 'FILE_PROCESSING_FAILED',
+          error: error instanceof EbookParseError ? error.message : 'File processing failed',
+          code: error instanceof EbookParseError ? error.code : 'FILE_PROCESSING_FAILED',
         });
       }
     }
@@ -720,13 +754,15 @@ export async function GET(request: NextRequest) {
               { type: 'xlsx', extensions: ['.xlsx', '.xls', '.csv'], description: 'Excel 表格 / CSV' },
               { type: 'markdown', extensions: ['.md', '.markdown'], description: 'Markdown 文档' },
               { type: 'json', extensions: ['.json'], description: 'JSON 数据' },
+              { type: 'epub', extensions: ['.epub'], description: 'EPUB 电子书' },
+              { type: 'mobi', extensions: ['.mobi'], description: 'MOBI 电子书' },
               { type: 'url', extensions: [], description: '网页 URL' },
               { type: 'youtube', extensions: [], description: 'YouTube 视频' },
             ],
             config: {
               defaultChunkSize: 500,
               defaultChunkOverlap: 50,
-              embeddingModel: EMBEDDING_MODEL,
+              embeddingModel: resolveRuntimeEmbeddingModel(),
               milvus: getPublicMilvusConfig(),
             },
             vectorIngest: getVectorIngestSnapshot(),

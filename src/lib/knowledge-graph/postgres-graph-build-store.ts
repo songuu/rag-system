@@ -5,6 +5,8 @@ import type { RagRetrievalScope } from '../security/retrieval-scope';
 import type { MiroFishGraphArtifactIdentity } from '../mirofish/graph-artifact-store';
 import { createKnowledgeGraphSnapshotIdentity, KnowledgeGraphError } from './contracts';
 import { createMiroFishGraphVersion } from './mirofish-adapter';
+import { validateBuildPublicationManifest, type BuildPublicationManifest } from './build-publication-manifest';
+import { canonicalJson } from '../rag/eval/canonical-json';
 
 export type KnowledgeGraphBuildStatus =
   | 'queued'
@@ -83,8 +85,12 @@ const ENQUEUE_SQL = [
 const COMPLETE_VALIDATED_SQL = [
   'update public.graph_build_jobs',
   "set status = 'validated', progress = 1, artifact_digest = $3,",
+  "    metadata = metadata || jsonb_build_object('publicationManifest', $5::jsonb),",
   '    lease_token = null, lease_expires_at = null, updated_at = now()',
   "where id = $1::uuid and status = 'running' and lease_token = $4::uuid",
+  // now() is fixed at transaction start and could accept an expired lease.
+  '  and lease_expires_at > clock_timestamp()',
+  '  and tenant_id = $6 and corpus_id = $7 and graph_version = $8',
   '  and $2 >= progress',
   `returning ${JOB_FIELDS}`,
 ].join('\n');
@@ -368,7 +374,7 @@ export class PostgresKnowledgeGraphBuildJobStore {
         normalizeDigest(input.artifactDigest),
         boundedOptionalText(input.errorCode, 128),
         boundedOptionalText(input.errorMessage, 2_000),
-        JSON.stringify(input.metadata ?? {}),
+        JSON.stringify(normalizeMetadata(input.metadata ?? {})),
         input.leaseToken ? requiredUuid(input.leaseToken) : null,
       ],
       'transition knowledge graph build job'
@@ -387,9 +393,18 @@ export class PostgresKnowledgeGraphBuildJobStore {
     progress: number;
     artifactDigest: string;
     leaseToken: string;
+    publicationManifest: BuildPublicationManifest;
   }): Promise<KnowledgeGraphBuildJob> {
     if (!Number.isFinite(input.progress) || input.progress < 0 || input.progress > 1) {
       throw new Error('Graph build progress must be between 0 and 1.');
+    }
+    // Keep the complete, validated Snapshot inventory bound to this same job
+    // and digest; a separate write would leave a publishable partial record.
+    const manifest = validateBuildPublicationManifest(input.publicationManifest);
+    // Bind validation and the write to one observation, even for a getter.
+    const artifactDigest = input.artifactDigest;
+    if (manifest.artifactDigest !== artifactDigest) {
+      throw new Error('Graph build publication manifest does not match the validated artifact digest.');
     }
     const result = await queryPostgres<BuildJobRow>(
       this.client,
@@ -397,8 +412,12 @@ export class PostgresKnowledgeGraphBuildJobStore {
       [
         requiredUuid(input.jobId),
         input.progress,
-        normalizeDigest(input.artifactDigest),
+        normalizeDigest(artifactDigest),
         requiredUuid(input.leaseToken),
+        JSON.stringify(manifest),
+        manifest.tenantId,
+        manifest.corpusId,
+        manifest.graphVersion,
       ],
       'atomically validate knowledge graph build job'
     );
@@ -413,22 +432,30 @@ export class PostgresKnowledgeGraphBuildJobStore {
 }
 
 const RESERVED_METADATA_KEYS = new Set([
-  'tenantId', 'corpusId', 'graphVersion', 'documentIdentity',
+  'tenantId', 'corpusId', 'graphVersion', 'documentIdentity', 'publicationManifest',
 ]);
 const MAX_METADATA_BYTES = 16 * 1024;
 
 function normalizeMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
-  const normalized = requiredRecord(metadata);
+  // Check only a detached data snapshot. Reading caller hooks after checking
+  // reserved keys could inject a publicationManifest into the eventual write.
+  let encoded: string;
+  let normalized: Record<string, unknown>;
+  try {
+    encoded = canonicalJson(metadata);
+    normalized = requiredRecord(JSON.parse(encoded));
+  } catch {
+    throw new Error('Graph build metadata must contain only bounded JSON data properties.');
+  }
+  if (Buffer.byteLength(encoded, 'utf8') > MAX_METADATA_BYTES) {
+    throw new Error('Graph build metadata is too large.');
+  }
   for (const key of Object.keys(normalized)) {
     if (RESERVED_METADATA_KEYS.has(key)) {
       throw new Error(`Graph build metadata key ${key} is reserved.`);
     }
   }
-  const encoded = JSON.stringify(normalized);
-  if (Buffer.byteLength(encoded, 'utf8') > MAX_METADATA_BYTES) {
-    throw new Error('Graph build metadata is too large.');
-  }
-  return structuredClone(normalized);
+  return normalized;
 }
 
 function toJob(row: BuildJobRow): KnowledgeGraphBuildJob {

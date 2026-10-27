@@ -1,0 +1,199 @@
+{
+  "runId": "6ed1510f-88de-4ca2-b321-c2711fd35deb",
+  "startedAt": "2026-10-27T05:48:10.266Z",
+  "origin": "http://localhost:3000",
+  "mockedResponses": false,
+  "tests": [
+    {
+      "entry": "home-ask",
+      "case": "comparison",
+      "question": "根据知识库资料，黑死病对西欧和东欧的社会变化有什么不同影响？请简要回答，并标注引用编号。",
+      "request": {
+        "question": "根据知识库资料，黑死病对西欧和东欧的社会变化有什么不同影响？请简要回答，并标注引用编号。",
+        "topK": 3,
+        "similarityThreshold": 0,
+        "llmModel": "llama3.1",
+        "embeddingModel": "qwen3-embedding:latest",
+        "userId": "demo-user",
+        "sessionId": "demo-session",
+        "storageBackend": "milvus",
+        "useAgenticRAG": false,
+        "useAdaptiveEntityRAG": false,
+        "maxRetries": 2,
+        "enableReranking": true
+      },
+      "httpStatus": 200,
+      "traceId": "ask-1793080099192",
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceCount": 3,
+      "searchResultCount": 3,
+      "diagnosticsCandidateCount": 3,
+      "answer": "现有材料无法支持完整比较。\n\n有依据的事实：\n[1] 原文：1347年，黑死病经由地中海商船传播到欧洲。鼠疫杆菌是黑死病的病原体，主要由寄生在黑鼠身上的跳蚤传播。疫情造成欧洲人口锐减，劳动力短缺提高了幸存农民和工人的议价能力。封建领主为维持收入加重赋役，引发英格兰农民起义等社会冲突。城市卫生制度和隔离措施随后逐步发展。\n\n无法确认的部分：当前材料缺少完整比较所需的各方依据，无法确认比较对象之间的差异。",
+      "answerLength": 202,
+      "answerPreview": "现有材料无法支持完整比较。\n\n有依据的事实：\n[1] 原文：1347年，黑死病经由地中海商船传播到欧洲。鼠疫杆菌是黑死病的病原体，主要由寄生在黑鼠身上的跳蚤传播。疫情造成欧洲人口锐减，劳动力短缺提高了幸存农民和工人的议价能力。封建领主为维持收入加重赋役，引发英格兰农民起义等社会冲突。城市卫生制度和隔离措施随后逐步发展。\n\n无法确认的部分：当前材料缺少完整比较所需的各方依据，无法确认比较对象之间的差异。",
+      "citationStatus": "unavailable",
+      "citationCount": 0,
+      "citationSources": [],
+      "sourceDocumentIds": [
+        "codex-local-graph-black-death-e2e-20260908.txt",
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 27,
+      "disabledMatches": [],
+      "documentPolicyStable": true,
+      "renderedAnswerMatchesResponse": true
+    },
+    {
+      "entry": "home-ask",
+      "case": "supported",
+      "question": "根据知识库资料，黑死病如何传播，以及它带来了哪些社会变化？请简要回答，并标注引用编号。",
+      "request": {
+        "question": "根据知识库资料，黑死病如何传播，以及它带来了哪些社会变化？请简要回答，并标注引用编号。",
+        "topK": 3,
+        "similarityThreshold": 0,
+        "llmModel": "llama3.1",
+        "embeddingModel": "qwen3-embedding:latest",
+        "userId": "demo-user",
+        "sessionId": "demo-session",
+        "storageBackend": "milvus",
+        "useAgenticRAG": false,
+        "useAdaptiveEntityRAG": false,
+        "maxRetries": 2,
+        "enableReranking": true
+      },
+      "httpStatus": 200,
+      "traceId": "ask-1793080102549",
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceCount": 3,
+      "searchResultCount": 3,
+      "diagnosticsCandidateCount": 3,
+      "answer": "基于给出的知识库资料，回答用户的问题：\n\n黑死病是如何传播的？黑死病主要通过跳蚤（寄生在黑鼠身上）传播，随后通过商船传播到欧洲，造成了欧洲人口锐减。\n\n黑死病带来的社会变化是 gì？黑死病导致劳动力短缺，提高了幸存农民和工人的议价能力。封建领主为了维持收入，加重了赋役，这引发了英格兰农民起义等社会冲突。\n\n（引用编号：[1]）\n\n注意：上下文中没有关于黑死病在其他地区或社会的具体信息或社会变化的详细描述。",
+      "answerLength": 204,
+      "answerPreview": "基于给出的知识库资料，回答用户的问题：\n\n黑死病是如何传播的？黑死病主要通过跳蚤（寄生在黑鼠身上）传播，随后通过商船传播到欧洲，造成了欧洲人口锐减。\n\n黑死病带来的社会变化是 gì？黑死病导致劳动力短缺，提高了幸存农民和工人的议价能力。封建领主为了维持收入，加重了赋役，这引发了英格兰农民起义等社会冲突。\n\n（引用编号：[1]）\n\n注意：上下文中没有关于黑死病在其他地区或社会的具体信息或社会变化的详细描述。",
+      "citationStatus": "unavailable",
+      "citationCount": 0,
+      "citationSources": [],
+      "sourceDocumentIds": [
+        "codex-local-graph-black-death-e2e-20260908.txt",
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 27,
+      "disabledMatches": [],
+      "documentPolicyStable": true,
+      "renderedAnswerMatchesResponse": true
+    },
+    {
+      "entry": "home-ask",
+      "case": "unsupported",
+      "question": "根据知识库资料，1350年东欧农民的日工资精确为多少克银？请给出有文档依据的数字。",
+      "request": {
+        "question": "根据知识库资料，1350年东欧农民的日工资精确为多少克银？请给出有文档依据的数字。",
+        "topK": 3,
+        "similarityThreshold": 0,
+        "llmModel": "llama3.1",
+        "embeddingModel": "qwen3-embedding:latest",
+        "userId": "demo-user",
+        "sessionId": "demo-session",
+        "storageBackend": "milvus",
+        "useAgenticRAG": false,
+        "useAdaptiveEntityRAG": false,
+        "maxRetries": 2,
+        "enableReranking": true
+      },
+      "httpStatus": 200,
+      "traceId": "ask-1793080105359",
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceCount": 3,
+      "searchResultCount": 3,
+      "diagnosticsCandidateCount": 3,
+      "answer": "根据提供的知识库资料，无法准确找到有关1350年东欧农民的日工资精确为多少克银的信息。上下文信息主要关注黑死病的传播、欧洲人口的锐减和社会冲突的发生，但没有提及农民的日工资。\n\n因此，我无法提供有文档依据的数字来回答这个问题。",
+      "answerLength": 113,
+      "answerPreview": "根据提供的知识库资料，无法准确找到有关1350年东欧农民的日工资精确为多少克银的信息。上下文信息主要关注黑死病的传播、欧洲人口的锐减和社会冲突的发生，但没有提及农民的日工资。\n\n因此，我无法提供有文档依据的数字来回答这个问题。",
+      "citationStatus": "missing",
+      "citationCount": 0,
+      "citationSources": [],
+      "sourceDocumentIds": [
+        "codex-local-graph-black-death-e2e-20260908.txt",
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 27,
+      "disabledMatches": [],
+      "documentPolicyStable": true,
+      "renderedAnswerMatchesResponse": true
+    }
+  ],
+  "passed": true,
+  "documentState": [
+    {
+      "documentId": "codex-local-graph-black-death-e2e-20260908.txt",
+      "name": "codex-local-graph-black-death-e2e-20260908.txt",
+      "enabled": true,
+      "chunks": 1
+    },
+    {
+      "documentId": "codex-local-graph-integrity-e2e-20260908.txt",
+      "name": "codex-local-graph-integrity-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 2
+    },
+    {
+      "documentId": "sample7.txt",
+      "name": "sample7.txt",
+      "enabled": false,
+      "chunks": 26
+    },
+    {
+      "documentId": "sample6.txt",
+      "name": "sample6.txt",
+      "enabled": false,
+      "chunks": 12
+    },
+    {
+      "documentId": "codex-local-graph-e2e-20260908.txt",
+      "name": "codex-local-graph-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 1
+    },
+    {
+      "documentId": "重构契丹早期史.epub",
+      "name": "重构契丹早期史.epub",
+      "enabled": true,
+      "chunks": 645
+    },
+    {
+      "documentId": "重构契丹早期史.mobi",
+      "name": "重构契丹早期史.mobi",
+      "enabled": false,
+      "chunks": 718
+    }
+  ],
+  "summary": {
+    "documentCount": 7,
+    "enabledDocumentCount": 2,
+    "disabledDocumentCount": 5,
+    "chunkCount": 1405,
+    "searchableChunkCount": 646,
+    "disabledChunkCount": 759,
+    "byteSize": 9783623,
+    "syncedCount": 7,
+    "elasticsearchMode": "active"
+  },
+  "homeLoadStatuses": [
+    200
+  ],
+  "modelReadiness": {
+    "handledBy": "actual-home-and-server-workflow"
+  },
+  "documentPolicyUnchanged": true,
+  "pageErrors": [],
+  "completedAt": "2026-10-27T05:48:31.700Z"
+}

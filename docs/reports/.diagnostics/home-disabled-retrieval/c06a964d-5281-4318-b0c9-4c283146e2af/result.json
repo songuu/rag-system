@@ -1,0 +1,160 @@
+{
+  "runId": "c06a964d-5281-4318-b0c9-4c283146e2af",
+  "startedAt": "2026-10-27T03:16:53.942Z",
+  "origin": "http://localhost:3000",
+  "mockedResponses": false,
+  "tests": [
+    {
+      "entry": "home-realtime",
+      "case": "khitan",
+      "query": "耶律阿保机 契丹 建国",
+      "request": {
+        "action": "search",
+        "query": "耶律阿保机 契丹 建国",
+        "topK": 10,
+        "threshold": 0,
+        "embeddingModel": "qwen3-embedding:latest"
+      },
+      "httpStatus": 200,
+      "resultCount": 10,
+      "sourceDocumentIds": [
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 30,
+      "disabledMatches": [],
+      "documentPolicyStable": true,
+      "sourceRunId": "31680640-e23a-4996-b725-325b91d919f2",
+      "sourceRunStartedAt": "2026-10-27T02:59:35.423Z"
+    },
+    {
+      "entry": "home-realtime",
+      "case": "black-death",
+      "query": "黑死病 西欧 东欧 社会变化",
+      "request": {
+        "action": "search",
+        "query": "黑死病 西欧 东欧 社会变化",
+        "topK": 10,
+        "threshold": 0,
+        "embeddingModel": "qwen3-embedding:latest"
+      },
+      "httpStatus": 200,
+      "resultCount": 10,
+      "sourceDocumentIds": [
+        "codex-local-graph-black-death-e2e-20260908.txt",
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 30,
+      "disabledMatches": [],
+      "documentPolicyStable": true,
+      "sourceRunId": "31680640-e23a-4996-b725-325b91d919f2",
+      "sourceRunStartedAt": "2026-10-27T02:59:35.423Z"
+    },
+    {
+      "entry": "home-ask",
+      "case": "khitan",
+      "question": "根据知识库资料，耶律阿保机是如何建立契丹政权的？请简要回答，并用[1]这样的编号标注依据。",
+      "request": {
+        "question": "根据知识库资料，耶律阿保机是如何建立契丹政权的？请简要回答，并用[1]这样的编号标注依据。",
+        "topK": 3,
+        "similarityThreshold": 0,
+        "llmModel": "llama3.1",
+        "embeddingModel": "qwen3-embedding:latest",
+        "userId": "demo-user",
+        "sessionId": "demo-session",
+        "storageBackend": "milvus",
+        "useAgenticRAG": false,
+        "useAdaptiveEntityRAG": false,
+        "maxRetries": 2,
+        "enableReranking": true
+      },
+      "httpStatus": 200,
+      "traceId": "ask-1793071068312",
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceCount": 3,
+      "searchResultCount": 3,
+      "diagnosticsCandidateCount": 3,
+      "answerLength": 372,
+      "answerPreview": "根据知识库资料，耶律阿保机建立契丹政权的过程如下：\n\n[1] 在唐朝开元后期，阿保机率契丹残部北逃潢水上游，与当地诸部族重组、混融。后来，契丹渐成欧亚草原东部之共主，阿保机家族迅速崛起，至10世纪初叶已可对外自称国王，遥辇汗权名存实亡。[1]\n\n[2] 阿保机本非汗族，但通过选汗旧制的让渡，现实的力量格局得到了政治礼仪与名义上的确认，阿保机家族成为新任汗族。[2]\n\n[3] 阿保机先是代钦德为主，后自称国王，使用了大量燕人，包括军士、官",
+      "citationStatus": "unavailable",
+      "citationCount": 0,
+      "citationSources": [],
+      "sourceDocumentIds": [
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 27,
+      "disabledMatches": [],
+      "documentPolicyStable": true
+    }
+  ],
+  "passed": false,
+  "documentState": [
+    {
+      "documentId": "codex-local-graph-black-death-e2e-20260908.txt",
+      "name": "codex-local-graph-black-death-e2e-20260908.txt",
+      "enabled": true,
+      "chunks": 1
+    },
+    {
+      "documentId": "codex-local-graph-integrity-e2e-20260908.txt",
+      "name": "codex-local-graph-integrity-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 2
+    },
+    {
+      "documentId": "sample7.txt",
+      "name": "sample7.txt",
+      "enabled": false,
+      "chunks": 26
+    },
+    {
+      "documentId": "sample6.txt",
+      "name": "sample6.txt",
+      "enabled": false,
+      "chunks": 12
+    },
+    {
+      "documentId": "codex-local-graph-e2e-20260908.txt",
+      "name": "codex-local-graph-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 1
+    },
+    {
+      "documentId": "重构契丹早期史.epub",
+      "name": "重构契丹早期史.epub",
+      "enabled": true,
+      "chunks": 645
+    },
+    {
+      "documentId": "重构契丹早期史.mobi",
+      "name": "重构契丹早期史.mobi",
+      "enabled": false,
+      "chunks": 718
+    }
+  ],
+  "summary": {
+    "documentCount": 7,
+    "enabledDocumentCount": 2,
+    "disabledDocumentCount": 5,
+    "chunkCount": 1405,
+    "searchableChunkCount": 646,
+    "disabledChunkCount": 759,
+    "byteSize": 9783623,
+    "syncedCount": 7,
+    "elasticsearchMode": "active"
+  },
+  "homeLoadStatuses": [
+    500,
+    200
+  ],
+  "modelReadiness": {
+    "handledBy": "actual-home-and-server-workflow"
+  },
+  "error": {
+    "phase": "ask-black-death",
+    "name": "SyntaxError",
+    "message": "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON"
+  }
+}

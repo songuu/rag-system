@@ -38,6 +38,8 @@ export interface RagEvalGoldEvidence {
 }
 
 export interface RagEvalExpectedAnswer {
+  /** Full reference answer for human review; scoring still uses requiredFacts. */
+  referenceAnswer?: string;
   /**
    * Each outer item is one required fact. Inner strings are accepted textual
    * alternatives for that fact, for example a full name and its abbreviation.

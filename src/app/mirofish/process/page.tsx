@@ -1,7 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import Link from 'next/link';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import * as d3 from 'd3';
 
@@ -51,19 +50,26 @@ interface GraphData {
   edge_count: number;
 }
 
-interface TaskStatus {
-  status: 'pending' | 'processing' | 'completed' | 'failed';
-  progress: number;
-  message: string;
-  graphId?: string;
-  error?: string;
-}
-
 interface PhaseStatus {
   phase: number;
   status: 'waiting' | 'processing' | 'completed' | 'error';
   message?: string;
 }
+
+interface SimulationGraphNode extends GraphNode, d3.SimulationNodeDatum {
+  color: string;
+}
+
+interface SimulationGraphLink extends d3.SimulationLinkDatum<SimulationGraphNode> {
+  source: string | SimulationGraphNode;
+  target: string | SimulationGraphNode;
+  name: string;
+  data: GraphEdge;
+}
+
+type GraphDragEvent = d3.D3DragEvent<SVGGElement, SimulationGraphNode, SimulationGraphNode>;
+
+const GRAPH_COLORS = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C'];
 
 // ==================== 组件 ====================
 
@@ -72,8 +78,6 @@ export default function MiroFishProcessPage() {
 
   // 当前步骤: 0=本体生成, 1=图谱构建, 2=Profile生成, 3=模拟
   const [currentStep, setCurrentStep] = useState<number>(0);
-  const [statusText, setStatusText] = useState<string>('初始化中');
-  const [statusClass, setStatusClass] = useState<string>('processing');
 
   // 数据状态
   const [simulationRequirement, setSimulationRequirement] = useState<string>('');
@@ -85,7 +89,7 @@ export default function MiroFishProcessPage() {
 
   // 加载状态
   const [ontologyLoading, setOntologyLoading] = useState<boolean>(false);
-  const [graphLoading, setGraphLoading] = useState<boolean>(false);
+  const [graphLoading] = useState<boolean>(false);
   const [graphBuilding, setGraphBuilding] = useState<boolean>(false);
   const [ontologyProgress, setOntologyProgress] = useState<PhaseStatus | null>(null);
   const [buildProgress, setBuildProgress] = useState<{ progress: number; message: string } | null>(null);
@@ -95,53 +99,22 @@ export default function MiroFishProcessPage() {
 
   // 图谱展示
   const [selectedItem, setSelectedItem] = useState<{ type: 'node' | 'edge'; data: GraphNode | GraphEdge } | null>(null);
-  const [isFullScreen, setIsFullScreen] = useState<boolean>(false);
-  const [entityTypes, setEntityTypes] = useState<Array<{ name: string; count: number; color: string }>>([]);
 
   // DOM引用
   const graphContainerRef = useRef<HTMLDivElement>(null);
   const graphSvgRef = useRef<SVGSVGElement>(null);
 
   // 任务轮询
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
-
-  // 颜色配置
-  const colors = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C'];
+  const [, setCurrentTaskId] = useState<string | null>(null);
 
   // 步骤名称
   const stepNames = ['Ontology', 'Graph Building', 'Profile Generation', 'Simulation'];
 
   // ==================== 计算属性 ====================
 
-  // 根据步骤更新状态
-  useEffect(() => {
-    if (error) {
-      setStatusClass('error');
-      setStatusText('构建失败');
-    } else if (currentStep >= 3) {
-      setStatusClass('completed');
-      setStatusText('构建完成');
-    } else if (currentStep === 2) {
-      setStatusClass('processing');
-      setStatusText('Profile生成中');
-    } else if (currentStep === 1) {
-      setStatusClass('processing');
-      setStatusText('图谱构建中');
-    } else if (currentStep === 0) {
-      setStatusClass('processing');
-      setStatusText('本体生成中');
-    } else {
-      setStatusClass('processing');
-      setStatusText('初始化中');
-    }
-  }, [currentStep, error]);
-
   // 从图谱数据提取实体类型统计
-  useEffect(() => {
-    if (!graphData?.nodes) {
-      setEntityTypes([]);
-      return;
-    }
+  const entityTypes = useMemo(() => {
+    if (!graphData?.nodes) return [];
 
     const typeMap: Record<string, number> = {};
     graphData.nodes.forEach(node => {
@@ -149,12 +122,11 @@ export default function MiroFishProcessPage() {
       typeMap[type] = (typeMap[type] || 0) + 1;
     });
 
-    const types = Object.entries(typeMap).map(([name, count], index) => ({
+    return Object.entries(typeMap).map(([name, count], index) => ({
       name,
       count,
-      color: colors[index % colors.length],
+      color: GRAPH_COLORS[index % GRAPH_COLORS.length],
     }));
-    setEntityTypes(types);
   }, [graphData]);
 
   // ==================== 方法 ====================
@@ -178,7 +150,7 @@ export default function MiroFishProcessPage() {
         setInputText(prev => prev + (prev ? '\n\n' : '') + text);
       }
       setUploadedFiles(prev => [...prev, ...newFiles]);
-    } catch (err) {
+    } catch {
       setError('文件读取失败');
     } finally {
       setUploading(false);
@@ -302,25 +274,14 @@ export default function MiroFishProcessPage() {
     router.push('/mirofish');
   };
 
-  // 刷新图谱
-  const refreshGraph = useCallback(() => {
-    if (graphData) {
-      // 触发重新渲染
-      setGraphData({ ...graphData });
-    }
-  }, [graphData]);
-
-  // 切换全屏
-  const toggleFullScreen = () => {
-    setIsFullScreen(!isFullScreen);
-  };
-
   // D3 图谱渲染
   useEffect(() => {
-    if (!graphData?.nodes?.length || !graphSvgRef.current || !graphContainerRef.current) return;
+    if (!graphSvgRef.current || !graphContainerRef.current) return;
 
     const svg = d3.select(graphSvgRef.current);
     svg.selectAll('*').remove();
+    // Clear a replaced graph even when its next snapshot contains no nodes.
+    if (!graphData?.nodes?.length) return;
 
     const container = graphContainerRef.current;
     const width = container.clientWidth;
@@ -328,15 +289,15 @@ export default function MiroFishProcessPage() {
 
     if (width === 0 || height === 0) return;
 
-    const nodes = graphData.nodes.map((node, idx) => ({
+    const nodes: SimulationGraphNode[] = graphData.nodes.map((node, idx) => ({
       ...node,
       // 分配颜色
-      color: colors[idx % colors.length],
+      color: GRAPH_COLORS[idx % GRAPH_COLORS.length],
     }));
 
     const nodeMap = new Map(nodes.map(n => [n.name, n]));
 
-    const links = graphData.edges
+    const links: SimulationGraphLink[] = graphData.edges
       .filter(edge => nodeMap.has(edge.source_node_name) && nodeMap.has(edge.target_node_name))
       .map(edge => ({
         source: edge.source_node_name,
@@ -345,14 +306,14 @@ export default function MiroFishProcessPage() {
         data: edge,
       }));
 
-    const simulation = d3.forceSimulation(nodes as d3.SimulationNodeDatum[])
-      .force('link', d3.forceLink(links).id((d: any) => d.name).distance(100))
-      .force('charge', d3.forceManyBody().strength(-300))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(30));
+    const simulation = d3.forceSimulation<SimulationGraphNode>(nodes)
+      .force('link', d3.forceLink<SimulationGraphNode, SimulationGraphLink>(links).id(d => d.name).distance(100))
+      .force('charge', d3.forceManyBody<SimulationGraphNode>().strength(-300))
+      .force('center', d3.forceCenter<SimulationGraphNode>(width / 2, height / 2))
+      .force('collision', d3.forceCollide<SimulationGraphNode>().radius(30));
 
     const link = svg.append('g')
-      .selectAll('line')
+      .selectAll<SVGLineElement, SimulationGraphLink>('line')
       .data(links)
       .join('line')
       .attr('stroke', '#999')
@@ -360,21 +321,21 @@ export default function MiroFishProcessPage() {
       .attr('opacity', 0.6);
 
     const node = svg.append('g')
-      .selectAll('g')
+      .selectAll<SVGGElement, SimulationGraphNode>('g')
       .data(nodes)
       .join('g')
       .attr('cursor', 'pointer')
-      .call((d3.drag<SVGGElement, any>() as any)
-        .on('start', (event: any, d: any) => {
+      .call(d3.drag<SVGGElement, SimulationGraphNode, SimulationGraphNode>()
+        .on('start', (event: GraphDragEvent, d) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
           d.fx = d.x;
           d.fy = d.y;
         })
-        .on('drag', (event: any, d: any) => {
+        .on('drag', (event: GraphDragEvent, d) => {
           d.fx = event.x;
           d.fy = event.y;
         })
-        .on('end', (event: any, d: any) => {
+        .on('end', (event: GraphDragEvent, d) => {
           if (!event.active) simulation.alphaTarget(0);
           d.fx = null;
           d.fy = null;
@@ -382,12 +343,12 @@ export default function MiroFishProcessPage() {
 
     node.append('circle')
       .attr('r', 12)
-      .attr('fill', (d: any) => d.color || '#004E89')
+      .attr('fill', d => d.color || '#004E89')
       .attr('stroke', '#fff')
       .attr('stroke-width', 2);
 
     node.append('text')
-      .text((d: any) => d.name)
+      .text(d => d.name)
       .attr('x', 16)
       .attr('y', 4)
       .attr('font-size', '11px')
@@ -405,12 +366,12 @@ export default function MiroFishProcessPage() {
 
     simulation.on('tick', () => {
       link
-        .attr('x1', (d: any) => d.source.x)
-        .attr('y1', (d: any) => d.source.y)
-        .attr('x2', (d: any) => d.target.x)
-        .attr('y2', (d: any) => d.target.y);
+        .attr('x1', d => typeof d.source === 'string' ? null : d.source.x ?? null)
+        .attr('y1', d => typeof d.source === 'string' ? null : d.source.y ?? null)
+        .attr('x2', d => typeof d.target === 'string' ? null : d.target.x ?? null)
+        .attr('y2', d => typeof d.target === 'string' ? null : d.target.y ?? null);
 
-      node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
     });
 
     return () => {

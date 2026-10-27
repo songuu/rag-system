@@ -2,6 +2,7 @@
  * 构建时生成文章数据 JSON 文件
  * 在 next build 之前运行，将 markdown 文件转换为可供前端使用的 JSON 数据
  * 若配置 NOTION_TOKEN + NOTION_PARENT_PAGE_ID，则自动同步到 Notion
+ * 构建使用 --local-only：仅生成本地数据，不读取同步配置或执行外部同步
  */
 import fs from 'fs';
 import path from 'path';
@@ -10,10 +11,11 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.join(__dirname, '..');
+const localOnly = process.argv.includes('--local-only');
 
 // 加载 .env.local（若存在）以支持 Notion 同步配置
 const envPath = path.join(ROOT_DIR, '.env.local');
-if (fs.existsSync(envPath)) {
+if (!localOnly && fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf-8').split(/\r?\n/)) {
     const m = line.match(/^([^#=]+)=(.*)$/);
     if (m && !process.env[m[1].trim()]) {
@@ -188,7 +190,7 @@ articles.forEach((a) => {
 });
 
 // 若配置了 Notion，则自动同步
-if (process.env.NOTION_TOKEN && process.env.NOTION_PARENT_PAGE_ID) {
+if (!localOnly && process.env.NOTION_TOKEN && process.env.NOTION_PARENT_PAGE_ID) {
   console.log('\n📤 同步到 Notion...');
   try {
     execSync('node scripts/sync-to-notion.mjs', {

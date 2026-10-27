@@ -117,6 +117,7 @@ prepare_snapshots() {
   snapshot_file env-last-known-good "$SHARED_ROOT/.env.prod.last-known-good"
   snapshot_file env-last-applied-sha256 "$SHARED_ROOT/.env.prod.last-applied.sha256"
   capture_watcher_state
+  record_gateway_access_policy
   : > "$SNAPSHOT_COMPLETE"
 }
 
@@ -186,20 +187,67 @@ configure_nginx() {
     || "$api_location" != 1 ]]; then
     echo 'RAG Nginx locations are incomplete or ambiguous; refusing deployment.' >&2
     return 1
+  else
+    # An existing gateway may still carry the old shared console login rules.
+    "$SCRIPT_DIR/apply-nginx.sh" "$SHARED_ROOT/patch-nginx.py" --public-access
   fi
 
   "$SHARED_ROOT/refresh-rag-nginx-token.sh" "$SHARED_ROOT/patch-nginx.py" >/dev/null
 }
 
+gateway_code() {
+  curl -sk --connect-timeout 5 --max-time 30 -o /dev/null -w '%{http_code}' \
+    -H "Host:${DOMAIN_NAME}" "https://127.0.0.1$1"
+}
+
+rag_gateway_absent() {
+  [[ "$(location_count '=' '/rag-system')" = 0 \
+    && "$(location_count '^~' '/rag-system/api/')" = 0 \
+    && "$(location_count '^~' '/rag-system/')" = 0 \
+    && "$(location_count '=' '/rag-api/health/live')" = 0 \
+    && "$(location_count '^~' '/rag-api/')" = 0 ]]
+}
+
+record_gateway_access_policy() {
+  local ui_code
+  local api_code
+  if rag_gateway_absent; then
+    printf 'absent\n' > "$STATE_ROOT/gateway-ui.status"
+    printf 'absent\n' > "$STATE_ROOT/gateway-api.status"
+    return 0
+  fi
+  ui_code="$(gateway_code "$RAG_BASE_PATH")"
+  api_code="$(gateway_code '/rag-api/health')"
+  case "$ui_code:$api_code" in
+    200:200|200:401|302:200|302:401) ;;
+    *) echo 'Cannot snapshot the previous RAG gateway access policy.' >&2; return 1 ;;
+  esac
+  printf '%s\n' "$ui_code" > "$STATE_ROOT/gateway-ui.status"
+  printf '%s\n' "$api_code" > "$STATE_ROOT/gateway-api.status"
+}
+
 verify_gateway() {
+  local expected_ui_code="${1:-200}"
+  local expected_api_code="${2:-200}"
   local live_code
   local anonymous_ui_code
+  local anonymous_api_code
   local direct_api_code
-  live_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN_NAME}" "https://127.0.0.1/rag-api/health/live")"
+  if [[ "$expected_ui_code:$expected_api_code" = 'absent:absent' ]]; then
+    rag_gateway_absent
+    return
+  fi
+  case "$expected_ui_code:$expected_api_code" in
+    200:200|200:401|302:200|302:401) ;;
+    *) echo 'Invalid saved RAG gateway access policy.' >&2; return 2 ;;
+  esac
+  live_code="$(gateway_code '/rag-api/health/live')"
   test "$live_code" = 200 || return
-  anonymous_ui_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN_NAME}" "https://127.0.0.1${RAG_BASE_PATH}")"
-  test "$anonymous_ui_code" = 302 || return
-  direct_api_code="$(curl -sk -o /dev/null -w '%{http_code}' -H "Host:${DOMAIN_NAME}" "https://127.0.0.1${RAG_BASE_PATH}/api/health/live")"
+  anonymous_ui_code="$(gateway_code "$RAG_BASE_PATH")"
+  test "$anonymous_ui_code" = "$expected_ui_code" || return
+  anonymous_api_code="$(gateway_code '/rag-api/health')"
+  test "$anonymous_api_code" = "$expected_api_code" || return
+  direct_api_code="$(gateway_code "${RAG_BASE_PATH}/api/health/live")"
   test "$direct_api_code" = 404 || return
 }
 
@@ -364,7 +412,8 @@ rollback_gate() {
     rollback_failed=1
   fi
   if [[ -n "$RELEASE_PATH" ]]; then
-    verify_gateway || rollback_failed=1
+    verify_gateway "$(cat "$STATE_ROOT/gateway-ui.status")" \
+      "$(cat "$STATE_ROOT/gateway-api.status")" || rollback_failed=1
   fi
   if [[ "$rollback_failed" != 0 ]]; then
     return 1

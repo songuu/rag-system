@@ -231,6 +231,8 @@ export class RagLaneExecutor {
         if (result.evidence.length > acceptedIds.length && evidence.length >= input.budget.maxEvidence) {
           truncated = true;
         }
+        const beforeRerankIds = lane.type === 'rerank' && result.transform
+          ? evidence.map(item => item.id) : undefined;
         if (result.transform) {
           const transformed = applyEvidenceTransform(evidence, result.transform);
           evidence.splice(0, evidence.length, ...transformed);
@@ -245,6 +247,10 @@ export class RagLaneExecutor {
           retriever: handler.retriever,
           status: 'completed',
           retrievedEvidenceIds: acceptedIds,
+          ...(beforeRerankIds ? { reranking: {
+            beforeEvidenceIds: beforeRerankIds,
+            afterEvidenceIds: evidence.map(item => item.id),
+          } } : {}),
           retrievalQuality: result.retrievalQuality,
           generationUtility: result.generationUtility,
           uncertainty: result.uncertainty,

@@ -81,7 +81,8 @@ export interface ContextualizedChunkV2 {
     | 'CONTEXTUALIZER_FAILED'
     | 'CONTEXTUALIZER_EMPTY'
     | 'CONTEXTUALIZER_TIMEOUT'
-    | 'CONTEXTUALIZER_BUSY';
+    | 'CONTEXTUALIZER_BUSY'
+    | 'CONTEXTUALIZER_BUDGET_EXCEEDED';
 }
 
 export interface ContextualRetrievalV2Result {
@@ -257,8 +258,30 @@ export async function contextualizeChunksV2(
     'contextualizerTimeoutMs'
   );
   const providerKey = contextualizerAdmissionKey(options.providerKey, model);
+  const handleBudgetExceeded = (message: string): ContextualRetrievalV2Result => {
+    if (options.failureMode !== 'fallback') throw new Error(message);
+    // Context is optional during ingestion. Exhausting its budget must never
+    // discard valid source chunks or start a partial set of provider calls.
+    return {
+      version: CONTEXTUAL_RETRIEVAL_V2_VERSION,
+      mode,
+      chunks: options.chunks.map((chunk, index) => ({
+        id: rawIdentities[index].components.chunkId,
+        identity: rawIdentities[index],
+        rawContent: chunk.text,
+        generatedContext: '',
+        denseText: chunk.text,
+        ...(mode === 'shadow' ? { shadowDenseText: chunk.text } : {}),
+        status: 'fallback',
+        participatesInDenseIndex: mode === 'active',
+        errorCode: 'CONTEXTUALIZER_BUDGET_EXCEEDED',
+      })),
+      generatedCharacters: 0,
+      fallbackCount: options.chunks.length,
+    };
+  };
   if (options.chunks.length > maxProviderCalls) {
-    throw new Error('Contextual provider call count exceeds the configured budget.');
+    return handleBudgetExceeded('Contextual provider call count exceeds the configured budget.');
   }
   const contextWindows: Array<{ text: string; startOffset: number }> = [];
   let totalInputCharacters = 0;
@@ -271,7 +294,7 @@ export async function contextualizeChunksV2(
     );
     totalInputCharacters += contextWindow.text.length;
     if (totalInputCharacters > maxTotalInputCharacters) {
-      throw new Error('Contextual provider input exceeds the configured character budget.');
+      return handleBudgetExceeded('Contextual provider input exceeds the configured character budget.');
     }
     contextWindows.push(contextWindow);
   }

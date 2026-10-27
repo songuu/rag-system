@@ -58,8 +58,9 @@ test('document catalog preserves retrieval trust scope and counts only dual-read
 
   assert.match(catalog, /input\.scope\.allowedTrustLevels/);
   assert.match(catalog, /= any\(\$3::text\[\]\)/);
-  assert.match(route, /document\.elasticsearchStatus === 'ready'/);
-  assert.doesNotMatch(route, /document\.elasticsearchStatus === 'disabled'/);
+  assert.match(route, /summarizeDocumentCatalog\(documents, elasticsearchMode\)/);
+  assert.match(catalog, /document\.elasticsearchStatus === 'ready'/);
+  assert.doesNotMatch(catalog, /document\.elasticsearchStatus === 'disabled'/);
 });
 
 test('home navigation keeps labels on one line when document links are present', () => {

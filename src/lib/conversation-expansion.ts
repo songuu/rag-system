@@ -12,6 +12,7 @@ import { StringOutputParser } from '@langchain/core/output_parsers';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
+import type { Runnable } from '@langchain/core/runnables';
 
 // 导入自适应实体 RAG 的实体提取工具
 import { EntityPreprocessor } from './adaptive-entity-rag';
@@ -19,9 +20,7 @@ import { EntityPreprocessor } from './adaptive-entity-rag';
 // 导入统一模型配置系统
 import { 
   createLLM, 
-  createEmbedding, 
-  getModelFactory,
-  isOllamaProvider 
+  createEmbedding,
 } from './model-config';
 
 // ==================== 类型定义 ====================
@@ -99,7 +98,7 @@ export interface ExpansionResult {
 export interface DocumentChunk {
   id: string;
   content: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   score?: number;
 }
 
@@ -110,6 +109,84 @@ export interface ExpansionConfig {
   maxSuggestions: number;
   minRelevanceScore: number;
   enableValidation: boolean;
+}
+
+type AnchorAnalysisInput = {
+  userQuery: string;
+  aiResponse: string;
+  contextChunks: string;
+};
+
+type QuestionGenerationInput = {
+  strategyType: ExpansionStrategy;
+  strategyDesc: string;
+  topic: string;
+  referenceInfo: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function isOneOf<T extends string>(value: unknown, options: readonly T[]): value is T {
+  return isString(value) && options.some(option => option === value);
+}
+
+function isExtractedEntity(value: unknown): value is ExtractedEntity {
+  return isRecord(value)
+    && isString(value.name)
+    && isOneOf<ExtractedEntity['type']>(value.type, [
+      'product', 'person', 'organization', 'concept', 'action', 'attribute', 'other',
+    ])
+    && typeof value.confidence === 'number'
+    && Number.isFinite(value.confidence);
+}
+
+function parseModelJSON(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Some models wrap a valid JSON object in prose or a Markdown code block.
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch {
+        return {};
+      }
+    }
+    return {};
+  }
+}
+
+function normalizeAnchor(value: unknown): IntentAnchor {
+  const parsed = isRecord(value) ? value : {};
+  return {
+    entities: Array.isArray(parsed.entities) ? parsed.entities.filter(isExtractedEntity) : [],
+    attributes: Array.isArray(parsed.attributes) ? parsed.attributes.filter(isString) : [],
+    intentType: isOneOf<IntentAnchor['intentType']>(parsed.intentType, [
+      'query', 'compare', 'how-to', 'why', 'what-if', 'other',
+    ]) ? parsed.intentType : 'query',
+    stage: isOneOf<IntentAnchor['stage']>(parsed.stage, [
+      'initial', 'exploring', 'deep-diving', 'concluding',
+    ]) ? parsed.stage : 'initial',
+  };
+}
+
+function getStringEvidence(value: unknown, field?: 'name' | 'content'): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: unknown) => {
+    if (isString(item)) return [item];
+    if (field && isRecord(item)) {
+      const detail = item[field];
+      if (isString(detail)) return [detail];
+    }
+    return [];
+  });
 }
 
 // ==================== 默认配置 ====================
@@ -151,13 +228,13 @@ AI回答: {aiResponse}
 
 class IntentAnchorAnalyzer {
   private llm: BaseChatModel;
-  private chain: any;
+  private chain: Runnable<AnchorAnalysisInput, string>;
 
   constructor(llmModel: string) {
     // 使用统一模型配置系统
     this.llm = createLLM(llmModel, { temperature: 0.1 });
     
-    const prompt = ChatPromptTemplate.fromTemplate(ANCHOR_ANALYSIS_PROMPT);
+    const prompt = ChatPromptTemplate.fromTemplate<AnchorAnalysisInput>(ANCHOR_ANALYSIS_PROMPT);
     this.chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
   }
 
@@ -178,13 +255,7 @@ class IntentAnchorAnalyzer {
         contextChunks: chunksText || '无相关文档',
       });
 
-      const parsed = this.parseJSON(result);
-      return {
-        entities: parsed.entities || [],
-        attributes: parsed.attributes || [],
-        intentType: parsed.intentType || 'query',
-        stage: parsed.stage || 'initial',
-      };
+      return normalizeAnchor(parseModelJSON(result));
     } catch (error) {
       console.error('[AnchorAnalyzer] Error:', error);
       return {
@@ -196,23 +267,6 @@ class IntentAnchorAnalyzer {
     }
   }
 
-  private parseJSON(text: string): any {
-    try {
-      // 尝试直接解析
-      return JSON.parse(text);
-    } catch {
-      // 尝试提取 JSON 块
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch {
-          return {};
-        }
-      }
-      return {};
-    }
-  }
 }
 
 // ==================== 延伸策略路由器 ====================
@@ -254,8 +308,8 @@ class ExpansionStrategyRouter {
   async route(
     anchor: IntentAnchor,
     contextChunks: DocumentChunk[]
-  ): Promise<Map<ExpansionStrategy, any>> {
-    const results = new Map<ExpansionStrategy, any>();
+  ): Promise<Map<ExpansionStrategy, unknown>> {
+    const results = new Map<ExpansionStrategy, unknown>();
     const chunksText = contextChunks
       .map((c, i) => `[${i + 1}] ${c.content.slice(0, 400)}`)
       .join('\n\n');
@@ -304,7 +358,7 @@ class ExpansionStrategyRouter {
   private async executeStrategy(
     strategy: ExpansionStrategy,
     variables: Record<string, string>
-  ): Promise<any> {
+  ): Promise<unknown> {
     try {
       const promptTemplate = STRATEGY_PROMPTS[strategy];
       let prompt = promptTemplate;
@@ -314,28 +368,13 @@ class ExpansionStrategyRouter {
 
       const result = await this.llm.invoke(prompt);
       const content = typeof result.content === 'string' ? result.content : '';
-      return this.parseJSON(content);
+      return parseModelJSON(content);
     } catch (error) {
       console.error(`[StrategyRouter] ${strategy} error:`, error);
       return {};
     }
   }
 
-  private parseJSON(text: string): any {
-    try {
-      return JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch {
-          return {};
-        }
-      }
-      return {};
-    }
-  }
 }
 
 // ==================== 候选问题生成器 ====================
@@ -368,18 +407,18 @@ const QUESTION_GENERATION_PROMPT = `你是一个智能问答助手，根据文�
 
 class CandidateQuestionGenerator {
   private llm: BaseChatModel;
-  private chain: any;
+  private chain: Runnable<QuestionGenerationInput, string>;
 
   constructor(llmModel: string) {
     // 使用统一模型配置系统
     this.llm = createLLM(llmModel, { temperature: 0.5 });
     
-    const prompt = ChatPromptTemplate.fromTemplate(QUESTION_GENERATION_PROMPT);
+    const prompt = ChatPromptTemplate.fromTemplate<QuestionGenerationInput>(QUESTION_GENERATION_PROMPT);
     this.chain = prompt.pipe(this.llm).pipe(new StringOutputParser());
   }
 
   async generate(
-    strategyResults: Map<ExpansionStrategy, any>,
+    strategyResults: Map<ExpansionStrategy, unknown>,
     anchor: IntentAnchor,
     contextChunks: DocumentChunk[]
   ): Promise<CandidateQuestion[]> {
@@ -405,15 +444,15 @@ class CandidateQuestionGenerator {
       .join('\n\n');
 
     for (const [strategy, result] of strategyResults) {
-      if (!result || Object.keys(result).length === 0) continue;
+      if (!isRecord(result) || Object.keys(result).length === 0) continue;
 
       let strategyHint = '';
       if (strategy === 'drill-down' && result.unexploredAttributes) {
-        strategyHint = `建议探索的属性: ${result.unexploredAttributes.join(', ')}`;
+        strategyHint = `建议探索的属性: ${getStringEvidence(result.unexploredAttributes).join(', ')}`;
       } else if (strategy === 'lateral-move' && result.relatedEntities) {
-        strategyHint = `文档中提到的相关实体: ${result.relatedEntities.map((e: any) => e.name || e).join(', ')}`;
+        strategyHint = `文档中提到的相关实体: ${getStringEvidence(result.relatedEntities, 'name').join(', ')}`;
       } else if (strategy === 'logical-flow' && result.logicalExtensions) {
-        strategyHint = `文档中的逻辑延伸点: ${result.logicalExtensions.map((e: any) => e.content || e).join('; ')}`;
+        strategyHint = `文档中的逻辑延伸点: ${getStringEvidence(result.logicalExtensions, 'content').join('; ')}`;
       }
 
       // 将策略提示和原始文档内容结合
@@ -427,8 +466,8 @@ class CandidateQuestionGenerator {
           referenceInfo,
         });
 
-        const parsed = this.parseJSON(response);
-        const questions = parsed.questions || [];
+        const parsed = parseModelJSON(response);
+        const questions = isRecord(parsed) && Array.isArray(parsed.questions) ? parsed.questions : [];
 
         for (const q of questions) {
           if (typeof q === 'string' && q.trim()) {
@@ -450,21 +489,6 @@ class CandidateQuestionGenerator {
     return candidates;
   }
 
-  private parseJSON(text: string): any {
-    try {
-      return JSON.parse(text);
-    } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          return JSON.parse(jsonMatch[0]);
-        } catch {
-          return {};
-        }
-      }
-      return {};
-    }
-  }
 }
 
 // ==================== 证据闭环校验器 (强化版) ====================
@@ -713,19 +737,19 @@ export class ConversationExpansionEngine {
     };
 
     // 1. 意图锚点分析
-    let anchorStart = Date.now();
+    const anchorStart = Date.now();
     const anchor = await this.anchorAnalyzer.analyze(userQuery, aiResponse, contextChunks);
     timings.anchorAnalysis = Date.now() - anchorStart;
     console.log('[ExpansionEngine] Anchor:', anchor);
 
     // 2. 策略路由
-    let routeStart = Date.now();
+    const routeStart = Date.now();
     const strategyResults = await this.strategyRouter.route(anchor, contextChunks);
     timings.strategyRouting = Date.now() - routeStart;
     console.log('[ExpansionEngine] Strategy results:', Object.fromEntries(strategyResults));
 
     // 3. 候选问题生成
-    let genStart = Date.now();
+    const genStart = Date.now();
     const candidates = await this.questionGenerator.generate(
       strategyResults,
       anchor,
@@ -737,7 +761,7 @@ export class ConversationExpansionEngine {
     // 4. 证据校验
     let suggestions: CandidateQuestion[] = candidates;
     if (this.config.enableValidation && candidates.length > 0) {
-      let valStart = Date.now();
+      const valStart = Date.now();
       suggestions = await this.validator.validate(candidates, contextChunks, userQuery);
       timings.validation = Date.now() - valStart;
     }

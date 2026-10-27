@@ -1,18 +1,20 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { formatDocumentChunkCounts, type DocumentChunkCounts } from '@/lib/documents/document-counts';
 
 // ============== 类型定义 ==============
 
 interface SearchResult {
   id: string;
   content: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   score: number;
   distance?: number;
 }
 
 interface QueryVisualizerProps {
+  documentCounts: DocumentChunkCounts | null;
   embeddingModel?: string;
   onSearchComplete?: (results: SearchResult[]) => void;
   className?: string;
@@ -50,6 +52,7 @@ function getSimilarityColor(score: number) {
 // ============== 主组件 ==============
 
 export default function MilvusQueryVisualizer({
+  documentCounts,
   embeddingModel = 'nomic-embed-text',
   onSearchComplete,
   className = '',
@@ -65,9 +68,8 @@ export default function MilvusQueryVisualizer({
     results: [],
     timing: {}
   });
-  const [milvusStatus, setMilvusStatus] = useState<{ connected: boolean; rowCount: number; dimension: number }>({
+  const [milvusStatus, setMilvusStatus] = useState<{ connected: boolean; dimension: number }>({
     connected: false,
-    rowCount: 0,
     dimension: 768
   });
   const [selectedResult, setSelectedResult] = useState<string | null>(null);
@@ -90,10 +92,9 @@ export default function MilvusQueryVisualizer({
 
       setMilvusStatus({
         connected: Boolean(statusData.connected),
-        rowCount: statusData.stats?.rowCount || 0,
         dimension: statusData.stats?.embeddingDimension || 768,
       });
-    } catch (error) {
+    } catch {
       setMilvusStatus(prev => ({ ...prev, connected: false }));
     }
   }, []);
@@ -255,9 +256,10 @@ export default function MilvusQueryVisualizer({
               <div className="text-sm font-medium text-gray-900">Milvus 查询可视化</div>
               <div className="text-xs text-gray-500">
                 {milvusStatus.connected ? (
-                  <span className="flex items-center gap-1">
+                  <span className="flex flex-wrap items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
-                    {milvusStatus.rowCount} 文档 · {milvusStatus.dimension}D
+                    <span>{formatDocumentChunkCounts(documentCounts)}</span>
+                    <span>· {milvusStatus.dimension}D</span>
                   </span>
                 ) : (
                   <span className="flex items-center gap-1">
@@ -292,7 +294,7 @@ export default function MilvusQueryVisualizer({
           </div>
           <div>
             <div className="text-sm font-medium text-gray-900">Milvus 实时查询</div>
-            <div className="text-xs text-gray-500 flex items-center gap-2">
+            <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2">
               {milvusStatus.connected ? (
                 <>
                   <span className="flex items-center gap-1">
@@ -300,7 +302,7 @@ export default function MilvusQueryVisualizer({
                     在线
                   </span>
                   <span className="text-gray-300">|</span>
-                  <span>{milvusStatus.rowCount} 文档</span>
+                  <span>{formatDocumentChunkCounts(documentCounts)}</span>
                   <span className="text-gray-300">|</span>
                   <span>{milvusStatus.dimension}D</span>
                 </>
@@ -324,13 +326,15 @@ export default function MilvusQueryVisualizer({
       </div>
 
       {/* 生产环境通过受保护的 pipeline 入库，不能调用已废弃的 legacy sync 路由。 */}
-      {milvusStatus.connected && milvusStatus.rowCount === 0 && (
+      {milvusStatus.connected && documentCounts?.searchableChunkCount === 0 && (
         <div className="px-4 py-3 bg-amber-50 border-b border-amber-100">
           <div className="flex items-center gap-2 text-sm text-amber-700">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            当前语料库为空。请通过文档管理上传文件，系统会写入当前受保护的语料库。
+            {documentCounts.chunkCount > 0
+              ? '当前没有启用的文档块。可在文档管理中启用已有文档，或上传新文档。'
+              : '当前语料库为空。请通过文档管理上传文件，系统会写入当前受保护的语料库。'}
           </div>
         </div>
       )}
@@ -543,6 +547,8 @@ export default function MilvusQueryVisualizer({
                   visualization.results.map((result, i) => {
                     const color = getSimilarityColor(result.score);
                     const isSelected = selectedResult === result.id;
+                    const source = result.metadata?.source;
+                    const sourceLabel = typeof source === 'string' && source ? source : `文档 ${i + 1}`;
                     
                     return (
                       <div
@@ -563,7 +569,7 @@ export default function MilvusQueryVisualizer({
                               {i + 1}
                             </span>
                             <span className="text-xs font-medium text-gray-700 truncate max-w-[120px]">
-                              {result.metadata?.source || `文档 ${i + 1}`}
+                              {sourceLabel}
                             </span>
                           </div>
                           <span className={`text-xs font-bold ${color.text}`}>

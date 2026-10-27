@@ -18,6 +18,8 @@
 import { OllamaEmbeddings } from '@langchain/ollama';
 import { OpenAIEmbeddings } from '@langchain/openai';
 import { Embeddings } from '@langchain/core/embeddings';
+import { getActiveEmbeddingIndex } from './embedding-index-state';
+import { OLLAMA_EMBEDDING_NUM_CTX, resolveOllamaRuntimeSettings } from './ollama-readiness';
 
 // ==================== SiliconFlow 自定义 Embedding 类 ====================
 
@@ -78,7 +80,12 @@ class SiliconFlowEmbeddings extends Embeddings {
     const url = `${this.baseUrl}/embeddings`;
     
     // 构建请求体 - 仅包含 SiliconFlow 支持的参数
-    const body: any = {
+    const body: {
+      model: string;
+      input: string[];
+      encoding_format: 'float';
+      dimensions?: number;
+    } = {
       model: this.model,
       input: inputs,
       encoding_format: 'float',
@@ -106,12 +113,12 @@ class SiliconFlowEmbeddings extends Embeddings {
       throw new Error(`SiliconFlow API 错误 (${response.status}): ${errorText}`);
     }
 
-    const data = await response.json();
+    const data: { data: Array<{ index: number; embedding: number[] }> } = await response.json();
     
     // 提取 embedding 向量
     const embeddings = data.data
-      .sort((a: any, b: any) => a.index - b.index)
-      .map((item: any) => item.embedding);
+      .sort((a, b) => a.index - b.index)
+      .map((item) => item.embedding);
     
     console.log(`[SiliconFlow] 成功获取 ${embeddings.length} 个向量, 维度: ${embeddings[0]?.length}`);
     
@@ -133,7 +140,7 @@ export interface EmbeddingModelConfig {
   dimension: number;
   maxTokens?: number;
   batchSize?: number;
-  options?: Record<string, any>;
+  options?: Record<string, unknown>;
 }
 
 /** Embedding 环境配置 */
@@ -335,6 +342,7 @@ export class EmbeddingFactory {
    * @param options 额外配置
    */
   createEmbedding(modelName?: string, options: Partial<EmbeddingModelConfig> = {}): Embeddings {
+    modelName ||= getActiveEmbeddingIndex()?.model;
     const provider = options.provider || this.envConfig.EMBEDDING_PROVIDER;
     const cacheKey = `${provider}:${modelName || 'default'}:${JSON.stringify(options)}`;
     
@@ -372,10 +380,18 @@ export class EmbeddingFactory {
     const actualModel = modelName || this.envConfig.OLLAMA_EMBEDDING_MODEL;
     console.log(`[EmbeddingFactory] 创建 Ollama Embedding: ${actualModel}`);
     
+    const requestOptions = options.options?.requestOptions;
     return new OllamaEmbeddings({
       baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL,
       model: actualModel,
       ...options.options,
+      keepAlive: resolveOllamaRuntimeSettings().keepAlive,
+      // Match preloading so a short query never allocates the server's huge default KV cache.
+      requestOptions: {
+        ...(requestOptions && typeof requestOptions === 'object' ? requestOptions : {}),
+        numCtx: OLLAMA_EMBEDDING_NUM_CTX,
+        num_ctx: OLLAMA_EMBEDDING_NUM_CTX,
+      },
     });
   }
   
@@ -475,6 +491,8 @@ export class EmbeddingFactory {
    * - custom: 优先使用 CUSTOM_EMBEDDING_DIMENSION 环境变量
    */
   getModelDimension(modelName?: string): number {
+    const active = getActiveEmbeddingIndex();
+    if (active && (!modelName || modelName.replace(/:latest$/u, '') === active.model.replace(/:latest$/u, ''))) return active.dimension;
     const provider = this.envConfig.EMBEDDING_PROVIDER;
     let actualModel: string;
     
@@ -686,13 +704,15 @@ export function getEmbeddingFactory(): EmbeddingFactory {
  * 快捷创建 Embedding 实例
  */
 export function createEmbeddingModel(modelName?: string, options?: Partial<EmbeddingModelConfig>): Embeddings {
-  return getEmbeddingFactory().createEmbedding(modelName, options);
+  return getEmbeddingFactory().createEmbedding(modelName || getActiveEmbeddingIndex()?.model, options);
 }
 
 /**
  * 获取当前 Embedding 模型维度
  */
 export function getEmbeddingDimension(modelName?: string): number {
+  const active = getActiveEmbeddingIndex();
+  if (active && (!modelName || modelName.replace(/:latest$/u, '') === active.model.replace(/:latest$/u, ''))) return active.dimension;
   return getEmbeddingFactory().getModelDimension(modelName);
 }
 
@@ -714,7 +734,9 @@ export function selectEmbeddingModelByDimension(dimension: number): string {
  * 获取 Embedding 配置摘要
  */
 export function getEmbeddingConfigSummary() {
-  return getEmbeddingFactory().getConfigSummary();
+  const summary = getEmbeddingFactory().getConfigSummary();
+  const active = getActiveEmbeddingIndex();
+  return active ? { ...summary, model: active.model, dimension: active.dimension } : summary;
 }
 
 /**

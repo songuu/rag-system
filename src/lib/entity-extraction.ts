@@ -824,7 +824,10 @@ export class EntityExtractor {
             // 更新已有实体
             const existing = entities.get(existingId)!;
             existing.mentions += 1;
-            existing.sourceChunks.push(chunk.id);
+            // Multiple mentions in one chunk share the same evidence reference.
+            if (!existing.sourceChunks.includes(chunk.id)) {
+              existing.sourceChunks.push(chunk.id);
+            }
             if (entity.description.length > existing.description.length) {
               existing.description = entity.description;
             }

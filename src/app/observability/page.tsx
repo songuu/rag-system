@@ -1,11 +1,14 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ArrowLeft, BarChart3, Clock, CheckCircle, Coins, RefreshCw, Trash2, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import Link from 'next/link';
+import type { Generation, Observation, Score } from '@/lib/observability';
+
+type TraceObservation = Pick<Observation, 'name' | 'type'> & Pick<Generation, 'usage'>;
 
 interface Trace {
   id: string;
@@ -13,10 +16,10 @@ interface Trace {
   startTime: string;
   endTime?: string;
   status: 'PENDING' | 'SUCCESS' | 'ERROR';
-  input?: any;
-  output?: any;
-  observations: any[];
-  scores: any[];
+  input?: unknown;
+  output?: unknown;
+  observations: TraceObservation[];
+  scores: Pick<Score, 'name' | 'value' | 'source' | 'comment'>[];
   userId?: string;
   sessionId?: string;
 }
@@ -29,6 +32,22 @@ interface TraceStats {
   avgTokensPerTrace: number;
 }
 
+function getTraceQuestion(input: unknown): string {
+  if (input && typeof input === 'object' && 'question' in input && typeof input.question === 'string') {
+    return input.question || 'No question';
+  }
+  return 'No question';
+}
+
+async function fetchTraceList(signal?: AbortSignal): Promise<{
+  success: boolean;
+  traces: Trace[];
+  stats: TraceStats;
+}> {
+  const response = await fetch('/rag-api/traces', { signal });
+  return response.json();
+}
+
 export default function ObservabilityPage() {
   const [traces, setTraces] = useState<Trace[]>([]);
   const [stats, setStats] = useState<TraceStats>({
@@ -39,23 +58,26 @@ export default function ObservabilityPage() {
     avgTokensPerTrace: 0
   });
   const [selectedTrace, setSelectedTrace] = useState<Trace | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const loadTraces = async () => {
-    setIsLoading(true);
-    try {
-      const response = await fetch('/rag-api/traces');
-      const data = await response.json();
-      
+  const loadTraces = useCallback((signal?: AbortSignal) => fetchTraceList(signal)
+    .then((data) => {
+      if (signal?.aborted) return;
       if (data.success) {
         setTraces(data.traces);
         setStats(data.stats);
       }
-    } catch (error) {
-      console.error('加载 Traces 失败:', error);
-    } finally {
-      setIsLoading(false);
-    }
+    })
+    .catch((error: unknown) => {
+      if (!signal?.aborted) console.error('加载 Traces 失败:', error);
+    })
+    .finally(() => {
+      if (!signal?.aborted) setIsLoading(false);
+    }), []);
+
+  const refreshTraces = () => {
+    setIsLoading(true);
+    void loadTraces();
   };
 
   const clearTraces = async () => {
@@ -98,7 +120,7 @@ export default function ObservabilityPage() {
       });
       
       // 重新加载数据
-      loadTraces();
+      refreshTraces();
     } catch (error) {
       console.error('添加反馈失败:', error);
     }
@@ -123,15 +145,18 @@ export default function ObservabilityPage() {
     return `${duration}ms`;
   };
 
-  const getTotalTokens = (observations: any[]) => {
+  const getTotalTokens = (observations: TraceObservation[]) => {
     return observations
       .filter(obs => obs.type === 'GENERATION')
       .reduce((sum, gen) => sum + (gen.usage?.totalTokens || 0), 0);
   };
 
   useEffect(() => {
-    loadTraces();
-  }, []);
+    const controller = new AbortController();
+    void loadTraces(controller.signal);
+    // StrictMode replay and unmount must not commit a stale response.
+    return () => controller.abort();
+  }, [loadTraces]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
@@ -150,7 +175,7 @@ export default function ObservabilityPage() {
               <h1 className="text-xl font-bold text-slate-900">可观测性仪表盘</h1>
             </div>
             <div className="flex items-center space-x-4">
-              <Button onClick={loadTraces} disabled={isLoading} size="sm">
+              <Button onClick={refreshTraces} disabled={isLoading} size="sm">
                 <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
                 刷新
               </Button>
@@ -239,6 +264,7 @@ export default function ObservabilityPage() {
                 ) : (
                   <div className="space-y-4">
                     {traces
+                      .slice()
                       .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime())
                       .map((trace) => (
                         <div
@@ -257,7 +283,7 @@ export default function ObservabilityPage() {
                                 </Badge>
                               </div>
                               <p className="text-sm text-slate-600 truncate">
-                                {trace.input?.question || 'No question'}
+                                {getTraceQuestion(trace.input)}
                               </p>
                             </div>
                             <div className="text-right text-sm text-slate-500">

@@ -5,6 +5,36 @@
 
 import { AutoTokenizer, AutoModel } from '@xenova/transformers';
 
+type LoadedTokenizer = Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>>;
+
+interface EmbeddingModelView {
+  embeddings?: {
+    word_embeddings?: {
+      weight?: { data?: Float32Array; shape?: unknown };
+    };
+  };
+}
+
+interface VocabularyToken {
+  id?: number;
+  content: string;
+}
+
+interface TokenizerVocabularySource {
+  model?: { vocab?: unknown; encoder?: unknown };
+  vocab?: unknown;
+  encoder?: unknown;
+  tokenizer_?: { model?: { vocab?: unknown }; vocab?: unknown };
+  _tokenizer?: { model?: { vocab?: unknown } };
+  added_tokens?: { forEach(callback: (token: VocabularyToken) => void): void };
+}
+
+// Preserve the existing two-argument adapter call; the installed SDK declares a
+// different overload, so changing its arguments is a separate behavior change.
+interface LegacyTokenEncoder {
+  encode(text: string, options: { add_special_tokens: boolean }): number[];
+}
+
 // 向量加权信息
 export interface VectorWeightInfo {
   token: string;
@@ -60,8 +90,8 @@ export interface ModelComparison {
  * 向量加权分析器
  */
 export class VectorWeightAnalyzer {
-  private tokenizer: any = null;
-  private model: any = null;
+  private tokenizer: LoadedTokenizer | null = null;
+  private model: EmbeddingModelView | null = null;
   private embeddingWeights: Float32Array | null = null;
   private initialized: boolean = false;
 
@@ -81,7 +111,7 @@ export class VectorWeightAnalyzer {
       
       // 尝试加载模型以获取权重
       try {
-        this.model = await AutoModel.from_pretrained(this.modelName);
+        this.model = await AutoModel.from_pretrained(this.modelName) as unknown as EmbeddingModelView;
         
         // 提取 word_embeddings 权重
         if (this.model && this.model.embeddings && this.model.embeddings.word_embeddings) {
@@ -113,7 +143,7 @@ export class VectorWeightAnalyzer {
 
     for (const { token, tokenId } of tokens) {
       let vectorMagnitude = 0;
-      let embedding: number[] = [];
+      const embedding: number[] = [];
       let semanticUniqueness = 0;
 
       // 使用估算方法（@xenova/transformers 的向量提取比较复杂）
@@ -270,6 +300,8 @@ export class TokenizationScorecardGenerator {
     vectorWeights: VectorWeightInfo[],
     densityInfos: TokenDensityInfo[]
   ): TokenizationScorecard {
+    // Keep the existing density argument/API; the current score uses weights only.
+    void densityInfos;
     // 1. 碎片化率
     const textLength = new TextEncoder().encode(originalText).length;
     const tokenCount = tokens.length;
@@ -342,15 +374,15 @@ export class ModelComparisonAnalyzer {
   /**
    * 从 tokenizer 中提取词汇表 (id -> token 映射)
    */
-  private extractVocabulary(tokenizer: any): Map<number, string> {
+  private extractVocabulary(tokenizer: TokenizerVocabularySource): Map<number, string> {
     const idToToken = new Map<number, string>();
     
     // 辅助函数：从对象或Map中提取词汇
-    const extractFromVocabObject = (vocabObj: any) => {
+    const extractFromVocabObject = (vocabObj: unknown) => {
       if (!vocabObj) return;
       
       if (vocabObj instanceof Map) {
-        vocabObj.forEach((value: any, key: any) => {
+        vocabObj.forEach((value: unknown, key: unknown) => {
           if (typeof key === 'string' && typeof value === 'number') {
             idToToken.set(value, key);
           } else if (typeof value === 'string' && typeof key === 'number') {
@@ -358,7 +390,7 @@ export class ModelComparisonAnalyzer {
           }
         });
       } else if (Array.isArray(vocabObj)) {
-        vocabObj.forEach((token, index) => {
+        (vocabObj as Array<string | VocabularyToken | null | undefined>).forEach((token, index) => {
           if (typeof token === 'string') {
             idToToken.set(index, token);
           } else if (token && typeof token.content === 'string') {
@@ -402,7 +434,7 @@ export class ModelComparisonAnalyzer {
     // 添加 added_tokens
     if (tokenizer.added_tokens) {
       try {
-        tokenizer.added_tokens.forEach((tokenInfo: any) => {
+        tokenizer.added_tokens.forEach((tokenInfo: VocabularyToken) => {
           if (tokenInfo && tokenInfo.content && typeof tokenInfo.id === 'number') {
             idToToken.set(tokenInfo.id, tokenInfo.content);
           }
@@ -432,7 +464,7 @@ export class ModelComparisonAnalyzer {
         const tokenizer = await AutoTokenizer.from_pretrained(modelName);
         
         // 分词
-        const tokenizerAny = tokenizer as any;
+        const tokenizerAny = tokenizer as unknown as LegacyTokenEncoder;
         const encoded = tokenizerAny.encode(text, { add_special_tokens: false }) as number[];
         
         // 获取 id 到 token 的映射

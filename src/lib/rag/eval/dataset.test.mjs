@@ -169,3 +169,34 @@ test('E1b V2 rejects unknown forbidden evidence and quarantined gold', () => {
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');
 }
+
+test('V1 generated annotations retain reference answer and validated source spans on round trip', () => {
+  const input = structuredClone(fixture);
+  input.cases[0].expectedAnswer.referenceAnswer = '根据资料给出的完整参考答案。';
+  input.cases[0].goldEvidence[0].spans = [{ startOffset: 0, endOffset: 3 }];
+  const parsed = parseRagEvalDataset(input);
+  assert.equal(parsed.cases[0].expectedAnswer.referenceAnswer, input.cases[0].expectedAnswer.referenceAnswer);
+  assert.deepEqual(parsed.cases[0].goldEvidence[0].spans, input.cases[0].goldEvidence[0].spans);
+  assert.deepEqual(parseRagEvalDataset(JSON.parse(JSON.stringify(parsed))), parsed);
+});
+
+test('V1 optional spans and reference answer reject invalid values without weakening legacy parsing', () => {
+  const input = structuredClone(fixture);
+  input.cases[0].goldEvidence[0].spans = [{ startOffset: 0, endOffset: 999999 }];
+  assert.throws(() => parseRagEvalDataset(input), /must not exceed evidence content length/);
+  delete input.cases[0].goldEvidence[0].spans;
+  input.cases[0].expectedAnswer.referenceAnswer = ' ';
+  assert.throws(() => parseRagEvalDataset(input), /referenceAnswer: must be a non-empty string/);
+});
+
+test('V1 knowledge corpus preserves optional canonical identity and validates supplied fields', () => {
+  const input = structuredClone(fixture);
+  Object.assign(input.corpus[0], { documentVersion: 'revision-1', tenantId: 'tenant-a', corpusId: 'corpus-a', trustLevel: 'external' });
+  const corpus = parseRagEvalDataset(input).corpus[0];
+  assert.equal(corpus.documentVersion, 'revision-1');
+  assert.equal(corpus.tenantId, 'tenant-a');
+  assert.equal(corpus.corpusId, 'corpus-a');
+  assert.equal(corpus.trustLevel, 'external');
+  input.corpus[0].documentVersion = '';
+  assert.throws(() => parseRagEvalDataset(input), /documentVersion/);
+});

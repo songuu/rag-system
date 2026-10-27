@@ -1,4 +1,5 @@
 import type { RagEvidence } from '../core/types';
+import { listRetrievableDocumentIds } from '../../documents/document-visibility';
 import type { RagLaneHandler, RagLaneHandlerResult } from './lane-executor';
 import type { RagRetrievalLane } from './retrieval-plan';
 import type { GraphEdge, GraphNode, GraphPassage } from '../../mirofish/types';
@@ -17,6 +18,12 @@ import {
   type GraphRetrievalPort,
 } from '../../knowledge-graph/contracts';
 import { createMiroFishGraphVersion } from '../../knowledge-graph/mirofish-adapter';
+import {
+  GRAPH_EVIDENCE_LIMITS,
+  readGraphEvidencePaths,
+  type GraphEvidencePath,
+  type GraphRelationEvidence,
+} from '../../knowledge-graph/graph-evidence';
 
 export interface GraphEntityLaneOptions {
   store?: MiroFishGraphArtifactStore;
@@ -154,6 +161,10 @@ export function createGraphEntityLaneHandler(
       const config = readLaneConfig(context.lane, defaultMaxHops);
       if (!config) {
         return noGain('graph_lane_not_configured');
+      }
+      const retrievableDocumentIds = await listRetrievableDocumentIds(scope);
+      if (retrievableDocumentIds !== null && !retrievableDocumentIds.includes(config.documentId)) {
+        return noGain('document_unavailable');
       }
       const identity: MiroFishGraphArtifactIdentity = {
         tenantId: scope.tenantId,
@@ -380,7 +391,8 @@ export async function rankGraphArtifactPassages(input: {
   const { edgesByNode, edgesById, indexedEdges } = edgeIndex;
   const selectedScores = new Map<string, number>();
   const selectedHops = new Map<string, number>();
-  const queue: Array<{ id: string; score: number; hop: number }> = [];
+  const selectedPaths = new Map<string, GraphEdge[]>();
+  const queue: Array<{ id: string; score: number; hop: number; path: GraphEdge[] }> = [];
   const seedCandidates: Array<{ id: string; score: number }> = [];
 
   for (const node of nodes.values()) {
@@ -400,7 +412,7 @@ export async function rankGraphArtifactPassages(input: {
     const { id, score } = seed;
     selectedScores.set(id, score);
     selectedHops.set(id, 0);
-    queue.push({ id, score, hop: 0 });
+    queue.push({ id, score, hop: 0, path: [] });
     bestQueuedStateScore.set(createExpansionStateKey(id, 0), score);
   }
 
@@ -442,11 +454,13 @@ export async function rankGraphArtifactPassages(input: {
       if (score <= (selectedScores.get(neighborId) ?? 0)) continue;
       selectedScores.set(neighborId, score);
       selectedHops.set(neighborId, hop);
+      const path = [...current.path, edge];
+      selectedPaths.set(neighborId, path);
       const neighborStateKey = createExpansionStateKey(neighborId, hop);
       if (processedStates.has(neighborStateKey)) continue;
       if (score <= (bestQueuedStateScore.get(neighborStateKey) ?? 0)) continue;
       bestQueuedStateScore.set(neighborStateKey, score);
-      queue.push({ id: neighborId, score, hop });
+      queue.push({ id: neighborId, score, hop, path });
     }
   }
 
@@ -595,6 +609,76 @@ export async function rankGraphArtifactPassages(input: {
         || left[0].localeCompare(right[0]);
     });
   const selectedPassages = ranked.slice(0, input.topK);
+  const selectedPassageIds = new Set(selectedPassages.map(([id]) => id));
+  const pathsByPassage = new Map<string, Map<string, GraphEvidencePath>>();
+  const relationCache = new Map<string, GraphRelationEvidence | undefined>();
+  const readRelation = async (edge: GraphEdge): Promise<GraphRelationEvidence | undefined> => {
+    if (relationCache.has(edge.uuid)) return relationCache.get(edge.uuid);
+    relationCache.set(edge.uuid, undefined);
+    if (edge.invalid_at || edge.expired_at
+      || (edge.attributes.status !== undefined && edge.attributes.status !== 'active')) return undefined;
+    const passageIds = new Set<string>();
+    sources:
+    for (const references of [readUnknownArray(edge.attributes.sourceChunks), edge.episodes]) {
+      for (const reference of references) {
+        const checkpoint = traversal.consumeReferences(1);
+        if (checkpoint === false) return undefined;
+        if (checkpoint) await checkpoint;
+        const id = readTrimmedString(reference);
+        const passage = id ? passagesById.get(id) : undefined;
+        if (!passage || passage.document_id !== input.artifact.documentId
+          || (passage.tenant_id !== undefined && passage.tenant_id !== input.artifact.tenantId)
+          || (passage.corpus_id !== undefined && passage.corpus_id !== input.artifact.corpusId)
+          || (passage.document_version !== undefined && passage.document_version !== input.artifact.documentVersion)
+          || (passage.trust_level !== undefined && passage.trust_level !== input.artifact.trustLevel)) continue;
+        passageIds.add(passage.id);
+        if (passageIds.size >= GRAPH_EVIDENCE_LIMITS.maxPassagesPerRelation) break sources;
+      }
+    }
+    const candidate: GraphRelationEvidence = {
+      claimId: edge.uuid,
+      sourceEntityId: edge.source_node_uuid,
+      sourceEntityName: nodes.get(edge.source_node_uuid)?.name ?? edge.source_node_name,
+      predicate: edge.name,
+      targetEntityId: edge.target_node_uuid,
+      targetEntityName: nodes.get(edge.target_node_uuid)?.name ?? edge.target_node_name,
+      passageIds: [...passageIds],
+    };
+    const relation = readGraphEvidencePaths([[candidate]])[0]?.[0];
+    relationCache.set(edge.uuid, relation);
+    return relation;
+  };
+  const attachPath = async (edges: GraphEdge[]): Promise<boolean> => {
+    const checkpoint = traversal.consumeOperation();
+    if (checkpoint === false) return false;
+    if (checkpoint) await checkpoint;
+    const path: GraphEvidencePath = [];
+    for (const edge of edges) {
+      const relation = await readRelation(edge);
+      if (!relation || !relation.passageIds.some(id => selectedPassageIds.has(id))) return true;
+      path.push(relation);
+    }
+    const validated = readGraphEvidencePaths([path])[0];
+    if (!validated) return true;
+    const key = JSON.stringify(validated.map(relation => relation.claimId));
+    for (const relation of validated) {
+      for (const passageId of relation.passageIds) {
+        if (!selectedPassageIds.has(passageId)) continue;
+        const paths = pathsByPassage.get(passageId) ?? new Map<string, GraphEvidencePath>();
+        if (paths.size < GRAPH_EVIDENCE_LIMITS.maxPathsPerEvidence || paths.has(key)) paths.set(key, validated);
+        else traversal.markTruncated();
+        pathsByPassage.set(passageId, paths);
+      }
+    }
+    return true;
+  };
+  for (const path of selectedPaths.values()) {
+    if (!await attachPath(path)) break;
+  }
+  for (const edge of indexedEdges) {
+    if (!selectedScores.has(edge.source_node_uuid) || !selectedScores.has(edge.target_node_uuid)) continue;
+    if (!await attachPath([edge])) break;
+  }
 
   return {
     evidence: selectedPassages.map(([passageId, ranking]) =>
@@ -602,7 +686,8 @@ export async function rankGraphArtifactPassages(input: {
         passagesById.get(passageId)!,
         ranking,
         input.artifact,
-        input.laneId
+        input.laneId,
+        [...(pathsByPassage.get(passageId)?.values() ?? [])]
       )
     ),
     matchedEntityIds: Array.from(selectedScores.keys()).sort(),
@@ -624,7 +709,8 @@ function toEvidence(
   passage: GraphPassage,
   ranking: PassageScore,
   artifact: MiroFishGraphArtifact,
-  laneId: string
+  laneId: string,
+  paths: GraphEvidencePath[]
 ): RagEvidence {
   return {
     id: `graph:${artifact.documentVersion}:${passage.id}`,
@@ -644,11 +730,13 @@ function toEvidence(
     metadata: {
       ...(passage.metadata ?? {}),
       graphId: artifact.graph.graph_id,
+      graphVersion: createMiroFishGraphVersion(artifact),
       graphArtifactSchema: artifact.schemaVersion,
       graphPassageId: passage.id,
       graphEntityIds: Array.from(ranking.entityIds).sort(),
       graphCommunityIds: Array.from(ranking.communityIds).sort(),
       graphMinimumHop: Number.isFinite(ranking.minimumHop) ? ranking.minimumHop : null,
+      graphPaths: paths,
     },
   };
 }

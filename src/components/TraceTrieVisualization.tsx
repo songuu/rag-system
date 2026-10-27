@@ -8,7 +8,6 @@ const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
 // 导入类型定义
 import type {
   LogicWaterfall,
-  WaterfallStage,
   PathToken
 } from '@/lib/trace-trie';
 import type {
@@ -36,8 +35,18 @@ interface TraceTrieVisualizationProps {
   onTokenClick?: (token: PathToken) => void;
 }
 
+type TokenScatterPoint = [frequency: number, magnitude: number, token: string, density: number];
+interface TokenScatterParams {
+  data: TokenScatterPoint;
+}
+
+function escapeTooltipToken(token: string): string {
+  // ECharts inserts formatter strings as HTML rather than escaped React text.
+  return token.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
 export default function TraceTrieVisualization({
-  text,
   waterfall,
   vectorWeights = [],
   densityInfos = [],
@@ -67,7 +76,6 @@ export default function TraceTrieVisualization({
     let position = 0;
     finalStage.tokens.forEach((token, index) => {
       const density = densityInfos.find(d => d.tokenId === token.tokenId);
-      const vectorWeight = vectorWeights.find(v => v.tokenId === token.tokenId);
       
       // 检查是否是字节回退（碎片化）
       if (token.token.startsWith('[0x') || token.token.length === 1) {
@@ -115,7 +123,7 @@ export default function TraceTrieVisualization({
     });
     
     return warnings;
-  }, [waterfall, densityInfos, vectorWeights]);
+  }, [waterfall, densityInfos]);
 
   // 渲染语义密度警告面板
   const renderWarningsPanel = () => {
@@ -598,10 +606,10 @@ export default function TraceTrieVisualization({
     if (vectorWeights.length === 0 || densityInfos.length === 0) return null;
 
     // 准备 ECharts 数据
-    const scatterData = vectorWeights.map((vw, index) => {
-      const density = densityInfos[index];
+    const densityByToken = new Map(densityInfos.map(density => [density.tokenId, density.density]));
+    const scatterData: TokenScatterPoint[] = vectorWeights.map((vw) => {
       const frequency = 1 / (vw.tokenId + 1);
-      return [frequency, vw.vectorMagnitude, vw.token, density?.density || 1];
+      return [frequency, vw.vectorMagnitude, vw.token, densityByToken.get(vw.tokenId) ?? 1];
     });
 
     const option = {
@@ -614,9 +622,9 @@ export default function TraceTrieVisualization({
       },
       tooltip: {
         trigger: 'item',
-        formatter: (params: any) => {
+        formatter: (params: TokenScatterParams) => {
           return `<div style="font-family: monospace;">
-            <strong>${params.data[2]}</strong><br/>
+            <strong>${escapeTooltipToken(params.data[2])}</strong><br/>
             频率: ${params.data[0].toFixed(4)}<br/>
             权重: ${params.data[1].toFixed(3)}<br/>
             密度: ${params.data[3].toFixed(2)}
@@ -645,12 +653,12 @@ export default function TraceTrieVisualization({
       series: [{
         type: 'scatter',
         data: scatterData,
-        symbolSize: (data: number[]) => {
-          const density = data[3] || 1;
+        symbolSize: (data: TokenScatterPoint) => {
+          const density = data[3];
           return Math.max(8, Math.min(25, density * 15));
         },
         itemStyle: {
-          color: (params: any) => {
+          color: (params: TokenScatterParams) => {
             const weight = params.data[1];
             if (weight > 0.8) return '#6366f1'; // indigo
             if (weight > 0.6) return '#8b5cf6'; // violet
@@ -662,7 +670,7 @@ export default function TraceTrieVisualization({
         label: {
           show: true,
           position: 'top',
-          formatter: (params: any) => params.data[2],
+          formatter: (params: TokenScatterParams) => params.data[2],
           fontSize: 10,
           color: '#64748b'
         }

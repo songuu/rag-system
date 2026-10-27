@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import AnswerProcessingPanel from '@/components/AnswerProcessingPanel';
 import type { AnswerProcessingDetails } from '@/lib/rag/answer-processing';
+import { parseCitationReferences } from '@/lib/rag/citations/reference-parser';
+import type { RagCitationItem, RagCitationPreview, RagCitations } from '@/lib/rag/citations/types';
 
 interface Message {
   id: string;
@@ -14,6 +16,7 @@ interface Message {
   retrievalDetails?: any;
   queryAnalysis?: any;
   processingDetails?: AnswerProcessingDetails;
+  citations?: RagCitations;
 }
 
 /**
@@ -53,6 +56,101 @@ interface ChatMessageProps {
   message: Message;
   currentQuery: string;
   highlightMatchingText: (content: string, query: string) => string;
+  citationPartition?: string | null;
+  citationAccessStatus?: 'loading' | 'ready' | 'unavailable';
+  citationClockOffsetMs?: number | null;
+}
+
+function CitationSourceModal({ item, partition, onClose }: {
+  item: RagCitationItem;
+  partition: string;
+  onClose: () => void;
+}) {
+  const [preview, setPreview] = useState<RagCitationPreview | null>(null);
+  const [error, setError] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void (async () => {
+      try {
+        const response = await fetch('/rag-api/ask/citations/preview', {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locator: item.locator }), signal: controller.signal,
+        });
+        if (!response.ok) throw new Error('Citation preview unavailable.');
+        const body: unknown = await response.json();
+        if (!body || typeof body !== 'object') throw new Error('Invalid citation preview.');
+        const candidate = body as Record<string, unknown>;
+        if (candidate.success !== true || typeof candidate.content !== 'string' || typeof candidate.contentTruncated !== 'boolean'
+          || candidate.content.length > 65_536) throw new Error('Invalid citation preview.');
+        const relations: NonNullable<RagCitationPreview['relations']> = [];
+        if (Array.isArray(candidate.relations)) {
+          if (candidate.relations.length > 64) throw new Error('Invalid citation relations.');
+          for (const relation of candidate.relations) {
+            if (!relation || typeof relation !== 'object'
+              || !['source', 'predicate', 'target', 'fact'].every(key => typeof relation[key] === 'string')) {
+              throw new Error('Invalid citation relation.');
+            }
+            relations.push({ source: relation.source, predicate: relation.predicate, target: relation.target, fact: relation.fact });
+          }
+        }
+        if (active) setPreview({
+          success: true, content: candidate.content, contentTruncated: candidate.contentTruncated,
+          ...(typeof candidate.source === 'string' ? { source: candidate.source } : {}),
+          ...(Number.isSafeInteger(candidate.page) && (candidate.page as number) > 0 ? { page: candidate.page as number } : {}),
+          ...(relations.length ? { relations } : {}),
+        });
+      } catch {
+        // An old token or a failed authorization must never reveal a cached passage.
+        if (active) setError(true);
+      }
+    })();
+    return () => { active = false; controller.abort(); };
+  }, [item.locator, partition]);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+      if (event.key === 'Tab') {
+        const close = dialogRef.current?.querySelector<HTMLButtonElement>('button');
+        if (close) { event.preventDefault(); close.focus(); }
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => { document.removeEventListener('keydown', onKeyDown); previousFocus?.focus(); };
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label={`引用 ${item.number} 原文`} tabIndex={-1}
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-5 text-gray-900 shadow-xl"
+        onClick={event => event.stopPropagation()}>
+        <div className="mb-4 flex items-start justify-between gap-4">
+          <h3 className="font-semibold">引用 {item.number} 原文</h3>
+          <button type="button" aria-label="关闭原文" onClick={onClose} className="rounded px-2 py-1 text-sm hover:bg-gray-100">关闭</button>
+        </div>
+        {!preview && !error && <p role="status" className="text-sm text-gray-600">正在重新核验权限并读取原文…</p>}
+        {error && <p role="alert" className="text-sm text-amber-800">引用不可用、已过期或当前无权访问，请重新提问获取有效来源。</p>}
+        {preview && <>
+          {(preview.source || preview.page) && <p className="mb-3 text-xs text-gray-600">{preview.source}{preview.page ? ` · 第 ${preview.page} 页` : ''}</p>}
+          <p className="whitespace-pre-wrap text-sm leading-relaxed">{preview.content}</p>
+          {preview.contentTruncated && <p className="mt-2 text-xs text-amber-800">原文片段已截断，以上内容不代表完整文档。</p>}
+          {preview.relations?.length ? <section className="mt-4 border-t pt-3" aria-label="关系依据">
+            <h4 className="mb-2 text-sm font-semibold">关系依据</h4>
+            <ul className="space-y-2 text-sm">{preview.relations.map((relation, index) => <li key={index}>
+              <p>{relation.source} → {relation.predicate} → {relation.target}</p>
+              {relation.fact && <p className="mt-1 text-xs text-gray-600">{relation.fact}</p>}
+            </li>)}</ul>
+          </section> : null}
+        </>}
+      </div>
+    </div>
+  );
 }
 
 // 相似度等级
@@ -412,9 +510,60 @@ function DetailModal({
   );
 }
 
-export default function ChatMessage({ message, currentQuery, highlightMatchingText }: ChatMessageProps) {
+export default function ChatMessage({ message, currentQuery, highlightMatchingText, citationPartition, citationAccessStatus, citationClockOffsetMs = null }: ChatMessageProps) {
   const [showDetails, setShowDetails] = useState(false);
   const [selectedDocIndex, setSelectedDocIndex] = useState<number | null>(null);
+  const [selectedCitation, setSelectedCitation] = useState<RagCitationItem | null>(null);
+  const [wallNow, setWallNow] = useState(() => Date.now());
+  const citationNow = citationClockOffsetMs === null ? null : wallNow - citationClockOffsetMs;
+  const content = safeContentString(message.content);
+  const citationRanges = useMemo(() => parseCitationReferences(content).ranges, [content]);
+  useEffect(() => {
+    let active = true;
+    void Promise.resolve().then(() => { if (active) setWallNow(Date.now()); });
+    return () => { active = false; };
+  }, [message.citations, citationClockOffsetMs]);
+  useEffect(() => {
+    if (citationNow === null || citationClockOffsetMs === null) return;
+    const expiry = Math.min(...(message.citations?.items ?? []).map(item => item.expiresAt).filter(value => value > citationNow));
+    if (!Number.isFinite(expiry)) return;
+    const timer = setTimeout(() => setWallNow(Date.now()), Math.max(1, Math.min(2_147_483_647, expiry - (Date.now() - citationClockOffsetMs) + 1)));
+    return () => clearTimeout(timer);
+  }, [message.citations, citationNow, citationClockOffsetMs]);
+  const citationItems = new Map<number, RagCitationItem>();
+  if (message.type === 'assistant' && citationAccessStatus === 'ready' && citationNow !== null
+    && message.citations?.version === 'rag-citations/v1' && message.citations.status === 'available'
+    && message.citations.partition === citationPartition) {
+    for (const item of message.citations.items) {
+      if (item.expiresAt > citationNow) citationItems.set(item.number, item);
+    }
+  }
+  const selectedAvailable = selectedCitation
+    && citationItems.get(selectedCitation.number)?.locator === selectedCitation.locator
+    ? selectedCitation : null;
+  const contentParts: React.ReactNode[] = [];
+  let offset = 0;
+  for (const range of citationRanges) {
+    contentParts.push(content.slice(offset, range.start));
+    const marker = content.slice(range.start, range.end);
+    let markerOffset = 0;
+    for (const match of marker.matchAll(/\d+/g)) {
+      contentParts.push(marker.slice(markerOffset, match.index));
+      const item = citationItems.get(Number(match[0]));
+      contentParts.push(item ? <button key={`${range.start}:${match.index}`} type="button"
+        aria-label={`查看引用 ${item.number}`} onClick={() => {
+          if (citationClockOffsetMs === null) return;
+          const now = Date.now();
+          if (item.expiresAt <= now - citationClockOffsetMs) { setWallNow(now); return; }
+          setSelectedCitation(item);
+        }}
+        className="rounded px-0.5 font-medium text-blue-700 underline decoration-blue-300 underline-offset-2 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-500">{match[0]}</button> : match[0]);
+      markerOffset = match.index + match[0].length;
+    }
+    contentParts.push(marker.slice(markerOffset));
+    offset = range.end;
+  }
+  contentParts.push(content.slice(offset));
   
   const searchResults = message.retrievalDetails?.searchResults || [];
   const hasRetrievalDetails = message.type === 'assistant' && searchResults.length > 0;
@@ -435,7 +584,13 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
         }`}>
           {/* 消息内容 */}
           <div className="px-4 py-3">
-            <p className="text-sm whitespace-pre-wrap leading-relaxed">{safeContentString(message.content)}</p>
+            <p className="text-sm whitespace-pre-wrap leading-relaxed">{contentParts}</p>
+            {message.type === 'assistant' && message.citations?.status === 'unavailable' &&
+              <p role="status" className="mt-2 text-xs text-amber-800">引用服务暂不可用，当前回答没有可核验的原文入口。</p>}
+            {message.type === 'assistant' && message.citations?.status === 'available' && (citationAccessStatus !== 'ready' || citationClockOffsetMs === null) &&
+              <p role="status" className="mt-2 text-xs text-gray-500">{citationAccessStatus === 'loading' ? '正在核验引用身份…' : '引用身份暂未通过校验，来源入口已停用。'}</p>}
+            {message.type === 'assistant' && message.citations?.status === 'available' && citationAccessStatus === 'ready' && citationClockOffsetMs !== null && citationItems.size === 0 &&
+              <p role="status" className="mt-2 text-xs text-gray-500">引用已过期或不属于当前账号及知识库，请重新提问获取有效来源。</p>}
             
             {/* 时间和 Trace ID */}
             <div className={`flex items-center justify-between mt-2 text-xs ${
@@ -601,6 +756,9 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
           onClose={() => setSelectedDocIndex(null)}
         />
       )}
+      {selectedAvailable && citationPartition && <CitationSourceModal
+        key={`${message.id}:${selectedAvailable.locator}:${citationPartition}`}
+        item={selectedAvailable} partition={citationPartition} onClose={() => setSelectedCitation(null)} />}
     </>
   );
 }

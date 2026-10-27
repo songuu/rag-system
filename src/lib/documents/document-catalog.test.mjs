@@ -15,7 +15,35 @@ registerHooks({
   },
 });
 
-const { toDocumentCatalogItem } = await import('./document-catalog.ts');
+const { toDocumentCatalogItem, summarizeDocumentCatalog } = await import('./document-catalog.ts');
+
+test('summary separates stored chunks from searchable chunks after disabling a document', () => {
+  const documents = [645, 718, 12, 26, 1, 2, 1].map((chunkCount, index) => ({
+    enabled: index !== 0, lifecycle: 'active', chunkCount, byteSize: 100,
+    milvusStatus: 'ready', elasticsearchStatus: 'ready',
+  }));
+  const original = structuredClone(documents);
+  assert.deepEqual(summarizeDocumentCatalog(documents, 'active'), {
+    documentCount: 7, enabledDocumentCount: 6, disabledDocumentCount: 1,
+    chunkCount: 1405, searchableChunkCount: 760, disabledChunkCount: 645,
+    byteSize: 700, syncedCount: 7, elasticsearchMode: 'active',
+  });
+  assert.deepEqual(documents, original);
+});
+
+test('disabled and deleting documents contribute zero searchable chunks while keeping stored totals', () => {
+  const result = summarizeDocumentCatalog([
+    { enabled: false, lifecycle: 'active', chunkCount: 8, byteSize: 50, milvusStatus: 'ready', elasticsearchStatus: 'ready' },
+    { enabled: true, lifecycle: 'deleting', chunkCount: 2, byteSize: 20, milvusStatus: 'ready', elasticsearchStatus: 'pending' },
+  ], 'active');
+  assert.equal(result.chunkCount, 10);
+  assert.equal(result.searchableChunkCount, 0);
+  assert.equal(result.disabledChunkCount, 10);
+  assert.equal(result.enabledDocumentCount, 0);
+  assert.equal(result.disabledDocumentCount, 2);
+  assert.equal(result.syncedCount, 1);
+  assert.equal(summarizeDocumentCatalog([], 'off').searchableChunkCount, 0);
+});
 
 test('catalog maps canonical pipeline assets to document management records', () => {
   const result = toDocumentCatalogItem({
@@ -53,6 +81,8 @@ test('catalog maps canonical pipeline assets to document management records', ()
     updatedAt: '2026-09-13T11:15:00.000Z',
     milvusStatus: 'ready',
     elasticsearchStatus: 'ready',
+    enabled: true,
+    lifecycle: 'active',
   });
 });
 

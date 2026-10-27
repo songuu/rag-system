@@ -21,6 +21,8 @@ test('rerank lane transforms the complete order and preserves all evidence prove
   assert.equal(handler.type, 'rerank'); assert.equal(handler.retriever, 'rerank:unit:test-model');
   const result = await new RagLaneExecutor([{ type: 'dense-vector', retriever: 'unit-dense', execute: async () => ({ evidence: ctx.priorEvidence }) }, handler]).execute({ request: ctx.request, plan: ctx.plan, budget: { maxLanes: 2, maxEvidence: 10, maxDurationMs: 1000 } });
   assert.deepEqual(result.evidence, [{ ...original[1], rerankScore: 2.3 }, { ...original[0], rerankScore: -0.5 }]); assert.deepEqual(ctx.priorEvidence, original); assert.equal(result.laneExecutions[1].retrievalQuality, undefined); assert.equal(result.laneExecutions[1].uncertainty, undefined);
+  assert.deepEqual(result.laneExecutions[1].reranking, { beforeEvidenceIds: ['a', 'b'], afterEvidenceIds: ['b', 'a'] });
+  assert.equal(result.laneExecutions[0].reranking, undefined);
 });
 test('rerank without configured provider or candidates makes no network call', async t => {
   const keys = ['RERANK_PROVIDER', 'SILICONFLOW_API_KEY', 'COHERE_API_KEY', 'VOYAGE_API_KEY']; const saved = keys.map(key => [key, process.env[key]]);

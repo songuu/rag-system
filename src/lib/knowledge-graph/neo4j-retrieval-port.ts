@@ -2,6 +2,12 @@ import type { ManagedTransaction } from 'neo4j-driver';
 import type { Neo4jClient } from '../neo4j/driver';
 import type { RagEvidence } from '../rag/core/types';
 import {
+  GRAPH_EVIDENCE_LIMITS,
+  graphEvidencePathConnects,
+  readGraphEvidencePaths,
+  type GraphEvidencePath,
+} from './graph-evidence';
+import {
   assertGraphRetrievalEvidence,
   KnowledgeGraphError,
   normalizeGraphRetrievalRequest,
@@ -43,6 +49,7 @@ interface PathRow {
   claimPassageIds: string[];
   claimIds: string[];
   communityIds: string[];
+  relations: GraphEvidencePath;
 }
 
 interface RankedPassage {
@@ -51,6 +58,7 @@ interface RankedPassage {
   entityIds: Set<string>;
   claimIds: Set<string>;
   communityIds: Set<string>;
+  paths: Map<string, GraphEvidencePath>;
 }
 
 export class Neo4jGraphRetrievalPort implements GraphRetrievalPort {
@@ -77,6 +85,7 @@ export class Neo4jGraphRetrievalPort implements GraphRetrievalPort {
       seedPassageIds: request.seedPassageIds,
       seedLimit: Math.min(128, Math.max(16, request.topK * 8)),
       pathLimit: MAX_PATH_ROWS,
+      maxRelationPassageIds: GRAPH_EVIDENCE_LIMITS.maxPassagesPerRelation,
     };
 
     try {
@@ -126,6 +135,7 @@ async function readGraphEvidence(
   const seedIds = new Set<string>();
   const claimIds = new Set<string>();
   const communityIds = new Set<string>();
+  let pathsTruncated = false;
   for (const row of rows) {
     entityIds.add(row.entityId);
     seedIds.add(row.seedId);
@@ -139,12 +149,21 @@ async function readGraphEvidence(
         entityIds: new Set<string>(),
         claimIds: new Set<string>(),
         communityIds: new Set<string>(),
+        paths: new Map<string, GraphEvidencePath>(),
       };
       current.score += baseScore + (request.seedPassageIds.includes(passageId) ? 0.25 : 0);
       current.minimumHop = Math.min(current.minimumHop, row.hop);
       current.entityIds.add(row.entityId);
       row.claimIds.forEach(id => current.claimIds.add(id));
       row.communityIds.forEach(id => current.communityIds.add(id));
+      if (row.relations.length > 0 && row.relations.some(relation => relation.passageIds.includes(passageId))) {
+        const key = JSON.stringify(row.relations.map(relation => relation.claimId));
+        if (current.paths.size < GRAPH_EVIDENCE_LIMITS.maxPathsPerEvidence || current.paths.has(key)) {
+          current.paths.set(key, row.relations);
+        } else {
+          pathsTruncated = true;
+        }
+      }
       ranking.set(passageId, current);
     }
   }
@@ -173,6 +192,13 @@ async function readGraphEvidence(
     const passageId = requiredString(data.passageId, 'passageId');
     return toEvidence(data, passageId, ranking.get(passageId), request);
   });
+  const deliveredIds = new Set(evidence.map(item => item.metadata?.graphPassageId));
+  for (const item of evidence) {
+    const paths = readGraphEvidencePaths(item.metadata?.graphPaths).filter(path =>
+      path.every(relation => relation.passageIds.some(id => deliveredIds.has(id)))
+    );
+    item.metadata = { ...item.metadata, graphPaths: paths };
+  }
 
   return {
     evidence,
@@ -183,7 +209,7 @@ async function readGraphEvidence(
       matchedCommunityCount: communityIds.size,
       inspectedPathCount: rows.length,
       inspectedClaimCount: claimIds.size,
-      truncated: rows.length >= MAX_PATH_ROWS || ranking.size > MAX_PASSAGE_CANDIDATES,
+      truncated: rows.length >= MAX_PATH_ROWS || ranking.size > MAX_PASSAGE_CANDIDATES || pathsTruncated,
     },
   };
 }
@@ -284,20 +310,38 @@ function createPathQuery(variableLength: '*0..2' | '*0..4'): string {
     '  matched.passageIds AS entityPassageIds,',
     '  reduce(ids = [], claim IN claims | ids + claim.passageIds) AS claimPassageIds,',
     '  [claim IN claims | claim.claimId] AS claimIds,',
+    '  [claim IN claims | {',
+    '    claimId: claim.claimId, sourceEntityId: claim.sourceEntityId,',
+    '    sourceEntityName: claim.sourceEntityName, predicate: claim.predicate,',
+    '    targetEntityId: claim.targetEntityId, targetEntityName: claim.targetEntityName,',
+    '    passageIds: [(claim)-[:SUPPORTED_BY]->(pathSource:Passage)',
+    '      WHERE pathSource.tenantId = $tenantId AND pathSource.corpusId = $corpusId',
+    '        AND pathSource.graphVersion = $graphVersion',
+    '        AND pathSource.trustLevel IN $allowedTrustLevels',
+    '        AND ($documentId IS NULL OR pathSource.documentId = $documentId)',
+    '        AND ($documentVersion IS NULL OR pathSource.documentVersion = $documentVersion)',
+    '        AND ($trustLevel IS NULL OR pathSource.trustLevel = $trustLevel)',
+    '      | pathSource.passageId][0..toInteger($maxRelationPassageIds)]',
+    '  }] AS relations,',
     '  [id IN communityIds WHERE id IS NOT NULL] AS communityIds',
     'LIMIT toInteger($pathLimit)',
   ].join('\n');
 }
 
 function readPathRow(record: { get(key: string): unknown }): PathRow {
+  const seedId = requiredString(record.get('seedId'), 'seedId');
+  const entityId = requiredString(record.get('entityId'), 'entityId');
+  const hop = toNumber(record.get('hop'));
+  const parsed = readGraphEvidencePaths([record.get('relations')])[0] ?? [];
   return {
-    seedId: requiredString(record.get('seedId'), 'seedId'),
-    entityId: requiredString(record.get('entityId'), 'entityId'),
-    hop: toNumber(record.get('hop')),
+    seedId,
+    entityId,
+    hop,
     entityPassageIds: stringArray(record.get('entityPassageIds')),
     claimPassageIds: stringArray(record.get('claimPassageIds')),
     claimIds: stringArray(record.get('claimIds')),
     communityIds: stringArray(record.get('communityIds')),
+    relations: parsed.length === hop && graphEvidencePathConnects(parsed, seedId, entityId) ? parsed : [],
   };
 }
 
@@ -334,6 +378,7 @@ function toEvidence(
       graphClaimIds: [...(ranking?.claimIds ?? [])].sort(),
       graphCommunityIds: [...(ranking?.communityIds ?? [])].sort(),
       graphMinimumHop: Number.isFinite(ranking?.minimumHop) ? ranking?.minimumHop : null,
+      graphPaths: [...(ranking?.paths.values() ?? [])].filter(path => path.length <= request.maxHops),
     },
   };
 }

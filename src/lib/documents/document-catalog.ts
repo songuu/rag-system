@@ -23,6 +23,8 @@ export interface DocumentCatalogItem {
   updatedAt: string;
   milvusStatus: DocumentIndexStatus;
   elasticsearchStatus: DocumentIndexStatus;
+  enabled: boolean;
+  lifecycle: 'active' | 'deleting';
 }
 
 export interface DocumentCatalogRow {
@@ -36,6 +38,44 @@ export interface DocumentCatalogRow {
   updated_at: string | Date;
   lexical_chunk_count: string | number;
   lexical_event_status: 'published' | 'pending' | 'failed' | null;
+}
+
+export interface DocumentCatalogSummary {
+  documentCount: number;
+  enabledDocumentCount: number;
+  disabledDocumentCount: number;
+  /** Stored chunks are retained when retrieval is disabled. */
+  chunkCount: number;
+  searchableChunkCount: number;
+  disabledChunkCount: number;
+  byteSize: number;
+  syncedCount: number;
+  elasticsearchMode: ElasticsearchRolloutMode;
+}
+
+export function summarizeDocumentCatalog(
+  documents: readonly DocumentCatalogItem[],
+  elasticsearchMode: ElasticsearchRolloutMode
+): DocumentCatalogSummary {
+  const summary: DocumentCatalogSummary = {
+    documentCount: documents.length, enabledDocumentCount: 0, disabledDocumentCount: 0,
+    chunkCount: 0, searchableChunkCount: 0, disabledChunkCount: 0,
+    byteSize: 0, syncedCount: 0, elasticsearchMode,
+  };
+  for (const document of documents) {
+    summary.chunkCount += document.chunkCount;
+    summary.byteSize += document.byteSize;
+    if (document.enabled && document.lifecycle === 'active') {
+      summary.enabledDocumentCount++;
+      summary.searchableChunkCount += document.chunkCount;
+    } else {
+      summary.disabledDocumentCount++;
+      summary.disabledChunkCount += document.chunkCount;
+    }
+    // Projection health describes stored indexes, independently of retrieval visibility.
+    if (document.milvusStatus === 'ready' && document.elasticsearchStatus === 'ready') summary.syncedCount++;
+  }
+  return summary;
 }
 
 export class DocumentCatalogUnavailableError extends Error {
@@ -94,6 +134,7 @@ export async function listDocumentCatalog(input: {
      where asset.tenant_id = $1 and asset.corpus_id = $2
        and asset.external_document_id is not null
        and asset.metadata ? 'source_kind'
+       and coalesce(asset.metadata->>'lifecycle', 'active') <> 'deleted'
        and coalesce(
          nullif(asset.metadata #>> '{document,trustLevel}', ''),
          nullif(asset.metadata #>> '{document,trust_level}', ''),
@@ -153,6 +194,8 @@ export function toDocumentCatalogItem(
       row.lexical_event_status,
       lexicalChunkCount
     ),
+    enabled: metadata.retrieval_enabled !== false && !['deleting', 'deleted'].includes(String(metadata.lifecycle)),
+    lifecycle: metadata.lifecycle === 'deleting' ? 'deleting' : 'active',
   };
 }
 

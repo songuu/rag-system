@@ -1,0 +1,272 @@
+{
+  "schemaVersion": "rag-local-regression-inventory/v1",
+  "executionProfile": "local-reference",
+  "productionAccepted": false,
+  "historicalOrderRecovered": false,
+  "ordering": "original54-order-then-six-additions-lexicographic",
+  "authority": {
+    "base54Source": "docs/reports/.diagnostics/closed-rag-observer-run.cjs",
+    "base54SourceSha256": "c75df5c033fa242879880c0dfd1fca8b009832fef72b678761bb38d07bfa2dfb",
+    "base54OrderedListSha256": "c4b1331a99131fb8bbf4033fe039e87769a3c0f0c1f4f77e5198e3404aa1cbf2",
+    "additionsReport": "docs/reports/2026-10-10-rag-publication-conformance.md",
+    "additions": [
+      "src/lib/rag/eval/production-ask-https-transport.test.mjs",
+      "src/lib/rag/eval/production-ask-measurements.test.mjs",
+      "src/lib/rag/eval/production-ask-network-policy.test.mjs",
+      "src/lib/rag/eval/production-ask-producer.test.mjs",
+      "src/lib/rag/eval/production-ask-request-contract.test.mjs",
+      "src/lib/rag/eval/production-ask-runner.test.mjs"
+    ]
+  },
+  "nodeArguments": [
+    "--test",
+    "--test-timeout=30000"
+  ],
+  "parentTimeoutMs": 90000,
+  "maxBufferBytes": 16777216,
+  "defaultConcurrency": true,
+  "router": "off",
+  "orderedListSha256": "40c0685c909520864d5a2e6bd979080cb04a3a0034ccb4f1c76caf8cfa36f274",
+  "tests": [
+    {
+      "file": "src/lib/rag/eval/dataset.test.mjs",
+      "sha256": "c0404d6026445e19558169fa1bbc3921f6d5bec6f8e96ea5a01ed9434e0de017"
+    },
+    {
+      "file": "src/lib/rag/eval/metrics.test.mjs",
+      "sha256": "d27c6b43730a331617f53fab18262289e52779fe5b0f5487d8d74cd5b0dc8a56"
+    },
+    {
+      "file": "src/lib/rag/eval/gate.test.mjs",
+      "sha256": "032a20e0aa7dceb4d2a9bfb1151f2bad914cd274224874d7553be6d70008a303"
+    },
+    {
+      "file": "src/lib/rag/eval/matrix.test.mjs",
+      "sha256": "0b61bd928b8a71231530c0434c2454227c620dfae0e3baf8a92305605ddb7ab5"
+    },
+    {
+      "file": "src/lib/rag/eval/production-policy-contract.test.mjs",
+      "sha256": "32530b64b25295c7af298569fd8243f64278266db4a06214f3b6593cf78ceecf"
+    },
+    {
+      "file": "src/lib/rag/core/context-composer-v2.test.mjs",
+      "sha256": "45eb630eef152252541780c670150428d90194c234a69c85106cca2d5a6fd4c2"
+    },
+    {
+      "file": "src/lib/rag/retrieval/legacy-evidence-adapter.test.mjs",
+      "sha256": "94d8a4396490e41798a9def0ac31a70cf335223a93ae500a5721453486941e70"
+    },
+    {
+      "file": "src/lib/knowledge-graph/contracts.test.mjs",
+      "sha256": "46c68a53121ac554935b33919270ada1b909bc52907a604c60dc83a4f5fe58aa"
+    },
+    {
+      "file": "src/lib/knowledge-graph/postgres-publication-store.test.mjs",
+      "sha256": "2b0162dadbaf37a1cdac27dfbf6fbd64ad569aa3350a84cd317fd742c0cffabc"
+    },
+    {
+      "file": "src/lib/knowledge-graph/graph-snapshot-recovery.test.mjs",
+      "sha256": "dd678644bfd4a88635f29ea45f0b4de799ce840a3621f54b8bd01bcfdef162ee"
+    },
+    {
+      "file": "src/app/api/ask/route.test.mjs",
+      "sha256": "52c9168f2094eafe4f6bd2a83b7900e1a6d505f61f070fc07376d964de64ce9d"
+    },
+    {
+      "file": "src/lib/rag/eval/canonical-json.test.mjs",
+      "sha256": "1acab0a5423bf1a551ad8209d5b74a4172cbcc75e12b6beab5cc2b9cc85f45f5"
+    },
+    {
+      "file": "src/lib/rag/eval/production-gate-manifest.test.mjs",
+      "sha256": "5def3b864188fb5721e610832c0cbb561cfd45422f57df0dcfff42027dbcd483"
+    },
+    {
+      "file": "src/lib/rag/eval/production-run-journal.test.mjs",
+      "sha256": "556ac19d3aeda7b9d5c8536b7284af6d6087274071bcd1909d75653cefb5954f"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authorization.test.mjs",
+      "sha256": "5f65625d988b60156a7451e0175388292f102f943898f4553df4b850380e2bb1"
+    },
+    {
+      "file": "src/lib/rag/eval/production-provider-trust.test.mjs",
+      "sha256": "18719ea773a4f509a899d18d059e8a2ae5b7071f5a6235ca418dab11d717b698"
+    },
+    {
+      "file": "src/lib/rag/eval/production-controlled-artifacts.test.mjs",
+      "sha256": "2941fdfd31e1043e8fc15ca67d34667307a32a369c8332a8e1db641c7ef3ae2d"
+    },
+    {
+      "file": "src/lib/rag/eval/production-receipts.test.mjs",
+      "sha256": "0215c37647f7a365e9d36ee406b996e51cd0dc32d1c2fc9e1ff9ee713446d5ee"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authorized-journal.test.mjs",
+      "sha256": "3576232a5213a6baa05cee05c876486af6b732aee9268f33eacf39ac133c57f3"
+    },
+    {
+      "file": "src/lib/rag/eval/production-artifact-conformance.test.mjs",
+      "sha256": "500852baa32c48c325c893508a385b32d99908a7a1d0470e9478dfa742b7745a"
+    },
+    {
+      "file": "src/lib/rag/eval/production-journal-conformance.test.mjs",
+      "sha256": "d6dc4277e8a276e7651624f897e344c1cc523238154a9c996c7231755c73d066"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authority-ports.test.mjs",
+      "sha256": "5bc9d64bb4216311264fd57a8e3dbdaf66dc07acbb287784068f174f37a1a509"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authority-approval.test.mjs",
+      "sha256": "0ede3bb50d453e61baf134c65e7ea46c80a6e7c72b1cd3d4c3490cad5ba51a9f"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authority-conformance.test.mjs",
+      "sha256": "2e3e30475a97c4801c3abf2beecf488128dd136018944872a9ac5cdf1f13f60a"
+    },
+    {
+      "file": "src/lib/rag/eval/bounded-provider-call.test.mjs",
+      "sha256": "32535488e04c1a6bb3012fce77511b90b070852607f88532def6181233ae7844"
+    },
+    {
+      "file": "src/lib/rag/eval/production-provider-registry.test.mjs",
+      "sha256": "7c319140918bf9698f25134674af7970a022fa95f60aa17d488b57d0610809bf"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authority-receipts.test.mjs",
+      "sha256": "cb89a732ef7ac7651263917eeb3636e72e14f0509a51d741c8035822791f73e7"
+    },
+    {
+      "file": "src/lib/rag/eval/production-provider-evidence.test.mjs",
+      "sha256": "1c0c9043004836704bd9c4ee0e1b4ed5d6401735a6787923196d9cf0168c8c09"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authority-receipt-writer.test.mjs",
+      "sha256": "59ed578c5b570ffa0c9b007182a9811ffd948045059523095cdf94b86f5dd2f0"
+    },
+    {
+      "file": "src/lib/rag/eval/production-manifest-authority.test.mjs",
+      "sha256": "d7ef457788ee9a4d5e8fe01bbdd5811b06c2e59fd288294465fa49c37193fafd"
+    },
+    {
+      "file": "src/lib/rag/eval/production-approval-provenance.test.mjs",
+      "sha256": "6ec7c493ccbef13947fd30f34f5c71bf17cec3a1ba2aaa40eabae0dae9b8a45c"
+    },
+    {
+      "file": "src/lib/rag/eval/production-existing-receipt.test.mjs",
+      "sha256": "fe5eb680657f4b29940d357f4be3f402a0e2af568ca83673a349f08434e56ffc"
+    },
+    {
+      "file": "src/lib/rag/eval/production-predecessor-receipt.test.mjs",
+      "sha256": "f01d7a9ae3ef3401fe0c29fe1aaec7c5b703a65e68c811f29421935b681320fe"
+    },
+    {
+      "file": "src/lib/rag/eval/production-authority-bundle-writer.test.mjs",
+      "sha256": "1071f16cae36121cbb9736a584eae4e86a9ae45f26b1385680a7f48e6673f816"
+    },
+    {
+      "file": "src/lib/knowledge-graph/publication-identity.test.mjs",
+      "sha256": "3e378eb0ad49d7b8e59ac4b638e8e6101ec40e26fb0b633c26426cf36e4367a9"
+    },
+    {
+      "file": "src/lib/knowledge-graph/build-publication-manifest.test.mjs",
+      "sha256": "8a7be6348c090f9e9ec824481190417bcede81d4c8d4f0258423a28020bf3d06"
+    },
+    {
+      "file": "src/lib/knowledge-graph/postgres-publication-readback.test.mjs",
+      "sha256": "deadebdd29993f19b1e21bd70947dc1dc45a62fea668a2768e683711c2fd4b6a"
+    },
+    {
+      "file": "src/lib/knowledge-graph/postgres-graph-build-store.test.mjs",
+      "sha256": "de5c051a2b45b6388a296021ec3f4317f752fe08ed9ccac730ec13af4bcbdfd3"
+    },
+    {
+      "file": "scripts/graph-control-worker.test.mjs",
+      "sha256": "fd651729befaa0f25274bf0958fb17a9858e9c47154ffd9c4dc9d02ce2cfb894"
+    },
+    {
+      "file": "src/lib/knowledge-graph/local-graph-build-executor.test.mjs",
+      "sha256": "e5d95445c5de9b288cdc4be40e33e6b4197856a895c1570f1888e2a06444a305"
+    },
+    {
+      "file": "src/lib/knowledge-graph/auto-build.test.mjs",
+      "sha256": "be4961d724ed3554588d794e1d593da6aad413bd26b15e2fa2a2c8ecfa557e73"
+    },
+    {
+      "file": "src/lib/knowledge-graph/neo4j-publication-readback.test.mjs",
+      "sha256": "71d725a7aab535b2d621b7107951f13adf986ca44fac3ceee3c6df6c85e11156"
+    },
+    {
+      "file": "src/lib/knowledge-graph/milvus-publication-readback.test.mjs",
+      "sha256": "3e168ca045d60408572f3b039afdc175ee336c815534dd7638883f2b3f98b0a1"
+    },
+    {
+      "file": "src/lib/knowledge-graph/native-publication-sources.test.mjs",
+      "sha256": "9653a016fcb921418a05cd7da8aaae0ecd8241570870a04989565efb5345bf34"
+    },
+    {
+      "file": "src/lib/rag/eval/production-publication-conformance.test.mjs",
+      "sha256": "0cf96d213767a517a6272479f259e1a1b276f4f457ea36a21768749bf6ed3967"
+    },
+    {
+      "file": "src/lib/rag/eval/production-publication-state-observer.test.mjs",
+      "sha256": "fab1ef74fb2e5198b95599aba0ae5c5d71d0f8ab764197efd9e47b0c58d71aec"
+    },
+    {
+      "file": "src/lib/rag/eval/production-publication-artifact.test.mjs",
+      "sha256": "df9406359701543cddc4cbe2e0af999a307d5a897e0749d4cb74748466e99c13"
+    },
+    {
+      "file": "src/lib/rag/eval/production-manifest-publication-artifact.test.mjs",
+      "sha256": "8aba11ddc5afca96fbc846bd647236518f34ccb7b76f870e753412ee0cfe2cb1"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-target.test.mjs",
+      "sha256": "a543fa689a72169cd34e6124a75541d00f91ac347f41585f08518624b2558bf6"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-dataset-binding.test.mjs",
+      "sha256": "c03557eb43681eb0b9b075d072164b27a0a7312b2d8ddac217623a01ce6e872b"
+    },
+    {
+      "file": "src/lib/rag/core/durable-error-diagnostic.test.mjs",
+      "sha256": "1b7843165d41e387028240f25519fddb7e345932d2217a3620d7a6506e88266f"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-artifact-framing.test.mjs",
+      "sha256": "91008df0d386ef139caa06d0f1490c0a48a6b9d415ceffe0af1fe18138d379c4"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-artifact-writer.test.mjs",
+      "sha256": "1f7b758723de1ec03db27c981435dfa7694b5dd87d27357fbb9af391275bff8a"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-reference-evaluator.test.mjs",
+      "sha256": "1defa8d5baf5ebc6aec3758ea1f77a37df751e7acda2cce0f2efa370fd2117d0"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-https-transport.test.mjs",
+      "sha256": "981cc023fe23b6e1103ae4ff9a376cdc97326232fa9eda7566ee3b2e21510fef"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-measurements.test.mjs",
+      "sha256": "06d9713d9ab6c2f6c38f592ded3b2fd06fc06a40874f043bcba5f500b6de1b16"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-network-policy.test.mjs",
+      "sha256": "b476fd8ffa82e437c39837bfbae8a3f0108fbdf84b3ea82daf1b1557afb680f2"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-producer.test.mjs",
+      "sha256": "26286b89b65b01e18e56f7b4d23d193ce19b720988f625a8da036a913c969c8c"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-request-contract.test.mjs",
+      "sha256": "ad33eba7eb3ce01adfc1ce47bdf1c2737868f1806d9d6b90a614d3b824555f5b"
+    },
+    {
+      "file": "src/lib/rag/eval/production-ask-runner.test.mjs",
+      "sha256": "8489cc290fe86f7d6aded29954753595722db30a22af8e0a21b6ddf044ec50f0"
+    }
+  ]
+}

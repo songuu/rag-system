@@ -34,7 +34,11 @@ const { PostgresKnowledgeGraphBuildJobStore } = await import('../src/lib/knowled
 const { PostgresKnowledgeGraphPublicationStore } = await import('../src/lib/knowledge-graph/postgres-publication-store.ts');
 const { dispatchKnowledgeGraphOutbox } = await import('../src/lib/knowledge-graph/graph-outbox-dispatcher.ts');
 const { applyLocalBackfill, buildLocalBackfillPlan, inspectLocalBackfill } = await import('./backfill-local-postgres.mjs');
-const { grantApplicationRole, runMigrationSession } = await import('./migrate-postgres.mjs');
+const {
+  grantApplicationRole,
+  loadMigrations,
+  runMigrationSession,
+} = await import('./migrate-postgres.mjs');
 const {
   resolveRuntimeVerificationConfig,
   verifyPostgresRuntime,
@@ -74,20 +78,25 @@ test('real PostgreSQL migration and persistence round trip', {
   };
 
   try {
+    const migrations = await loadMigrations();
+    const expectedMigrationVersions = migrations.map(({ version }) => version);
+
     // The runner grants an existing least-privilege role; role creation remains
     // an explicit DBA responsibility in production.
     await client.query(`create role "${appRole}" login password '${appPassword}'`);
     const migration = await runMigrationSession(client, {
       seedScope: { tenantId, corpusId },
       appRole,
+      migrations,
     });
     assert.equal(migration.seeded, true);
     const repeatedMigration = await runMigrationSession(client, {
       seedScope: { tenantId, corpusId },
       appRole,
+      migrations,
     });
     assert.deepEqual(repeatedMigration.applied, []);
-    assert.deepEqual(repeatedMigration.skipped, ['0001', '0002', '0003', '0004', '0005']);
+    assert.deepEqual(repeatedMigration.skipped, expectedMigrationVersions);
 
     const appDatabaseUrl = new URL(databaseUrl);
     appDatabaseUrl.username = appRole;
@@ -577,6 +586,11 @@ test('real PostgreSQL graph control plane enforces CAS, leases, outbox, and app-
       progress: 1,
       artifactDigest: `sha256:${'a'.repeat(64)}`,
       leaseToken: claimedBuild.leaseToken,
+      publicationManifest: {
+        schemaVersion: 'kg-build-publication-manifest/v1', tenantId, corpusId,
+        graphVersion: claimedBuild.graphVersion, artifactDigest: `sha256:${'a'.repeat(64)}`,
+        documents: [{ documentId: `doc-${suffix}`, documentVersion: 'v1', trustLevel: 'reviewed' }],
+      },
     });
     assert.equal(completedBuild.status, 'validated');
     await assert.rejects(

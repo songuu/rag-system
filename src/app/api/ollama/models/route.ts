@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { normalizeInstalledOllamaModels } from '@/lib/ollama-model-list';
 import {
   createModelRequestTimeoutFetch,
   getConfigSummary,
@@ -286,7 +287,7 @@ export async function GET(request: NextRequest) {
         if (statusResponse.ok) {
           ollamaOnline = true;
           const data = await statusResponse.json();
-          allOllamaModels = Array.isArray(data.models) ? data.models : [];
+          allOllamaModels = normalizeInstalledOllamaModels(Array.isArray(data.models) ? data.models : []);
 
           // 分类 Ollama 本地模型
           for (const model of allOllamaModels) {
@@ -295,7 +296,7 @@ export async function GET(request: NextRequest) {
 
             const modelInfo: RuntimeModelInfo = {
               name: modelName,
-              displayName: modelName.split(':')[0],
+              displayName: modelName.replace(/:latest$/u, ''),
               tag: modelName.split(':')[1] || 'latest',
               size: model.size ?? 0,
               sizeFormatted: formatBytes(model.size ?? 0),

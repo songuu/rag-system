@@ -2,7 +2,10 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
-import { dbManager, type ConversationMessage } from '@/lib/indexeddb';
+import { dbManager, projectMessageCitations, type ConversationMessage } from '@/lib/indexeddb';
+import type { RagCitations } from '@/lib/rag/citations/types';
+import HomeHeader from '@/components/HomeHeader';
+import { formatDocumentChunkCounts, parseDocumentChunkCounts, type DocumentChunkCounts } from '@/lib/documents/document-counts';
 import ChatMessage from '@/components/ChatMessage';
 import AnswerProcessingPanel from '@/components/AnswerProcessingPanel';
 import QueryAnalysis from '@/components/QueryAnalysis';
@@ -21,6 +24,13 @@ import SuggestedQuestions from '@/components/SuggestedQuestions';
 import ConversationExpansionWorkflow from '@/components/ConversationExpansionWorkflow';
 import { ModelConfigPanel } from '@/components/ModelConfigPanel';
 import { RAG_CLIENT_REQUEST_TIMEOUT_MS } from '@/lib/rag/core/request-budgets';
+import { routeConversation } from '@/lib/rag/conversation-router';
+import {
+  resolveSessionModelConfig,
+  requestSessionModelSelection,
+  type SessionLlmSelection,
+  type SessionModelConfig,
+} from '@/lib/model-selection';
 import {
   classifyDirectConversation,
   createPendingAnswerProcessing,
@@ -39,6 +49,7 @@ interface Message {
   retrievalDetails?: any;
   queryAnalysis?: any;
   processingDetails?: AnswerProcessingDetails;
+  citations?: RagCitations;
 }
 
 interface Toast {
@@ -133,6 +144,8 @@ export default function HomePage() {
   const [vectorBackendDisabled, setVectorBackendDisabled] = useState(false);
   const [runtimeStatusLoaded, setRuntimeStatusLoaded] = useState(false);
   const [milvusStats, setMilvusStats] = useState<any>(null);
+  const [documentCounts, setDocumentCounts] = useState<DocumentChunkCounts | null>(null);
+  const documentCountsRequestRef = useRef<AbortController | null>(null);
 
   // Agentic RAG 相关状态
   const [useAgenticRAG, setUseAgenticRAG] = useState(false);
@@ -167,6 +180,160 @@ export default function HomePage() {
   const [showExpansionWorkflow, setShowExpansionWorkflow] = useState(true);
 
   const askAbortControllerRef = useRef<AbortController | null>(null);
+  const sessionLlmSelectionRef = useRef<SessionLlmSelection | null>(null);
+  const [citationPartition, setCitationPartition] = useState<string | null>(null);
+  const [citationAccessStatus, setCitationAccessStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+  const [citationClockOffsetMs, setCitationClockOffsetMs] = useState<number | null>(null);
+  const citationPartitionRef = useRef<string | null>(null);
+  const citationClockOffsetRef = useRef<number | null>(null);
+  const citationIdentityRequestRef = useRef<AbortController | null>(null);
+  const citationIdentityRevisionRef = useRef(0);
+  const citationInvalidationRevisionRef = useRef(0);
+  const citationMountedRef = useRef(false);
+  const [modelReadiness, setModelReadiness] = useState<{ model: string; phase: 'loading' | 'ready' | 'failed'; detail?: string } | null>(null);
+  const [modelWarmupAttempt, setModelWarmupAttempt] = useState(0);
+
+  const refreshCitationPartition = useCallback(async (clearExisting = false) => {
+    if (!citationMountedRef.current) return;
+    citationIdentityRequestRef.current?.abort();
+    const controller = new AbortController();
+    citationIdentityRequestRef.current = controller;
+    const revision = ++citationIdentityRevisionRef.current;
+    const isCurrent = () => citationMountedRef.current && !controller.signal.aborted
+      && revision === citationIdentityRevisionRef.current;
+    citationPartitionRef.current = null;
+    citationClockOffsetRef.current = null;
+    dbManager.setCitationClockOffset(null);
+    setCitationPartition(null);
+    setCitationClockOffsetMs(null);
+    setCitationAccessStatus('loading');
+    const clearHandles = async () => {
+      if (!isCurrent()) return;
+      citationInvalidationRevisionRef.current++;
+      setMessages(current => current.map(message => {
+        const cleared = { ...message };
+        delete cleared.citations;
+        return cleared;
+      }));
+      await dbManager.invalidateCitationReferences();
+    };
+    try {
+      if (clearExisting) await clearHandles();
+      await dbManager.waitForCitationClear();
+      if (!isCurrent()) return;
+      const response = await fetch('/rag-api/ask/citations/preview', {
+        method: 'GET', credentials: 'same-origin', cache: 'no-store',
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+      });
+      if (!isCurrent()) return;
+      if (response.status === 401 || response.status === 403) {
+        await clearHandles();
+        throw new Error('Citation identity is no longer authorized.');
+      }
+      if (!response.ok) throw new Error('Citation identity unavailable.');
+      const body: unknown = await response.json();
+      if (!body || typeof body !== 'object') throw new Error('Invalid citation identity.');
+      const identity = body as Record<string, unknown>;
+      if (identity.success !== true || typeof identity.partition !== 'string'
+        || !/^[a-f0-9]{64}$/.test(identity.partition)
+        || typeof identity.now !== 'number' || !Number.isFinite(identity.now)) throw new Error('Invalid citation identity.');
+      if (!isCurrent()) return;
+      const partition = identity.partition;
+      await dbManager.waitForCitationClear();
+      if (!isCurrent()) return;
+      dbManager.setCitationIdentity(partition);
+      const offsetMs = Date.now() - identity.now;
+      citationClockOffsetRef.current = offsetMs;
+      dbManager.setCitationClockOffset(offsetMs);
+      citationPartitionRef.current = partition;
+      setCitationPartition(partition);
+      setCitationClockOffsetMs(offsetMs);
+      setCitationAccessStatus('ready');
+      setMessages(current => current.map(message => ({
+        ...message, citations: projectMessageCitations(message.citations, partition, identity.now as number),
+      })));
+      // One shared identity read covers the whole conversation; preview still reauthorizes each click.
+      await dbManager.init();
+      if (isCurrent()) {
+        await dbManager.pruneConversationCitations(partition, identity.now);
+      }
+    } catch {
+      if (isCurrent()) {
+        citationPartitionRef.current = null;
+        setCitationPartition(null);
+        setCitationAccessStatus('unavailable');
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    citationMountedRef.current = true;
+    const refresh = () => { void refreshCitationPartition(); };
+    const invalidate = () => { void refreshCitationPartition(true); };
+    refresh();
+    window.addEventListener('focus', refresh);
+    window.addEventListener('storage', refresh);
+    window.addEventListener('rag-auth-change', invalidate);
+    window.addEventListener('rag-corpus-change', invalidate);
+    return () => {
+      citationMountedRef.current = false;
+      citationIdentityRequestRef.current?.abort();
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('storage', refresh);
+      window.removeEventListener('rag-auth-change', invalidate);
+      window.removeEventListener('rag-corpus-change', invalidate);
+    };
+  }, [refreshCitationPartition]);
+
+  useEffect(() => {
+    if (modelConfig?.llm.provider !== 'ollama') { setModelReadiness(null); return; }
+    const controller = new AbortController();
+    const model = llmModel;
+    setModelReadiness({ model, phase: 'loading', detail: '正在准备回答和检索模型，知识库问答会等待准备完成后继续。' });
+    void (async () => {
+      try {
+        const response = await fetch('/rag-api/model-warmup', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ llmModel: model, embeddingModel }),
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]),
+        });
+        let data = await response.json();
+        if (!response.ok || !data.success) throw new Error(data.error || '模型预加载未完成。');
+        const pollingDeadline = Date.now() + 620_000;
+        while (data.readiness?.phase === 'loading' && !controller.signal.aborted && Date.now() < pollingDeadline) {
+          await new Promise<void>(resolve => {
+            const finish = () => { window.clearTimeout(timer); controller.signal.removeEventListener('abort', finish); resolve(); };
+            const timer = window.setTimeout(finish, 2000);
+            controller.signal.addEventListener('abort', finish, { once: true });
+          });
+          if (controller.signal.aborted) return;
+          const status = await fetch(`/rag-api/model-warmup?model=${encodeURIComponent(model)}&embeddingModel=${encodeURIComponent(embeddingModel)}`, {
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]), cache: 'no-store',
+          });
+          data = await status.json();
+          if (!status.ok || !data.success) throw new Error(data.error || '读取模型加载状态失败。');
+        }
+        if (data.readiness?.phase !== 'ready' || data.readiness.model !== model) {
+          throw new Error(data.readiness?.detail || '模型预加载未完成，请重试加载。');
+        }
+        if (controller.signal.aborted) return;
+        if (!controller.signal.aborted) setModelReadiness({ model, phase: 'ready' });
+      } catch (error) {
+        if (!controller.signal.aborted) setModelReadiness({ model, phase: 'failed',
+          detail: error instanceof Error ? error.message : '模型预加载失败，请检查本地服务。' });
+      }
+    })();
+    // A late response from the previous selection must not mark the new model ready.
+    return () => controller.abort();
+  }, [llmModel, embeddingModel, modelConfig?.llm.provider, modelWarmupAttempt]);
+
+  useEffect(() => {
+    if (modelReadiness?.phase !== 'ready' || modelReadiness.model !== llmModel) return;
+    // Keep the selected model warm while the page is open; residency is still
+    // finite after the page closes, rather than permanently consuming VRAM.
+    const timer = window.setTimeout(() => setModelWarmupAttempt(attempt => attempt + 1), 5 * 60_000);
+    return () => window.clearTimeout(timer);
+  }, [llmModel, modelReadiness]);
 
   useEffect(() => () => {
     askAbortControllerRef.current?.abort(
@@ -185,25 +352,26 @@ export default function HomePage() {
         setMilvusConnected(false);
         setMilvusStats(null);
       }
-      if (data.success) {
-        setSystemStatus(disabled ? '知识库维护中' : '运行中');
-        setDocCount(data.ragSystem?.documentCount || 0);
-        setEmbeddingDim(data.ragSystem?.embeddingDimension || 0);
-      } else {
-        setSystemStatus('错误');
-        return 'unavailable';
-      }
-      
-      // 更新实际的模型配置（无论成功与否都更新，因为 API 总是返回配置）
+      // 依赖服务未就绪时健康接口仍返回模型配置，避免显示过期的默认模型。
       if (data.modelConfig) {
-        setLlmModel(data.modelConfig.llm?.model || 'llama3.1');
-        setEmbeddingModel(data.modelConfig.embedding?.model || 'nomic-embed-text');
+        const activeConfig = resolveSessionModelConfig(data.modelConfig, sessionLlmSelectionRef.current);
+        if (activeConfig === data.modelConfig) sessionLlmSelectionRef.current = null;
+        setLlmModel(activeConfig.llm.model);
+        setEmbeddingModel(activeConfig.embedding.model);
         // 保存完整的 modelConfig 用于 SystemInfo 组件
-        setModelConfig(data.modelConfig);
+        setModelConfig(activeConfig);
         // 如果有嵌入维度信息，也更新
         if (data.modelConfig.embedding?.dimension) {
           setEmbeddingDim(data.modelConfig.embedding.dimension);
         }
+      }
+      if (data.success) {
+        setSystemStatus(disabled ? '知识库维护中' : '运行中');
+        setDocCount(data.ragSystem?.documentCount || 0);
+        setEmbeddingDim(data.modelConfig?.embedding?.dimension || data.ragSystem?.embeddingDimension || 0);
+      } else {
+        setSystemStatus('错误');
+        return 'unavailable';
       }
       return disabled ? 'disabled' : 'enabled';
     } catch (error) {
@@ -235,25 +403,77 @@ export default function HomePage() {
     }
   }, []);
 
+  const refreshDocumentCounts = useCallback(async () => {
+    documentCountsRequestRef.current?.abort();
+    const controller = new AbortController();
+    documentCountsRequestRef.current = controller;
+    try {
+      const response = await fetch('/rag-api/documents', { cache: 'no-store', signal: controller.signal });
+      const data = await response.json();
+      if (!controller.signal.aborted) {
+        setDocumentCounts(response.ok && data.success === true ? parseDocumentChunkCounts(data.summary) : null);
+      }
+    } catch {
+      // Storage counts cannot substitute for an unavailable visibility-aware count.
+      if (!controller.signal.aborted) setDocumentCounts(null);
+    } finally {
+      if (documentCountsRequestRef.current === controller) documentCountsRequestRef.current = null;
+    }
+  }, []);
+
   const refreshRuntimeStatus = useCallback(async () => {
     setRuntimeStatusLoaded(false);
-    const runtimeStatus = await checkSystemHealth();
-    if (runtimeStatus === 'enabled') await checkMilvusStatus();
+    const [runtimeStatus] = await Promise.all([checkSystemHealth(), refreshDocumentCounts()]);
+    // /api/health 在 Elasticsearch 或 PostgreSQL 未就绪时也返回 503，此时 Milvus
+    // 可能完好；徽标只应反映 Milvus 自身探测结果，仅显式维护模式才跳过探测。
+    if (runtimeStatus !== 'disabled') await checkMilvusStatus();
     setRuntimeStatusLoaded(true);
-  }, [checkMilvusStatus, checkSystemHealth]);
+  }, [checkMilvusStatus, checkSystemHealth, refreshDocumentCounts]);
+
+  useEffect(() => {
+    const refresh = () => { void refreshDocumentCounts(); };
+    const refreshVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    const invalidate = () => { setDocumentCounts(null); refresh(); };
+    // Disabling documents in another tab must update every home counter on return.
+    window.addEventListener('focus', refreshVisible);
+    document.addEventListener('visibilitychange', refreshVisible);
+    window.addEventListener('rag-auth-change', invalidate);
+    window.addEventListener('rag-corpus-change', invalidate);
+    const interval = window.setInterval(refreshVisible, 30_000);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refreshVisible);
+      document.removeEventListener('visibilitychange', refreshVisible);
+      window.removeEventListener('rag-auth-change', invalidate);
+      window.removeEventListener('rag-corpus-change', invalidate);
+      documentCountsRequestRef.current?.abort();
+    };
+  }, [refreshDocumentCounts]);
 
   // 处理模型切换
-  const handleModelChange = async (newLlmModel: string, newEmbeddingModel: string) => {
+  const handleModelChange = async (newLlmModel: string, newEmbeddingModel: string, onProgress?: (message: string) => void) => {
     if (newLlmModel === llmModel && newEmbeddingModel === embeddingModel) {
       showToast('模型未做任何更改', 'info');
       return;
     }
 
-    // Production model selection is server-owned and allowlisted. Calling the
-    // legacy reinitialize route here would be rejected and could leave the UI
-    // claiming a model change that never reached the runtime.
-    showToast('生产模型由服务器环境配置和白名单管理，请在部署配置中变更后刷新状态。', 'info');
-    await checkSystemHealth();
+    const data = await requestSessionModelSelection(newLlmModel, newEmbeddingModel, fetch, onProgress);
+    const activeConfig: SessionModelConfig = {
+      ...data.config,
+      embedding: { ...data.config.embedding, dimension: data.config.embedding.dimension ?? modelConfig?.embedding.dimension ?? embeddingDim },
+    };
+
+    sessionLlmSelectionRef.current = {
+      provider: data.config.llm.provider,
+      serverModel: data.defaultLlmModel,
+      model: data.config.llm.model,
+    };
+    setLlmModel(data.config.llm.model);
+    setEmbeddingModel(data.config.embedding.model);
+    setEmbeddingDim(activeConfig.embedding.dimension);
+    setModelConfig(activeConfig);
+    await Promise.all([checkMilvusStatus(), refreshDocumentCounts()]);
+    showToast(`已应用模型：${data.config.llm.model}；向量模型：${data.config.embedding.model}`, 'success');
   };
 
   // Toast 通知
@@ -279,6 +499,8 @@ export default function HomePage() {
 
   // 保存消息到 IndexedDB
   const saveMessageToDB = async (message: ConversationMessage) => {
+    const generation = dbManager.captureCitationWriteGeneration();
+    const invalidationRevision = citationInvalidationRevisionRef.current;
     try {
       console.log('[IndexedDB] 保存消息:', message.id, message.type);
       await dbManager.init();
@@ -296,10 +518,11 @@ export default function HomePage() {
         // 确保时间戳是 Date 对象
         const messageToSave: ConversationMessage = {
           ...message,
+          citations: invalidationRevision === citationInvalidationRevisionRef.current ? message.citations : undefined,
           timestamp: message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp)
         };
 
-        await dbManager.addMessageToConversation(currentConversationId, messageToSave);
+        await dbManager.addMessageToConversation(currentConversationId, messageToSave, generation);
         console.log('[IndexedDB] 消息已保存到对话:', currentConversationId);
       }
     } catch (error) {
@@ -310,6 +533,7 @@ export default function HomePage() {
 
   // 从 IndexedDB 加载最新对话
   const loadLatestConversation = async () => {
+    const invalidationRevision = citationInvalidationRevisionRef.current;
     try {
       console.log('[IndexedDB] 开始加载最新对话...');
       await dbManager.init();
@@ -350,7 +574,11 @@ export default function HomePage() {
               storageBackend: msg.storageBackend,
               retrievalDetails: msg.retrievalDetails || null,
               queryAnalysis: msg.queryAnalysis || null,
-              processingDetails: msg.processingDetails
+              processingDetails: msg.processingDetails,
+              citations: invalidationRevision === citationInvalidationRevisionRef.current
+                ? projectMessageCitations(msg.citations, citationPartitionRef.current,
+                  citationClockOffsetRef.current === null ? null : Date.now() - citationClockOffsetRef.current)
+                : undefined,
             };
           });
 
@@ -615,17 +843,19 @@ export default function HomePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const submittedQuestion = input.trim();
+    const citationInvalidationRevision = citationInvalidationRevisionRef.current;
     if (!submittedQuestion || isLoading) return;
     const isDirectConversation = classifyDirectConversation(submittedQuestion) !== null;
+    const requiresKnowledge = !isDirectConversation && routeConversation(submittedQuestion).reason !== 'uncertain';
 
     // Knowledge questions require Milvus, while self-contained conversational
     // turns are answered without touching the vector or model providers.
-    if (vectorBackendDisabled && !isDirectConversation) {
+    if (vectorBackendDisabled && requiresKnowledge) {
       showToast('知识库维护中：向量检索已临时关闭，暂不支持知识库提问。', 'info');
       return;
     }
 
-    if (!milvusConnected && !isDirectConversation) {
+    if (!milvusConnected && requiresKnowledge) {
       showToast('知识库暂不可用：向量服务未连接，恢复后即可继续提问。', 'error');
       return;
     }
@@ -709,6 +939,10 @@ export default function HomePage() {
       const data = await response.json();
 
       console.log('data', data);
+      if (data.conversationMode === 'direct') {
+        setShowAgenticPanel(false);
+        setShowAdaptiveEntityPanel(false);
+      }
 
       // 处理自适应实体 RAG 响应
       if (data.adaptiveEntityMode) {
@@ -915,6 +1149,7 @@ export default function HomePage() {
 
         if (currentConversationId) {
           try {
+            const generation = dbManager.captureCitationWriteGeneration();
             await dbManager.init();
             const conversation = await dbManager.getConversation(currentConversationId);
             if (conversation) {
@@ -922,7 +1157,7 @@ export default function HomePage() {
               if (userMsgIndex !== -1) {
                 conversation.messages[userMsgIndex].queryAnalysis = queryAnalysisData;
                 conversation.updatedAt = new Date();
-                await dbManager.saveConversation(conversation);
+                await dbManager.saveConversation(conversation, generation);
               }
             }
           } catch (error) {
@@ -932,6 +1167,11 @@ export default function HomePage() {
 
         // 安全提取回答内容，防止 LangChain 对象被传递给 React
         const answerContent = safeAnswerString(data.answer);
+        const citations = citationInvalidationRevision === citationInvalidationRevisionRef.current
+          ? projectMessageCitations(data.citations, undefined,
+            citationClockOffsetRef.current === null ? null : Date.now() - citationClockOffsetRef.current)
+          : undefined;
+        if (citations && citations.partition !== citationPartitionRef.current) void refreshCitationPartition();
         
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
@@ -942,6 +1182,7 @@ export default function HomePage() {
           storageBackend: data.storageBackend,
           retrievalDetails: data.retrievalDetails,
           processingDetails,
+          citations,
         };
 
         setMessages(prev => [...prev, assistantMessage]);
@@ -958,6 +1199,7 @@ export default function HomePage() {
           storageBackend: data.storageBackend,
           retrievalDetails: data.retrievalDetails,
           processingDetails,
+          citations,
         });
 
         // 异步生成推荐问题（不阻塞主流程）
@@ -1059,173 +1301,36 @@ export default function HomePage() {
 
   return (
     <div className="bg-gray-50 min-h-screen">
-      {/* 导航栏 - 简洁设计 */}
-      <nav className="bg-white shadow-sm border-b">
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex h-14 items-center gap-4">
-            {/* 左侧: Logo + 受保护的检索存储 */}
-            <div className="flex shrink-0 items-center gap-6">
-              <div className="flex shrink-0 items-center whitespace-nowrap">
-                <i className="fas fa-brain text-blue-600 text-xl mr-2"></i>
-                <h1 className="text-lg font-semibold text-gray-900">RAG 知识库</h1>
-              </div>
-
-              <div
-                className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1 text-xs font-medium ${
-                  vectorBackendDisabled
-                    ? 'bg-amber-50 text-amber-700'
-                    : 'bg-purple-50 text-purple-700'
-                }`}
-                title={vectorBackendDisabled
-                  ? '知识库向量检索已临时关闭'
-                  : '生产环境使用受认证的 Milvus 语料库'}
-              >
-                <i className={`fas ${vectorBackendDisabled ? 'fa-pause-circle' : 'fa-database'}`}></i>
-                {vectorBackendDisabled ? '知识库维护' : 'Milvus'}
-                <span className={`w-1.5 h-1.5 rounded-full ${
-                  vectorBackendDisabled
-                    ? 'bg-amber-400'
-                    : milvusConnected ? 'bg-green-400' : 'bg-red-400'
-                }`}></span>
-              </div>
-
-              {/* RAG 模式开关 - 仅在 Milvus 模式下显示 */}
-              {storageBackend === 'milvus' && !vectorBackendDisabled && (
-                <div className="flex shrink-0 items-center gap-2">
-                  {/* Agentic RAG 开关 */}
-                  <button
-                    onClick={() => {
-                      setUseAgenticRAG(!useAgenticRAG);
-                      if (!useAgenticRAG) {
-                        setShowAgenticPanel(true);
-                        setUseAdaptiveEntityRAG(false); // 互斥
-                      }
-                    }}
-                    className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
-                      useAgenticRAG
-                        ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-sm'
-                        : 'bg-gray-100 text-gray-500 hover:text-gray-700'
-                    }`}
-                    title="启用 Agentic RAG 代理化工作流"
-                  >
-                    <i className="fas fa-robot"></i>
-                    Agent
-                    {useAgenticRAG && <i className="fas fa-check text-xs"></i>}
-                  </button>
-
-                  {/* 自适应实体路由 RAG 开关 */}
-                  <button
-                    onClick={() => {
-                      setUseAdaptiveEntityRAG(!useAdaptiveEntityRAG);
-                      if (!useAdaptiveEntityRAG) {
-                        setShowAdaptiveEntityPanel(true);
-                        setUseAgenticRAG(false); // 互斥
-                      }
-                    }}
-                    className={`px-3 py-1 text-xs font-medium rounded-md transition-all flex items-center gap-1.5 ${
-                      useAdaptiveEntityRAG
-                        ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-sm'
-                        : 'bg-gray-100 text-gray-500 hover:text-gray-700'
-                    }`}
-                    title="启用自适应实体路由 RAG"
-                  >
-                    <i className="fas fa-route"></i>
-                    Entity
-                    {useAdaptiveEntityRAG && <i className="fas fa-check text-xs"></i>}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* 中间: 导航链接 - 图标为主 */}
-            <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <Link href="/documents" className="p-2 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="文档管理">
-                <i className="fas fa-file-lines"></i>
-                <span className="hidden lg:inline">文档管理</span>
-              </Link>
-              <Link href="/document-search" className="p-2 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="文档搜索">
-                <i className="fas fa-magnifying-glass"></i>
-                <span className="hidden lg:inline">文档搜索</span>
-              </Link>
-              <div className="w-px h-6 bg-gray-200 mx-1"></div>
-              <Link href="/blog" className="p-2 text-orange-500 hover:text-orange-700 hover:bg-orange-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="技术博客">
-                <i className="fas fa-book-open"></i>
-                <span className="hidden sm:inline">博客</span>
-              </Link>
-              <Link href="/prompt-optimizer" className="p-2 text-amber-600 hover:text-amber-800 hover:bg-amber-50 rounded-lg transition-colors font-medium text-xs flex items-center gap-1" title="提示词优化台">
-                <i className="fas fa-wand-magic-sparkles"></i>
-                <span className="hidden xl:inline">提示词</span>
-              </Link>
-              <div className="w-px h-6 bg-gray-200 mx-1"></div>
-              <Link href="/history" className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors" title="历史对话">
-                <i className="fas fa-history"></i>
-              </Link>
-              <Link href="/observability" className="p-2 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors" title="可观测性">
-                <i className="fas fa-chart-line"></i>
-              </Link>
-              <Link href="/trace-trie" className="p-2 text-purple-500 hover:text-purple-700 hover:bg-purple-50 rounded-lg transition-colors" title="Trace-Trie">
-                <i className="fas fa-sitemap"></i>
-              </Link>
-              <Link href="/domain-vectors" className="p-2 text-emerald-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors" title="领域向量">
-                <i className="fas fa-crosshairs"></i>
-              </Link>
-              <Link href="/self-rag" className="p-2 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 rounded-lg transition-colors" title="Self-RAG">
-                <i className="fas fa-sync-alt"></i>
-              </Link>
-              <Link href="/agentic-rag" className="p-2 text-fuchsia-500 hover:text-fuchsia-700 hover:bg-fuchsia-50 rounded-lg transition-colors" title="Agentic RAG">
-                <i className="fas fa-robot"></i>
-              </Link>
-              <Link href="/self-corrective-rag" className="p-2 text-teal-500 hover:text-teal-700 hover:bg-teal-50 rounded-lg transition-colors" title="Self-Corrective RAG">
-                <i className="fas fa-redo-alt"></i>
-              </Link>
-              <Link href="/milvus" className="p-2 text-violet-500 hover:text-violet-700 hover:bg-violet-50 rounded-lg transition-colors" title="Milvus">
-                <i className="fas fa-database"></i>
-              </Link>
-              <Link href="/entity-extraction" className="p-2 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded-lg transition-colors" title="实体抽取">
-                <i className="fas fa-project-diagram"></i>
-              </Link>
-              <Link href="/knowledge-graph" className="p-2 text-cyan-600 hover:text-cyan-800 hover:bg-cyan-50 rounded-lg transition-colors" title="Neo4j 知识图谱">
-                <i className="fas fa-share-alt"></i>
-              </Link>
-              <Link href="/mirofish" className="p-2 text-pink-500 hover:text-pink-700 hover:bg-pink-50 rounded-lg transition-colors" title="MiroFish 群体模拟">
-                <i className="fas fa-fish"></i>
-              </Link>
-              <Link href="/adaptive-entity-rag" className="p-2 text-cyan-500 hover:text-cyan-700 hover:bg-cyan-50 rounded-lg transition-colors" title="自适应实体路由 RAG">
-                <i className="fas fa-route"></i>
-              </Link>
-              <Link href="/context-management" className="p-2 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors" title="上下文管理">
-                <i className="fas fa-layer-group"></i>
-              </Link>
-            </div>
-
-            {/* 右侧: 状态 */}
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                onClick={handleDeleteAllConversations}
-                className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                title="清空对话"
-                aria-label="清空历史对话"
-              >
-                <i className="fas fa-trash-alt"></i>
-              </button>
-              <div className="w-px h-6 bg-gray-200"></div>
-              <div className="flex items-center px-2 py-1 bg-gray-50 rounded-lg">
-                <div className={`w-2 h-2 rounded-full mr-2 ${systemStatus === '运行中' ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                <span className="text-xs text-gray-600">{systemStatus}</span>
-              </div>
-              <button onClick={() => { void refreshRuntimeStatus(); }} className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded" title="刷新">
-                <i className="fas fa-sync-alt text-sm"></i>
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
-
+      <HomeHeader
+        vectorBackendDisabled={vectorBackendDisabled}
+        milvusConnected={milvusConnected}
+        showRagModes={storageBackend === 'milvus' && !vectorBackendDisabled}
+        useAgenticRAG={useAgenticRAG}
+        useAdaptiveEntityRAG={useAdaptiveEntityRAG}
+        systemStatus={systemStatus}
+        onToggleAgentic={() => {
+          setUseAgenticRAG(!useAgenticRAG);
+          if (!useAgenticRAG) {
+            setShowAgenticPanel(true);
+            setUseAdaptiveEntityRAG(false);
+          }
+        }}
+        onToggleEntity={() => {
+          setUseAdaptiveEntityRAG(!useAdaptiveEntityRAG);
+          if (!useAdaptiveEntityRAG) {
+            setShowAdaptiveEntityPanel(true);
+            setUseAgenticRAG(false);
+          }
+        }}
+        onClearConversations={handleDeleteAllConversations}
+        onRefreshStatus={() => { void refreshRuntimeStatus(); }}
+      />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Milvus 查询可视化 - 当选择 Milvus 后端时显示 */}
         {runtimeStatusLoaded && storageBackend === 'milvus' && !vectorBackendDisabled && systemStatus === '运行中' && !useAgenticRAG && !useAdaptiveEntityRAG && (
           <MilvusQueryVisualizer
             embeddingModel={embeddingModel}
+            documentCounts={documentCounts}
             defaultExpanded={false}
           />
         )}
@@ -1303,6 +1408,9 @@ export default function HomePage() {
                       message={message}
                       currentQuery={currentQuery}
                       highlightMatchingText={highlightMatchingText}
+                      citationPartition={citationPartition}
+                      citationAccessStatus={citationAccessStatus}
+                      citationClockOffsetMs={citationClockOffsetMs}
                     />
                   ))
                 )}
@@ -1315,7 +1423,7 @@ export default function HomePage() {
                         defaultExpanded
                         isLive
                         slowMessage={isRequestSlow
-                          ? '当前模型响应较慢，可取消后切换轻量模型'
+                          ? '模型可能正在加载，准备完成后会自动继续；也可取消请求'
                           : undefined}
                         onCancel={handleCancelRequest}
                       />
@@ -1347,10 +1455,20 @@ export default function HomePage() {
                     threshold={threshold}
                     llmModel={llmModel}
                     embeddingModel={embeddingModel}
+                    llmProvider={modelConfig?.llm.provider}
+                    embeddingProvider={modelConfig?.embedding.provider}
                     onTopKChange={setTopK}
                     onThresholdChange={setThreshold}
-                    onLLMModelChange={setLlmModel}
-                    onEmbeddingModelChange={setEmbeddingModel}
+                    onLLMModelChange={value => {
+                      void handleModelChange(value, embeddingModel).catch(error => {
+                        showToast(error instanceof Error ? error.message : '模型切换失败', 'error');
+                      });
+                    }}
+                    onEmbeddingModelChange={value => {
+                      void handleModelChange(llmModel, value).catch(error => {
+                        showToast(error instanceof Error ? error.message : '模型切换失败', 'error');
+                      });
+                    }}
                     showParams={showParams}
                     onToggle={() => setShowParams(!showParams)}
                   />
@@ -1648,6 +1766,7 @@ export default function HomePage() {
                   onClick={() => { void refreshRuntimeStatus(); }}
                   className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                   title="刷新知识库状态"
+                  aria-label="刷新知识库状态"
                 >
                   <i className="fas fa-sync-alt"></i>
                 </button>
@@ -1657,7 +1776,7 @@ export default function HomePage() {
                   {vectorBackendDisabled
                     ? '维护模式已启用：不会连接 Milvus 或 Zilliz，也不会写入向量库。'
                     : milvusConnected
-                    ? `当前语料库包含 ${milvusStats?.rowCount || 0} 个向量文档块。`
+                    ? formatDocumentChunkCounts(documentCounts)
                     : '正在检查 Milvus 连接状态；连接恢复后可继续上传和提问。'}
                 </p>
                 <p className="text-xs text-gray-500">
@@ -1689,12 +1808,15 @@ export default function HomePage() {
             )}
 
             <SystemInfo
-              docCount={storageBackend === 'milvus' ? (milvusStats?.rowCount || 0) : docCount}
+              docCount={storageBackend === 'milvus' ? documentCounts?.searchableChunkCount ?? null : docCount}
+              documentCounts={documentCounts}
               embeddingDim={storageBackend === 'milvus' ? (milvusStats?.embeddingDimension || 0) : embeddingDim}
               systemStatus={systemStatus}
               llmModel={llmModel}
               embeddingModel={embeddingModel}
               modelConfig={modelConfig}
+              modelReadiness={modelReadiness?.model === llmModel ? modelReadiness : null}
+              onRetryModelWarmup={() => setModelWarmupAttempt(attempt => attempt + 1)}
               onRefresh={() => { void refreshRuntimeStatus(); }}
               onModelChange={handleModelChange}
             />

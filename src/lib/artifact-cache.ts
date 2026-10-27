@@ -60,7 +60,8 @@ export function createArtifactCacheIdentity<ModelSignature extends object>(input
 
   return {
     cache_key: cacheKey,
-    cache_file: path.join(cacheDir, `${cacheKey}.json`),
+    // Runtime cache files are mutable data, not deployable JSON assets.
+    cache_file: path.join(/*turbopackIgnore: true*/ cacheDir, `${cacheKey}.json`),
     source_hash: sourceHash,
     model_signature: modelSignature,
   };

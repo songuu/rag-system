@@ -9,7 +9,6 @@ import {
   type MiroFishGraphArtifactIdentity,
   type MiroFishGraphArtifactStore,
 } from '../mirofish/graph-artifact-store';
-import { extractMiroFishGraphData } from '../mirofish/graph-builder';
 import type { GraphData } from '../mirofish/types';
 import { createRetrievalScope, type RagTrustLevel } from '../security/retrieval-scope';
 import type { KnowledgeGraphCommandStore } from './contracts';
@@ -47,7 +46,9 @@ export function createLocalGraphBuildHandler(
   dependencies: LocalGraphBuildDependencies
 ): (job: KnowledgeGraphBuildJob) => Promise<LocalGraphBuildResult> {
   const extractGraph = dependencies.extractGraph
-    ?? ((text: string, documentId: string) => extractMiroFishGraphData({ text, documentId }));
+    ?? (async (text: string, documentId: string) => (
+      (await import('../mirofish/graph-builder')).extractMiroFishGraphData({ text, documentId })
+    ));
   return async job => {
     const identity = requiredJobIdentity(job);
     const expectedChunks = requiredChunkCount(job.metadata.chunkCount);
@@ -115,7 +116,7 @@ function requiredJobIdentity(job: KnowledgeGraphBuildJob): MiroFishGraphArtifact
   return identity;
 }
 
-function reconstructDocument(
+export function reconstructDocument(
   rows: readonly MilvusQueryRow[],
   identity: MiroFishGraphArtifactIdentity,
   expectedChunks: number

@@ -1,0 +1,74 @@
+{
+  "runId": "69f0ac49-edf1-420a-9e03-281f5242be5f",
+  "startedAt": "2026-10-27T05:13:30.108Z",
+  "origin": "http://localhost:3000",
+  "mockedResponses": false,
+  "tests": [],
+  "passed": false,
+  "documentState": [
+    {
+      "documentId": "codex-local-graph-black-death-e2e-20260908.txt",
+      "name": "codex-local-graph-black-death-e2e-20260908.txt",
+      "enabled": true,
+      "chunks": 1
+    },
+    {
+      "documentId": "codex-local-graph-integrity-e2e-20260908.txt",
+      "name": "codex-local-graph-integrity-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 2
+    },
+    {
+      "documentId": "sample7.txt",
+      "name": "sample7.txt",
+      "enabled": false,
+      "chunks": 26
+    },
+    {
+      "documentId": "sample6.txt",
+      "name": "sample6.txt",
+      "enabled": false,
+      "chunks": 12
+    },
+    {
+      "documentId": "codex-local-graph-e2e-20260908.txt",
+      "name": "codex-local-graph-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 1
+    },
+    {
+      "documentId": "重构契丹早期史.epub",
+      "name": "重构契丹早期史.epub",
+      "enabled": true,
+      "chunks": 645
+    },
+    {
+      "documentId": "重构契丹早期史.mobi",
+      "name": "重构契丹早期史.mobi",
+      "enabled": false,
+      "chunks": 718
+    }
+  ],
+  "summary": {
+    "documentCount": 7,
+    "enabledDocumentCount": 2,
+    "disabledDocumentCount": 5,
+    "chunkCount": 1405,
+    "searchableChunkCount": 646,
+    "disabledChunkCount": 759,
+    "byteSize": 9783623,
+    "syncedCount": 7,
+    "elasticsearchMode": "active"
+  },
+  "homeLoadStatuses": [
+    200
+  ],
+  "modelReadiness": {
+    "handledBy": "actual-home-and-server-workflow"
+  },
+  "error": {
+    "phase": "ask-comparison",
+    "name": "AssertionError",
+    "message": "answer lost the source scope or missing region"
+  }
+}

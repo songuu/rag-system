@@ -145,7 +145,7 @@ export class EnhancedTrie {
     let bestTokenId = -1;
     let bestMergeRank = Infinity;
     let bestFrequency = 0;
-    let candidates: CandidateInfo[] = [];
+    const candidates: CandidateInfo[] = [];
     
     for (let i = startPos; i < text.length; i++) {
       const char = text[i];

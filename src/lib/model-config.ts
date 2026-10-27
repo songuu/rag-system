@@ -32,6 +32,7 @@ import {
 } from './embedding-config';
 import type { EmbeddingModelConfig, EmbeddingProvider } from './embedding-config';
 import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
+import { resolveOllamaRuntimeSettings } from './ollama-readiness';
 
 // ==================== 类型定义 ====================
 
@@ -565,6 +566,7 @@ export class ModelFactory {
   private createOllamaLLM(modelName?: string, options: Partial<ModelConfig> = {}): ChatOllama {
     const actualModel = modelName || this.envConfig.OLLAMA_LLM_MODEL;
     const extra = (options.options || {}) as Record<string, unknown>;
+    const runtimeSettings = resolveOllamaRuntimeSettings();
     const requestPolicy = resolveModelRequestPolicy(options, {
       timeoutMs: this.envConfig.MODEL_REQUEST_TIMEOUT_MS,
       maxRetries: this.envConfig.MODEL_MAX_RETRIES,
@@ -574,7 +576,7 @@ export class ModelFactory {
       ? extra.num_ctx
       : typeof extra.numCtx === 'number'
         ? extra.numCtx
-        : 8192;
+        : runtimeSettings.numCtx;
     console.log(`[ModelFactory] 创建 Ollama LLM: ${actualModel} (num_ctx=${numCtx}${extra.format ? `, format=${extra.format}` : ''})`);
 
     return new ChatOllama({
@@ -583,6 +585,7 @@ export class ModelFactory {
       model: actualModel,
       temperature: options.temperature ?? 0.7,
       numCtx,
+      keepAlive: runtimeSettings.keepAlive,
       maxRetries: 0,
       fetch: createModelRequestTimeoutFetch(requestPolicy.timeoutMs),
     });

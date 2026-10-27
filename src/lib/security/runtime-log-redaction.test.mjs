@@ -25,6 +25,7 @@ function extractConsoleCalls(source) {
 test('ask and adaptive runtime logs do not interpolate query or entity payloads', async () => {
   const sources = await Promise.all([
     readFile(new URL('../../app/api/ask/route.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../../app/api/ask/runtime.ts', import.meta.url), 'utf8'),
     readFile(new URL('../adaptive-entity-rag.ts', import.meta.url), 'utf8'),
   ]);
   const consoleCalls = sources.flatMap(extractConsoleCalls).join('\n');

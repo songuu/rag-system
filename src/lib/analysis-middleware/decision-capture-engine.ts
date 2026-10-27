@@ -9,14 +9,20 @@ import type {
   TokenDecisionMetadata,
   PathLogic,
   SemanticEntropy,
-  ByteRange,
   MergeOperation,
   LogicWaterfallData,
   StabilityMetrics
 } from './types';
 
+// Legacy layouts remain untrusted until token/id pairs pass the existing guards.
+interface TokenizerVocabularyLayouts {
+  model?: { tokens_to_ids?: unknown; vocab?: unknown; encoder?: unknown };
+  vocab?: unknown;
+  tokenizer_?: { model?: { vocab?: unknown } };
+}
+
 export class DecisionCaptureEngine {
-  private tokenizer: any = null;
+  private tokenizer: Awaited<ReturnType<typeof AutoTokenizer.from_pretrained>> | null = null;
   private modelName: string;
   private vocabMap: Map<string, number> = new Map();
   private idToTokenMap: Map<number, string> = new Map();
@@ -45,11 +51,13 @@ export class DecisionCaptureEngine {
    * 从 tokenizer 提取词汇表
    */
   private extractVocabulary(): void {
+    const tokenizer: TokenizerVocabularyLayouts | null = this.tokenizer;
     const vocabPaths = [
-      () => this.tokenizer?.model?.vocab,
-      () => this.tokenizer?.model?.encoder,
-      () => this.tokenizer?.vocab,
-      () => this.tokenizer?.tokenizer_?.model?.vocab,
+      () => tokenizer?.model?.tokens_to_ids,
+      () => tokenizer?.model?.vocab,
+      () => tokenizer?.model?.encoder,
+      () => tokenizer?.vocab,
+      () => tokenizer?.tokenizer_?.model?.vocab,
     ];
 
     for (const getVocab of vocabPaths) {
@@ -57,7 +65,7 @@ export class DecisionCaptureEngine {
         const vocabObj = getVocab();
         if (vocabObj) {
           if (vocabObj instanceof Map) {
-            vocabObj.forEach((value: any, key: any) => {
+            vocabObj.forEach((value: unknown, key: unknown) => {
               if (typeof key === 'string' && typeof value === 'number') {
                 this.vocabMap.set(key, value);
                 this.idToTokenMap.set(value, key);
@@ -235,12 +243,12 @@ export class DecisionCaptureEngine {
     const operations: MergeOperation[] = [];
 
     // 使用 tokenizer 进行编码
-    const encoded = this.tokenizer.encode(text, { add_special_tokens: false });
+    const encoded = this.tokenizer!.encode(text, null, { add_special_tokens: false });
     
     // 获取 token 文本
     let tokenTexts: string[] = [];
     try {
-      tokenTexts = this.tokenizer.batch_decode(
+      tokenTexts = this.tokenizer!.batch_decode(
         encoded.map((id: number) => [id]),
         { skip_special_tokens: false }
       );
@@ -294,7 +302,7 @@ export class DecisionCaptureEngine {
         tokenId,
         token: tokenText,
         pathLogic: this.buildPathLogic(tokenId, tokenText),
-        semanticEntropy: this.calculateTokenEntropy(tokenId, tokenText),
+        semanticEntropy: this.calculateTokenEntropy(tokenId),
         byteRange: {
           start: actualStart,
           end: actualEnd,
@@ -326,11 +334,11 @@ export class DecisionCaptureEngine {
    */
   private async captureFinalStage(text: string): Promise<LogicWaterfallData['stages'][0]> {
     const startTime = Date.now();
-    const encoded = this.tokenizer.encode(text, { add_special_tokens: false });
+    const encoded = this.tokenizer!.encode(text, null, { add_special_tokens: false });
     
     let tokenTexts: string[] = [];
     try {
-      tokenTexts = this.tokenizer.batch_decode(
+      tokenTexts = this.tokenizer!.batch_decode(
         encoded.map((id: number) => [id]),
         { skip_special_tokens: false }
       );
@@ -354,7 +362,7 @@ export class DecisionCaptureEngine {
         tokenId,
         token: tokenText,
         pathLogic: this.buildPathLogic(tokenId, tokenText),
-        semanticEntropy: this.calculateTokenEntropy(tokenId, tokenText),
+        semanticEntropy: this.calculateTokenEntropy(tokenId),
         byteRange: {
           start: actualStart,
           end: actualEnd,
@@ -398,7 +406,7 @@ export class DecisionCaptureEngine {
     operations: MergeOperation[],
     tokens: TokenDecisionMetadata[]
   ): StabilityMetrics[] {
-    return tokens.map((token, index) => {
+    return tokens.map((token) => {
       const relatedOps = operations.filter(op => 
         op.merged.tokenId === token.tokenId
       );
@@ -456,7 +464,7 @@ export class DecisionCaptureEngine {
     };
   }
 
-  private calculateTokenEntropy(tokenId: number, token: string): SemanticEntropy {
+  private calculateTokenEntropy(tokenId: number): SemanticEntropy {
     const rank = this.getTokenRank(tokenId);
     const frequency = 1 / (rank + 1);
     const idf = Math.log((this.vocabMap.size || 30000) / (rank + 1));

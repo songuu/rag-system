@@ -1,0 +1,18 @@
+{
+  "runId": "21b55207-e285-4235-95a4-031ea165f7b5",
+  "startedAt": "2026-10-27T06:05:30.923Z",
+  "mockedResponses": false,
+  "tests": [],
+  "passed": false,
+  "document": {
+    "id": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+    "name": "重构契丹早期史.epub",
+    "documentId": "重构契丹早期史.epub",
+    "version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+    "chunks": 645
+  },
+  "error": {
+    "phase": "generate-1",
+    "message": "page.waitForResponse: Timeout 135000ms exceeded while waiting for event \"response\""
+  }
+}

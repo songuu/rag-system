@@ -12,6 +12,10 @@ const installedModels = [
   { name: 'qwen3-embedding:latest', size: 4360000000 },
   { name: 'nomic-embed-text:latest', size: 261600000 },
   { name: 'llama3.1:latest', size: 4580000000 },
+  { name: 'glm-4.7-flash:latest', digest: 'old', size: 19019270852 },
+  { name: 'glm-4.7-flash:latest', digest: 'new', size: 19019270582 },
+  { name: 'llamacpp:' + 'a'.repeat(64), digest: 'new' },
+  { name: 'qwen2.5:0.5b' },
 ];
 export function createModelRequestTimeoutFetch() {
   return async () => new Response(JSON.stringify({ models: installedModels }), {
@@ -82,6 +86,9 @@ test('GET includes dimensions for installed Ollama embedding models', async () =
 
   assert.equal(response.status, 200);
   assert.equal(body.success, true);
+  assert.equal(body.llmModels.filter(model => model.name === 'glm-4.7-flash:latest').length, 1);
+  assert.equal(body.allModels.some(model => model.name.startsWith('llamacpp:')), false);
+  assert.equal(body.llmModels.find(model => model.name === 'qwen2.5:0.5b').displayName, 'qwen2.5:0.5b');
   assert.deepEqual(
     Object.fromEntries(body.embeddingModels.map(model => [model.name, model.dimension])),
     {

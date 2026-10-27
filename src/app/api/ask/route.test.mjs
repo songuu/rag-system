@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,6 +7,12 @@ import path from 'node:path';
 import test, { after } from 'node:test';
 import { registerHooks } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import {
+  DURABLE_FIRST_POST_DIAGNOSTIC_MARKER,
+  formatDurableFirstPostDiagnostic,
+  formatDurableBoundedFirstPostDiagnostic,
+  parseDurableFirstPostDiagnosticMessage,
+} from './durable-response-diagnostic.test-support.mjs';
 
 const agenticStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 let fixture;
@@ -265,10 +272,13 @@ export function getMilvusInstance() { return store; }
 const modelStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [], embeddedQueries: [] };
 let createLLMError;
+let modelAnswer = 'generated answer';
 export function resetModelSignals() {
   signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [], embeddedQueries: [] };
   createLLMError = undefined;
+  modelAnswer = 'generated answer';
 }
+export function setModelAnswer(value) { modelAnswer = value; }
 export function getModelSignals() { return structuredClone(signals); }
 export function setCreateLLMError(value) { createLLMError = value; }
 export function createEmbedding() {
@@ -280,7 +290,9 @@ export function createLLM(modelName, options) {
     modelName,
     requestTimeoutMs: options?.requestTimeoutMs,
   });
-  return { async invoke(prompt) {
+  return { withStructuredOutput() {
+    return { async invoke() { return { coverage: 'complete', evidenceNumbers: [1] }; } };
+  }, async invoke(prompt) {
     const isVisual = Array.isArray(prompt) && prompt.some(message =>
       Array.isArray(message?.content)
       && message.content.some(block => block?.type === 'image_url')
@@ -290,8 +302,10 @@ export function createLLM(modelName, options) {
       return { content: 'VISUAL_PAGE_EVIDENCE' };
     }
     signals.generate += 1;
-    signals.prompts.push(String(prompt));
-    return { content: 'generated answer' };
+    signals.prompts.push(typeof prompt === 'string' ? prompt : prompt.map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\\n\\n'));
+    signals.messageRoles ??= [];
+    signals.messageRoles.push(Array.isArray(prompt) ? prompt.map(message => message.role) : ['user']);
+    return { content: modelAnswer };
   } };
 }
 `);
@@ -318,10 +332,19 @@ export function buildReranker() {
 }
 `);
 const moduleStubs = new Map([
+  // Live PG/Milvus authorization is covered by document citation adapter tests.
+  ['@/lib/rag/citations/document-runtime', 'data:text/javascript,' + encodeURIComponent(`
+    export async function issueRuntimeDocumentCitations(input) { return input.graphCitations; }
+  `)],
   ['@/lib/agentic-rag', agenticStubUrl],
   ['@/lib/rag/agents/scoped-retrieval-agent', scopedAgentStubUrl],
   ['@/lib/milvus-client', milvusStubUrl],
   ['@/lib/model-config', modelStubUrl],
+  // Cold-start behavior is covered by lightweight-entry; these retrieval tests
+  // must not load real provider weights before invoking their Milvus fixtures.
+  ['@/lib/ollama-readiness', 'data:text/javascript,' + encodeURIComponent(`
+    export async function warmOllamaEmbeddingModel(model) { return { model, phase: 'ready' }; }
+  `)],
   ['@/lib/rag-instance', 'data:text/javascript,' + encodeURIComponent(`
     export async function getRagSystem() { throw new Error('memory fixture not configured'); }
   `)],
@@ -389,6 +412,7 @@ const environmentKeys = [
   'RAG_DURABLE_WORKFLOW_RESULT_MAX_ARTIFACTS',
   'RAG_AGENTIC_RUNTIME', 'RAG_AGENTIC_RETRIEVAL_MODE', 'RAG_AGENTIC_DECISION_MODE',
   'RAG_VECTOR_BACKEND',
+  'RAG_SEMANTIC_ROUTER',
   'NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD',
 ];
 const originalEnvironment = Object.fromEntries(environmentKeys.map(key => [key, process.env[key]]));
@@ -400,6 +424,7 @@ Object.assign(process.env, {
   RAG_DEFAULT_TENANT_ID: 'tenant-a',
   RAG_DEFAULT_CORPUS_ID: 'corpus-a',
   LANGCHAIN_TRACING_V2: 'false',
+  RAG_SEMANTIC_ROUTER: 'off',
 });
 delete process.env.RAG_AGENTIC_RUNTIME;
 delete process.env.RAG_AGENTIC_RETRIEVAL_MODE;
@@ -417,9 +442,12 @@ const {
   GET,
   PATCH,
   POST,
+} = await import('./route.ts');
+const {
   invokeGenerationWithDeadline,
   isOptionalKnowledgeGraphFailure,
-} = await import('./route.ts');
+  sanitizeDurableAskReplayValue,
+} = await import('./runtime.ts');
 const { Neo4jOperationError } = await import('@/lib/neo4j/driver');
 const { PostgresQueryError } = await import('@/lib/postgres/client');
 const {
@@ -432,6 +460,7 @@ const {
   resetModelSignals,
   getModelSignals,
   setCreateLLMError,
+  setModelAnswer,
 } = await import('@/lib/model-config');
 const {
   FileMiroFishGraphArtifactStore,
@@ -456,6 +485,183 @@ after(() => {
   }
 });
 
+test('durable first POST diagnostic retains only the closed response fields and fixture counts', () => {
+  assert.deepEqual(JSON.parse(formatDurableFirstPostDiagnostic({
+    status: 503,
+    body: { code: 'DURABLE_WORKFLOW_PAUSED', durable: { status: 'paused', replay: false } },
+    milvusSignals: { connect: 1, search: 2 },
+    modelSignals: { embed: 3, generate: 4 },
+    scopedAgentCalls: 5,
+  }).slice(DURABLE_FIRST_POST_DIAGNOSTIC_MARKER.length)), {
+    caseTag: 'durable-agentic-replay-first-post/v1',
+    site: 'first-post-status',
+    status: 503,
+    bodyCode: 'DURABLE_WORKFLOW_PAUSED',
+    durableStatus: 'paused',
+    durableReplay: false,
+    milvusConnect: 1,
+    milvusSearch: 2,
+    modelEmbed: 3,
+    modelGenerate: 4,
+    scopedAgentCalls: 5,
+  });
+});
+
+test('durable first POST diagnostic retains the disabled vector backend gate code', () => {
+  const record = JSON.parse(formatDurableFirstPostDiagnostic({
+    status: 503, body: { code: 'VECTOR_BACKEND_DISABLED' },
+  }).slice(DURABLE_FIRST_POST_DIAGNOSTIC_MARKER.length));
+  assert.equal(record.bodyCode, 'VECTOR_BACKEND_DISABLED');
+});
+
+test('durable first POST diagnostic masks unrecognized strings without serializing private fields', () => {
+  const sentinel = 'PRIVATE_SYNTHETIC_FIRST_POST_SENTINEL';
+  const output = formatDurableFirstPostDiagnostic({
+    status: sentinel,
+    body: {
+      code: 'DURABLE_ASK_PRIVATE_SYNTHETIC_FIRST_POST_SENTINEL',
+      durable: { status: sentinel, replay: sentinel },
+      error: sentinel, message: sentinel, path: sentinel, headers: sentinel,
+      query: sentinel, rawBody: sentinel,
+    },
+    milvusSignals: { connect: sentinel, search: sentinel },
+    modelSignals: { embed: sentinel, generate: sentinel },
+    scopedAgentCalls: sentinel,
+  });
+  assert.equal(output.includes(sentinel), false);
+  const record = JSON.parse(output.slice(DURABLE_FIRST_POST_DIAGNOSTIC_MARKER.length));
+  assert.equal(Object.values(record).slice(2).every(value => value === 'unknown'), true);
+});
+
+test('durable first POST diagnostic does not invoke root or nested accessors', () => {
+  let reads = 0;
+  const accessor = { enumerable: true, get() { reads += 1; return 'PRIVATE_SYNTHETIC_ACCESSOR'; } };
+  const root = Object.defineProperties({}, Object.fromEntries([
+    'status', 'body', 'milvusSignals', 'modelSignals', 'scopedAgentCalls',
+  ].map(key => [key, accessor])));
+  const body = Object.defineProperties({}, Object.fromEntries([
+    'code', 'durable', 'error', 'message', 'path', 'headers', 'query', 'rawBody',
+  ].map(key => [key, accessor])));
+  const nested = Object.defineProperties({}, Object.fromEntries([
+    'status', 'replay', 'connect', 'search', 'embed', 'generate', 'toJSON',
+  ].map(key => [key, accessor])));
+  const outputs = [
+    formatDurableFirstPostDiagnostic(root),
+    formatDurableFirstPostDiagnostic({ body, milvusSignals: nested, modelSignals: nested }),
+    formatDurableFirstPostDiagnostic({ body: { durable: nested } }),
+  ];
+  assert.equal(reads, 0);
+  assert.equal(outputs.every(output => !output.includes('PRIVATE_SYNTHETIC_ACCESSOR')), true);
+});
+
+test('durable first POST diagnostic rejects root nested and revoked proxies without executing traps', () => {
+  let traps = 0;
+  const proxy = new Proxy({}, {
+    get() { traps += 1; return 'PRIVATE_SYNTHETIC_PROXY'; },
+    getOwnPropertyDescriptor() { traps += 1; return undefined; },
+    getPrototypeOf() { traps += 1; return null; },
+    ownKeys() { traps += 1; return []; },
+    has() { traps += 1; return false; },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const outputs = [
+    formatDurableFirstPostDiagnostic(proxy),
+    formatDurableFirstPostDiagnostic(revoked.proxy),
+    formatDurableFirstPostDiagnostic({ body: proxy, milvusSignals: proxy, modelSignals: proxy }),
+    formatDurableFirstPostDiagnostic({ body: { durable: proxy }, scopedAgentCalls: proxy }),
+    formatDurableFirstPostDiagnostic({ body: { code: proxy, durable: { status: proxy, replay: proxy } } }),
+  ];
+  assert.equal(traps, 0);
+  assert.equal(outputs.every(output => !output.includes('PRIVATE_SYNTHETIC_PROXY')), true);
+});
+
+test('durable first POST diagnostic ignores inherited fields and does not coerce invalid numbers', () => {
+  let conversions = 0;
+  const coercible = {
+    valueOf() { conversions += 1; return 503; },
+    toString() { conversions += 1; return 'PRIVATE_SYNTHETIC_COERCION'; },
+  };
+  const inherited = Object.create({ status: 503, body: { code: 'DURABLE_WORKFLOW_PAUSED' } });
+  for (const input of [undefined, null, inherited, {
+    status: coercible,
+    body: Object.create({ code: 'DURABLE_WORKFLOW_PAUSED', durable: { status: 'paused' } }),
+    milvusSignals: { connect: coercible, search: Number.POSITIVE_INFINITY },
+    modelSignals: { embed: -1, generate: 1.5 },
+    scopedAgentCalls: Number.MAX_SAFE_INTEGER + 1,
+  }]) {
+    const record = JSON.parse(formatDurableFirstPostDiagnostic(input).slice(DURABLE_FIRST_POST_DIAGNOSTIC_MARKER.length));
+    assert.equal(Object.values(record).slice(2).every(value => value === 'unknown'), true);
+  }
+  assert.equal(conversions, 0);
+});
+
+test('durable first POST diagnostic permits only finite durable statuses and boolean replay', () => {
+  for (const status of ['pending', 'running', 'paused', 'completed', 'cancelled', 'failed']) {
+    for (const replay of [false, true]) {
+      const record = JSON.parse(formatDurableFirstPostDiagnostic({ body: { durable: { status, replay } } }).slice(DURABLE_FIRST_POST_DIAGNOSTIC_MARKER.length));
+      assert.equal(record.durableStatus, status);
+      assert.equal(record.durableReplay, replay);
+    }
+  }
+});
+
+test('durable first POST diagnostic parser accepts only the canonical formatter record', () => {
+  const message = formatDurableFirstPostDiagnostic({
+    status: 503, body: { code: 'DURABLE_WORKFLOW_PAUSED' },
+    milvusSignals: { connect: 1, search: 1 },
+    modelSignals: { embed: 1, generate: 0 }, scopedAgentCalls: 0,
+  });
+  assert.deepEqual(parseDurableFirstPostDiagnosticMessage(message), {
+    caseTag: 'durable-agentic-replay-first-post/v1', site: 'first-post-status',
+    status: 503, bodyCode: 'DURABLE_WORKFLOW_PAUSED', durableStatus: 'unknown',
+    durableReplay: 'unknown', milvusConnect: 1, milvusSearch: 1,
+    modelEmbed: 1, modelGenerate: 0, scopedAgentCalls: 0,
+  });
+});
+
+test('durable first POST diagnostic parser rejects unknown keys values duplicate keys and malformed messages', () => {
+  const message = formatDurableFirstPostDiagnostic({});
+  const sentinel = 'PRIVATE_SYNTHETIC_PARSER_SENTINEL';
+  for (const candidate of [
+    '', 'not-json', DURABLE_FIRST_POST_DIAGNOSTIC_MARKER + 'null',
+    message.slice(1), message + ' ', 'prefix ' + message,
+    message.replace('durable-agentic-replay-first-post/v1', sentinel),
+    message.replace('first-post-status', sentinel),
+    message.replace('"status":"unknown"', '"status":600'),
+    message.replace('"bodyCode":"unknown"', '"bodyCode":"' + sentinel + '"'),
+    message.replace('"durableStatus":"unknown"', '"durableStatus":"' + sentinel + '"'),
+    message.replace('"durableReplay":"unknown"', '"durableReplay":1'),
+    message.replace('"milvusConnect":"unknown"', '"milvusConnect":-1'),
+    message.replace('"modelEmbed":"unknown"', '"modelEmbed":1.5'),
+    message.replace('"scopedAgentCalls":"unknown"', '"scopedAgentCalls":9007199254740992'),
+    message.slice(0, -1) + ',"message":"' + sentinel + '"}',
+    message.slice(0, -1) + ',"status":"unknown"}',
+    message.slice(0, -1) + ',"__proto__":{"message":"' + sentinel + '"}}',
+    DURABLE_FIRST_POST_DIAGNOSTIC_MARKER + ' '.repeat(4096),
+  ]) {
+    assert.equal(parseDurableFirstPostDiagnosticMessage(candidate) === null, true);
+  }
+});
+
+test('durable first POST diagnostic parser rejects nonstrings without invoking coercion or proxy traps', () => {
+  let hooks = 0;
+  const boxed = new String('PRIVATE_SYNTHETIC_BOXED_MESSAGE');
+  boxed.toString = () => { hooks += 1; return ''; };
+  const proxy = new Proxy({}, {
+    get() { hooks += 1; return ''; },
+    getOwnPropertyDescriptor() { hooks += 1; return undefined; },
+    getPrototypeOf() { hooks += 1; return null; },
+    ownKeys() { hooks += 1; return []; },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  for (const value of [undefined, null, 503, false, boxed, proxy, revoked.proxy]) {
+    assert.equal(parseDurableFirstPostDiagnosticMessage(value) === null, true);
+  }
+  assert.equal(hooks, 0);
+});
+
 test('POST answers a greeting without vector or model work and returns public processing stages', async () => {
   resetVectorIngestStateForTests();
   setMilvusFixture({ searchResults: [denseResult()] });
@@ -476,6 +682,71 @@ test('POST answers a greeting without vector or model work and returns public pr
   assert.equal(getMilvusSignals().search, 0);
   assert.equal(getModelSignals().embed, 0);
   assert.equal(getModelSignals().generate, 0);
+});
+
+test('POST answers identity and clock questions without loading the selected local model', async () => {
+  for (const question of ['介绍你自己', '今天的日期', '今天的时间', '现在几点',
+    '麻烦告诉我现在是啥时间，谢谢', '今天星期几', '明天几号', '东京现在几点',
+    '3+2*4是多少', '你用的是什么模型', '今天上海天气怎么样',
+    '你好，请问今天几号，现在几点']) {
+    resetVectorIngestStateForTests();
+    setMilvusFixture({ searchResults: [denseResult()] });
+    resetModelSignals();
+    const response = await POST(milvusAskRequest(question));
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.conversationMode, 'direct');
+    assert.equal(body.modelUsage.llm, false);
+    assert.equal(body.processing.retrievalSkipped, true);
+    assert.equal(body.routing.route, 'direct');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(getModelSignals().generate, 0);
+    assert.equal(getModelSignals().embed, 0);
+    assert.equal(getMilvusSignals().search, 0);
+  }
+});
+
+test('POST answers the selected model from validated runtime selection instead of model self-description', async () => {
+  resetModelSignals();
+  const response = await POST(milvusAskRequest('你用的是什么模型'));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.match(body.answer, /llama3.1/);
+  assert.deepEqual(body.answerSources, ['runtime-config']);
+  assert.equal(getModelSignals().generate, 0);
+});
+
+test('POST authenticates direct tool requests before returning runtime or clock information', async () => {
+  resetModelSignals();
+  const request = milvusAskRequest('你用的是什么模型');
+  request.headers.delete('authorization');
+  const response = await POST(request);
+  assert.equal(response.status, 401);
+  assert.equal(getModelSignals().generate, 0);
+});
+
+test('POST direct tools work while vector search is disabled even with Agentic mode selected', async () => {
+  process.env.RAG_VECTOR_BACKEND = 'disabled';
+  resetModelSignals();
+  setMilvusFixture({ searchResults: [] });
+  try {
+    const response = await POST(milvusAskRequest('今天星期几，3+2是多少', { useAgenticRAG: true }));
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.processing.retrievalSkipped, true);
+    assert.equal(getModelSignals().generate, 0);
+    assert.equal(getMilvusSignals().connect, 0);
+    assert.equal(getScopedAgentSignals().length, 0);
+  } finally { delete process.env.RAG_VECTOR_BACKEND; }
+});
+
+test('POST preserves knowledge work when a clock question includes document scope', async () => {
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  const response = await POST(milvusAskRequest('今天几号，并总结文档中的主要结论'));
+  assert.equal(response.status, 200);
+  assert.equal(getModelSignals().generate, 1);
+  assert.equal(getMilvusSignals().search, 1);
 });
 
 test('POST does not treat a greeting-prefixed knowledge question as direct chat', async () => {
@@ -634,12 +905,17 @@ test('POST reranks canonical candidates and falls back without modifying their i
   assert.deepEqual(ranked.evidence.map(item => item.id), ['dense-b', 'dense-a']);
   assert.deepEqual(ranked.agent.servedEvidenceIds, ['dense-b', 'dense-a']);
   assert.equal(ranked.retrievalDetails.rerank.applied, true);
+  assert.deepEqual(ranked.retrievalDetails.diagnostics.rows.map(row => [
+    row.evidenceId, row.beforeRerankRank, row.afterRerankRank, row.inContext,
+  ]), [['dense-b', 2, 1, true], ['dense-a', 1, 2, true]]);
+  assert.equal(ranked.retrievalDetails.diagnostics.qualityMeasurement, 'unmeasured');
   assert.equal(getRerankCalls(), 1);
 
   setRerankFixture({ configured: true, fail: true });
   const fallback = await (await POST(askRequest())).json();
   assert.deepEqual(fallback.evidence.map(item => item.id), ['dense-a', 'dense-b']);
   assert.equal(fallback.retrievalDetails.rerank.applied, false);
+  assert.ok(fallback.retrievalDetails.diagnostics.rows.every(row => row.beforeRerankRank === undefined && row.afterRerankRank === undefined));
   assert.notEqual(ranked.cacheIdentity.answer, fallback.cacheIdentity.answer);
 
   setRerankFixture({ configured: true });
@@ -776,6 +1052,9 @@ test('POST bounded ordered context caps evidence after active selection and repo
   assert.equal(body.retrievalDetails.contextPacking.truncated, true);
   assert.equal(body.retrievalDetails.contextPacking.excludedEvidenceIds.length, 2);
   assert.deepEqual(body.retrievalDetails.abstention.qualifiedEvidenceIds, body.agent.servedEvidenceIds);
+  assert.equal(body.retrievalDetails.diagnostics.candidateCount, 8);
+  assert.equal(body.retrievalDetails.diagnostics.contextCount, 6);
+  assert.equal(body.retrievalDetails.diagnostics.citedCount, 1);
 });
 
 test('POST bounded follow-up applies the active dense threshold before generation', async t => {
@@ -797,6 +1076,9 @@ test('POST bounded follow-up applies the active dense threshold before generatio
   assert.deepEqual(body.agent.servedEvidenceIds, ['dense-a']);
   assert.doesNotMatch(body.context, /LOW_QUALITY_SHOULD_BE_EXCLUDED/);
   assert.deepEqual(body.retrievalDetails.abstention.qualifiedEvidenceIds, ['dense-a']);
+  assert.equal(body.retrievalDetails.diagnostics.candidateCount, 2);
+  assert.equal(body.retrievalDetails.diagnostics.rows.find(row => row.evidenceId === 'weak-followup').inContext, false);
+  assert.equal(body.retrievalDetails.diagnostics.citedCount, 1);
 });
 
 test('POST bounded follow-up rejects cross-tenant evidence before it reaches the agent result', async t => {
@@ -921,7 +1203,7 @@ test('POST activates bounded ordered context before lane execution and skips den
   assert.equal(modelSignals.generate, 1);
   assert.deepEqual(modelSignals.llmCreations, [{
     modelName: 'llama3.1',
-    requestTimeoutMs: 90_000,
+    requestTimeoutMs: 240_000,
   }]);
   assert.ok(modelSignals.prompts[0].indexOf('raw-a') < modelSignals.prompts[0].indexOf('raw-b'));
   assert.deepEqual(body.laneExecutions.map(item => item.retriever), ['milvus-ordered-corpus-v1']);
@@ -1436,6 +1718,151 @@ test('POST disables PDF visual active capability on an unsupported multi-instanc
   assert.match(getModelSignals().prompts.join('\n'), /dense PDF evidence/);
 });
 
+test('POST ordinary entity chat uses graph evidence and issues clickable citations for the actual served number', async t => {
+  const fixture = await createMiroFishRouteFixture(t, { documentId: 'chat-entity-citation', marker: 'ENTITY_SOURCE', activate: true });
+  configureCitationRouteEnvironment(t);
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  setModelAnswer('方案甲提升召回。[2]');
+  const response = await POST(milvusAskRequest('介绍一下方案甲'));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('x-rag-policy'), 'milvus-2step');
+  assert.ok(body.evidence.some(item => item.documentId === fixture.identity.documentId));
+  assert.match(getModelSignals().prompts.join('\n'), /ENTITY_SOURCE/);
+  assert.deepEqual(getModelSignals().messageRoles.at(-1), ['system', 'user']);
+  assert.equal(body.citations.status, 'available');
+  assert.deepEqual(body.citations.items.map(item => item.number), [2]);
+  assert.equal(body.citations.items[0].locator.includes(fixture.identity.documentId), false);
+  assert.equal(body.retrievalDetails.graph.servedEvidenceCount, 1);
+  assert.equal(body.retrievalDetails.graph.citedEvidenceCount, 1);
+});
+
+test('POST a supported single-document relationship can answer under active abstention', async t => {
+  await createMiroFishRouteFixture(t, { documentId:'chat-local-relationship', marker:'RELATION_SOURCE', activate:true });
+  const prior = process.env.RAG_ABSTENTION_MODE;
+  process.env.RAG_ABSTENTION_MODE = 'active';
+  t.after(() => { if(prior === undefined) delete process.env.RAG_ABSTENTION_MODE; else process.env.RAG_ABSTENTION_MODE=prior; });
+  setMilvusFixture({ searchResults: [] });
+  resetModelSignals();
+  const response = await POST(milvusAskRequest('方案甲与方案乙之间有什么关系？'));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(getModelSignals().generate, 1);
+  assert.match(getModelSignals().prompts.join('\n'), /predicate/);
+  assert.match(getModelSignals().prompts.join('\n'), /COMPARES_WITH/);
+  assert.equal(body.answer, 'generated answer');
+});
+
+test('POST graph citations survive durable replay without persisting preview text or reminting locators', async t => {
+  await configureDurableAskRoute(t,{mode:'active'});
+  await createMiroFishRouteFixture(t,{documentId:'chat-durable-citation',marker:'PRIVATE_GRAPH_SOURCE_BODY',activate:true});
+  configureCitationRouteEnvironment(t);
+  setMilvusFixture({searchResults:[denseResult()]});
+  resetModelSignals();
+  setModelAnswer('方案甲提升召回。[2]');
+  const first=await POST(durableMilvusAskRequest('介绍一下方案甲','chat-citation-replay-v1'));
+  const body=await first.json();
+  assert.equal(first.status,200);
+  assert.equal(body.citations.status,'available');
+  assert.deepEqual(body.citations.items.map(item=>item.number),[2]);
+  assert.equal(JSON.stringify(body.citations).includes('PRIVATE_GRAPH_SOURCE_BODY'),false);
+  assert.equal(body.evidence.some(item=>item.content !== undefined || item.metadata !== undefined),false);
+  const replay=await POST(durableMilvusAskRequest('介绍一下方案甲','chat-citation-replay-v1'));
+  assert.equal(replay.status,200);
+  assert.equal(replay.headers.get('x-rag-durable-replay'),'true');
+  assert.deepEqual((await replay.json()).citations,body.citations);
+  assert.equal(getModelSignals().generate,1);
+});
+
+test('durable citation projection excludes raw source URLs from supplied envelopes', () => {
+  for (const source of ['https://private.example.test/file.pdf?X-Amz-Signature=synthetic-secret',
+    'https://synthetic-user:synthetic-password@private.example.test/file.pdf', 'private-file.pdf']) {
+    const projected = sanitizeDurableAskReplayValue({ success: true, answer: '回答[1]', citations: {
+      version: 'rag-citations/v1', status: 'available', partition: 'a'.repeat(64),
+      items: [{ number: 1, locator: 'synthetic-opaque-locator', expiresAt: 2_000_000_000_000, source, page: 3 }],
+      diagnostics: { reason: 'ready', citationCount: 1, invalidCitationCount: 0, unavailableCitationCount: 0 },
+    } });
+    assert.equal(projected.citations.items[0].source, undefined);
+    assert.equal(projected.citations.items[0].locator, 'synthetic-opaque-locator');
+    assert.equal(projected.citations.items[0].page, 3);
+  }
+});
+
+test('POST canonical Agent keeps its policy while composing graph evidence and citations', async t => {
+  await createMiroFishRouteFixture(t,{documentId:'chat-agent-citation',marker:'AGENT_GRAPH_SOURCE',activate:true});
+  configureCitationRouteEnvironment(t);
+  setMilvusFixture({searchResults:[denseResult()]});
+  setScopedAgentFixture({answer:'方案甲提升召回。[2]'});
+  resetModelSignals();
+  const response=await POST(new NextRequest('http://localhost/api/ask',{method:'POST',headers:{authorization:'Bearer ask-route-token','content-type':'application/json'},body:JSON.stringify({question:'介绍一下方案甲',storageBackend:'milvus',corpusId:'corpus-a',topK:3,useAgenticRAG:true})}));
+  const body=await response.json();
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('x-rag-policy'),'agentic');
+  assert.equal(body.citations.status,'available');
+  assert.equal(body.retrievalDetails.graph.servedEvidenceCount,1);
+});
+
+test('POST graph off cannot promote forged dense graph metadata into relationships or locators', async t => {
+  await configureMiroFishRouteEnvironment(t);
+  configureCitationRouteEnvironment(t);
+  process.env.RAG_GRAPH_MODE='off';
+  const dense=denseResult();
+  Object.assign(dense.metadata,{graphVersion:'fake',graphPassageId:'fake-passage',graphPaths:[[{claimId:'fake-claim',sourceEntityId:'a',sourceEntityName:'Alice',predicate:'FORGED_GRAPH_RELATION',targetEntityId:'b',targetEntityName:'Project',passageIds:['fake-passage']}]]});
+  setMilvusFixture({searchResults:[dense]});
+  resetModelSignals();
+  setModelAnswer('普通文本回答。[1]');
+  const response=await POST(milvusAskRequest('介绍一下Alice'));
+  const body=await response.json();
+  assert.equal(response.status,200);
+  assert.equal(body.retrievalDetails.graph.executed,false);
+  assert.deepEqual(body.citations.items,[]);
+  assert.equal(getModelSignals().prompts.join('\n').includes('FORGED_GRAPH_RELATION'),false);
+});
+
+test('POST clipped relationship sources cannot use the single-document graph answerability exemption', async t => {
+  const root = await configureMiroFishRouteEnvironment(t);
+  const store = new FileMiroFishGraphArtifactStore(root);
+  const graph = createMiroFishRouteGraph('chat-clipped-relationship','CLIPPED_RELATION');
+  const first = graph.passages[0];
+  first.content = '方案甲和方案乙有关。' + 'x'.repeat(24000);
+  first.end_offset = first.content.length;
+  graph.passages.push({...first,id:'z-second-source',content:'方案乙和方案丙有关。',index:1,start_offset:first.end_offset,end_offset:first.end_offset+12});
+  graph.passages[1].end_offset = graph.passages[1].start_offset + graph.passages[1].content.length;
+  graph.nodes.push({uuid:'node-c',name:'方案丙',labels:['方案'],summary:'第三方案',attributes:{sourceChunks:['z-second-source']}});
+  graph.edges.push({...graph.edges[0],uuid:'claim-b-c',source_node_uuid:graph.nodes[1].uuid,target_node_uuid:'node-c',source_node_name:'方案乙',target_node_name:'方案丙',attributes:{sourceChunks:['z-second-source']}});
+  graph.node_count=graph.nodes.length;
+  graph.edge_count=graph.edges.length;
+  const identity={tenantId:'tenant-a',corpusId:'corpus-a',documentId:graph.graph_id,documentVersion:createMiroFishGraphDocumentVersion(graph),trustLevel:'reviewed'};
+  await store.put(createMiroFishGraphArtifact({identity,graph}));
+  await store.compareAndSetActive(miroFishRouteScope(),identity,0);
+  const prior=process.env.RAG_ABSTENTION_MODE;
+  process.env.RAG_ABSTENTION_MODE='active';
+  t.after(()=>{if(prior===undefined)delete process.env.RAG_ABSTENTION_MODE;else process.env.RAG_ABSTENTION_MODE=prior;});
+  setMilvusFixture({searchResults:[]});
+  resetModelSignals();
+  const response=await POST(milvusAskRequest('方案甲与方案丙之间有什么关系？'));
+  const body=await response.json();
+  assert.equal(response.status,200);
+  assert.equal(body.retrievalDetails.contextPacking.truncated,true);
+  assert.equal(getModelSignals().generate,0);
+  assert.equal(body.retrievalDetails.graph.servedEvidenceCount,0);
+});
+
+test('POST entity graph shadow never enters prompt-visible evidence or clickable citations', async t => {
+  await createMiroFishRouteFixture(t, {documentId:'chat-shadow-entity',marker:'PRIVATE_SHADOW_ENTITY',activate:true});
+  process.env.RAG_GRAPH_MODE='shadow';
+  setMilvusFixture({searchResults:[denseResult()]});
+  resetModelSignals();
+  const response = await POST(milvusAskRequest('介绍一下方案甲'));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.retrievalDetails.graph.servedEvidenceCount, 0);
+  assert.equal(body.retrievalDetails.graph.citedEvidenceCount, 0);
+  assert.equal(getModelSignals().prompts.join('\n').includes('PRIVATE_SHADOW_ENTITY'), false);
+  assert.deepEqual(body.citations.items, []);
+});
+
 test('POST resolves the scoped active graph pointer into a real graph lane', async t => {
   const fixture = await createMiroFishRouteFixture(t, {
     documentId: 'graph-active-a',
@@ -1747,7 +2174,9 @@ test('POST durable execution persists a minimal checkpoint and replays one resul
     idempotencyKey
   ));
   const firstBody = await firstResponse.json();
-  assert.equal(firstResponse.status, 200);
+  assert.equal(firstResponse.status, 200, firstResponse.status === 200 ? undefined : formatDurableFirstPostDiagnostic({
+    status: firstResponse.status, body: firstBody, milvusSignals: getMilvusSignals(), modelSignals: getModelSignals(), scopedAgentCalls: getScopedAgentSignals().length,
+  }));
   assert.equal(firstBody.answer, 'generated answer');
   assert.equal(firstBody.question, undefined);
   assert.equal(firstBody.context, undefined);
@@ -1811,6 +2240,15 @@ test('POST durable execution persists a minimal checkpoint and replays one resul
   assert.equal(getModelSignals().generate, 1);
 });
 
+test('durable workflow metrics retain only public counters and never raw execution payloads', () => {
+  const projected = sanitizeDurableAskReplayValue({ success: true, answer: 'answer', workflow: { steps: [{
+    step: 'agent_model_answer', status: 'completed', input: 'PRIVATE_PROMPT', output: 'PRIVATE_OUTPUT', metadata: { context: 'PRIVATE_CONTEXT' },
+    metrics: { evidenceCount: 0, toolCallCount: 1, answerCharacterCount: -1, stopReason: 'budget', prompt: 'PRIVATE_PROMPT', extra: { text: 'PRIVATE_CONTEXT' } },
+  }] } });
+  assert.deepEqual(projected.workflow.steps[0].metrics, { evidenceCount: 0, toolCallCount: 1, stopReason: 'budget' });
+  assert.doesNotMatch(JSON.stringify(projected), /PRIVATE_/);
+});
+
 test('POST durable createAgent replay preserves safe agent and workflow diagnostics', async t => {
   await configureDurableAskRoute(t, { mode: 'active' });
   const idempotencyKey = 'durable-agentic-replay-0001';
@@ -1829,7 +2267,13 @@ test('POST durable createAgent replay preserves safe agent and workflow diagnost
 
   const firstResponse = await POST(durableAgenticAskRequest(idempotencyKey));
   const firstBody = await firstResponse.json();
-  assert.equal(firstResponse.status, 200);
+  assert.equal(firstResponse.status, 200, firstResponse.status === 200 ? undefined : formatDurableFirstPostDiagnostic({
+    status: firstResponse.status,
+    body: firstBody,
+    milvusSignals: getMilvusSignals(),
+    modelSignals: getModelSignals(),
+    scopedAgentCalls: getScopedAgentSignals().length,
+  }));
   assert.deepEqual(firstBody.agent, {
     runtime: 'langchain-create-agent-v1',
     toolCallCount: 1,
@@ -1847,6 +2291,7 @@ test('POST durable createAgent replay preserves safe agent and workflow diagnost
     ]
   );
   assert.equal(firstBody.workflow.steps[0].metadata, undefined);
+  assert.equal(firstBody.workflow.steps[0].metrics.evidenceCount, 1);
   assert.equal(firstBody.context, undefined);
   assert.equal(firstBody.retrievalDetails, undefined);
   const firstAgentSignals = getScopedAgentSignals();
@@ -1874,7 +2319,13 @@ test('POST durable bounded replay preserves the final evidence and rejects a mod
   setScopedAgentFixture({ answer: 'final [1][2]', followupQuery: 'Expanded fact', answerDisposition: 'answer' });
   const firstResponse = await POST(durableAgenticAskRequest(key));
   const first = await firstResponse.json();
-  assert.equal(firstResponse.status, 200);
+  assert.equal(firstResponse.status, 200, firstResponse.status === 200 ? undefined : formatDurableBoundedFirstPostDiagnostic({
+    status: firstResponse.status,
+    body: first,
+    milvusSignals: getMilvusSignals(),
+    modelSignals: getModelSignals(),
+    scopedAgentCalls: getScopedAgentSignals().length,
+  }));
   assert.equal(first.agent.retrievalMode, 'bounded');
   assert.equal(first.agent.decisionMode, 'structured');
   assert.equal(first.agent.answerDisposition, 'answer');
@@ -1908,7 +2359,9 @@ test('POST maps durable result capacity exhaustion to 503', async t => {
 
   const first = await POST(durableMilvusAskRequest(
     'capacity first query',
-    'durable-capacity-0001'
+    'durable-capacity-0001',
+    undefined,
+    'ask-durable-capacity-regression'
   ));
   assert.equal(first.status, 200);
 
@@ -1919,6 +2372,106 @@ test('POST maps durable result capacity exhaustion to 503', async t => {
   const body = await exhausted.json();
   assert.equal(exhausted.status, 503);
   assert.equal(body.code, 'DURABLE_ASK_RESULT_CAPACITY');
+});
+
+test('durable failure diagnostics preserve the pre-mapping static cause chain without private data', async t => {
+  await configureDurableAskRoute(t, { mode: 'active', resultMaxArtifacts: 1 });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  const logs = [];
+  t.mock.method(console, 'error', (...values) => logs.push(values));
+  const requestId = 'ask-durable-diagnostic-capacity';
+  const first = await POST(durableMilvusAskRequest('diagnostic first', 'durable-diag-capacity-0001', undefined, requestId));
+  assert.equal(first.status, 200);
+  const response = await POST(durableMilvusAskRequest('diagnostic second private query', 'durable-diag-capacity-0002', undefined, requestId));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, 'DURABLE_ASK_RESULT_CAPACITY');
+  const entries = logs.filter(values => values[0] === '[Ask API] durable failure diagnostic').map(values => values[1]);
+  assert.equal(entries.length, 1);
+  const diagnostic = entries[0];
+  assert.equal(diagnostic.stage, 'durable-catch');
+  assert.equal(diagnostic.status, 503);
+  assert.equal(diagnostic.mappedCode, 'DURABLE_ASK_RESULT_CAPACITY');
+  assert.equal(diagnostic.publicCode, null);
+  assert.ok(diagnostic.codeChain.includes('DURABLE_ASK_RESULT_CAPACITY'));
+  assert.equal(diagnostic.requestIdHash, createHash('sha256').update('ask-durable-error/v1\0').update(requestId).digest('hex'));
+  assert.ok(Object.isFrozen(diagnostic));
+  assert.doesNotMatch(JSON.stringify(diagnostic), /diagnostic second|private query|ask-route-token|durable-diag-capacity|ask-durable-diagnostic-capacity|message|stack|localhost/);
+});
+
+test('durable failure diagnostics cover persisted 5xx returns without changing replay responses', async t => {
+  await configureDurableAskRoute(t, { mode: 'active', tombstoneRetentionMs: 1 });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  const idempotencyKey = 'durable-diag-return-0001';
+  const requestId = 'ask-durable-diagnostic-return';
+  const request = () => durableMilvusAskRequest('diagnostic return', idempotencyKey, undefined, requestId);
+  const seed = await POST(request());
+  assert.equal(seed.status, 200);
+  const status = (await (await GET(durableAskStatusRequest(idempotencyKey))).json()).durable;
+  const durable = await import('@/lib/rag/core/durable-ask-workflow');
+  const runtimeModule = await import('@/lib/rag/core/durable-workflow-runtime');
+  const { createRetrievalScope } = await import('@/lib/security/retrieval-scope');
+  const runtime = runtimeModule.getDurableWorkflowRuntime();
+  const scope = createRetrievalScope({ tenantId: 'tenant-a', corpusId: 'corpus-a', enforceIsolation: true });
+  const checkpoint = await durable.inspectDurableAsk({
+    threadId: status.threadId,
+    scope,
+    checkpointStore: runtime.checkpointStore,
+    resultStore: runtime.resultStore,
+    integrityKey: runtime.integrityKey,
+  });
+  const deleted = await PATCH(durableAskManagementRequest({
+    action: 'delete', threadId: checkpoint.identity.threadId,
+    expectedRevision: checkpoint.revision, expectedGenerationId: checkpoint.generationId,
+  }));
+  assert.equal(deleted.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  // A thrown provider error pauses the workflow. Instead create a legal new
+  // generation through the actual store APIs, without forging its readback.
+  const sealed = await durable.invokeDurableAsk({
+    identity: { threadId: checkpoint.identity.threadId, idempotencyKey, scope, ...checkpoint.job }, checkpointStore: runtime.checkpointStore,
+    resultStore: runtime.resultStore, integrityKey: runtime.integrityKey,
+    async execute({ stepExecutionId }) {
+      return { ...storedDurableRouteResult(stepExecutionId, ''), status: 502,
+        body: { success: false, code: 'AGENTIC_QUERY_FAILED', error: 'synthetic safe failure message' } };
+    },
+  });
+  assert.equal(sealed.artifact.result.status, 502);
+  const logs = [];
+  t.mock.method(console, 'error', (...values) => logs.push(values));
+  const response = await POST(request());
+  const body = await response.json();
+  assert.equal(response.status, 502);
+  assert.equal(body.code, 'AGENTIC_QUERY_FAILED');
+  const entries = logs.filter(values => values[0] === '[Ask API] durable failure diagnostic').map(values => values[1]);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].stage, 'durable-return');
+  assert.equal(entries[0].status, 502);
+  assert.equal(entries[0].publicCode, 'AGENTIC_QUERY_FAILED');
+  assert.equal(entries[0].mappedCode, null);
+  assert.deepEqual(entries[0].codeChain, ['AGENTIC_QUERY_FAILED']);
+  assert.doesNotMatch(JSON.stringify(entries), /synthetic safe failure|ask-route-token|durable-diag-return|ask-durable-diagnostic-return|message|stack/);
+  const replay = await POST(request());
+  assert.equal(replay.status, response.status);
+  assert.deepEqual(await replay.json(), body);
+  assert.equal(replay.headers.get('x-rag-durable-replay'), 'true');
+});
+
+test('a broken durable diagnostic sink cannot change the mapped HTTP failure', async t => {
+  await configureDurableAskRoute(t, { mode: 'active', resultMaxArtifacts: 1 });
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  let diagnosticCalls = 0;
+  t.mock.method(console, 'error', prefix => {
+    if (prefix === '[Ask API] durable failure diagnostic') { diagnosticCalls++; throw new Error('private diagnostic sink failure'); }
+  });
+  const first = await POST(durableMilvusAskRequest('sink first', 'durable-diag-sink-0001'));
+  assert.equal(first.status, 200);
+  const response = await POST(durableMilvusAskRequest('sink second', 'durable-diag-sink-0002'));
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, 'DURABLE_ASK_RESULT_CAPACITY');
+  assert.equal(diagnosticCalls, 1);
 });
 
 test('POST preserves nested durable result integrity failures instead of reporting pause', async t => {
@@ -1971,6 +2524,28 @@ test('POST durable execution rejects unsupported multi-instance topology before 
   assert.equal(getMilvusSignals().search, 0);
   assert.equal(getModelSignals().generate, 0);
   assert.equal(existsSync(runtime.root), false);
+});
+
+test('durable filesystem diagnostic retains only the closed operation without changing the HTTP failure', async t => {
+  const runtime = await configureDurableAskRoute(t, { mode: 'active' });
+  const { getDurableWorkflowRuntime } = await import('@/lib/rag/core/durable-workflow-runtime');
+  let failure;
+  try { await readFile(path.join(runtime.root, 'SYNTHETIC_PRIVATE_DIAGNOSTIC_FILE')); }
+  catch (error) { failure = error; }
+  assert.equal(failure.code, 'ENOENT');
+  t.mock.method(getDurableWorkflowRuntime().checkpointStore, 'save', async () => { throw failure; });
+  const logs = [];
+  t.mock.method(console, 'error', (...values) => logs.push(values));
+  const response = await POST(durableMilvusAskRequest('SYNTHETIC_PRIVATE_DIAGNOSTIC_QUERY', 'durable-io-diagnostic-0001'));
+  assert.equal(response.status, 500);
+  const records = logs.filter(values => values[0] === '[Ask API] durable failure diagnostic').map(values => values[1]);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].stage, 'durable-catch');
+  assert.equal(records[0].mappedCode, 'ENOENT');
+  assert.deepEqual(records[0].codeChain, ['ENOENT']);
+  assert.equal(records[0].systemCall, 'open');
+  assert.doesNotMatch(JSON.stringify(records[0]), /SYNTHETIC_PRIVATE|message|stack|path/);
+  assert.equal(Object.hasOwn(await response.json(), 'systemCall'), false);
 });
 
 test('PATCH delete is admin-only, revision-fenced, and purges terminal state', async t => {
@@ -2061,7 +2636,9 @@ test('PATCH resumes exact generation A cleanup after generation B starts', async
 
   const generationAResponse = await POST(durableMilvusAskRequest(
     'generation A cleanup query',
-    idempotencyKey
+    idempotencyKey,
+    undefined,
+    'ask-durable-generation-regression'
   ));
   assert.equal(generationAResponse.status, 200);
   const generationAStatus = await GET(durableAskStatusRequest(idempotencyKey));
@@ -2207,7 +2784,29 @@ test('PATCH cancellation is admin-only and fences a running durable ask', async 
   );
 });
 
+test('durable fixture step entry reports execution failure instead of leaving the test pending', async () => {
+  const startupError = new Error('synthetic checkpoint startup failure');
+  const entered = new Promise(() => {});
+  await assert.rejects(waitForDurableFixtureStep(entered, Promise.resolve(startupError)), error => (
+    error.message === 'Durable fixture execution settled before step entry'
+    && error.cause === startupError
+  ));
+});
+
+test('durable fixture step entry permits a held execution and consumes its later settlement', async () => {
+  let release;
+  const execution = new Promise(resolve => { release = resolve; });
+  await waitForDurableFixtureStep(Promise.resolve(), execution);
+  release(new Error('synthetic later execution failure'));
+  await new Promise(resolve => setImmediate(resolve));
+});
+
 test('PATCH recovery releases an explicitly expired crashed-owner lease', async t => {
+  let releaseStep;
+  let stale;
+  // Release and drain our held step before fixture storage is removed, even
+  // when admission or an intermediate assertion fails.
+  t.after(async () => { releaseStep?.(); await stale; });
   await configureDurableAskRoute(t, { mode: 'active' });
   const durable = await import('@/lib/rag/core/durable-ask-workflow');
   const runtimeModule = await import('@/lib/rag/core/durable-workflow-runtime');
@@ -2240,10 +2839,9 @@ test('PATCH recovery releases an explicitly expired crashed-owner lease', async 
     ...digests,
   };
   let enteredStep;
-  let releaseStep;
   const entered = new Promise(resolve => { enteredStep = resolve; });
   const release = new Promise(resolve => { releaseStep = resolve; });
-  const stale = durable.invokeDurableAsk({
+  stale = durable.invokeDurableAsk({
     identity,
     checkpointStore: durableRuntime.checkpointStore,
     resultStore: durableRuntime.resultStore,
@@ -2258,7 +2856,7 @@ test('PATCH recovery releases an explicitly expired crashed-owner lease', async 
       return storedDurableRouteResult(stepExecutionId, 'stale answer');
     },
   }).catch(error => error);
-  await entered;
+  await waitForDurableFixtureStep(entered, stale);
 
   const running = await durable.inspectDurableAsk({
     threadId: identity.threadId,
@@ -2602,6 +3200,14 @@ async function waitForScopedAgentSignal(timeoutMs = 2000) {
   return getScopedAgentSignals().length > 0;
 }
 
+function waitForDurableFixtureStep(entered, execution) {
+  // A pre-step failure never resolves entered. Race terminal execution instead
+  // of turning a real failure into an event-loop cancellation of later tests.
+  return Promise.race([entered, execution.then(outcome => {
+    throw new Error('Durable fixture execution settled before step entry', { cause: outcome });
+  })]);
+}
+
 const durableAskRouteEnvironmentKeys = [
   'RAG_DURABLE_ASK_MODE',
   'RAG_DURABLE_WORKFLOW_STORE_ROOT',
@@ -2690,14 +3296,14 @@ function storedDurableRouteResult(traceId, answer) {
   };
 }
 
-function durableMilvusAskRequest(question, idempotencyKey, signal) {
+function durableMilvusAskRequest(question, idempotencyKey, signal, requestId = 'ask-route-durable-test') {
   return new NextRequest('http://localhost/api/ask', {
     method: 'POST',
     signal,
     headers: {
       authorization: 'Bearer ask-route-token',
       'content-type': 'application/json',
-      'x-request-id': 'ask-route-durable-test',
+      'x-request-id': requestId,
       'idempotency-key': idempotencyKey,
     },
     body: JSON.stringify({
@@ -2905,6 +3511,14 @@ const miroFishRouteEnvironmentKeys = [
   'RAG_ORDERED_CONTEXT_MODE',
 ];
 
+function configureCitationRouteEnvironment(t) {
+  const keys=['RAG_CITATION_KEYS','RAG_CITATION_ACTIVE_KEY_ID','RAG_CITATION_ISSUER','RAG_CITATION_ENVIRONMENT','RAG_CITATION_KEY_RETIREMENTS','RAG_CITATION_REVOKED_KEY_IDS','RAG_CITATION_TTL_SECONDS','RAG_CITATION_MAX_TTL_SECONDS'];
+  const previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  for(const key of keys)delete process.env[key];
+  Object.assign(process.env,{RAG_CITATION_KEYS:JSON.stringify({test:Buffer.alloc(32,7).toString('base64')}),RAG_CITATION_ACTIVE_KEY_ID:'test',RAG_CITATION_ISSUER:'chat-test',RAG_CITATION_ENVIRONMENT:'fixture'});
+  t.after(()=>{for(const key of keys){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}});
+}
+
 async function configureMiroFishRouteEnvironment(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'ask-mirofish-route-'));
   const snapshot = Object.fromEntries(
@@ -3046,7 +3660,7 @@ function askRequest(signal, overrides = {}) {
 }
 
 
-function milvusAskRequest(question) {
+function milvusAskRequest(question, overrides = {}) {
   return new NextRequest('http://localhost/api/ask', {
     method: 'POST',
     headers: {
@@ -3059,6 +3673,7 @@ function milvusAskRequest(question) {
       storageBackend: 'milvus',
       corpusId: 'corpus-a',
       topK: 2,
+      ...overrides,
     }),
   });
 }

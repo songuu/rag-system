@@ -38,7 +38,7 @@ export interface ContextualizeChunksOptions {
   /** 完整文档文本 */
   fullDocument: string;
   /** 待处理的 chunks（包含 text 字段的对象数组） */
-  chunks: Array<{ text: string; metadata?: Record<string, any> }>;
+  chunks: Array<{ text: string; metadata?: Record<string, unknown> }>;
   /** 可选的 LLM 实例（不传则自动创建） */
   llm?: BaseChatModel;
   /** 可选的配置覆盖 */
@@ -182,7 +182,7 @@ Answer only with the succinct context and nothing else.`;
   const content = typeof response.content === 'string'
     ? response.content
     : Array.isArray(response.content)
-      ? response.content.map((c: any) => (typeof c === 'string' ? c : c.text || '')).join('')
+      ? response.content.map((c) => (typeof c === 'string' ? c : c.text || '')).join('')
       : String(response.content);
 
   return content.trim();

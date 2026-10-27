@@ -32,8 +32,31 @@ interface WorkflowStep {
   step: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
   duration?: number;
-  details?: any;
+  details?: WorkflowStepDetails;
   error?: string;
+}
+
+interface WorkflowStepDetails {
+  operations?: string[];
+  entityCount?: number;
+  intent?: string;
+  validatedCount?: number;
+  totalCount?: number;
+  action?: string;
+  actionName?: string;
+  resultCount?: number;
+  inputCount?: number;
+  outputCount?: number;
+  responseLength?: number;
+  extractedEntities?: Array<Pick<ExtractedEntity, 'name' | 'type' | 'confidence'>>;
+  validatedEntities?: Array<{
+    original: string;
+    normalized?: string;
+    type: string;
+    isValid: boolean;
+    matchScore?: number;
+  }>;
+  topResults?: Array<Pick<RetrievalResult, 'id' | 'score' | 'contentPreview' | 'matchType'>>;
 }
 
 interface QueryAnalysis {
@@ -49,7 +72,7 @@ interface QueryAnalysis {
 interface RoutingDecision {
   action: string;
   reason: string;
-  constraints: any[];
+  constraints: unknown[];
   relaxedConstraints: string[];
   retryCount: number;
 }
@@ -149,14 +172,6 @@ const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   OTHER: '📝 其他',
 };
 
-const INTENT_LABELS: Record<IntentType, { label: string; icon: string; color: string }> = {
-  factual: { label: '事实查询', icon: '🔍', color: 'text-blue-600' },
-  conceptual: { label: '概念解释', icon: '📖', color: 'text-purple-600' },
-  comparison: { label: '比较分析', icon: '⚖️', color: 'text-orange-600' },
-  procedural: { label: '操作指导', icon: '📋', color: 'text-green-600' },
-  exploratory: { label: '探索发现', icon: '🔭', color: 'text-cyan-600' },
-};
-
 const STEP_STATUS_STYLES: Record<string, { icon: string; color: string }> = {
   pending: { icon: '○', color: 'text-gray-400' },
   running: { icon: '◐', color: 'text-blue-500 animate-pulse' },
@@ -184,7 +199,7 @@ export default function AdaptiveEntityRAGPage() {
   
   // 模型列表状态
   const [availableModels, setAvailableModels] = useState<AvailableModels | null>(null);
-  const [loadingModels, setLoadingModels] = useState(false);
+  const [loadingModels, setLoadingModels] = useState(true);
   
   // 实体库
   const [entities, setEntities] = useState<EntityMetadata[]>([]);
@@ -219,16 +234,17 @@ export default function AdaptiveEntityRAGPage() {
   ];
 
   // 获取可用模型列表
-  const loadAvailableModels = useCallback(async () => {
-    setLoadingModels(true);
+  const loadAvailableModels = useCallback((signal?: AbortSignal) => {
+    if (signal?.aborted) return Promise.resolve();
     const loadingFallbackTimer = window.setTimeout(() => {
-      setLoadingModels(false);
+      if (!signal?.aborted) setLoadingModels(false);
     }, 2000);
+    const clearLoadingFallback = () => window.clearTimeout(loadingFallbackTimer);
+    signal?.addEventListener('abort', clearLoadingFallback, { once: true });
 
-    try {
-      // 先读取统一配置快照,避免页面默认值和运行时模型配置漂移。
-      const configResponse = await fetch('/rag-api/model-config');
-      const configData = await configResponse.json();
+    // 先读取统一配置快照,避免页面默认值和运行时模型配置漂移。
+    return fetch('/rag-api/model-config', { signal }).then(response => response.json()).then(configData => {
+      if (signal?.aborted) return;
 
       if (configData.config?.llm?.model) {
         setLlmModel(configData.config.llm.model);
@@ -259,8 +275,8 @@ export default function AdaptiveEntityRAGPage() {
         setLoadingModels(false);
       }
 
-      const response = await fetch('/rag-api/ollama/models');
-      const data = await response.json();
+      return fetch('/rag-api/ollama/models', { signal }).then(response => response.json()).then(data => {
+        if (signal?.aborted) return;
 
       if (data.providerConfig?.llm?.model) {
         setLlmModel(data.providerConfig.llm.model);
@@ -285,17 +301,26 @@ export default function AdaptiveEntityRAGPage() {
           );
         }
       }
-    } catch (error) {
-      console.error('加载模型列表失败:', error);
-    } finally {
-      window.clearTimeout(loadingFallbackTimer);
-      setLoadingModels(false);
-    }
+      });
+    }).catch(error => {
+      if (!signal?.aborted) console.error('加载模型列表失败:', error);
+    }).finally(() => {
+      clearLoadingFallback();
+      signal?.removeEventListener('abort', clearLoadingFallback);
+      if (!signal?.aborted) setLoadingModels(false);
+    });
   }, []);
+
+  const refreshAvailableModels = () => {
+    setLoadingModels(true);
+    void loadAvailableModels();
+  };
 
   // 初始化时加载模型
   useEffect(() => {
-    loadAvailableModels();
+    const controller = new AbortController();
+    void loadAvailableModels(controller.signal);
+    return () => controller.abort();
   }, [loadAvailableModels]);
 
   // 格式化文件大小
@@ -364,28 +389,30 @@ export default function AdaptiveEntityRAGPage() {
   }, [knowledgeStats?.embeddingDimension]);
 
   // 加载实体库
-  const loadEntities = useCallback(async () => {
-    try {
-      const res = await fetch('/rag-api/adaptive-entity-rag?action=entities');
-      const data = await res.json();
-      if (data.success) {
-        setEntities(data.entities || []);
-      }
-    } catch (err) {
-      console.error('加载实体库失败:', err);
-    }
+  const loadEntities = useCallback((signal?: AbortSignal) => {
+    return fetch('/rag-api/adaptive-entity-rag?action=entities', { signal })
+      .then(res => res.json())
+      .then(data => {
+        if (signal?.aborted) return;
+        if (data.success) {
+          setEntities(data.entities || []);
+        }
+      })
+      .catch(err => {
+        if (!signal?.aborted) console.error('加载实体库失败:', err);
+      });
   }, []);
 
   // 加载知识库状态
-  const loadKnowledgeStatus = useCallback(async () => {
-    try {
-      const [statusRes, filesRes] = await Promise.all([
-        fetch('/rag-api/adaptive-entity-rag?action=status'),
-        fetch('/rag-api/adaptive-entity-rag?action=files'),
-      ]);
+  const loadKnowledgeStatus = useCallback((signal?: AbortSignal) => {
+    return Promise.all([
+      fetch('/rag-api/adaptive-entity-rag?action=status', { signal }),
+      fetch('/rag-api/adaptive-entity-rag?action=files', { signal }),
+    ]).then(async ([statusRes, filesRes]) => {
       
       const statusData = await statusRes.json();
       const filesData = await filesRes.json();
+      if (signal?.aborted) return;
       
       if (statusData.success) {
         setKnowledgeStats(statusData.knowledgeBase || { 
@@ -398,9 +425,9 @@ export default function AdaptiveEntityRAGPage() {
       if (filesData.success) {
         setUploadedFiles(filesData.files || []);
       }
-    } catch (err) {
-      console.error('加载知识库状态失败:', err);
-    }
+    }).catch(err => {
+      if (!signal?.aborted) console.error('加载知识库状态失败:', err);
+    });
   }, []);
 
   // 上传文本内容
@@ -430,7 +457,7 @@ export default function AdaptiveEntityRAGPage() {
       } else {
         setError(data.error || '上传失败');
       }
-    } catch (err) {
+    } catch {
       setError('上传失败');
     } finally {
       setIsUploading(false);
@@ -462,7 +489,7 @@ export default function AdaptiveEntityRAGPage() {
         }
       }
       await loadKnowledgeStatus();
-    } catch (err) {
+    } catch {
       setError('文件上传失败');
     } finally {
       setIsUploading(false);
@@ -501,7 +528,7 @@ export default function AdaptiveEntityRAGPage() {
         setError(data.error || '向量化失败');
         setVectorizeProgress(null);
       }
-    } catch (err) {
+    } catch {
       setError('向量化失败');
       setVectorizeProgress(null);
     } finally {
@@ -527,7 +554,7 @@ export default function AdaptiveEntityRAGPage() {
       } else {
         setError(data.error || '删除失败');
       }
-    } catch (err) {
+    } catch {
       setError('删除失败');
     }
   };
@@ -553,14 +580,16 @@ export default function AdaptiveEntityRAGPage() {
       } else {
         setError(data.error || '清空失败');
       }
-    } catch (err) {
+    } catch {
       setError('清空失败');
     }
   };
 
   useEffect(() => {
-    loadEntities();
-    loadKnowledgeStatus();
+    const controller = new AbortController();
+    void loadEntities(controller.signal);
+    void loadKnowledgeStatus(controller.signal);
+    return () => controller.abort();
   }, [loadEntities, loadKnowledgeStatus]);
 
   // 提交查询
@@ -675,26 +704,6 @@ export default function AdaptiveEntityRAGPage() {
     }
   };
 
-  // 渲染实体标签
-  const renderEntityTag = (entity: ExtractedEntity, showDetails = false) => {
-    const colors = ENTITY_TYPE_COLORS[entity.type] || ENTITY_TYPE_COLORS.OTHER;
-    return (
-      <span
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-sm ${colors.bg} ${colors.text} border ${colors.border}`}
-      >
-        <span className="font-medium">{entity.name}</span>
-        {entity.normalizedName && entity.normalizedName !== entity.name && (
-          <span className="text-xs opacity-75">→ {entity.normalizedName}</span>
-        )}
-        {showDetails && (
-          <span className="text-xs bg-white/50 px-1.5 rounded-full">
-            {(entity.confidence * 100).toFixed(0)}%
-          </span>
-        )}
-      </span>
-    );
-  };
-
   // 渲染工作流步骤（增强版，显示详细操作）
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   
@@ -783,11 +792,11 @@ export default function AdaptiveEntityRAGPage() {
             </div>
             
             {/* 展开的详细操作 */}
-            {isExpanded && hasOperations && (
+            {isExpanded && hasOperations && step.details && (
               <div className="border-t border-gray-200 bg-white/50 p-3">
                 <div className="text-xs font-medium text-gray-500 mb-2">执行详情</div>
                 <div className="space-y-1 font-mono text-xs">
-                  {(step.details.operations as string[]).map((op, opIndex) => (
+                  {step.details.operations?.map((op, opIndex) => (
                     <div 
                       key={`op-${index}-${opIndex}`}
                       className={`py-1 px-2 rounded ${
@@ -809,7 +818,7 @@ export default function AdaptiveEntityRAGPage() {
                   <div className="mt-3 pt-3 border-t border-gray-200">
                     <div className="text-xs font-medium text-gray-500 mb-2">提取的实体</div>
                     <div className="flex flex-wrap gap-2">
-                      {(step.details.extractedEntities as Array<{name: string; type: string; confidence: number}>).map((e, eIndex) => (
+                      {step.details.extractedEntities.map((e, eIndex) => (
                         <span 
                           key={`entity-${index}-${eIndex}`}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-purple-100 text-purple-700"
@@ -827,7 +836,7 @@ export default function AdaptiveEntityRAGPage() {
                   <div className="mt-3 pt-3 border-t border-gray-200">
                     <div className="text-xs font-medium text-gray-500 mb-2">校验结果</div>
                     <div className="space-y-1">
-                      {(step.details.validatedEntities as Array<{original: string; normalized: string; type: string; isValid: boolean; matchScore: number}>).map((e, eIndex) => (
+                      {step.details.validatedEntities.map((e, eIndex) => (
                         <div 
                           key={`validated-${index}-${eIndex}`}
                           className={`flex items-center gap-2 text-xs px-2 py-1 rounded ${e.isValid ? 'bg-green-50' : 'bg-red-50'}`}
@@ -853,7 +862,7 @@ export default function AdaptiveEntityRAGPage() {
                   <div className="mt-3 pt-3 border-t border-gray-200">
                     <div className="text-xs font-medium text-gray-500 mb-2">检索结果预览</div>
                     <div className="space-y-2">
-                      {(step.details.topResults as Array<{id: string; score: number; contentPreview: string; matchType: string}>).map((r, rIndex) => (
+                      {step.details.topResults.map((r, rIndex) => (
                         <div 
                           key={`result-${index}-${rIndex}`}
                           className="text-xs bg-white p-2 rounded border border-gray-200"
@@ -988,7 +997,7 @@ export default function AdaptiveEntityRAGPage() {
                           LLM 模型
                         </label>
                         <button
-                          onClick={loadAvailableModels}
+                          onClick={refreshAvailableModels}
                           disabled={loadingModels}
                           className="text-xs text-cyan-400 hover:text-cyan-300 transition-colors disabled:opacity-50"
                         >
@@ -1206,14 +1215,14 @@ export default function AdaptiveEntityRAGPage() {
               <div className="bg-slate-800/90 rounded-xl border border-slate-700/50 backdrop-blur-sm overflow-hidden">
                 {/* Tab 切换 */}
                 <div className="flex border-b border-slate-700/50">
-                  {[
+                  {([
                     { id: 'cognitive', label: '认知解析', icon: 'fa-brain' },
                     { id: 'workflow', label: '工作流', icon: 'fa-stream' },
                     { id: 'results', label: '检索结果', icon: 'fa-list-alt' },
-                  ].map(tab => (
+                  ] as const).map(tab => (
                     <button
                       key={tab.id}
-                      onClick={() => setActiveTab(tab.id as any)}
+                      onClick={() => setActiveTab(tab.id)}
                       className={`flex-1 px-4 py-3 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
                         activeTab === tab.id
                           ? 'text-cyan-400 bg-slate-700/30 border-b-2 border-cyan-400'

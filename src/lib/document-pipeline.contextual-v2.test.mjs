@@ -115,6 +115,30 @@ test('empty contextual output is a raw fallback', async () => {
   assert.deepEqual(chunks.map(chunk => chunk.embeddingContent), chunks.map(chunk => chunk.content));
 });
 
+test('book-sized contextual input falls back to raw evidence within existing provider budgets', async () => {
+  const documentText = 'long book source '.repeat(20_000);
+  const chunks = await splitDocument({
+    content: documentText,
+    metadata: { source: 'book.epub', type: 'epub', documentId: 'book.epub' },
+  }, { chunkSize: 500, chunkOverlap: 50 });
+  assert.ok(chunks.length > 600);
+  let calls = 0;
+  const result = await applyContextualRetrievalV2ToChunks({
+    documentText,
+    chunks,
+    sourceHash: 'sha256:long-book',
+    documentVersion: 'sha256:long-book',
+    model: 'book-context-model',
+    promptVersion: 'book-context-v1',
+    mode: 'shadow',
+    contextualizer: { async generateContext() { calls++; return 'must not run'; } },
+  });
+  assert.equal(calls, 0);
+  assert.equal(result.fallbackCount, chunks.length);
+  assert.ok(chunks.every(chunk => chunk.embeddingContent === chunk.content));
+  assert.ok(chunks.every(chunk => chunk.metadata.contextualStatus === 'fallback'));
+});
+
 test('repeated text chunks advance monotonically and remain source aligned', async () => {
   const document = {
     content: 'a'.repeat(400),

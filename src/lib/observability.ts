@@ -12,9 +12,9 @@ interface Trace {
   name: string;
   startTime: Date;
   endTime?: Date;
-  input?: any;
-  output?: any;
-  metadata?: Record<string, any>;
+  input?: unknown;
+  output?: unknown;
+  metadata?: Record<string, unknown>;
   tags?: string[];
   observations: Observation[];
   scores: Score[];
@@ -33,8 +33,8 @@ interface Generation {
   name: string;
   startTime: Date;
   endTime?: Date;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   model?: string;
   modelParameters?: {
     temperature?: number;
@@ -46,7 +46,7 @@ interface Generation {
     completionTokens: number;
     totalTokens: number;
   };
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   level: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
   statusMessage?: string;
 }
@@ -60,9 +60,9 @@ interface Span {
   name: string;
   startTime: Date;
   endTime?: Date;
-  input?: any;
-  output?: any;
-  metadata?: Record<string, any>;
+  input?: unknown;
+  output?: unknown;
+  metadata?: Record<string, unknown>;
   level: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
   statusMessage?: string;
 }
@@ -75,9 +75,9 @@ interface Event {
   type: 'EVENT';
   name: string;
   startTime: Date;
-  input?: any;
-  output?: any;
-  metadata?: Record<string, any>;
+  input?: unknown;
+  output?: unknown;
+  metadata?: Record<string, unknown>;
   level: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
   statusMessage?: string;
 }
@@ -137,8 +137,8 @@ class ObservabilityEngine {
     name: string;
     userId?: string;
     sessionId?: string;
-    input?: any;
-    metadata?: Record<string, any>;
+    input?: unknown;
+    metadata?: Record<string, unknown>;
     tags?: string[];
   }): string {
     const traceId = uuidv4();
@@ -162,8 +162,8 @@ class ObservabilityEngine {
   }
 
   updateTrace(traceId: string, updates: {
-    output?: any;
-    metadata?: Record<string, any>;
+    output?: unknown;
+    metadata?: Record<string, unknown>;
     status?: 'PENDING' | 'SUCCESS' | 'ERROR';
     endTime?: Date;
   }): Promise<void> {
@@ -184,10 +184,10 @@ class ObservabilityEngine {
     traceId: string;
     name: string;
     parentObservationId?: string;
-    input?: any;
+    input?: unknown;
     model?: string;
-    modelParameters?: any;
-    metadata?: Record<string, any>;
+    modelParameters?: Generation['modelParameters'];
+    metadata?: Record<string, unknown>;
   }): string {
     const observationId = uuidv4();
     const generation: Generation = {
@@ -221,8 +221,8 @@ class ObservabilityEngine {
     traceId: string;
     name: string;
     parentObservationId?: string;
-    input?: any;
-    metadata?: Record<string, any>;
+    input?: unknown;
+    metadata?: Record<string, unknown>;
   }): string {
     const observationId = uuidv4();
     const span: Span = {
@@ -254,9 +254,9 @@ class ObservabilityEngine {
     traceId: string;
     name: string;
     parentObservationId?: string;
-    input?: any;
-    output?: any;
-    metadata?: Record<string, any>;
+    input?: unknown;
+    output?: unknown;
+    metadata?: Record<string, unknown>;
     level?: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
   }): string {
     const observationId = uuidv4();
@@ -287,10 +287,10 @@ class ObservabilityEngine {
   }
 
   updateObservation(observationId: string, updates: {
-    output?: any;
+    output?: unknown;
     endTime?: Date;
-    usage?: any;
-    metadata?: Record<string, any>;
+    usage?: Generation['usage'];
+    metadata?: Record<string, unknown>;
     level?: 'DEFAULT' | 'DEBUG' | 'WARNING' | 'ERROR';
     statusMessage?: string;
   }): void {
@@ -311,7 +311,7 @@ class ObservabilityEngine {
     }
   }
 
-  startTrace(traceId: string, name: string, input?: any, metadata?: Record<string, any>): void {
+  startTrace(traceId: string, name: string, input?: unknown, metadata?: Record<string, unknown>): void {
     const trace: Trace = {
       id: traceId,
       name,
@@ -327,7 +327,7 @@ class ObservabilityEngine {
     void this.notifyTraceUpdate(trace);
   }
 
-  endTrace(traceId: string, output?: any, status: 'SUCCESS' | 'ERROR' = 'SUCCESS'): Promise<void> {
+  endTrace(traceId: string, output?: unknown, status: 'SUCCESS' | 'ERROR' = 'SUCCESS'): Promise<void> {
     return this.updateTrace(traceId, {
       output,
       status,
@@ -435,7 +435,7 @@ class ObservabilityEngine {
 
   // ============= 导出方法 =============
 
-  exportTraces(): any[] {
+  exportTraces(): Trace[] {
     return Array.from(this.traces.values()).map(trace => ({
       ...trace,
       observations: trace.observations,

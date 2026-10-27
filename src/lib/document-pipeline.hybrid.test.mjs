@@ -120,6 +120,23 @@ test('Milvus hybrid off mode performs only the authoritative dense write', async
   assert.equal(signals.manifestInputs.length, 0);
 });
 
+test('ordinary local ingestion never authorizes recreating an existing vector collection', async t => {
+  const previousMode = process.env.RAG_ACCESS_MODE;
+  const previousIsolation = process.env.RAG_TENANT_ISOLATION_REQUIRED;
+  process.env.RAG_ACCESS_MODE = 'local-dev';
+  delete process.env.RAG_TENANT_ISOLATION_REQUIRED;
+  t.after(() => {
+    if (previousMode === undefined) delete process.env.RAG_ACCESS_MODE;
+    else process.env.RAG_ACCESS_MODE = previousMode;
+    if (previousIsolation === undefined) delete process.env.RAG_TENANT_ISOLATION_REQUIRED;
+    else process.env.RAG_TENANT_ISOLATION_REQUIRED = previousIsolation;
+  });
+  setHybridMode('off');
+  setMilvusFixture();
+  await storeToMilvus(fixtureDocuments(), fixtureConfig());
+  assert.deepEqual(getMilvusSignals().initialize, [false]);
+});
+
 test('Milvus hybrid shadow mode keeps dense ingest successful when shadow write fails', async t => {
   t.mock.method(console, 'warn', () => {});
   setHybridMode('shadow');

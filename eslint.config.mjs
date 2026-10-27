@@ -1,6 +1,11 @@
 import { defineConfig, globalIgnores } from "eslint/config";
-import nextVitals from "eslint-config-next/core-web-vitals";
-import nextTs from "eslint-config-next/typescript";
+import { createRequire } from "node:module";
+
+// These installed Next configs export CommonJS arrays. Load the same objects
+// without Node's expensive ESM named-export discovery; rules/ignores stay unchanged.
+const loadCommonJsConfig = createRequire(import.meta.url);
+const nextVitals = loadCommonJsConfig("eslint-config-next/core-web-vitals");
+const nextTs = loadCommonJsConfig("eslint-config-next/typescript");
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -39,7 +44,11 @@ const eslintConfig = defineConfig([
     ".next/**",
     "out/**",
     "build/**",
+    // Agent-generated scratch bundles are not maintained project source.
+    ".codex-tmp/**",
     "next-env.d.ts",
+    // Runtime documents and private sessions are not source files; prune before traversal.
+    "data/**",
   ]),
 ]);
 

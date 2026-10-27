@@ -60,6 +60,39 @@ test('two-hop expansion reaches the second neighbor passage', async () => {
   assert.ok(result.evidence.some(item => item.metadata.graphPassageId === 'passage-project'));
 });
 
+test('file graph evidence carries an ordered two-hop path with actual claim directions', async () => {
+  const artifact = createArtifact();
+  const first = artifact.graph.edges[0];
+  first.source_node_uuid = 'entity-acme';
+  first.target_node_uuid = 'entity-alice';
+  first.name = 'EMPLOYS';
+  const result = await rankGraphArtifactPassages({ artifact, query: 'Alice', laneId: 'graph-lane', topK: 10, maxHops: 2 });
+  const project = result.evidence.find(item => item.metadata.graphPassageId === 'passage-project');
+  const path = project.metadata.graphPaths.find(item => item.length === 2);
+  assert.deepEqual(path.map(item => item.claimId), ['edge-1', 'edge-2']);
+  assert.equal(path[0].sourceEntityId, 'entity-acme');
+  assert.equal(path[0].targetEntityId, 'entity-alice');
+  assert.equal(path[0].sourceEntityName, 'Acme');
+  assert.equal(path[0].predicate, 'EMPLOYS');
+  assert.equal(project.metadata.graphVersion, graphVersion);
+  const alice = result.evidence.find(item => item.metadata.graphPassageId === 'passage-alice');
+  assert.deepEqual(alice.metadata.graphPaths, []);
+});
+
+test('file graph paths omit claims without valid sources or with expired status', async () => {
+  for (const mutate of [
+    artifact => { artifact.graph.edges[1].attributes.sourceChunks = []; },
+    artifact => { artifact.graph.edges[1].attributes.sourceChunks = ['missing-passage']; },
+    artifact => { artifact.graph.edges[1].expired_at = '2026-01-01T00:00:00.000Z'; },
+  ]) {
+    const artifact = createArtifact();
+    mutate(artifact);
+    const result = await rankGraphArtifactPassages({ artifact, query: 'Alice', laneId: 'graph-lane', topK: 10, maxHops: 2 });
+    const paths = result.evidence.flatMap(item => item.metadata.graphPaths);
+    assert.ok(paths.every(path => path.every(relation => relation.claimId !== 'edge-2')));
+  }
+});
+
 test('community ranking maps summaries back to passages instead of citing the summary', async () => {
   const artifact = createArtifact({ includeCommunity: true });
   const result = await rankGraphArtifactPassages({

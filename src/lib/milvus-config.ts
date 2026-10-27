@@ -10,6 +10,8 @@
  * 注意：默认向量维度会自动从 embedding-config.ts 获取
  */
 
+import { getActiveEmbeddingIndex } from './embedding-index-state';
+
 // 延迟导入 embedding-config 以避免循环依赖
 let _getEmbeddingDimension: (() => number) | null = null;
 
@@ -411,7 +413,9 @@ export function getMilvusProvider(): MilvusProvider {
  * 获取 Milvus 连接配置
  */
 export function getMilvusConnectionConfig(): MilvusConnectionConfig {
-  return getMilvusConfigManager().getConnectionConfig();
+  const config = getMilvusConfigManager().getConnectionConfig();
+  const active = getActiveEmbeddingIndex();
+  return active ? { ...config, defaultCollection: active.collection, defaultDimension: active.dimension } : config;
 }
 
 /**

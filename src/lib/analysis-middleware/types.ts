@@ -417,7 +417,7 @@ export interface AnalysisMiddlewareResponse {
 
 export interface StreamingAnalysisEvent {
   type: 'stage_complete' | 'token_processed' | 'embedding_computed' | 'analysis_complete' | 'warning' | 'error';
-  data: any;
+  data: unknown;
   timestamp: number;
   progress?: number;
 }

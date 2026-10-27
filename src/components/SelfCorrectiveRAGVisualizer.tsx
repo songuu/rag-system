@@ -32,8 +32,8 @@ interface NodeExecution {
   node: 'retrieve' | 'grade' | 'rewrite' | 'generate';
   status: 'pending' | 'running' | 'completed' | 'skipped' | 'error';
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
 }
 
@@ -46,7 +46,7 @@ interface Document {
     confidence: number;
     reasoning: string;
   };
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 interface SCRAGVisualizerProps {
@@ -436,13 +436,13 @@ export default function SelfCorrectiveRAGVisualizer({
           {/* 标签页切换 */}
           <div className="flex gap-2 mb-6">
             {[
-              { id: 'flow', label: '工作流', icon: '📊' },
-              { id: 'details', label: '详细信息', icon: '📋' },
-              { id: 'result', label: '结果', icon: '💡' },
+              { id: 'flow' as const, label: '工作流', icon: '📊' },
+              { id: 'details' as const, label: '详细信息', icon: '📋' },
+              { id: 'result' as const, label: '结果', icon: '💡' },
             ].map((tab) => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id)}
                 className={`px-4 py-2 rounded-lg font-medium transition-all ${
                   activeTab === tab.id
                     ? 'bg-indigo-600 text-white shadow-md'

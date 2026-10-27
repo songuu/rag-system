@@ -2,6 +2,8 @@
 
 import React, { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import RetrievalEffectSummary from '@/components/RetrievalEffectSummary';
+import type { RetrievalDiagnostics } from '@/lib/rag/retrieval/retrieval-diagnostics';
 
 const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
 
@@ -10,7 +12,7 @@ interface SearchResult {
     content: string;
     metadata: {
       source?: string;
-      [key: string]: any;
+      [key: string]: unknown;
     };
   };
   similarity: number;
@@ -19,6 +21,7 @@ interface SearchResult {
 
 interface RetrievalDetailsPanelProps {
   retrievalDetails: {
+    diagnostics?: RetrievalDiagnostics;
     searchResults: SearchResult[];
     queryEmbedding?: number[];
     threshold: number;
@@ -29,6 +32,9 @@ interface RetrievalDetailsPanelProps {
   queryText?: string;
   onClose?: () => void;
 }
+
+// Keep the absent-data memo dependency stable across renders.
+const EMPTY_SEARCH_RESULTS: readonly SearchResult[] = [];
 
 // 相似度等级判断
 function getSimilarityLevel(similarity: number): {
@@ -337,7 +343,7 @@ function ResultCard({
               <div className="flex flex-wrap gap-2">
                 {Object.entries(result.document.metadata).map(([key, value]) => {
                   // 格式化值：处理对象、数组等复杂类型
-                  const formatValue = (val: any): string => {
+                  const formatValue = (val: unknown): string => {
                     if (val === null || val === undefined) return 'N/A';
                     if (typeof val === 'object') {
                       if (Array.isArray(val)) {
@@ -411,7 +417,7 @@ export default function RetrievalDetailsPanel({
   const [showAllResults, setShowAllResults] = useState(false);
   
   // 提取数据（处理 null 情况）
-  const searchResults = retrievalDetails?.searchResults || [];
+  const searchResults = retrievalDetails?.searchResults || EMPTY_SEARCH_RESULTS;
   const threshold = retrievalDetails?.threshold || 0;
   const topK = retrievalDetails?.topK || 0;
   const totalDocuments = retrievalDetails?.totalDocuments || 0;
@@ -450,7 +456,7 @@ export default function RetrievalDetailsPanel({
           show: true,
           position: 'top',
           fontSize: 9,
-          formatter: (p: any) => (p.value * 100).toFixed(0) + '%'
+          formatter: (p: { value: number }) => (p.value * 100).toFixed(0) + '%'
         }
       }],
       markLine: {
@@ -525,6 +531,8 @@ export default function RetrievalDetailsPanel({
         </div>
       </div>
       
+      <RetrievalEffectSummary diagnostics={retrievalDetails.diagnostics} />
+
       {/* 相似度分布图 */}
       {searchResults.length > 1 && distributionOption && (
         <div className="p-4 border-b">

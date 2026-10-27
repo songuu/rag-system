@@ -7,19 +7,25 @@ import LangSmithTraceViewer from '@/components/LangSmithTraceViewer';
 import { resolveConfiguredOllamaModel } from '@/lib/ollama-model-name';
 import { DEFAULT_RUNTIME_MODELS } from '@/lib/runtime-config-defaults';
 
+type WorkflowPanelProps = React.ComponentProps<typeof AgenticWorkflowPanel>;
+
+interface RetrievedDocument {
+  content: string;
+  score?: number;
+  similarity?: number | null;
+  relevanceScore?: number;
+  metadata?: { source?: string };
+}
+
 interface AgentState {
   query: string;
   answer: string;
-  workflow?: {
-    steps: any[];
-    totalDuration?: number;
-    retryCount?: number;
-  };
-  queryAnalysis?: any;
+  workflow?: WorkflowPanelProps['workflow'];
+  queryAnalysis?: WorkflowPanelProps['queryAnalysis'];
   retrievalDetails?: {
-    documents: any[];
-    quality?: any;
-    selfReflection?: any;
+    documents: RetrievedDocument[];
+    quality?: WorkflowPanelProps['retrievalQuality'];
+    selfReflection?: WorkflowPanelProps['selfReflection'];
   };
   retrievalGrade?: {
     isRelevant: boolean;
@@ -35,10 +41,14 @@ interface AgentState {
     embeddingModel?: string;
     collectionDimension?: number;
   };
-  hallucinationCheck?: any;
+  hallucinationCheck?: WorkflowPanelProps['hallucinationCheck'];
   modelFallbacks?: string[];
   error?: string;
   errorDetail?: string;
+}
+
+interface AgenticQueryResponse extends Partial<Omit<AgentState, 'query' | 'modelFallbacks'>> {
+  models?: { fallbacks?: unknown };
 }
 
 interface ModelInfo {
@@ -369,7 +379,7 @@ export default function AgenticRAGPage() {
         }),
       });
 
-      const data = await response.json();
+      const data: AgenticQueryResponse = await response.json();
 
       const newResult: AgentState = {
         query: query.trim(),
@@ -801,7 +811,7 @@ export default function AgenticRAGPage() {
                   </div>
                 </div>
                 <div className="p-6 space-y-4">
-                  {result.retrievalDetails.documents.map((doc: any, i: number) => (
+                  {result.retrievalDetails.documents.map((doc, i: number) => (
                     <div key={i} className="p-4 bg-gray-50 rounded-lg border border-gray-200">
                       <div className="flex items-center justify-between mb-2">
                         <span className="font-medium text-gray-700">文档 {i + 1}</span>

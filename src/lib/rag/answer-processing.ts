@@ -1,3 +1,7 @@
+import { routeConversation } from './conversation-router';
+import type { ConversationAction, ConversationIntent, ConversationRouteDecision } from './conversation-router';
+import { calculateExpression } from './local-calculator';
+
 export type AnswerProcessingStatus =
   | 'pending'
   | 'active'
@@ -23,17 +27,12 @@ export interface AnswerProcessingDetails {
   steps: AnswerProcessingStep[];
 }
 
-export type DirectConversationIntent =
-  | 'greeting'
-  | 'presence'
-  | 'thanks'
-  | 'farewell'
-  | 'identity'
-  | 'capability';
+export type DirectConversationIntent = ConversationIntent;
 
 export interface DirectConversationClassification {
   intent: DirectConversationIntent;
   normalizedQuery: string;
+  routing: ConversationRouteDecision;
 }
 
 interface PublicExecutionTransition {
@@ -52,36 +51,6 @@ interface PublicLaneExecution {
 const PROCESS_DISCLOSURE =
   '这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。';
 
-const DIRECT_PATTERNS: ReadonlyArray<{
-  intent: DirectConversationIntent;
-  pattern: RegExp;
-}> = [
-  {
-    intent: 'greeting',
-    pattern: /^(?:你好|您好|你好吗|最近怎么样|嗨|哈喽|早|hello|hi|hey|how are you|早上好|下午好|晚上好|早安|午安|晚安|good morning|good afternoon|good evening)(?:呀|啊|哈|哇|哦|喽)?$/iu,
-  },
-  {
-    intent: 'presence',
-    pattern: /^(?:在吗|你在吗|在不在|有人吗|请问在吗)$/u,
-  },
-  {
-    intent: 'thanks',
-    pattern: /^(?:谢谢|谢谢你|感谢|感谢你|多谢|thanks|thank you|thank you so much)(?:啦|了|呀|啊)?$/iu,
-  },
-  {
-    intent: 'farewell',
-    pattern: /^(?:再见|拜拜|回头见|bye|goodbye|see you)(?:啦|了|呀|啊)?$/iu,
-  },
-  {
-    intent: 'identity',
-    pattern: /^(?:你是谁|你叫什么|你叫什么名字|介绍一下你自己|who are you)$/iu,
-  },
-  {
-    intent: 'capability',
-    pattern: /^(?:你能做什么|你可以做什么|你会做什么|怎么使用你|怎么用你|what can you do)$/iu,
-  },
-];
-
 const WORKFLOW_STEP_LABELS: Readonly<Record<string, string>> = {
   retrieve_original: '检索候选文档',
   retrieve_after_rewrite: '按优化问题重新检索',
@@ -96,28 +65,35 @@ const WORKFLOW_STEP_LABELS: Readonly<Record<string, string>> = {
 export function classifyDirectConversation(
   query: string
 ): DirectConversationClassification | null {
-  const normalizedQuery = normalizeConversationalQuery(query);
-  if (!normalizedQuery) return null;
-
-  for (const candidate of DIRECT_PATTERNS) {
-    if (candidate.pattern.test(normalizedQuery)) {
-      return { intent: candidate.intent, normalizedQuery };
-    }
-  }
-  return null;
+  const routing = routeConversation(query);
+  return routing.route === 'direct'
+    ? { intent: routing.actions[0].intent, normalizedQuery: routing.normalizedQuery, routing }
+    : null;
 }
 
-export function createDirectConversationReply(query: string): {
+export function createDirectConversationReply(
+  query: string,
+  now: Date = new Date(),
+  runtime: { llmModel?: string } = {},
+  validatedRouting?: ConversationRouteDecision
+): {
   intent: DirectConversationIntent;
   answer: string;
   processing: AnswerProcessingDetails;
+  routing: ConversationRouteDecision;
+  answerSources: string[];
 } | null {
-  const classification = classifyDirectConversation(query);
+  const classification = validatedRouting?.route === 'direct' && validatedRouting.actions.length > 0
+    ? { intent: validatedRouting.actions[0].intent, normalizedQuery: validatedRouting.normalizedQuery, routing: validatedRouting }
+    : classifyDirectConversation(query);
   if (!classification) return null;
 
   return {
     intent: classification.intent,
-    answer: directAnswer(classification.intent, classification.normalizedQuery),
+    answer: classification.routing.actions.map(action =>
+      directAnswer(action, classification.normalizedQuery, now, runtime)).join('\n'),
+    routing: classification.routing,
+    answerSources: [...new Set(classification.routing.actions.map(action => actionSource(action)))],
     processing: {
       version: 'answer-processing/v1',
       mode: 'direct',
@@ -128,7 +104,8 @@ export function createDirectConversationReply(query: string): {
         {
           id: 'classify',
           label: '识别问题类型',
-          detail: directIntentDetail(classification.intent),
+          detail: (classification.routing.reason === 'semantic-capabilities' ? '使用轻量模型识别能力，参数已通过服务端校验。' : '')
+            + classification.routing.actions.map(action => directIntentDetail(action.intent)).join(' '),
           status: 'completed',
         },
         {
@@ -140,7 +117,7 @@ export function createDirectConversationReply(query: string): {
         {
           id: 'respond',
           label: '生成直接回复',
-          detail: '使用简洁的助手回复，不引用知识库内容。',
+          detail: [...new Set(classification.routing.actions.map(action => actionDetail(action)))].join(' '),
           status: 'completed',
         },
       ],
@@ -163,7 +140,7 @@ export function createPendingAnswerProcessing(
         {
           id: 'classify',
           label: '识别问题类型',
-          detail: directIntentDetail(direct.intent),
+          detail: direct.routing.actions.map(action => directIntentDetail(action.intent)).join(' '),
           status: 'completed',
         },
         {
@@ -347,17 +324,58 @@ export function isAnswerProcessingDetails(
   });
 }
 
-function normalizeConversationalQuery(query: string): string {
-  return query
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/gu, ' ')
-    .replace(/[。！？!?，,、.~～…👋🙂😊]+$/gu, '')
-    .trim();
-}
-
-function directAnswer(intent: DirectConversationIntent, normalizedQuery: string): string {
-  const english = /^[\x00-\x7F]+$/u.test(normalizedQuery);
+function directAnswer(action: ConversationAction, normalizedQuery: string, now: Date, runtime: { llmModel?: string }): string {
+  const intent = action.intent;
+  const english = /^[\x00-\x7F]+$/u.test(normalizedQuery) && /[a-z]/iu.test(normalizedQuery);
+  if ('timeZone' in action) {
+    // Relative dates shift the requested zone's calendar, not a fixed 24h
+    // duration: DST transitions otherwise move late-night queries by a day.
+    let calendar = now;
+    if (action.dayOffset !== 0) {
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: action.timeZone, year: 'numeric', month: 'numeric', day: 'numeric',
+      }).formatToParts(now);
+      const part = (type: string) => Number(parts.find(value => value.type === type)?.value);
+      calendar = new Date(Date.UTC(part('year'), part('month') - 1, part('day') + action.dayOffset, 12));
+    }
+    const date = new Intl.DateTimeFormat(english ? 'en-US' : 'zh-CN', {
+      timeZone: action.dayOffset === 0 ? action.timeZone : 'UTC',
+      year: 'numeric', month: 'long', day: 'numeric',
+      ...(intent === 'current-weekday' ? { weekday: 'long' } as const : {}),
+      ...(intent === 'current-time' || intent === 'current-datetime' ? {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+      } as const : {}),
+    }).format(calendar);
+    const zoneLabel = english && action.timeZone === 'Asia/Shanghai' ? 'China Standard Time' : action.zoneLabel;
+    const dayLabel = action.dayOffset === -1 ? (english ? 'Yesterday' : '昨天')
+      : action.dayOffset === 1 ? (english ? 'Tomorrow' : '明天') : (english ? 'Today' : '今天');
+    return english ? `${dayLabel}: ${date} (${zoneLabel}).`
+      : `${intent === 'current-time' || intent === 'current-datetime' ? '现在' : dayLabel}是${date}（${zoneLabel}）。`;
+  }
+  if (action.intent === 'calculation') {
+    const result = calculateExpression(action.expression);
+    // Preserve every digit of safe integer results; only round fractional
+    // floating-point display noise (for example 0.1 + 0.2).
+    if (result.success) return `${action.expression} = ${Number.isSafeInteger(result.value)
+      ? result.value : Number(result.value.toPrecision(14))}`;
+    const messages = {
+      DIVISION_BY_ZERO: english ? 'Division by zero is undefined.' : '不能除以零，请检查算式。',
+      INVALID_EXPRESSION: english ? 'Please provide a valid arithmetic expression.' : '算式不完整，请检查数字、运算符和括号。',
+      CALCULATION_LIMIT: english ? 'This expression exceeds the local calculator limits.' : '算式超过本地计算器的长度、嵌套或数值范围限制。',
+    };
+    return messages[result.code];
+  }
+  if (intent === 'model-info') {
+    return runtime.llmModel
+      ? (english ? `The selected answer model is ${runtime.llmModel}. This reply is generated by the system without calling that model.`
+        : `当前选择的回答模型是 ${runtime.llmModel}。本条回复由系统生成，未调用该模型。`)
+      : (english ? 'The selected model must be confirmed by the server configuration.' : '当前模型名称需要由服务端配置确认。');
+  }
+  if (intent === 'connectivity' || intent === 'live-data') {
+    return english
+      ? 'This question requires a live internet data source, which this chat has not connected. I cannot verify current weather, news or market data from uploaded documents. You can provide up-to-date material for me to analyze.'
+      : '当前问答入口尚未接入实时互联网数据源，无法核实实时天气、新闻或行情。知识库文档不能代替实时数据；你可以提供最新资料供我分析。';
+  }
   if (english) {
     switch (intent) {
       case 'thanks':
@@ -393,8 +411,32 @@ function directIntentDetail(intent: DirectConversationIntent): string {
     farewell: '识别为告别。',
     identity: '识别为助手身份询问。',
     capability: '识别为助手能力询问。',
+    'current-date': '识别为当前日期询问。',
+    'current-time': '识别为当前时间询问。',
+    'current-weekday': '识别为星期询问。',
+    'current-datetime': '识别为日期与时间询问。',
+    'calculation': '识别为独立算术计算。',
+    'model-info': '识别为当前模型配置询问。',
+    'connectivity': '识别为实时查询能力询问。',
+    'live-data': '识别为实时外部信息询问。',
   };
   return labels[intent];
+}
+
+function actionSource(action: ConversationAction): string {
+  if ('timeZone' in action) return 'system-clock';
+  if (action.intent === 'calculation') return 'local-calculator';
+  if (action.intent === 'model-info') return 'runtime-config';
+  if (action.intent === 'connectivity' || action.intent === 'live-data') return 'capability-notice';
+  return 'assistant';
+}
+
+function actionDetail(action: ConversationAction): string {
+  if ('timeZone' in action) return `读取系统时钟并按${action.zoneLabel}回复${action.intent === 'current-time' ? '当前时间' : '日期/星期信息'}。`;
+  if (action.intent === 'calculation') return '使用受限算术语法计算，不调用模型。';
+  if (action.intent === 'model-info') return '读取当前请求经服务端验证的模型选择。';
+  if (action.intent === 'connectivity' || action.intent === 'live-data') return '说明实时数据源尚未接入，未生成未经验证的实时信息。';
+  return '使用简洁的助手回复，不引用知识库内容。';
 }
 
 function isPublicTransition(value: PublicExecutionTransition): value is {

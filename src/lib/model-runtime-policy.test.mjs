@@ -22,8 +22,12 @@ const {
 } = await import('./model-config.ts');
 const {
   RAG_CLIENT_REQUEST_TIMEOUT_MS,
+  RAG_EMBEDDING_WARMUP_BUDGET_MS,
   RAG_GENERATION_EXECUTION_BUDGET_MS,
   RAG_RETRIEVAL_EXECUTION_BUDGET_MS,
+  resolveRagGenerationExecutionBudgetMs,
+  resolveRagAgenticExecutionBudgetMs,
+  RAG_AGENTIC_EXECUTION_BUDGET_MS,
 } = await import('./rag/core/request-budgets.ts');
 
 const ENV_KEYS = [
@@ -110,12 +114,27 @@ test('per-call request policy bounds each attempt and the logical retry budget',
 });
 
 test('browser request deadline covers the full retrieval and generation budget', () => {
-  assert.equal(RAG_GENERATION_EXECUTION_BUDGET_MS, 90_000);
-  assert.equal(RAG_CLIENT_REQUEST_TIMEOUT_MS, 135_000);
+  assert.equal(resolveRagAgenticExecutionBudgetMs('ollama'), 270_000);
+  assert.equal(resolveRagAgenticExecutionBudgetMs('openai'), 120_000);
+  assert.equal(RAG_AGENTIC_EXECUTION_BUDGET_MS, resolveRagAgenticExecutionBudgetMs(process.env.MODEL_PROVIDER));
+  assert(RAG_CLIENT_REQUEST_TIMEOUT_MS > RAG_AGENTIC_EXECUTION_BUDGET_MS);
+  assert.equal(resolveRagGenerationExecutionBudgetMs('ollama'), 240_000);
+  assert.equal(resolveRagGenerationExecutionBudgetMs(undefined), 240_000);
+  for (const provider of ['openai', 'deepseek', 'anthropic']) {
+    assert.equal(resolveRagGenerationExecutionBudgetMs(provider), 90_000);
+  }
+  assert.equal(RAG_GENERATION_EXECUTION_BUDGET_MS,
+    resolveRagGenerationExecutionBudgetMs(process.env.MODEL_PROVIDER));
+  assert.equal(RAG_EMBEDDING_WARMUP_BUDGET_MS, 90_000);
+  assert.equal(RAG_CLIENT_REQUEST_TIMEOUT_MS, 375_000);
+  assert(RAG_CLIENT_REQUEST_TIMEOUT_MS > RAG_EMBEDDING_WARMUP_BUDGET_MS
+    + RAG_RETRIEVAL_EXECUTION_BUDGET_MS + resolveRagGenerationExecutionBudgetMs('ollama'));
   assert(
     RAG_CLIENT_REQUEST_TIMEOUT_MS
       > RAG_RETRIEVAL_EXECUTION_BUDGET_MS + RAG_GENERATION_EXECUTION_BUDGET_MS
   );
+  assert(RAG_CLIENT_REQUEST_TIMEOUT_MS
+    > RAG_RETRIEVAL_EXECUTION_BUDGET_MS + resolveRagGenerationExecutionBudgetMs('ollama'));
 });
 
 test('timeout fetch aborts a hung provider body within the configured deadline', async () => {

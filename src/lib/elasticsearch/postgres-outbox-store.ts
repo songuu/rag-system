@@ -58,6 +58,9 @@ export class PostgresElasticsearchOutboxStore {
   }
 
   async enqueueUpsert(chunks: ElasticsearchProjectionChunk[]): Promise<string> {
+    // A re-upload after deletion reuses this unique event identity. Give every
+    // new projection a fresh position. Preserve in-flight leases until expiry;
+    // sequence checks prevent an old worker acknowledging the new generation.
     const identity = validateProjectionChunks(chunks);
     const payload = JSON.stringify(chunks.map(chunk => ({
       chunk_id: chunk.id,
@@ -124,6 +127,7 @@ export class PostgresElasticsearchOutboxStore {
          where (select count(*) from staged) = jsonb_array_length($1::jsonb)
          on conflict (tenant_id, corpus_id, document_id, document_version, event_type)
          do update set
+           sequence = nextval(pg_get_serial_sequence('public.elasticsearch_lexical_outbox', 'sequence')),
            projection_digest = excluded.projection_digest,
            published_at = null,
            dead_lettered_at = null,
@@ -132,14 +136,8 @@ export class PostgresElasticsearchOutboxStore {
                or public.elasticsearch_lexical_outbox.dead_lettered_at is not null
              then 0 else public.elasticsearch_lexical_outbox.attempts
            end,
-           available_at = case
-             when public.elasticsearch_lexical_outbox.lease_token is null then now()
-             else public.elasticsearch_lexical_outbox.available_at
-           end,
-           last_error = case
-             when public.elasticsearch_lexical_outbox.lease_token is null then null
-             else public.elasticsearch_lexical_outbox.last_error
-           end
+           available_at = now(),
+           last_error = null
          returning id
        )
        select id from event`,
@@ -163,6 +161,7 @@ export class PostgresElasticsearchOutboxStore {
     corpusId: string;
     documentId: string;
   }): Promise<string> {
+    // Repeated delete must follow any intervening restored upsert in the queue.
     const values = [
       required(input.tenantId, 'tenantId', 128),
       required(input.corpusId, 'corpusId', 128),
@@ -180,6 +179,7 @@ export class PostgresElasticsearchOutboxStore {
          ) values ($1, $2, $3, '*', 'delete', 'delete')
          on conflict (tenant_id, corpus_id, document_id, document_version, event_type)
          do update set
+           sequence = nextval(pg_get_serial_sequence('public.elasticsearch_lexical_outbox', 'sequence')),
            published_at = null,
            dead_lettered_at = null,
            attempts = case
@@ -187,14 +187,8 @@ export class PostgresElasticsearchOutboxStore {
                or public.elasticsearch_lexical_outbox.dead_lettered_at is not null
              then 0 else public.elasticsearch_lexical_outbox.attempts
            end,
-           available_at = case
-             when public.elasticsearch_lexical_outbox.lease_token is null then now()
-             else public.elasticsearch_lexical_outbox.available_at
-           end,
-           last_error = case
-             when public.elasticsearch_lexical_outbox.lease_token is null then null
-             else public.elasticsearch_lexical_outbox.last_error
-           end
+           available_at = now(),
+           last_error = null
          returning id
        )
        select id from event`,
@@ -218,6 +212,14 @@ export class PostgresElasticsearchOutboxStore {
            and candidate.dead_lettered_at is null
            and candidate.available_at <= now()
            and (candidate.lease_expires_at is null or candidate.lease_expires_at <= now())
+           and not exists (
+             select 1 from public.elasticsearch_lexical_outbox active
+             where active.tenant_id = candidate.tenant_id
+               and active.corpus_id = candidate.corpus_id
+               and active.document_id = candidate.document_id
+               and active.id <> candidate.id
+               and active.lease_expires_at > now()
+           )
            and not exists (
              select 1
              from public.elasticsearch_lexical_outbox earlier
@@ -270,9 +272,10 @@ export class PostgresElasticsearchOutboxStore {
       `update public.elasticsearch_lexical_outbox
        set published_at = now(), lease_token = null, lease_expires_at = null, last_error = null
        where id = $1 and lease_token = $2 and projection_digest = $3
+         and sequence = $4
          and published_at is null
        returning id`,
-      [event.id, event.leaseToken, event.projectionDigest],
+      [event.id, event.leaseToken, event.projectionDigest, event.sequence],
       'acknowledge Elasticsearch lexical outbox event'
     );
     return result.rowCount === 1;
@@ -297,6 +300,7 @@ export class PostgresElasticsearchOutboxStore {
              else now() + ($6::integer * interval '1 millisecond')
            end
        where id = $1 and lease_token = $2 and projection_digest = $3
+         and sequence = $7
          and published_at is null
        returning dead_lettered_at is not null as dead_lettered`,
       [
@@ -306,6 +310,7 @@ export class PostgresElasticsearchOutboxStore {
         boundedError(input.error),
         maxAttempts,
         retryDelayMs,
+        event.sequence,
       ],
       'retry Elasticsearch lexical outbox event'
     );

@@ -8,20 +8,55 @@ import {
 } from '@/lib/token-analyzer';
 import { AutoTokenizer } from '@xenova/transformers';
 
+interface VocabularyToken {
+  content: string;
+  id?: number;
+}
+
+interface TokenizerVocabularySource {
+  model?: {
+    vocab?: unknown;
+    config?: { vocab?: unknown };
+    encoder?: unknown;
+    bpe?: { vocab?: unknown };
+  };
+  vocab?: unknown;
+  encoder?: unknown;
+  tokenizer_?: { model?: { vocab?: unknown }; vocab?: unknown };
+  config?: { vocab?: unknown };
+  _tokenizer?: { model?: { vocab?: unknown } };
+  added_tokens?: { forEach(callback: (token: VocabularyToken) => void): void };
+  special_tokens?: object;
+}
+
+// Preserve the existing two-argument call. The installed SDK declares a different
+// overload; changing its argument positions requires a separate behavior decision.
+interface LegacyTokenEncoder {
+  encode(text: string, options: { add_special_tokens: boolean }): number[];
+  convert_ids_to_tokens?: (ids: number[]) => string[];
+}
+
+// This compatibility view intentionally preserves existing malformed-body errors;
+// request rejection rules and status changes are outside this type-only cleanup.
+interface TraceTrieRequest {
+  text?: unknown;
+  modelNames?: string[];
+}
+
 /**
  * 从 tokenizer 中提取词汇表
  * @xenova/transformers 的 tokenizer 没有 get_vocab() 方法
  * 需要从内部结构中提取
  */
-function extractVocabulary(tokenizer: any): Map<string, number> {
+function extractVocabulary(tokenizer: TokenizerVocabularySource): Map<string, number> {
   const vocab = new Map<string, number>();
   
   // 辅助函数：从对象或Map中提取词汇
-  const extractFromVocabObject = (vocabObj: any) => {
+  const extractFromVocabObject = (vocabObj: unknown) => {
     if (!vocabObj) return;
     
     if (vocabObj instanceof Map) {
-      vocabObj.forEach((value: any, key: any) => {
+      vocabObj.forEach((value: unknown, key: unknown) => {
         // 处理两种可能的映射方向
         if (typeof key === 'string' && typeof value === 'number') {
           vocab.set(key, value);
@@ -31,7 +66,7 @@ function extractVocabulary(tokenizer: any): Map<string, number> {
       });
     } else if (Array.isArray(vocabObj)) {
       // 某些模型的词汇表是数组格式
-      vocabObj.forEach((token, index) => {
+      (vocabObj as Array<string | VocabularyToken | null | undefined>).forEach((token, index) => {
         if (typeof token === 'string') {
           vocab.set(token, index);
         } else if (token && typeof token.content === 'string') {
@@ -39,7 +74,7 @@ function extractVocabulary(tokenizer: any): Map<string, number> {
         }
       });
     } else if (typeof vocabObj === 'object') {
-      Object.entries(vocabObj).forEach(([key, value]) => {
+      Object.entries(vocabObj).forEach(([key, value]: [string, unknown]) => {
         if (typeof value === 'number') {
           vocab.set(key, value);
         } else if (typeof value === 'string' && !isNaN(parseInt(key))) {
@@ -92,7 +127,7 @@ function extractVocabulary(tokenizer: any): Map<string, number> {
   // 添加 added_tokens（特殊 token）
   if (tokenizer.added_tokens) {
     try {
-      tokenizer.added_tokens.forEach((tokenInfo: any) => {
+      tokenizer.added_tokens.forEach((tokenInfo: VocabularyToken) => {
         if (tokenInfo && tokenInfo.content && typeof tokenInfo.id === 'number') {
           vocab.set(tokenInfo.content, tokenInfo.id);
         }
@@ -105,7 +140,7 @@ function extractVocabulary(tokenizer: any): Map<string, number> {
   // 添加 special_tokens
   if (tokenizer.special_tokens) {
     try {
-      Object.entries(tokenizer.special_tokens).forEach(([key, value]) => {
+      Object.entries(tokenizer.special_tokens).forEach(([, value]: [string, unknown]) => {
         if (typeof value === 'object' && value !== null) {
           const tokenObj = value as { content?: string; id?: number };
           if (tokenObj.content && typeof tokenObj.id === 'number') {
@@ -127,7 +162,7 @@ function extractVocabulary(tokenizer: any): Map<string, number> {
  */
 export async function POST(request: NextRequest) {
   try {
-    const { text, modelNames = ['Xenova/bert-base-multilingual-cased'] } = await request.json();
+    const { text, modelNames = ['Xenova/bert-base-multilingual-cased'] } = await request.json() as TraceTrieRequest;
 
     if (!text || typeof text !== 'string') {
       return NextResponse.json(
@@ -154,7 +189,7 @@ export async function POST(request: NextRequest) {
       
       try {
         // 对输入文本进行分词，直接使用 tokenizer 的结果
-        const tokenizerAny = tokenizer as any;
+        const tokenizerAny = tokenizer as unknown as LegacyTokenEncoder;
         const encoded = tokenizerAny.encode(text, { add_special_tokens: false }) as number[];
         
         // 尝试使用 batch_decode 来获取每个 token 的文本表示

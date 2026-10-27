@@ -12,12 +12,73 @@ const EMBEDDING_MODEL = 'nomic-embed-text';
 // 质心数据路径
 const CENTROIDS_FILE = path.join(process.cwd(), 'data', 'centroids.json');
 
+interface DomainCentroid {
+  centroid: number[];
+  name: string;
+  icon: string;
+}
+
+interface DomainMatch {
+  domain: string;
+  name: string;
+  similarity: number;
+  icon: string;
+}
+
+interface DomainAnalysis {
+  domains: DomainMatch[];
+  topDomain: DomainMatch | null;
+}
+
+interface QueryExpansion {
+  originalKeywords: string[];
+  synonyms: Record<string, string[]>;
+  relatedTerms: string[];
+  expandedQueries: string[];
+  reasoning: string;
+}
+
+interface IntentAnalysis {
+  intent: string;
+  intentType: string;
+  confidence: number;
+  expandedQueries: string[];
+  keywords: string[];
+  reasoning: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'number' && Number.isFinite(item));
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+function isSynonymMap(value: unknown): value is Record<string, string[]> {
+  return isRecord(value) && Object.values(value).every(isStringArray);
+}
+
+function isDomainCentroid(value: unknown): value is DomainCentroid {
+  return isRecord(value) && isNumberArray(value.centroid)
+    && typeof value.name === 'string' && typeof value.icon === 'string';
+}
+
 // 加载质心数据
-function loadCentroids(): Record<string, any> {
+function loadCentroids(): Record<string, DomainCentroid> {
   try {
     if (fs.existsSync(CENTROIDS_FILE)) {
       const data = fs.readFileSync(CENTROIDS_FILE, 'utf-8');
-      return JSON.parse(data);
+      const parsed: unknown = JSON.parse(data);
+      if (!isRecord(parsed)) return {};
+      // A malformed disk entry must not invalidate neighboring usable domains.
+      return Object.fromEntries(Object.entries(parsed).filter(
+        (entry): entry is [string, DomainCentroid] => entry[0] !== '_meta' && isDomainCentroid(entry[1])
+      ));
     }
   } catch (error) {
     console.error('Failed to load centroids:', error);
@@ -41,8 +102,12 @@ async function getEmbedding(text: string): Promise<number[]> {
       throw new Error(`Ollama embedding failed: ${response.statusText}`);
     }
     
-    const data = await response.json();
-    return data.embedding || [];
+    const data: unknown = await response.json();
+    const embedding = isRecord(data) ? data.embedding || [] : null;
+    if (!isNumberArray(embedding)) {
+      throw new Error('Invalid Ollama embedding response');
+    }
+    return embedding;
   } catch (error) {
     console.error('Failed to get embedding:', error);
     throw error;
@@ -50,10 +115,7 @@ async function getEmbedding(text: string): Promise<number[]> {
 }
 
 // 计算领域相似度
-async function analyzeDomainDistribution(query: string): Promise<{
-  domains: Array<{ domain: string; name: string; similarity: number; icon: string }>;
-  topDomain: { domain: string; name: string; similarity: number; icon: string } | null;
-}> {
+async function analyzeDomainDistribution(query: string): Promise<DomainAnalysis> {
   const centroids = loadCentroids();
   const queryEmbedding = await getEmbedding(query);
   
@@ -61,7 +123,7 @@ async function analyzeDomainDistribution(query: string): Promise<{
   const queryNorm = Math.sqrt(queryEmbedding.reduce((sum, v) => sum + v * v, 0));
   const normalizedQuery = queryEmbedding.map(v => v / queryNorm);
   
-  const domains: Array<{ domain: string; name: string; similarity: number; icon: string }> = [];
+  const domains: DomainMatch[] = [];
   
   for (const [domain, data] of Object.entries(centroids)) {
     if (domain === '_meta' || !data.centroid) continue;
@@ -96,13 +158,7 @@ async function analyzeDomainDistribution(query: string): Promise<{
 }
 
 // Query Expansion - 关键词扩展
-async function expandQueryKeywords(query: string, domainContext: any): Promise<{
-  originalKeywords: string[];
-  synonyms: Record<string, string[]>;
-  relatedTerms: string[];
-  expandedQueries: string[];
-  reasoning: string;
-}> {
+async function expandQueryKeywords(query: string, domainContext: DomainAnalysis): Promise<QueryExpansion> {
   const topDomainName = domainContext.topDomain?.name || '通用';
   
   const prompt = `你是一个专业的语义扩展专家。请分析以下查询并进行关键词扩展。
@@ -151,19 +207,21 @@ async function expandQueryKeywords(query: string, domainContext: any): Promise<{
       throw new Error('Query expansion LLM request failed');
     }
 
-    const data = await response.json();
-    const responseText = data.response || '';
+    const data: unknown = await response.json();
+    const responseText = isRecord(data) && typeof data.response === 'string' ? data.response : '';
     
     // 提取 JSON
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed: unknown = JSON.parse(jsonMatch[0]);
+      if (!isRecord(parsed)) throw new Error('Failed to parse query expansion response');
+      // Generated JSON is not trusted to satisfy the arrays rendered by the UI.
       return {
-        originalKeywords: parsed.originalKeywords || [],
-        synonyms: parsed.synonyms || {},
-        relatedTerms: parsed.relatedTerms || [],
-        expandedQueries: parsed.expandedQueries || [],
-        reasoning: parsed.reasoning || '自动扩展分析'
+        originalKeywords: isStringArray(parsed.originalKeywords) ? parsed.originalKeywords : [],
+        synonyms: isSynonymMap(parsed.synonyms) ? parsed.synonyms : {},
+        relatedTerms: isStringArray(parsed.relatedTerms) ? parsed.relatedTerms : [],
+        expandedQueries: isStringArray(parsed.expandedQueries) ? parsed.expandedQueries : [],
+        reasoning: typeof parsed.reasoning === 'string' && parsed.reasoning || '自动扩展分析'
       };
     }
     
@@ -183,16 +241,9 @@ async function expandQueryKeywords(query: string, domainContext: any): Promise<{
 }
 
 // 使用 LLM 进行意图分析
-async function analyzeIntentWithLLM(query: string, domainContext: any): Promise<{
-  intent: string;
-  intentType: string;
-  confidence: number;
-  expandedQueries: string[];
-  keywords: string[];
-  reasoning: string;
-}> {
+async function analyzeIntentWithLLM(query: string, domainContext: DomainAnalysis): Promise<IntentAnalysis> {
   const topDomains = domainContext.domains.slice(0, 3)
-    .map((d: any) => `${d.name}(${(d.similarity * 100).toFixed(1)}%)`)
+    .map(d => `${d.name}(${(d.similarity * 100).toFixed(1)}%)`)
     .join(', ');
   
   const prompt = `你是一个专业的查询意图分析专家。请深入分析以下用户查询的意图。
@@ -237,8 +288,8 @@ async function analyzeIntentWithLLM(query: string, domainContext: any): Promise<
       throw new Error(`LLM request failed: ${response.statusText}`);
     }
     
-    const data = await response.json();
-    const text = data.response || '';
+    const data: unknown = await response.json();
+    const text = isRecord(data) && typeof data.response === 'string' ? data.response : '';
     
     // 提取 JSON
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -246,15 +297,16 @@ async function analyzeIntentWithLLM(query: string, domainContext: any): Promise<
       throw new Error('Failed to extract JSON from LLM response');
     }
     
-    const result = JSON.parse(jsonMatch[0]);
+    const result: unknown = JSON.parse(jsonMatch[0]);
+    if (!isRecord(result)) throw new Error('Failed to extract JSON from LLM response');
     
     return {
-      intent: result.intent || '未识别',
-      intentType: result.intentType || '信息查询',
-      confidence: result.confidence || 0.5,
-      expandedQueries: result.expandedQueries || [query],
-      keywords: result.keywords || [],
-      reasoning: result.reasoning || '无详细分析'
+      intent: typeof result.intent === 'string' && result.intent || '未识别',
+      intentType: typeof result.intentType === 'string' && result.intentType || '信息查询',
+      confidence: typeof result.confidence === 'number' && Number.isFinite(result.confidence) && result.confidence || 0.5,
+      expandedQueries: isStringArray(result.expandedQueries) ? result.expandedQueries : [query],
+      keywords: isStringArray(result.keywords) ? result.keywords : [],
+      reasoning: typeof result.reasoning === 'string' && result.reasoning || '无详细分析'
     };
   } catch (error) {
     console.error('LLM intent analysis failed:', error);
@@ -272,7 +324,7 @@ async function analyzeIntentWithLLM(query: string, domainContext: any): Promise<
 }
 
 // 生成查询改写建议
-async function generateQueryRewrite(query: string, intentAnalysis: any, domainContext: any): Promise<{
+async function generateQueryRewrite(query: string, intentAnalysis: IntentAnalysis, domainContext: DomainAnalysis): Promise<{
   original: string;
   rewritten: string[];
   improvements: Array<{ type: string; description: string }>;
@@ -317,7 +369,7 @@ async function generateQueryRewrite(query: string, intentAnalysis: any, domainCo
 }
 
 // 计算意图置信度
-function calculateIntentConfidence(domainAnalysis: any, intentAnalysis: any): {
+function calculateIntentConfidence(domainAnalysis: DomainAnalysis, intentAnalysis: IntentAnalysis): {
   overall: number;
   factors: Array<{ factor: string; score: number; weight: number }>;
 } {
@@ -366,8 +418,9 @@ function calculateIntentConfidence(domainAnalysis: any, intentAnalysis: any): {
 // POST: 意图蒸馏
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { query, includeRewrite = true } = body;
+    const body: unknown = await request.json();
+    const query = isRecord(body) ? body.query : undefined;
+    const includeRewrite = isRecord(body) && body.includeRewrite !== undefined ? body.includeRewrite : true;
     
     // 验证输入
     if (!query || typeof query !== 'string' || query.trim().length === 0) {
@@ -520,8 +573,8 @@ export async function GET() {
       .filter(([k]) => k !== '_meta')
       .map(([domain, data]) => ({
         domain,
-        name: (data as any).name,
-        icon: (data as any).icon
+        name: data.name,
+        icon: data.icon
       })),
     supportedIntentTypes: [
       '信息查询',

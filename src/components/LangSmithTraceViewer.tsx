@@ -2,11 +2,12 @@
 
 import React, { useState, useMemo } from 'react';
 import LangSmithReactFlowGraph, { type LangSmithFlowStep } from './LangSmithReactFlowGraph';
+import { parseWorkflowStepMetrics, workflowStepMetricEntries, type WorkflowStepMetrics } from '@/lib/rag/workflow-step-metrics';
 
 type LangSmithViewerTab = 'timeline' | 'tree' | 'metrics' | 'debug';
 
 interface WorkflowStep {
-  id: string;
+  id?: string;
   parentId?: string;
   step?: string;
   name?: string;
@@ -15,6 +16,7 @@ interface WorkflowStep {
   startTime?: number;
   endTime?: number;
   duration?: number;
+  metrics?: WorkflowStepMetrics;
   input?: unknown;
   output?: unknown;
   error?: string;
@@ -166,7 +168,8 @@ export default function LangSmithTraceViewer({
       id: step.id ?? `workflow-${index}`,
       parentId: step.parentId,
       label: step.step ?? step.name ?? `Step ${index + 1}`,
-      description: step.errorDetail ?? step.error ?? readStringField(step.output, 'summary') ?? readStringField(step.metadata, 'description'),
+      description: step.errorDetail ?? step.error ?? readStringField(step.output, 'summary') ?? readStringField(step.metadata, 'description')
+        ?? (workflowStepMetricEntries(step.metrics ?? step.metadata).map(([label, value]) => label + '：' + value).join(' · ') || undefined),
       kind: inferFlowKind(step.step ?? step.name ?? step.type),
       status: normalizeFlowStatus(step.status),
       duration: typeof step.duration === 'number' ? step.duration : undefined,
@@ -190,6 +193,8 @@ export default function LangSmithTraceViewer({
         const statusConfig = STATUS_CONFIG[step.status ?? 'pending'] || STATUS_CONFIG.pending;
         const isSelected = selectedStep === index;
         const progress = step.duration && stats.totalTime > 0 ? (step.duration / stats.totalTime) * 100 : 0;
+        const metricEntries = workflowStepMetricEntries(parseWorkflowStepMetrics(step.metrics) ?? step.metadata);
+        const hasInputOutput = step.input != null || step.output != null;
 
         return (
           <div key={index} className="relative">
@@ -199,12 +204,19 @@ export default function LangSmithTraceViewer({
             )}
             
             <div
+              role="button"
+              tabIndex={0}
+              aria-label={`查看步骤 ${stepName}`}
+              aria-expanded={isSelected}
               className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all ${
                 isSelected 
                   ? 'bg-white/10 ring-1 ring-white/30' 
                   : 'hover:bg-white/5'
               }`}
               onClick={() => setSelectedStep(isSelected ? null : index)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedStep(isSelected ? null : index); }
+              }}
             >
               {/* 图标 */}
               <div className={`w-10 h-10 rounded-lg ${config.bgColor} flex items-center justify-center flex-shrink-0`}>
@@ -241,7 +253,22 @@ export default function LangSmithTraceViewer({
 
             {/* 展开详情 */}
             {isSelected && (
-              <div className="ml-13 mt-2 p-4 bg-black/30 rounded-lg border border-white/10 space-y-3">
+              <div role="region" aria-label={`${stepName} 执行详情`} className="ml-13 mt-2 p-4 bg-black/30 rounded-lg border border-white/10 space-y-3">
+                <div>
+                  <div className="text-xs text-white/50 mb-2">执行概览</div>
+                  <dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                    {[
+                      ['状态', statusConfig.label],
+                      ...(typeof step.duration === 'number' && Number.isFinite(step.duration) && step.duration >= 0 ? [['耗时', `${step.duration}ms`]] : []),
+                      ...metricEntries,
+                    ].map(([label, value]) => <div key={label} className="rounded bg-white/5 p-2">
+                      <dt className="text-white/50">{label}</dt><dd className="mt-1 text-white/90">{value}</dd>
+                    </div>)}
+                  </dl>
+                </div>
+                {!hasInputOutput && !step.error && <p className="text-xs text-white/50">
+                  {metricEntries.length ? '此步骤记录了执行摘要，未记录详细输入输出。' : '该记录没有保存详细输入输出。'}
+                </p>}
                 {step.input !== undefined && step.input !== null && (
                   <div>
                     <div className="text-xs text-white/50 mb-1 flex items-center gap-1">

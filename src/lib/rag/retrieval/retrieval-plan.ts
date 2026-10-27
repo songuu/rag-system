@@ -1,5 +1,6 @@
 import type { RagPolicyId, RagQueryRequest } from '../core/types';
 import { classifyRetrievalQuery, type RetrievalRouteDecision } from './retrieval-router';
+import { classifyGraphQueryIntent } from '../../knowledge-graph/query-intent';
 
 export type RagRetrievalLaneType =
   | 'memory'
@@ -64,6 +65,24 @@ export function createDefaultRetrievalPlan(
   now: Date = new Date()
 ): RagRetrievalPlan {
   const lanes = createDefaultLanes(request, policyId);
+  const graphIntent = classifyGraphQueryIntent(request.question);
+  if (request.graphArtifactIdentity && graphIntent !== 'none'
+    && (policyId === 'milvus-2step' || policyId === 'agentic' || policyId === 'mirofish-research')
+    && !lanes.some(lane => lane.type === 'graph-entity')) {
+    // Preserve the selected policy and place graph expansion after dense seeds,
+    // before any reranking or generation that consumes the evidence snapshot.
+    const denseIndex = lanes.findIndex(lane => lane.type === 'dense-vector');
+    lanes.splice(denseIndex + 1, 0, createRetrievalLane({
+      type: 'graph-entity',
+      required: false,
+      description: 'Expand scoped entity and relationship evidence from the published graph.',
+      parameters: {
+        ...request.graphArtifactIdentity,
+        graphIntent,
+        maxHops: graphIntent === 'entity' ? 1 : 2,
+      },
+    }));
+  }
 
   return {
     id: `${policyId}:${request.storageBackend}:${request.topK}:${request.similarityThreshold}`,

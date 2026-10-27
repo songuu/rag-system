@@ -1,0 +1,13 @@
+# Synthetic local test certificates only. No RANDFILE or production material.
+[req]
+prompt = no
+distinguished_name = fixture_name
+x509_extensions = fixture_extensions
+
+[fixture_name]
+CN = localhost
+
+[fixture_extensions]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,digitalSignature,keyCertSign,cRLSign
+extendedKeyUsage = serverAuth

@@ -1,6 +1,6 @@
 /**
  * 文档解析器 - 支持多种文件格式
- * 支持: TXT, PDF, Markdown, Excel, Word
+ * 支持: TXT, PDF, Markdown, Excel, Word, EPUB, MOBI
  */
 
 import * as XLSX from 'xlsx';
@@ -19,6 +19,8 @@ export const SUPPORTED_EXTENSIONS = [
   '.docx',
   '.doc',
   '.json',
+  '.epub',
+  '.mobi',
 ] as const;
 
 export type SupportedExtension = typeof SUPPORTED_EXTENSIONS[number];
@@ -62,7 +64,7 @@ export function getFileExtension(filename: string): string {
  * 获取支持的文件类型描述
  */
 export function getSupportedTypesDescription(): string {
-  return '支持 TXT, Markdown, PDF, Excel, CSV, Word, JSON 文件';
+  return '支持 TXT, Markdown, PDF, Excel, CSV, Word, JSON, EPUB, MOBI 文件';
 }
 
 /**
@@ -322,6 +324,23 @@ export async function parseDocument(buffer: Buffer, filename: string): Promise<P
     
     case '.json':
       return parseJsonFile(buffer, filename);
+
+    case '.epub':
+    case '.mobi': {
+      try {
+        const { parseEbookBuffer } = await import('./ebook-parser');
+        const ebook = await parseEbookBuffer(buffer, ext === '.epub' ? 'epub' : 'mobi');
+        return {
+          success: true,
+          document: {
+            content: ebook.content,
+            metadata: { filename, extension: ext, size: buffer.length, parseMethod: ebook.parseMethod },
+          },
+        };
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : '电子书解析失败' };
+      }
+    }
     
     default:
       return {

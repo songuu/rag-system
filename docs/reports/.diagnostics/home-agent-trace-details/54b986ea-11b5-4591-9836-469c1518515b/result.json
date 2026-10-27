@@ -1,0 +1,67 @@
+{
+  "runId": "54b986ea-11b5-4591-9836-469c1518515b",
+  "startedAt": "2026-10-27T08:41:03.815Z",
+  "mockedResponses": false,
+  "passed": true,
+  "steps": [
+    {
+      "step": "retrieve_original",
+      "duration": 321,
+      "metrics": {
+        "evidenceCount": 3,
+        "laneCount": 2
+      },
+      "visibleDetails": "执行概览\n状态\n完成\n耗时\n321ms\n证据数量\n3 条\n检索通道\n2 个\n\n此步骤记录了执行摘要，未记录详细输入输出。"
+    },
+    {
+      "step": "agent_model_request_tool",
+      "duration": 108758,
+      "metrics": {
+        "modelCallIndex": 1,
+        "toolCallCount": 1,
+        "evidenceCount": 3
+      },
+      "visibleDetails": "执行概览\n状态\n完成\n耗时\n108758ms\n证据数量\n3 条\n模型调用序号\n1\n工具调用\n1 次\n\n此步骤记录了执行摘要，未记录详细输入输出。"
+    },
+    {
+      "step": "read_scoped_rag_context",
+      "duration": 0,
+      "metrics": {
+        "evidenceCount": 3
+      },
+      "visibleDetails": "执行概览\n状态\n完成\n耗时\n0ms\n证据数量\n3 条\n\n此步骤记录了执行摘要，未记录详细输入输出。"
+    },
+    {
+      "step": "agent_model_answer",
+      "duration": 1229,
+      "metrics": {
+        "modelCallIndex": 2,
+        "toolCallCount": 0,
+        "evidenceCount": 3,
+        "answerCharacterCount": 49
+      },
+      "visibleDetails": "执行概览\n状态\n完成\n耗时\n1229ms\n证据数量\n3 条\n模型调用序号\n2\n工具调用\n0 次\n回答长度\n49 字符\n\n此步骤记录了执行摘要，未记录详细输入输出。"
+    }
+  ],
+  "readiness": {
+    "model": "llama3.1",
+    "phase": "ready"
+  },
+  "question": "根据知识库资料，契丹人主要分布在哪些地区？请简要回答并标注引用编号。",
+  "models": {
+    "llm": "llama3.1",
+    "embedding": "qwen3-embedding:latest"
+  },
+  "workflowDuration": 110349,
+  "httpStatus": 200,
+  "traceId": "ask-1793090467431",
+  "answer": "根据知识库资料，契丹人主要分布在辽宁朝阳东北数百里范围内，活动中心位于辽水下游、大凌河流域。[1]",
+  "pageErrors": [],
+  "originalDocumentsUnchanged": true,
+  "completedAt": "2026-10-27T08:42:59.280Z",
+  "validation": {
+    "testsPassed": 211,
+    "typecheck": "passed",
+    "eslint": "passed"
+  }
+}

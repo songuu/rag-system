@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 
 // 类型定义
 interface ReflectionToken {
@@ -14,8 +14,8 @@ interface ReflectionToken {
 interface SelfRAGStep {
   stepId: number;
   stepName: string;
-  input: any;
-  output: any;
+  input: unknown;
+  output: unknown;
   reflection: ReflectionToken | null;
   duration: number;
   status: 'pending' | 'running' | 'completed' | 'failed';

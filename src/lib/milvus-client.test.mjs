@@ -34,6 +34,39 @@ const {
   resolveMilvusSearchOptions,
 } = await import('./milvus-client.ts');
 
+test('managed document deletion targets every chunk and revision in dense and hybrid indexes within scope', async () => {
+  const store = new MilvusVectorStore({ ...createConfig(), collectionName: 'managed_documents' });
+  const calls = [];
+  attachNativeClient(store, {
+    hasCollection: async () => ({ value: true, status: { error_code: 'Success' } }),
+    describeCollection: async () => ({ status: { error_code: 'Success' }, schema: { fields: ['tenant_id', 'corpus_id', 'document_id', 'trust_level'].map(name => ({ name })) } }),
+    delete: async request => { calls.push(request); return { status: { error_code: 'Success' } }; },
+    flushSync: async () => ({ status: { error_code: 'Success' } }),
+  });
+  const scope = { tenantId: 'tenant-a', corpusId: 'corpus-a', allowedTrustLevels: ['external'], enforceIsolation: true };
+  const documentId = 'document" || true || "';
+  await store.deleteManagedDocument(documentId, scope);
+  assert.deepEqual(calls.map(call => call.collection_name), ['managed_documents', process.env.MILVUS_HYBRID_COLLECTION_NAME || 'managed_documents_hybrid_v1']);
+  for (const call of calls) {
+    assert.match(call.filter, /tenant_id == \{tenantId\}.*corpus_id == \{corpusId\}.*trust_level in \{allowedTrustLevels\}.*document_id == \{managedDocumentId\}/);
+    assert.deepEqual(call.exprValues, { tenantId: 'tenant-a', corpusId: 'corpus-a', allowedTrustLevels: ['external'], managedDocumentId: documentId });
+    assert.equal(call.filter.includes(documentId), false);
+    assert.equal(call.filter.includes('document_version'), false);
+  }
+});
+
+test('managed deletion rejects unscoped access and surfaces partial index failures for retry', async () => {
+  const store = new MilvusVectorStore({ ...createConfig(), collectionName: 'managed_documents' });
+  attachNativeClient(store, {
+    hasCollection: async () => ({ value: true, status: { error_code: 'Success' } }),
+    describeCollection: async () => ({ status: { error_code: 'Success' }, schema: { fields: ['tenant_id', 'corpus_id', 'document_id', 'trust_level'].map(name => ({ name })) } }),
+    delete: async () => ({ status: { error_code: 'UnexpectedError' } }),
+  });
+  const scope = { tenantId: 'tenant-a', corpusId: 'corpus-a', allowedTrustLevels: ['external'], enforceIsolation: true };
+  await assert.rejects(store.deleteManagedDocument('doc-1', { ...scope, enforceIsolation: false }), /enforced tenant isolation/);
+  await assert.rejects(store.deleteManagedDocument('doc-1', scope), /vector deletion failed/);
+});
+
 test('buildMilvusSearchParams keeps index defaults and allows overrides', () => {
   assert.deepEqual(buildMilvusSearchParams('IVF_FLAT'), { nprobe: 16 });
   assert.deepEqual(buildMilvusSearchParams('HNSW', { ef: 96, radius: 0.3 }), { ef: 96, radius: 0.3 });
@@ -681,6 +714,23 @@ test('native hybrid search shares server scope and retains only BM25 members', a
   assert.equal(hits[0].metadata.endOffset, 42);
 });
 
+test('native hybrid search accepts SDK Int64 strings and rejects unsafe integers', async () => {
+  const store = createHybridTestStore();
+  const hit = Object.assign(createNativeHybridHit(), { chunk_index: '0', total_chunks: '1', start_offset: '10', end_offset: '42' });
+  attachNativeClient(store, {
+    async hybridSearch() { return { status: { error_code: 'Success' }, results: [[hit]] }; },
+    async search() { return { status: { error_code: 'Success' }, results: [[{ id: hit.id }]] }; },
+  });
+  const manifest = createHybridManifest({ embeddingDimension: 2 });
+  const [result] = await store.searchHybridCollection(createHybridSearchRequest(), manifest);
+  assert.equal(result.metadata.chunkIndex, 0);
+  assert.equal(result.metadata.totalChunks, 1);
+  assert.equal(result.metadata.startOffset, 10);
+  assert.equal(result.metadata.endOffset, 42);
+  hit.chunk_index = '9007199254740992';
+  await assert.rejects(store.searchHybridCollection(createHybridSearchRequest(), manifest), /Milvus hybrid/);
+});
+
 test('native hybrid search stops at the failed or aborted RPC stage', async () => {
   const manifest = createHybridManifest({ embeddingDimension: 2 });
 
@@ -902,6 +952,36 @@ function attachNativeClient(store, client) {
   store.client = client;
   store.isConnected = true;
 }
+
+test('重建迭代器使用服务端范围字面量并核对源数量，兼容 SDK 的内部 count', async () => {
+  const { createRetrievalScope } = await import('./security/retrieval-scope.ts');
+  const scope = createRetrievalScope({ tenantId: 'tenant-1', corpusId: 'corpus-1', enforceIsolation: true });
+  const row = { id: 'chunk-1', content: 'original text', source: 'original.txt', metadata_json: '{"chunk_index":0}',
+    tenant_id: 'tenant-1', corpus_id: 'corpus-1', document_id: 'doc-1', trust_level: 'external' };
+  let expected = 1;
+  const store = new MilvusVectorStore(createConfig());
+  store.isInitialized = true; store.supportsTenantIsolation = true;
+  attachNativeClient(store, {
+    async query(request) {
+      assert.equal(request.consistency_level, ConsistencyLevelEnum.Strong);
+      return { status: { error_code: 'Success' }, data: [{ 'count(*)': expected }] };
+    },
+    async queryIterator(request) {
+      assert.equal(request.exprValues, undefined);
+      assert.match(request.expr, /tenant_id == "tenant-1" and corpus_id == "corpus-1"/);
+      assert.equal(request.output_fields.includes('embedding'), false);
+      return { async *[Symbol.asyncIterator]() { yield [row]; } };
+    },
+  });
+  const rows = [];
+  for await (const batch of store.readReindexChunks(scope)) rows.push(...batch);
+  assert.equal(rows[0].metadata.chunk_index, 0);
+  assert.equal(rows[0].content, 'original text');
+  expected = 2;
+  await assert.rejects(async () => { for await (const _batch of store.readReindexChunks(scope)) {} }, /快照不完整/);
+  expected = 1; row.tenant_id = 'other-tenant';
+  await assert.rejects(async () => { for await (const _batch of store.readReindexChunks(scope)) {} }, /范围外文档/);
+});
 
 function createConfig() {
   return {

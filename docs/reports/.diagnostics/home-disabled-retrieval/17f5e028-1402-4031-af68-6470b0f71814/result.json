@@ -1,0 +1,105 @@
+{
+  "runId": "17f5e028-1402-4031-af68-6470b0f71814",
+  "startedAt": "2026-10-27T03:49:01.414Z",
+  "origin": "http://localhost:3000",
+  "mockedResponses": false,
+  "tests": [
+    {
+      "entry": "home-realtime",
+      "case": "khitan",
+      "query": "耶律阿保机 契丹 建国",
+      "request": {
+        "action": "search",
+        "query": "耶律阿保机 契丹 建国",
+        "topK": 10,
+        "threshold": 0,
+        "embeddingModel": "qwen3-embedding:latest"
+      },
+      "httpStatus": 200,
+      "resultCount": 10,
+      "sourceDocumentIds": [
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 30,
+      "disabledMatches": [],
+      "documentPolicyStable": true
+    }
+  ],
+  "passed": false,
+  "documentState": [
+    {
+      "documentId": "codex-local-graph-black-death-e2e-20260908.txt",
+      "name": "codex-local-graph-black-death-e2e-20260908.txt",
+      "enabled": true,
+      "chunks": 1
+    },
+    {
+      "documentId": "codex-local-graph-integrity-e2e-20260908.txt",
+      "name": "codex-local-graph-integrity-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 2
+    },
+    {
+      "documentId": "sample7.txt",
+      "name": "sample7.txt",
+      "enabled": false,
+      "chunks": 26
+    },
+    {
+      "documentId": "sample6.txt",
+      "name": "sample6.txt",
+      "enabled": false,
+      "chunks": 12
+    },
+    {
+      "documentId": "codex-local-graph-e2e-20260908.txt",
+      "name": "codex-local-graph-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 1
+    },
+    {
+      "documentId": "重构契丹早期史.epub",
+      "name": "重构契丹早期史.epub",
+      "enabled": true,
+      "chunks": 645
+    },
+    {
+      "documentId": "重构契丹早期史.mobi",
+      "name": "重构契丹早期史.mobi",
+      "enabled": false,
+      "chunks": 718
+    }
+  ],
+  "summary": {
+    "documentCount": 7,
+    "enabledDocumentCount": 2,
+    "disabledDocumentCount": 5,
+    "chunkCount": 1405,
+    "searchableChunkCount": 646,
+    "disabledChunkCount": 759,
+    "byteSize": 9783623,
+    "syncedCount": 7,
+    "elasticsearchMode": "active"
+  },
+  "homeLoadStatuses": [
+    200
+  ],
+  "failedRequest": {
+    "action": "search",
+    "query": "黑死病 西欧 东欧 社会变化",
+    "topK": 10,
+    "threshold": 0,
+    "embeddingModel": "qwen3-embedding:latest"
+  },
+  "serverError": {
+    "name": "SyntaxError",
+    "source": "server",
+    "message": "Unexpected end of JSON input",
+    "stack": "SyntaxError: Unexpected end of JSON input\n    at JSON.parse (<anonymous>)\n    at loadManifest (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\load-manifest.external.js:54:25)\n    at loadManifestFromRelativePath (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\load-manifest.external.js:111:12)\n    at AppRouteRouteModule.loadManifests (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\compiled\\next-server\\app-route.runtime.dev.js:1:193273)\n    at AppRouteRouteModule.prepare (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\compiled\\next-server\\app-route.runtime.dev.js:1:203547)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async Module.handler (webpack-internal:///(rsc)/./node_modules/.pnpm/next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67/node_modules/next/dist/build/webpack/loaders/next-app-loader/index.js?name=app%2Fapi%2Fmilvus%2Froute&page=%2Fapi%2Fmilvus%2Froute&appPaths=&allNormalizedAppPaths=&pagePath=private-next-app-dir%2Fapi%2Fmilvus%2Froute.ts&appDir=E%3A%5Cproject%5Cai%5Crag%5Cproject%5Crag-nextjs%5Csrc%5Capp&pageExtensions=tsx&pageExtensions=ts&pageExtensions=jsx&pageExtensions=js&rootDir=E%3A%5Cproject%5Cai%5Crag%5Cproject%5Crag-nextjs&isDev=true&tsconfigPath=&basePath=&assetPrefix=&nextConfigOutput=standalone&preferredRegion=&middlewareConfig=e30%3D&isGlobalNotFoundEnabled=!:112:27)\n    at async DevServer.renderToResponseWithComponentsImpl (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\base-server.js:1462:9)\n    at async DevServer.renderPageComponent (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\base-server.js:1514:24)\n    at async DevServer.renderToResponseImpl (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\base-server.js:1564:32)\n    at async DevServer.pipeImpl (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\base-server.js:1044:25)\n    at async NextNodeServer.handleCatchallRenderRequest (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\next-server.js:338:17)\n    at async DevServer.handleRequestImpl (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\base-server.js:935:17)\n    at async E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\dev\\next-dev-server.js:394:20\n    at async Span.traceAsyncFn (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\trace\\trace.js:164:20)\n    at async DevServer.handleRequest (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\dev\\next-dev-server.js:390:24)\n    at async invokeRender (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\lib\\router-server.js:266:21)\n    at async handleRequest (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\lib\\router-server.js:465:24)\n    at async requestHandlerImpl (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\lib\\router-server.js:514:13)\n    at async Server.requestListener (E:\\project\\ai\\rag\\project\\rag-nextjs\\node_modules\\.pnpm\\next@16.2.6_@babel+core@7.2_e5b269a8721eb42884e96878e0e4ec67\\node_modules\\next\\dist\\server\\lib\\start-server.js:225:13)"
+  },
+  "error": {
+    "phase": "realtime-black-death",
+    "name": "Error",
+    "message": "Non-JSON response: HTTP 500 <!DOCTYPE html><html><head><meta charSet=\"utf-8\" data-next-head=\"\"/><meta name=\"viewport\" content=\"width=device-width\" d"
+  }
+}

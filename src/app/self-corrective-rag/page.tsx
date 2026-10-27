@@ -43,7 +43,7 @@ interface SCRAGResponse {
         confidence: number;
         reasoning: string;
       };
-      metadata?: Record<string, any>;
+      metadata?: Record<string, unknown>;
     }>;
   };
   graderResult: {
@@ -69,8 +69,8 @@ interface SCRAGResponse {
       node: 'retrieve' | 'grade' | 'rewrite' | 'generate';
       status: 'pending' | 'running' | 'completed' | 'skipped' | 'error';
       duration?: number;
-      input?: any;
-      output?: any;
+      input?: unknown;
+      output?: unknown;
       error?: string;
     }>;
     decisionPath: string[];
@@ -309,13 +309,13 @@ export default function SelfCorrectiveRAGPage() {
       };
       setMessages(prev => [...prev, assistantMessage]);
       
-    } catch (error: any) {
+    } catch (error) {
       console.error('SC-RAG 请求失败:', error);
       
       const errorMessage: Message = {
         id: `error-${Date.now()}`,
         role: 'assistant',
-        content: `请求失败: ${error.message}`,
+        content: `请求失败: ${error instanceof Error ? error.message : '未知错误'}`,
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, errorMessage]);

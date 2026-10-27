@@ -7,7 +7,7 @@
  * - BaseMessage (HumanMessage, AIMessage, SystemMessage) - 消息类型
  * - ChatPromptTemplate, MessagesPlaceholder - 提示模板
  * - StringOutputParser - 输出解析
- * - RunnableSequence, RunnableLambda, RunnablePassthrough, RunnableBranch - 链式调用
+ * - RunnableSequence, RunnableLambda, RunnableBranch - 链式调用
  * - trimMessages - 消息截断
  * - Document - 文档类型
  * 
@@ -25,17 +25,13 @@ import {
 import { 
   ChatPromptTemplate, 
   MessagesPlaceholder,
-  PromptTemplate,
 } from '@langchain/core/prompts';
 import { StringOutputParser } from '@langchain/core/output_parsers';
 import { 
   RunnableSequence, 
   RunnableLambda, 
-  RunnablePassthrough,
   RunnableBranch,
-  RunnableConfig,
 } from '@langchain/core/runnables';
-import { Document } from '@langchain/core/documents';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { Embeddings } from '@langchain/core/embeddings';
 import { getMilvusInstance } from './milvus-client';
@@ -45,7 +41,6 @@ import {
   getModelDimension,
   selectModelByDimension,
   getModelFactory,
-  isOllamaProvider,
 } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
 import * as fs from 'fs';
@@ -67,7 +62,7 @@ export interface RetrievedDocument {
   id: string;
   content: string;
   score: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 export interface WorkflowStep {
@@ -76,7 +71,7 @@ export interface WorkflowStep {
   startTime?: number;
   endTime?: number;
   duration?: number;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 export interface SessionMetadata {
@@ -108,12 +103,13 @@ export interface ContextState {
 }
 
 // SSE 流式输出事件类型
-export type StreamEventType = 'workflow' | 'token' | 'done' | 'error';
+export type StreamEventType = StreamEvent['type'];
 
-export interface StreamEvent {
-  type: StreamEventType;
-  data: any;
-}
+export type StreamEvent =
+  | { type: 'workflow'; data: { step: WorkflowStep; allSteps: WorkflowStep[] } }
+  | { type: 'token'; data: { content: string; fullResponse: string } }
+  | { type: 'done'; data: StreamQueryResult }
+  | { type: 'error'; data: { error: string; code?: ContextSessionErrorCode } };
 
 export interface StreamQueryResult {
   response: string;
@@ -215,7 +211,7 @@ function createStep(name: string): WorkflowStep {
   return { step: name, status: 'running', startTime: Date.now() };
 }
 
-function completeStep(step: WorkflowStep, details?: Record<string, any>): WorkflowStep {
+function completeStep(step: WorkflowStep, details?: Record<string, unknown>): WorkflowStep {
   return {
     ...step,
     status: 'completed',
@@ -264,68 +260,194 @@ function fromBaseMessage(msg: BaseMessage, timestamp: number): ConversationMessa
   };
 }
 
-/**
- * 将 Document 转换为 RetrievedDocument
- */
-function fromDocument(doc: Document, score: number): RetrievedDocument {
-  return {
-    id: (doc.metadata?.id as string) || generateId(),
-    content: doc.pageContent,
-    score,
-    metadata: doc.metadata,
-  };
-}
-
 // ==================== 文件持久化 ====================
 
 const DATA_DIR = 'data/context-sessions';
 
-function ensureDataDir(): void {
-  const fullPath = path.join(process.cwd(), DATA_DIR);
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, { recursive: true });
+type ContextSessionErrorCode = 'CONTEXT_SESSION_ID_INVALID' | 'CONTEXT_SESSION_STORAGE_UNSAFE';
+
+export class ContextSessionError extends Error {
+  readonly status: 400 | 503;
+
+  constructor(readonly code: ContextSessionErrorCode) {
+    super(code === 'CONTEXT_SESSION_ID_INVALID'
+      ? 'Invalid context session ID.'
+      : 'Context session storage failed its safety checks.');
+    this.name = 'ContextSessionError';
+    this.status = code === 'CONTEXT_SESSION_ID_INVALID' ? 400 : 503;
   }
 }
 
+export function assertContextSessionId(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,160}$/.test(value)
+    || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(value)) {
+    throw new ContextSessionError('CONTEXT_SESSION_ID_INVALID');
+  }
+}
+
+function isMissingPath(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+function unsafeSessionStorage(): never {
+  // Do not expose the caller's ID, absolute path or native error in API responses.
+  throw new ContextSessionError('CONTEXT_SESSION_STORAGE_UNSAFE');
+}
+
+function sessionPathStat(filename: string): fs.BigIntStats | undefined {
+  try {
+    return fs.lstatSync(filename, { bigint: true });
+  } catch (error) {
+    if (isMissingPath(error)) return undefined;
+    return unsafeSessionStorage();
+  }
+}
+
+function checkSessionDirectory(candidate: string): void {
+  const stat = sessionPathStat(candidate);
+  if (!stat) return;
+  if (stat.isSymbolicLink() || !stat.isDirectory()
+    || path.relative(candidate, fs.realpathSync(candidate)) !== '') unsafeSessionStorage();
+}
+
+function sessionDirectory(): string {
+  try {
+    // Keep path construction scoped to the runtime store, not the project root.
+    // cwd is trusted configuration; canonical store checks below reject aliases.
+    const root = process.cwd();
+    // Private session state is runtime data, never a static release asset.
+    const directory = path.resolve(/*turbopackIgnore: true*/ root, DATA_DIR);
+    // Explicit calls retain data-scoped inputs in Turbopack's file analysis;
+    // a loop variable here makes it collect the entire project as assets.
+    checkSessionDirectory(path.join(/*turbopackIgnore: true*/ root, 'data'));
+    checkSessionDirectory(directory);
+    return directory;
+  } catch {
+    return unsafeSessionStorage();
+  }
+}
+
+function ensureDataDir(): string {
+  const directory = sessionDirectory();
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  } catch {
+    return unsafeSessionStorage();
+  }
+  if (sessionDirectory() !== directory) unsafeSessionStorage();
+  return directory;
+}
+
 function getFilePath(sessionId: string): string {
-  return path.join(process.cwd(), DATA_DIR, `${sessionId}.json`);
+  // Validate before even querying filesystem metadata for untrusted IDs.
+  assertContextSessionId(sessionId);
+  const directory = sessionDirectory();
+  const filename = path.resolve(directory, `${sessionId}.json`);
+  if (path.relative(directory, filename) !== `${sessionId}.json`) unsafeSessionStorage();
+  return filename;
+}
+
+function checkedSessionFileStat(filename: string): fs.BigIntStats | undefined {
+  const stat = sessionPathStat(filename);
+  if (stat && (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== BigInt(1) || stat.ino <= BigInt(0))) {
+    unsafeSessionStorage();
+  }
+  return stat;
+}
+
+function sameSessionFile(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function closeSessionFile(fd: number): void {
+  try { fs.closeSync(fd); } catch { unsafeSessionStorage(); }
+}
+
+function openSessionFile(filename: string, flags: number, expected?: fs.BigIntStats): number {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filename, flags | (fs.constants.O_NOFOLLOW ?? 0), 0o600);
+    const descriptor = fs.fstatSync(fd, { bigint: true });
+    if (!descriptor.isFile() || descriptor.nlink !== BigInt(1) || descriptor.ino <= BigInt(0)
+      || (expected && !sameSessionFile(expected, descriptor))) unsafeSessionStorage();
+    if (sessionDirectory() !== path.dirname(filename)) unsafeSessionStorage();
+    const named = checkedSessionFileStat(filename);
+    if (!named || !sameSessionFile(named, descriptor)) unsafeSessionStorage();
+    return fd;
+  } catch {
+    if (fd !== undefined) closeSessionFile(fd);
+    return unsafeSessionStorage();
+  }
 }
 
 function saveSession(data: SessionData): void {
+  assertContextSessionId(data.metadata.sessionId);
+  const content = JSON.stringify(data, null, 2);
   ensureDataDir();
-  fs.writeFileSync(getFilePath(data.metadata.sessionId), JSON.stringify(data, null, 2), 'utf-8');
+  const filename = getFilePath(data.metadata.sessionId);
+  const expected = checkedSessionFileStat(filename);
+  // Existing files must be identified before truncation; new names are exclusive.
+  const flags = fs.constants.O_WRONLY | (expected ? 0 : fs.constants.O_CREAT | fs.constants.O_EXCL);
+  const fd = openSessionFile(filename, flags, expected);
+  try {
+    fs.ftruncateSync(fd, 0);
+    fs.writeFileSync(fd, content, 'utf-8');
+  } catch {
+    unsafeSessionStorage();
+  } finally {
+    closeSessionFile(fd);
+  }
 }
 
 function loadSession(sessionId: string): SessionData | null {
   const filePath = getFilePath(sessionId);
-  if (!fs.existsSync(filePath)) return null;
+  const expected = checkedSessionFileStat(filePath);
+  if (!expected) return null;
+  const fd = openSessionFile(filePath, fs.constants.O_RDONLY, expected);
+  let content: string;
+  try {
+    // This is a verified file descriptor, not a build-time filename pattern.
+    content = fs.readFileSync(/*turbopackIgnore: true*/ fd, 'utf-8');
+  } catch {
+    return unsafeSessionStorage();
+  } finally {
+    closeSessionFile(fd);
+  }
   
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const raw = JSON.parse(content);
     if (raw.metadata?.sessionId) {
+      if (raw.metadata.sessionId !== sessionId) unsafeSessionStorage();
       return { metadata: raw.metadata, messages: raw.messages || [], summary: raw.summary };
     } else if (raw.sessionId) {
+      if (raw.sessionId !== sessionId) unsafeSessionStorage();
       return { metadata: raw as SessionMetadata, messages: [] };
     }
     return null;
-  } catch {
+  } catch (error) {
+    if (error instanceof ContextSessionError) throw error;
     return null;
   }
 }
 
 function listAllSessions(): SessionMetadata[] {
-  ensureDataDir();
-  const fullPath = path.join(process.cwd(), DATA_DIR);
+  const fullPath = ensureDataDir();
   const sessions: SessionMetadata[] = [];
+  let files: string[];
+  try { files = fs.readdirSync(fullPath); } catch { return unsafeSessionStorage(); }
   
-  for (const file of fs.readdirSync(fullPath)) {
+  for (const file of files) {
     if (!file.endsWith('.json')) continue;
+    const sessionId = file.slice(0, -5);
+    try { assertContextSessionId(sessionId); } catch { continue; }
     try {
-      const data = loadSession(file.replace('.json', ''));
+      const data = loadSession(sessionId);
       if (data?.metadata) {
         sessions.push({ ...data.metadata, messageCount: data.messages.length });
       }
-    } catch { /* skip */ }
+    } catch (error) {
+      if (error instanceof ContextSessionError) throw error;
+    }
   }
   
   return sessions.sort((a, b) => (b.lastActiveAt || 0) - (a.lastActiveAt || 0));
@@ -333,11 +455,19 @@ function listAllSessions(): SessionMetadata[] {
 
 function deleteSessionFile(sessionId: string): boolean {
   const filePath = getFilePath(sessionId);
-  if (fs.existsSync(filePath)) {
+  const expected = checkedSessionFileStat(filePath);
+  if (!expected) return false;
+  const fd = openSessionFile(filePath, fs.constants.O_RDONLY, expected);
+  try {
+    // The directory must remain writable only by the server's OS identity.
+    // Portable Node unlink is name-based, not atomic against a hostile parent rename.
     fs.unlinkSync(filePath);
     return true;
+  } catch {
+    return unsafeSessionStorage();
+  } finally {
+    closeSessionFile(fd);
   }
-  return false;
 }
 
 // ==================== 窗口管理器 (使用 LangChain trimMessages) ====================
@@ -642,7 +772,7 @@ async function retrieveDocuments(
   threshold: number
 ): Promise<RetrievedDocument[]> {
   try {
-    let dimension = getModelDimension(embeddingModel);
+    const dimension = getModelDimension(embeddingModel);
     let actualEmbeddings = embeddings;
     
     const milvus = getMilvusInstance({
@@ -823,7 +953,7 @@ export class ContextManager {
     const threshold = options.similarityThreshold || this.config.similarityThreshold;
     
     // 1. 加载/创建会话
-    let loadStep = createStep('状态加载');
+    const loadStep = createStep('状态加载');
     let sessionData = loadSession(sessionId);
     if (!sessionData) {
       sessionData = {
@@ -837,7 +967,7 @@ export class ContextManager {
     workflowSteps.push(completeStep(loadStep, { isNew: !sessionData.messages.length }));
     
     // 2. 窗口截断 (使用 LangChain trimMessages)
-    let trimStep = createStep('窗口截断');
+    const trimStep = createStep('窗口截断');
     const { messages: trimmedMessages, trimmedCount } = await trimConversationMessages(
       sessionData.messages,
       this.config.windowConfig
@@ -846,7 +976,7 @@ export class ContextManager {
     workflowSteps.push(completeStep(trimStep, { trimmedCount, remainingCount: trimmedMessages.length }));
     
     // 3. 查询改写 (使用 LangChain RunnableSequence)
-    let rewriteStep = createStep('查询改写');
+    const rewriteStep = createStep('查询改写');
     let rewriteResult: RewriteResult = { rewrittenQuery: userQuery, needsRewrite: false, reason: '未启用' };
     
     if (this.config.enableQueryRewriting && sessionData.messages.length > 0) {
@@ -865,7 +995,7 @@ export class ContextManager {
     
     if (!greeting) {
       // 5. 向量检索 (使用 LangChain Embeddings)
-      let retrieveStep = createStep('向量检索');
+      const retrieveStep = createStep('向量检索');
       retrievedDocs = await retrieveDocuments(
         rewriteResult.rewrittenQuery,
         this.embeddings,
@@ -881,7 +1011,7 @@ export class ContextManager {
       }));
       
       // 6. 相关性过滤
-      let filterStep = createStep('相关性验证');
+      const filterStep = createStep('相关性验证');
       const originalCount = retrievedDocs.length;
       retrievedDocs = filterRelevantDocuments(retrievedDocs, rewriteResult.rewrittenQuery);
       workflowSteps.push(completeStep(filterStep, {
@@ -894,7 +1024,7 @@ export class ContextManager {
     }
     
     // 7. 生成响应 (使用 LangChain RunnableBranch)
-    let generateStep = createStep('响应生成');
+    const generateStep = createStep('响应生成');
     const context = retrievedDocs.length > 0
       ? retrievedDocs.map((d, i) => `[${i + 1}] ${d.content}`).join('\n\n')
       : '无相关参考资料';
@@ -918,7 +1048,7 @@ export class ContextManager {
     }));
     
     // 8. 保存消息
-    let saveStep = createStep('状态保存');
+    const saveStep = createStep('状态保存');
     const now = Date.now();
     const userMsg: ConversationMessage = {
       id: `${now}-user`, role: 'user', content: userQuery,
@@ -969,7 +1099,7 @@ export class ContextManager {
     const threshold = options.similarityThreshold || this.config.similarityThreshold;
     
     // 1. 加载/创建会话
-    let loadStep = createStep('状态加载');
+    const loadStep = createStep('状态加载');
     let sessionData = loadSession(sessionId);
     if (!sessionData) {
       sessionData = {
@@ -985,7 +1115,7 @@ export class ContextManager {
     yield { type: 'workflow', data: { step: completedLoadStep, allSteps: [...workflowSteps] } };
     
     // 2. 窗口截断
-    let trimStep = createStep('窗口截断');
+    const trimStep = createStep('窗口截断');
     const { messages: trimmedMessages, trimmedCount } = await trimConversationMessages(
       sessionData.messages,
       this.config.windowConfig
@@ -996,7 +1126,7 @@ export class ContextManager {
     yield { type: 'workflow', data: { step: completedTrimStep, allSteps: [...workflowSteps] } };
     
     // 3. 查询改写
-    let rewriteStep = createStep('查询改写');
+    const rewriteStep = createStep('查询改写');
     let rewriteResult: RewriteResult = { rewrittenQuery: userQuery, needsRewrite: false, reason: '未启用' };
     
     if (this.config.enableQueryRewriting && sessionData.messages.length > 0) {
@@ -1017,7 +1147,7 @@ export class ContextManager {
     
     if (!greeting) {
       // 5. 向量检索
-      let retrieveStep = createStep('向量检索');
+      const retrieveStep = createStep('向量检索');
       retrievedDocs = await retrieveDocuments(
         rewriteResult.rewrittenQuery,
         this.embeddings,
@@ -1035,7 +1165,7 @@ export class ContextManager {
       yield { type: 'workflow', data: { step: completedRetrieveStep, allSteps: [...workflowSteps] } };
       
       // 6. 相关性过滤
-      let filterStep = createStep('相关性验证');
+      const filterStep = createStep('相关性验证');
       const originalCount = retrievedDocs.length;
       retrievedDocs = filterRelevantDocuments(retrievedDocs, rewriteResult.rewrittenQuery);
       const completedFilterStep = completeStep(filterStep, {
@@ -1055,7 +1185,7 @@ export class ContextManager {
     }
     
     // 7. 流式生成响应
-    let generateStep = createStep('响应生成');
+    const generateStep = createStep('响应生成');
     yield { type: 'workflow', data: { step: generateStep, allSteps: [...workflowSteps, generateStep] } };
     
     const context = retrievedDocs.length > 0
@@ -1111,7 +1241,7 @@ ${context}`;
     yield { type: 'workflow', data: { step: completedGenerateStep, allSteps: [...workflowSteps] } };
     
     // 8. 保存消息
-    let saveStep = createStep('状态保存');
+    const saveStep = createStep('状态保存');
     const now = Date.now();
     const userMsg: ConversationMessage = {
       id: `${now}-user`, role: 'user', content: userQuery,
@@ -1186,6 +1316,7 @@ ${context}`;
       saveSession(data);
       return { success: true, summary: data.summary, compressedCount: oldMsgs.length };
     } catch (error) {
+      if (error instanceof ContextSessionError) throw error;
       console.error('[compressBySummary] Error:', error);
       return { success: false };
     }

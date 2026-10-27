@@ -1,0 +1,92 @@
+{
+  "runId": "de2d734c-a1c1-4811-9966-9ebdb9ef95f2",
+  "startedAt": "2026-10-27T03:09:47.061Z",
+  "origin": "http://localhost:3000",
+  "mockedResponses": false,
+  "tests": [
+    {
+      "entry": "home-realtime",
+      "case": "khitan",
+      "query": "耶律阿保机 契丹 建国",
+      "request": {
+        "action": "search",
+        "query": "耶律阿保机 契丹 建国",
+        "topK": 10,
+        "threshold": 0,
+        "embeddingModel": "qwen3-embedding:latest"
+      },
+      "httpStatus": 200,
+      "resultCount": 10,
+      "sourceDocumentIds": [
+        "重构契丹早期史.epub"
+      ],
+      "scannedSourceReferences": 30,
+      "disabledMatches": [],
+      "documentPolicyStable": true
+    }
+  ],
+  "passed": false,
+  "documentState": [
+    {
+      "documentId": "codex-local-graph-black-death-e2e-20260908.txt",
+      "name": "codex-local-graph-black-death-e2e-20260908.txt",
+      "enabled": true,
+      "chunks": 1
+    },
+    {
+      "documentId": "codex-local-graph-integrity-e2e-20260908.txt",
+      "name": "codex-local-graph-integrity-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 2
+    },
+    {
+      "documentId": "sample7.txt",
+      "name": "sample7.txt",
+      "enabled": false,
+      "chunks": 26
+    },
+    {
+      "documentId": "sample6.txt",
+      "name": "sample6.txt",
+      "enabled": false,
+      "chunks": 12
+    },
+    {
+      "documentId": "codex-local-graph-e2e-20260908.txt",
+      "name": "codex-local-graph-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 1
+    },
+    {
+      "documentId": "重构契丹早期史.epub",
+      "name": "重构契丹早期史.epub",
+      "enabled": true,
+      "chunks": 645
+    },
+    {
+      "documentId": "重构契丹早期史.mobi",
+      "name": "重构契丹早期史.mobi",
+      "enabled": false,
+      "chunks": 718
+    }
+  ],
+  "summary": {
+    "documentCount": 7,
+    "enabledDocumentCount": 2,
+    "disabledDocumentCount": 5,
+    "chunkCount": 1405,
+    "searchableChunkCount": 646,
+    "disabledChunkCount": 759,
+    "byteSize": 9783623,
+    "syncedCount": 7,
+    "elasticsearchMode": "active"
+  },
+  "homeLoadStatuses": [
+    200
+  ],
+  "error": {
+    "phase": "realtime-black-death",
+    "name": "SyntaxError",
+    "message": "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON"
+  }
+}

@@ -23,6 +23,7 @@ import {
   isZillizCloud,
   getMilvusProvider,
 } from './milvus-config';
+import { withDocumentVisibility } from './documents/document-visibility';
 import {
   buildScopedMilvusFilter,
   getDocumentSecurityFields,
@@ -1465,6 +1466,33 @@ export class MilvusVectorStore {
     await this.deleteScopedCollectionDocuments(this.config.collectionName, ids, scope);
   }
 
+  /** Delete all revisions/chunks by business document identity, never by row ID. */
+  async deleteManagedDocument(documentId: string, scope: RagRetrievalScope): Promise<void> {
+    if (!scope.enforceIsolation) throw new Error('Document deletion requires enforced tenant isolation.');
+    const identity = requiredMilvusDocumentQueryValue(documentId, 'documentId');
+    const scoped = buildScopedMilvusFilter(scope);
+    const client = await this.ensureConnected();
+    const collections = [...new Set([this.config.collectionName,
+      process.env.MILVUS_HYBRID_COLLECTION_NAME?.trim() || this.config.collectionName + '_hybrid_v1'])];
+    for (const collection of collections) {
+      const collectionName = safeMilvusIdentifier(collection, 'collectionName');
+      const exists = await client.hasCollection({ collection_name: collectionName });
+      if (exists.status?.error_code !== 'Success') throw new Error('Cannot check document index before deletion.');
+      if (!exists.value) continue;
+      const description = await client.describeCollection({ collection_name: collectionName });
+      if (description.status?.error_code !== 'Success' || !['tenant_id', 'corpus_id', 'document_id', 'trust_level']
+        .every(name => description.schema?.fields?.some(field => field.name === name))) {
+        throw new Error('Document index does not support isolated deletion: ' + collectionName);
+      }
+      const result = await client.delete({ collection_name: collectionName,
+        filter: scoped.filter + ' && document_id == {managedDocumentId}',
+        exprValues: { ...scoped.exprValues, managedDocumentId: identity } });
+      if (result.status.error_code !== 'Success') throw new Error('Document vector deletion failed: ' + collectionName);
+      const flushed = await client.flushSync({ collection_names: [collectionName] });
+      if (flushed.status?.error_code !== 'Success') throw new Error('Document vector deletion flush failed: ' + collectionName);
+    }
+  }
+
   /**
    * Best-effort counterpart for a hybrid write whose RPC may have committed before
    * reporting failure (for example, a later flush failure). A missing collection is
@@ -1536,7 +1564,7 @@ export class MilvusVectorStore {
     assertHybridManifestMatchesStore(manifest, this.config);
     assertRequestedHybridCollection(request.collectionName, manifest.collectionName);
     assertMilvusHybridNotAborted(request.signal);
-    const scoped = buildScopedMilvusFilter(request.scope);
+    const scoped = await withDocumentVisibility(buildScopedMilvusFilter(request.scope), request.scope);
     const client = await this.ensureConnected();
     const rerank = request.fusion === 'weighted'
       ? { strategy: RANKER_TYPE.WEIGHTED, params: { weights: [0.5, 0.5] } }
@@ -1616,6 +1644,51 @@ export class MilvusVectorStore {
   }
 
 
+  /** Stream all source chunks without copying old vectors into the new index. */
+  async countScopedDocuments(scope: RagRetrievalScope): Promise<number> {
+    if (!scope.enforceIsolation) throw new Error('计数必须使用服务端限定的知识库范围。');
+    if (!this.isInitialized) await this.initializeCollection();
+    if (!this.supportsTenantIsolation) throw new Error('当前集合缺少知识库隔离字段。');
+    const client = await this.ensureConnected();
+    const count = await client.query({ collection_name: this.config.collectionName,
+      filter: reindexScopeExpression(scope), output_fields: ['count(*)'], consistency_level: ConsistencyLevelEnum.Strong, timeout: 30_000 });
+    if (count.status.error_code !== 'Success') throw new Error('读取重建快照数量失败。');
+    const expected = Number(count.data?.[0]?.['count(*)']);
+    if (!Number.isSafeInteger(expected) || expected < 0) throw new Error('重建快照数量无效。');
+    return expected;
+  }
+
+  async *readReindexChunks(scope: RagRetrievalScope): AsyncIterable<import('./rag/embedding-index-rebuild').ReindexChunk[]> {
+    if (!scope.enforceIsolation) throw new Error('重建索引必须使用服务端限定的知识库范围。');
+    if (!this.isInitialized) await this.initializeCollection();
+    if (!this.supportsTenantIsolation) throw new Error('当前集合缺少知识库隔离字段，无法安全重建。');
+    const client = await this.ensureConnected();
+    // SDK queryIterator's internal count() omits exprValues. These literals
+    // come only from a validated server scope, never a client filter string.
+    const expression = reindexScopeExpression(scope);
+    const expected = await this.countScopedDocuments(scope);
+    let read = 0;
+    const iterator: AsyncIterable<Record<string, unknown>[]> = await client.queryIterator({
+      collection_name: this.config.collectionName, batchSize: 64,
+      output_fields: ['id', 'content', 'source', 'metadata_json', 'tenant_id', 'corpus_id', 'document_id', 'trust_level'],
+      expr: expression,
+      consistency_level: ConsistencyLevelEnum.Strong, timeout: 30_000,
+    });
+    for await (const rows of iterator) {
+      read += rows.length;
+      yield rows.map(row => {
+        if (row.tenant_id !== scope.tenantId || row.corpus_id !== scope.corpusId
+          || !scope.allowedTrustLevels.includes(row.trust_level as RagTrustLevel)) throw new Error('重建快照包含范围外文档。');
+        if (typeof row.id !== 'string' || typeof row.content !== 'string' || typeof row.metadata_json !== 'string') throw new Error('重建快照文档格式无效。');
+        const metadata = JSON.parse(row.metadata_json);
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) throw new Error('重建快照元数据无效。');
+        return { id: row.id, content: row.content, metadata: { ...metadata, source: row.source,
+          document_id: row.document_id, tenant_id: row.tenant_id, corpus_id: row.corpus_id, trust_level: row.trust_level } };
+      });
+    }
+    if (read !== expected) throw new Error('读取的知识库快照不完整，拒绝切换索引。');
+  }
+
   /** Read a single bounded snapshot using the server-owned retrieval scope. */
   async queryOrderedCorpusRows(
     scope: RagRetrievalScope,
@@ -1631,7 +1704,7 @@ export class MilvusVectorStore {
       throw new Error('Milvus ordered context scalar schema is unavailable.');
     }
 
-    const scopedFilter = buildScopedMilvusFilter(scope);
+    const scopedFilter = await withDocumentVisibility(buildScopedMilvusFilter(scope), scope);
     if (isTenantIsolationRequired() && !isServerDerivedScope(scopedFilter)) {
       throw new Error('Milvus ordered corpus query requires a server-derived scope.');
     }
@@ -1671,10 +1744,17 @@ export class MilvusVectorStore {
   async queryDocumentRows(
     scope: RagRetrievalScope,
     identity: MilvusDocumentQueryIdentity,
-    expectedChunks: number
+    expectedChunks: number,
+    options: { readOnly?: boolean; consistencyLevel?: 'Strong'; chunkIndices?: number[] } = {}
   ): Promise<MilvusQueryRow[]> {
-    if (!Number.isSafeInteger(expectedChunks) || expectedChunks < 1 || expectedChunks > 1_000) {
-      throw new Error('Milvus document query expectedChunks must be between 1 and 1000.');
+    const chunkIndices = options.chunkIndices === undefined ? undefined : [...options.chunkIndices];
+    if (chunkIndices !== undefined && (!options.readOnly || chunkIndices.length < 1 || chunkIndices.length > 48
+      || new Set(chunkIndices).size !== chunkIndices.length
+      || chunkIndices.some(index => !Number.isSafeInteger(index) || index < 0 || index >= expectedChunks))) {
+      throw new Error('Milvus sampled document query requires 1 to 48 unique valid chunk indices and readOnly mode.');
+    }
+    if (!Number.isSafeInteger(expectedChunks) || expectedChunks < 1 || expectedChunks > (chunkIndices ? 100_000 : 1_000)) {
+      throw new Error(`Milvus document query expectedChunks must be between 1 and ${chunkIndices ? 100_000 : 1_000}.`);
     }
     if (!scope.enforceIsolation) {
       throw new Error('Milvus document query requires an isolated server-derived scope.');
@@ -1690,14 +1770,22 @@ export class MilvusVectorStore {
       identity.documentVersion,
       'documentVersion'
     );
-    if (!this.isInitialized) {
-      await this.initializeCollection();
-    }
-    if (!this.supportsOrderedContext) {
-      throw new Error('Milvus ordered context scalar schema is unavailable.');
+    if (options.readOnly) {
+      // Source previews must never repair/create/load a collection when its evidence disappears.
+      const readClient = await this.ensureConnected();
+      const description = await readClient.describeCollection({ collection_name: this.config.collectionName });
+      const fields = description.schema?.fields;
+      const required = ['id', 'content', 'source', 'metadata_json', 'tenant_id', 'corpus_id', 'document_id', 'document_version', 'trust_level', 'chunk_index', 'total_chunks'];
+      if (description.status?.error_code !== 'Success' || !Array.isArray(fields)
+        || !required.every(name => fields.some(field => field.name === name))) {
+        throw new Error('Milvus read-only document source schema is unavailable.');
+      }
+    } else {
+      if (!this.isInitialized) await this.initializeCollection();
+      if (!this.supportsOrderedContext) throw new Error('Milvus ordered context scalar schema is unavailable.');
     }
 
-    const scopedFilter = buildScopedMilvusFilter(scope);
+    const scopedFilter = await withDocumentVisibility(buildScopedMilvusFilter(scope), scope);
     if (!isServerDerivedScope(scopedFilter)) {
       throw new Error('Milvus document query requires a server-derived scope.');
     }
@@ -1718,20 +1806,22 @@ export class MilvusVectorStore {
         'total_chunks',
       ],
       // One-row lookahead makes duplicate or stale extra chunks observable.
-      limit: expectedChunks + 1,
+      limit: (chunkIndices?.length ?? expectedChunks) + 1,
       filter: [
         scopedFilter.filter,
         'document_id == {documentId}',
         'document_version == {documentVersion}',
         'trust_level == {documentTrustLevel}',
+        ...(chunkIndices ? ['chunk_index in {sampleChunkIndices}'] : []),
       ].join(' && '),
       exprValues: {
         ...scopedFilter.exprValues,
         documentId,
         documentVersion,
         documentTrustLevel: identity.trustLevel,
+        ...(chunkIndices ? { sampleChunkIndices: chunkIndices } : {}),
       },
-      consistency_level: normalizeMilvusConsistencyLevel(this.config.consistencyLevel),
+      consistency_level: normalizeMilvusConsistencyLevel(options.readOnly ? 'Strong' : options.consistencyLevel ?? this.config.consistencyLevel),
       order_by_fields: [
         { field: 'chunk_index', order: 'asc' },
         { field: 'id', order: 'asc' },
@@ -1740,7 +1830,10 @@ export class MilvusVectorStore {
     if (result.status.error_code !== 'Success') {
       throw new Error('Milvus document query failed: ' + result.status.reason);
     }
-    if (!Array.isArray(result.data)) return [];
+    if (!Array.isArray(result.data)) {
+      if (options.readOnly) throw new Error('Milvus read-only document query returned an invalid row collection.');
+      return [];
+    }
     // Milvus does not consistently honor order_by_fields across SDK/server
     // versions. Re-establish deterministic chunk order at the trust boundary;
     // the executor separately rejects duplicate or malformed indices.
@@ -1783,7 +1876,10 @@ export class MilvusVectorStore {
 
     const client = await this.ensureConnected();
     const collectionName = this.config.collectionName;
-    const searchOptions = resolveMilvusSearchOptions(this.config, threshold, filter);
+    const requestedScope = typeof threshold === 'object' && threshold?.exprValues
+      && typeof threshold.exprValues.tenantId === 'string' && typeof threshold.exprValues.corpusId === 'string'
+      ? { tenantId: threshold.exprValues.tenantId, corpusId: threshold.exprValues.corpusId } : undefined;
+    const searchOptions = await withDocumentVisibility(resolveMilvusSearchOptions(this.config, threshold, filter), requestedScope);
     searchOptions.outputFields = isTenantIsolationRequired()
       ? getScopedSearchFields(searchOptions.outputFields)
       : getDeduplicatingSearchFields(searchOptions.outputFields);
@@ -2284,10 +2380,10 @@ function adaptNativeHybridHit(
   if (!Number.isFinite(score)) {
     throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid hit score is invalid.');
   }
-  const chunkIndex = optionalMilvusHybridInteger(hit.chunk_index, 'chunk_index');
-  const totalChunks = optionalMilvusHybridInteger(hit.total_chunks, 'total_chunks');
-  const startOffset = optionalMilvusHybridInteger(hit.start_offset, 'start_offset');
-  const endOffset = optionalMilvusHybridInteger(hit.end_offset, 'end_offset');
+  const chunkIndex = optionalNativeHybridInteger(hit.chunk_index, 'chunk_index');
+  const totalChunks = optionalNativeHybridInteger(hit.total_chunks, 'total_chunks');
+  const startOffset = optionalNativeHybridInteger(hit.start_offset, 'start_offset');
+  const endOffset = optionalNativeHybridInteger(hit.end_offset, 'end_offset');
   if ((startOffset === undefined) !== (endOffset === undefined)) {
     throw new MilvusHybridEvidenceIntegrityError('Milvus hybrid hit span is incomplete.');
   }
@@ -2324,6 +2420,19 @@ function adaptNativeHybridHit(
           }),
     },
   };
+}
+
+function optionalNativeHybridInteger(value: unknown, field: string): number | undefined {
+  // The SDK serializes protobuf Int64 output as decimal strings. Keep ingest
+  // validation strict while normalizing only these server-returned fields.
+  const normalized = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  try {
+    return optionalMilvusHybridInteger(normalized, field);
+  } catch {
+    throw new MilvusHybridEvidenceIntegrityError(
+      'Milvus hybrid hit ' + field + ' must be a non-negative safe integer.'
+    );
+  }
 }
 
 function parseNativeHybridMetadata(value: unknown): Record<string, unknown> {
@@ -2381,6 +2490,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // 全局实例缓存 - 按集合名称缓存不同的实例
+function reindexScopeExpression(scope: RagRetrievalScope): string {
+  return `tenant_id == ${JSON.stringify(scope.tenantId)} and corpus_id == ${JSON.stringify(scope.corpusId)} and trust_level in ${JSON.stringify(scope.allowedTrustLevels)}`;
+}
+
 const milvusInstances: Map<string, MilvusVectorStore> = new Map();
 
 /**

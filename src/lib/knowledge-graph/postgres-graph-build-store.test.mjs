@@ -21,6 +21,9 @@ const scope = createRetrievalScope({
 });
 const id = '5bc631c8-4c86-4b87-af1f-055321563402';
 const lease = 'c79a0a13-9d42-41ce-82f8-c9cba35f8d87';
+const publicationManifest = () => ({ schemaVersion: 'kg-build-publication-manifest/v1', tenantId: scope.tenantId, corpusId: scope.corpusId,
+  graphVersion: 'graph-v1', artifactDigest: `sha256:${'a'.repeat(64)}`,
+  documents: [{ documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' }] });
 
 function row(overrides = {}) {
   return {
@@ -202,11 +205,62 @@ test('atomically records validated completion under the running lease without a 
     progress: 1,
     artifactDigest: `sha256:${'a'.repeat(64)}`,
     leaseToken: lease,
+    publicationManifest: publicationManifest(),
   });
   assert.equal(completed.status, 'validated');
   assert.doesNotMatch(client.calls[0].text, /status = 'staged'/i);
   assert.match(client.calls[0].text, /status = 'validated'/i);
   assert.equal(client.calls[0].values[3], lease);
+});
+
+test('validated completion persists the full publication manifest atomically with digest and job scope', async () => {
+  const manifest = publicationManifest(); const client = fakeClient([{ rows: [row({ status: 'validated', progress: 1,
+    artifact_digest: manifest.artifactDigest, metadata: { publicationManifest: manifest } })], rowCount: 1 }]);
+  await new PostgresKnowledgeGraphBuildJobStore(client).completeValidated({ jobId: id, progress: 1,
+    artifactDigest: manifest.artifactDigest, leaseToken: lease, publicationManifest: manifest });
+  assert.equal(client.calls.length, 1); assert.match(client.calls[0].text, /metadata = metadata \|\| jsonb_build_object\('publicationManifest', \$5::jsonb\)/);
+  assert.match(client.calls[0].text, /tenant_id = \$6 and corpus_id = \$7 and graph_version = \$8/);
+  assert.match(client.calls[0].text, /lease_expires_at > clock_timestamp\(\)/);
+  assert.deepEqual(JSON.parse(client.calls[0].values[4]), manifest);
+  assert.deepEqual(client.calls[0].values.slice(5), ['tenant-a', 'corpus-a', 'graph-v1']);
+});
+
+test('validated completion binds one observed digest to both SQL and the publication manifest', async () => {
+  const manifest = publicationManifest(); const client = fakeClient([{ rows: [row({ status: 'validated', progress: 1,
+    artifact_digest: manifest.artifactDigest, metadata: { publicationManifest: manifest } })], rowCount: 1 }]);
+  let reads = 0; const input = { jobId: id, progress: 1, leaseToken: lease, publicationManifest: manifest };
+  Object.defineProperty(input, 'artifactDigest', { enumerable: true, get() { reads++; return reads === 1 ? manifest.artifactDigest : `sha256:${'b'.repeat(64)}`; } });
+  await new PostgresKnowledgeGraphBuildJobStore(client).completeValidated(input);
+  assert.equal(client.calls[0].values[2], JSON.parse(client.calls[0].values[4]).artifactDigest);
+  assert.equal(reads, 1);
+});
+
+test('unvalidated manifests and reserved publication metadata are rejected before database IO', async () => {
+  const client = fakeClient([]); const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  for (const manifest of [undefined, { ...publicationManifest(), artifactDigest: `sha256:${'b'.repeat(64)}` },
+    { ...publicationManifest(), documents: [] }]) await assert.rejects(store.completeValidated({ jobId: id, progress: 1,
+    artifactDigest: `sha256:${'a'.repeat(64)}`, leaseToken: lease, publicationManifest: manifest }));
+  await assert.rejects(store.enqueue(scope, 'graph-v1', { publicationManifest: publicationManifest() }), /reserved/);
+  for (const key of ['publicationManifest', 'documentIdentity']) await assert.rejects(store.transition({ jobId: id, expectedStatus: 'running',
+    status: 'queued', progress: 0, leaseToken: lease, metadata: { [key]: publicationManifest() } }), /reserved/);
+  assert.equal(client.calls.length, 0);
+});
+
+test('unsafe metadata cannot inject reserved fields or execute hooks before database IO', async () => {
+  for (const operation of ['transition', 'enqueue']) for (const kind of ['getter', 'nested-getter', 'toJSON', 'proxy']) {
+    const client = fakeClient([{ rows: [row({ status: 'published' })], rowCount: 1 }]);
+    const store = new PostgresKnowledgeGraphBuildJobStore(client); let hooks = 0; let metadata = {};
+    const inject = () => { hooks++; metadata.publicationManifest = publicationManifest(); return 'secret-token'; };
+    if (kind === 'getter') Object.defineProperty(metadata, 'note', { enumerable: true, get: inject });
+    if (kind === 'nested-getter') metadata.note = { get value() { return inject(); } };
+    if (kind === 'toJSON') metadata.note = { toJSON: inject };
+    if (kind === 'proxy') metadata = new Proxy({}, { ownKeys() { hooks++; return []; } });
+    const pending = operation === 'transition'
+      ? store.transition({ jobId: id, expectedStatus: 'validated', status: 'published', progress: 1, metadata })
+      : store.enqueue(scope, 'graph-v1', metadata);
+    await assert.rejects(pending, e => /Graph build metadata/.test(e.message) && !/secret-token/.test(e.message));
+    assert.equal(hooks, 0); assert.equal(client.calls.length, 0); assert.equal(client.transactions.length, 0);
+  }
 });
 
 test('reports a concurrent status or lease change as a conflict', async () => {

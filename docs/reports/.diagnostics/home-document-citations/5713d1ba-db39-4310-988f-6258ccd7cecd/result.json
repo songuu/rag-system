@@ -1,0 +1,170 @@
+{
+  "runId": "5713d1ba-db39-4310-988f-6258ccd7cecd",
+  "startedAt": "2026-10-27T08:06:43.193Z",
+  "mockedResponses": false,
+  "tests": [
+    {
+      "case": "khitan",
+      "httpStatus": 200,
+      "question": "根据知识库资料，契丹人主要分布在哪些地区？请简要回答，并标注引用编号。",
+      "answer": "答：根据知识库资料，契丹人主要分布在今辽宁朝阳东北数百里范围内，地近高丽。具体来说，他们居住在高句丽北境，并且活动中心位于辽水下游、大凌河流域。[1]\n\n注：根据《重构契丹早期史》一书中的内容，契丹人主要分布在今辽宁朝阳东北数百里范围内，地近高丽。",
+      "evidence": [
+        {
+          "id": "chunk-cf875143e75c64fa3905e263ac43957ecd9f6a67c92a18dd8f71e11b37db50de",
+          "documentId": "重构契丹早期史.epub"
+        },
+        {
+          "id": "chunk-7c624dc99813f6571143e851ecdf38c1b40175a8e3ade0a07cfc2282306dda79",
+          "documentId": "重构契丹早期史.epub"
+        },
+        {
+          "id": "chunk-5a6d369eb5159ce4d2072d65e8357ee248c8b05ba870a0a403572b46e6f2cf61",
+          "documentId": "重构契丹早期史.epub"
+        }
+      ],
+      "citationStatus": "available",
+      "citationNumbers": [
+        1
+      ],
+      "disabledMatches": [],
+      "preview": {
+        "httpStatus": 200,
+        "source": "重构契丹早期史.epub",
+        "content": "拓片及录文皆见赵文成、赵君平编选：《新出唐墓志百种》，西泠印社，2010年，第32—33页。\n杜佑：《通典》卷一七八州郡八，王文锦等点校，中华书局，1988年，第4715页。\n严耕望：《唐代交通图考》篇五二《渝关通柳城契丹辽东道》，“中研院”历史语言研究所，1986年，第1757页。\n我们首先需要考虑的是，契丹由北朝至唐初，居地、位置是否发生过大幅度变化。契丹在北魏时期始终活动于今辽宁朝阳东北数百里范围内，地近高丽，\n至北齐天保四年，文宣帝曾讨契丹于阳师水（今大凌河支流叶柏寿河）及青山（朝阳北票附近之大青山），\n足见当时其仍在朝阳附近、白狼水流域；由齐入隋，折冲反复于隋、突厥、高丽之间，\n一度稍稍南下归附隋朝，后又北徙“当辽西正北二百里，依托纥臣水而居，东西亘五百里，南北三百里”，\n其中辽西亦即朝阳，正反映了隋末唐初的情况。可见，自北魏至唐初，尽管契丹多有南迁北徙之往复，然皆不出朝阳以北（东北）数百里之范围，活动中心位于辽水下游、大凌河流域，并无明显变化。这种情况一直延续到唐前期，上元二年（675）《阿史那忠墓志》明确记载“契丹在白狼之东，居黄龙之右，近侵卉服，外结岛夷”，",
+        "contentHash": "83c275b56ba45a758bc8a2742f74ec41a8dfcc5105ff38236f7fa6efaa2a1a63",
+        "visible": true
+      }
+    },
+    {
+      "case": "canary-enabled",
+      "httpStatus": 200,
+      "question": "琥珀引文核验5713d1ba实验室的资料保管编号是什么？请依据原文回答，并标注引用编号。",
+      "answer": "琥珀引文核验5713d1ba实验室的资料保管编号是 [1] 中提到的 AMBER-7429。",
+      "evidence": [
+        {
+          "id": "chunk-44bd120fc0bc2df285394dde85e45f81a74d2e520f7016c7d0afef125579d111",
+          "documentId": "citation-canary-5713d1ba-db39-4310-988f-6258ccd7cecd.txt"
+        },
+        {
+          "id": "chunk-44fa7ddf41a32fd8cdcdd5035277bbd079754835c9a46a321caf7c45e5d028a0",
+          "documentId": "重构契丹早期史.epub"
+        },
+        {
+          "id": "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+          "documentId": "重构契丹早期史.epub"
+        }
+      ],
+      "citationStatus": "available",
+      "citationNumbers": [
+        1
+      ],
+      "disabledMatches": [],
+      "preview": {
+        "httpStatus": 200,
+        "source": "citation-canary-5713d1ba-db39-4310-988f-6258ccd7cecd.txt",
+        "content": "琥珀引文核验5713d1ba实验室的资料保管编号是 AMBER-7429。琥珀引文核验5713d1ba资料保管负责人是林澄。该资料仅用于引用启用和禁用的端到端测试。",
+        "contentHash": "5e19c2dd1cccb16b25e526bef8b79fae3be1db83c40bf1be22d8b7277e8e4c00",
+        "visible": true
+      },
+      "revokedPreview": {
+        "httpStatus": 404,
+        "code": "RAG_CITATION_SOURCE_UNAVAILABLE",
+        "returnedContent": false
+      }
+    },
+    {
+      "case": "canary-disabled",
+      "httpStatus": 200,
+      "question": "琥珀引文核验5713d1ba实验室的资料保管编号是什么？请依据原文回答，并标注引用编号。请重新检索当前可用的知识库。",
+      "answer": "根据原文，无法确认实验室的资料保管编号。\n\n上下文信息中没有提到任何有关实验室的资料保管编号的信息。",
+      "evidence": [
+        {
+          "id": "chunk-44fa7ddf41a32fd8cdcdd5035277bbd079754835c9a46a321caf7c45e5d028a0",
+          "documentId": "重构契丹早期史.epub"
+        },
+        {
+          "id": "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+          "documentId": "重构契丹早期史.epub"
+        },
+        {
+          "id": "chunk-2bd986fedca9d20b3bfcc53eddf582e772a9f6d743e333c42156691c1c41695e",
+          "documentId": "重构契丹早期史.epub"
+        }
+      ],
+      "citationStatus": "missing",
+      "citationNumbers": [],
+      "disabledMatches": []
+    }
+  ],
+  "passed": true,
+  "baseline": [
+    {
+      "id": "74d5d833-6ac4-4e46-bf93-5a04844c2766",
+      "documentId": "codex-local-graph-black-death-e2e-20260908.txt",
+      "name": "codex-local-graph-black-death-e2e-20260908.txt",
+      "enabled": true,
+      "chunks": 1
+    },
+    {
+      "id": "c005b0af-a44f-4ac6-83a8-cc01a4792bf5",
+      "documentId": "codex-local-graph-integrity-e2e-20260908.txt",
+      "name": "codex-local-graph-integrity-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 2
+    },
+    {
+      "id": "b45d8923-17e8-4a41-9b87-d16004b37216",
+      "documentId": "sample7.txt",
+      "name": "sample7.txt",
+      "enabled": false,
+      "chunks": 26
+    },
+    {
+      "id": "8aef5ff9-fd05-4cee-8c9d-bd48523702d1",
+      "documentId": "sample6.txt",
+      "name": "sample6.txt",
+      "enabled": false,
+      "chunks": 12
+    },
+    {
+      "id": "46a91917-4498-4a35-ac90-954e04f79f56",
+      "documentId": "codex-local-graph-e2e-20260908.txt",
+      "name": "codex-local-graph-e2e-20260908.txt",
+      "enabled": false,
+      "chunks": 1
+    },
+    {
+      "id": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+      "documentId": "重构契丹早期史.epub",
+      "name": "重构契丹早期史.epub",
+      "enabled": true,
+      "chunks": 645
+    },
+    {
+      "id": "8f19961d-ebd6-42f3-8d86-366309d49da8",
+      "documentId": "重构契丹早期史.mobi",
+      "name": "重构契丹早期史.mobi",
+      "enabled": false,
+      "chunks": 718
+    }
+  ],
+  "readiness": {
+    "model": "llama3.1",
+    "phase": "ready"
+  },
+  "canary": {
+    "assetId": "4815f16d-f98b-4b8c-ac8e-118e613438d1",
+    "documentId": "citation-canary-5713d1ba-db39-4310-988f-6258ccd7cecd.txt",
+    "source": "citation-canary-5713d1ba-db39-4310-988f-6258ccd7cecd.txt"
+  },
+  "pageErrors": [],
+  "completedAt": "2026-10-27T08:07:12.384Z",
+  "canaryCleaned": true,
+  "documentPolicyUnchangedAfterCleanup": true,
+  "verification": {
+    "unitAndApiTestsPassed": 165,
+    "typecheck": "passed",
+    "eslint": "passed",
+    "errorResponseBodyCheck": "Browser click status and visible alert, plus independent uncached HTTP request using the same locator; Chromium error-body protocol read was avoided."
+  }
+}

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 
 const pipelineStubUrl = 'data:text/javascript,' + encodeURIComponent(`
 import { EmbeddingOutputValidationError } from '@/lib/embedding-batch';
+import { EbookParseError } from '@/lib/ebook-parser-error';
 let calls = [];
 let failure;
 let waitForRelease = false;
@@ -49,6 +50,9 @@ export class DocumentPipeline {
     });
     if (waitForRelease) {
       await new Promise(resolve => { releasePending = resolve; });
+    }
+    if (failure === 'ebook' || (failure === 'mixed-ebook' && options.type === 'mobi')) {
+      throw new EbookParseError('MOBI 解析失败：文件已加密（DRM），请上传无加密版本。');
     }
     if (failure === 'reconciliation') {
       throw new MilvusHybridIngestReconciliationRequiredError(
@@ -209,7 +213,8 @@ Object.assign(process.env, {
 });
 
 const { NextRequest } = await import('next/server');
-const { POST } = await import('./route.ts');
+const { POST, GET } = await import('./route.ts');
+const { getEmbeddingIndexState, embeddingIndexBaseKey } = await import('@/lib/embedding-index-state');
 const {
   getPipelineCalls,
   releasePipeline,
@@ -342,6 +347,118 @@ test('authenticated multipart PDF reaches the production pipeline seam with serv
   assert.equal('tenantId' in body.results[0].pdfVisual, false);
   assert.equal('rootDir' in body.results[0].pdfVisual, false);
 });
+
+for (const extension of ['epub', 'mobi']) {
+  test(`authenticated multipart ${extension.toUpperCase()} reaches the canonical pipeline with its source type`, async () => {
+    resetPipelineCalls();
+    resetPersistenceCalls();
+    resetGraphBuildCalls();
+    const form = new FormData();
+    form.append('files', new File(['ebook fixture'], `测试.${extension.toUpperCase()}`));
+    const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer pipeline-route-token',
+        'x-rag-corpus-id': 'corpus-a',
+        'content-length': '2048',
+      },
+      body: form,
+    }));
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.successful, 1);
+    assert.equal(getPipelineCalls()[0]?.type, extension);
+    assert.equal(getPersistenceCalls()[0]?.sourceKind, extension);
+    assert.equal(getPipelineCalls()[0]?.metadata.tenantId, 'tenant-a');
+    assert.equal(getPipelineCalls()[0]?.inputIsBuffer, true);
+  });
+}
+
+for (const mixed of [false, true]) {
+  test(`ebook parse errors remain actionable in ${mixed ? 'mixed' : 'failed'} upload batches`, async () => {
+    resetPipelineCalls();
+    resetPersistenceCalls();
+    resetGraphBuildCalls();
+    setPipelineFailure(mixed ? 'mixed-ebook' : 'ebook');
+    const form = new FormData();
+    if (mixed) form.append('files', new File(['fixture'], 'valid.epub'));
+    form.append('files', new File(['fixture'], 'protected.mobi'));
+    const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer pipeline-route-token',
+        'x-rag-corpus-id': 'corpus-a',
+        'content-length': '2048',
+      },
+      body: form,
+    }));
+    const body = await response.json();
+    assert.equal(body.successful, mixed ? 1 : 0);
+    assert.equal(body.failed, 1);
+    assert.equal(body.results.at(-1).code, 'EBOOK_PARSE_FAILED');
+    assert.match(body.results.at(-1).error, /MOBI.*加密.*DRM/);
+    assert.equal(getPersistenceCalls().length, mixed ? 1 : 0);
+  });
+}
+
+function useActiveEmbeddingIndex(t) {
+  const state = getEmbeddingIndexState();
+  const previous = state.active;
+  const previousAllowlist = process.env.RAG_ALLOWED_EMBEDDING_MODELS;
+  const previousProvider = process.env.EMBEDDING_PROVIDER;
+  process.env.EMBEDDING_PROVIDER = 'ollama';
+  process.env.RAG_ALLOWED_EMBEDDING_MODELS = 'nomic-embed-text,qwen3-embedding:8b';
+  state.active = {
+    version: 1, baseKey: embeddingIndexBaseKey(), provider: 'ollama', model: 'qwen3-embedding:8b',
+    collection: 'ragidx_' + 'a'.repeat(32), dimension: 4096, chunkCount: 42,
+    updatedAt: new Date().toISOString(),
+  };
+  t.after(() => {
+    state.active = previous;
+    if (previousAllowlist === undefined) delete process.env.RAG_ALLOWED_EMBEDDING_MODELS;
+    else process.env.RAG_ALLOWED_EMBEDDING_MODELS = previousAllowlist;
+    if (previousProvider === undefined) delete process.env.EMBEDDING_PROVIDER;
+    else process.env.EMBEDDING_PROVIDER = previousProvider;
+  });
+}
+
+test('pipeline info reports the active tagged embedding model rather than the environment fallback', async t => {
+  useActiveEmbeddingIndex(t);
+  const response = await GET(new NextRequest('http://localhost/api/pipeline?action=info', {
+    headers: { authorization: 'Bearer pipeline-route-token', 'x-rag-corpus-id': 'corpus-a' },
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.pipeline.config.embeddingModel, 'qwen3-embedding:8b');
+});
+
+for (const model of ['qwen3-embedding:8b', 'nomic-embed-text']) {
+  test(`multipart ingestion ${model.startsWith('qwen') ? 'preserves the active model tag' : 'rejects a stale model before parsing or writes'}`, async t => {
+    useActiveEmbeddingIndex(t);
+    resetPipelineCalls();
+    resetPersistenceCalls();
+    resetGraphBuildCalls();
+    const form = new FormData();
+    form.append('files', new File(['fixture'], '电子书.epub'));
+    form.append('embeddingModel', model);
+    const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+      method: 'POST',
+      headers: { authorization: 'Bearer pipeline-route-token', 'x-rag-corpus-id': 'corpus-a', 'content-length': '2048' },
+      body: form,
+    }));
+    const body = await response.json();
+    if (model.startsWith('qwen')) {
+      assert.equal(response.status, 200);
+      assert.equal(body.successful, 1);
+      assert.equal(getPipelineCalls()[0]?.config.embeddingModel, model);
+    } else {
+      assert.equal(response.status, 409);
+      assert.equal(body.code, 'EMBEDDING_MODEL_REQUIRES_REINDEX');
+      assert.equal(getPipelineCalls().length, 0);
+      assert.equal(getPersistenceCalls().length, 0);
+    }
+  });
+}
 
 test('authenticated multipart ingest fails closed before pipeline construction when vectors are disabled', async () => {
   process.env.RAG_VECTOR_BACKEND = 'disabled';

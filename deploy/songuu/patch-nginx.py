@@ -27,9 +27,30 @@ def find_block(text: str, start: str) -> Tuple[int, int, str]:
         raise RuntimeError(f"missing opening brace for {start!r}")
 
     depth = 0
+    quote = None
+    escaped = False
+    comment = False
     for index in range(brace, len(text)):
         char = text[index]
-        if char == "{":
+        if comment:
+            if char == "\n":
+                comment = False
+            continue
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+        elif char == "#":
+            comment = True
+        elif char == "{":
             depth += 1
         elif char == "}":
             depth -= 1
@@ -112,15 +133,52 @@ def refresh_api_token(config: Path, original: str, token: str) -> Path:
     return write_with_backup(config, original, original[:begin] + updated_block + original[end:])
 
 
+
+def enable_public_access(config: Path, original: str) -> Path:
+    """Remove only the known shared login rules from the three RAG proxies."""
+    locations = expected_locations(original)
+    if any(count != 1 for count in locations.values()):
+        found = ", ".join("{}={}".format(name, count) for name, count in locations.items())
+        raise RuntimeError(
+            "cannot enable public RAG access with incomplete or ambiguous locations ({})".format(found)
+        )
+
+    text = original
+    for header, response in (
+        ("    location = /rag-system {", "302 https://songuu.top/login"),
+        ("    location ^~ /rag-system/ {", "302 https://songuu.top/login"),
+        ("    location ^~ /rag-api/ {", "401"),
+    ):
+        begin, end, block = find_block(text, header)
+        guard = re.compile(
+            r"^[ \t]*if[ \t]*\(\$dm_authed[ \t]*=[ \t]*0\)[ \t]*\{[ \t]*"
+            r"return[ \t]+" + re.escape(response) + r";[ \t]*\}[ \t]*\n",
+            re.MULTILINE,
+        )
+        if len(guard.findall(block)) > 1:
+            raise RuntimeError("duplicate shared login rules in {}".format(header))
+        updated = guard.sub("", block)
+        if "$dm_authed" in updated:
+            raise RuntimeError("unrecognized shared login rule in {}".format(header))
+        text = text[:begin] + updated + text[end:]
+    return write_with_backup(config, original, text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="/etc/nginx/conf.d/default.conf")
     parser.add_argument("--env-file", default="/opt/rag-system/shared/.env.prod")
     parser.add_argument("--upstream", default="127.0.0.1:5182")
-    parser.add_argument(
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
         "--refresh-token",
         action="store_true",
         help="replace only the RAG /rag-api/ Authorization header from --env-file",
+    )
+    modes.add_argument(
+        "--public-access",
+        action="store_true",
+        help="remove only known RAG shared login rules from existing locations",
     )
     args = parser.parse_args()
 
@@ -137,6 +195,12 @@ def main() -> int:
         print(f"backup={backup}")
         return 0
 
+    if args.public_access:
+        backup = enable_public_access(config, original)
+        print(f"public-access={config}")
+        print(f"backup={backup}")
+        return 0
+
     existing_locations = expected_locations(original)
     if any(existing_locations.values()):
         found = ", ".join(
@@ -150,7 +214,6 @@ def main() -> int:
 
     root_begin, _, _ = find_block(original, "    location = / {")
     rag_locations = f'''    location = /rag-system {{
-        if ($dm_authed = 0) {{ return 302 https://songuu.top/login; }}
         proxy_pass http://{args.upstream};
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -163,14 +226,13 @@ def main() -> int:
     }}
 
     # Browser API requests must use /rag-api/, where the trusted server-side
-    # bearer header is injected after the existing session gate. Do not expose
+    # bearer header is injected by the gateway for public visitors. Do not expose
     # the compiled Next API namespace through the page proxy.
     location ^~ /rag-system/api/ {{
         return 404;
     }}
 
     location ^~ /rag-system/ {{
-        if ($dm_authed = 0) {{ return 302 https://songuu.top/login; }}
         proxy_pass http://{args.upstream};
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -192,7 +254,6 @@ def main() -> int:
     }}
 
     location ^~ /rag-api/ {{
-        if ($dm_authed = 0) {{ return 401; }}
         client_max_body_size 50m;
         proxy_pass http://{args.upstream}/rag-system/api/;
         proxy_http_version 1.1;

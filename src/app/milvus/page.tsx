@@ -30,7 +30,7 @@ interface MilvusConfig {
 interface SearchResult {
   id: string;
   content: string;
-  metadata: Record<string, any>;
+  metadata: { source?: React.ReactNode; [key: string]: unknown };
   score: number;
   distance: number;
 }
@@ -41,13 +41,51 @@ interface ProcessingResult {
   chunks: number;
   success: boolean;
   error?: string;
-  metadata?: any;
+  metadata?: { type?: string; [key: string]: unknown };
 }
 
 interface OllamaModel {
   name: string;
   size: number;
   modified_at: string;
+}
+
+interface VectorSpacePoint {
+  id: string;
+  x: number;
+  y: number;
+  z?: number;
+  content: string;
+  source: string;
+  cluster: number;
+  type?: never;
+}
+
+type QueryPathNode = {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+} & ({ type: 'query'; score?: never; source?: never } | {
+  type: 'document';
+  score: number;
+  source?: React.ReactNode;
+});
+
+interface EmbeddingConfiguration {
+  provider?: string;
+  dimension?: number;
+  model: string;
+}
+
+interface ModelConfigurationResponse {
+  config?: { embedding?: EmbeddingConfiguration };
+}
+
+interface OllamaModelsResponse {
+  success: boolean;
+  embeddingModels?: OllamaModel[];
+  providerConfig?: { embedding?: EmbeddingConfiguration };
 }
 
 // 数据源类型图标
@@ -108,17 +146,18 @@ function getRecommendedEmbeddingModelsForProvider(provider: string) {
 export default function MilvusPage() {
   // 状态管理
   const [connected, setConnected] = useState(false);
-  const [health, setHealth] = useState<MilvusHealth | null>(null);
+  const [, setHealth] = useState<MilvusHealth | null>(null);
   const [stats, setStats] = useState<MilvusStats | null>(null);
   const [config, setConfig] = useState<MilvusConfig | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [, setError] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
 
   // Embedding 模型
   const [embeddingModels, setEmbeddingModels] = useState<OllamaModel[]>([]);
   const [selectedEmbeddingModel, setSelectedEmbeddingModel] = useState('nomic-embed-text');
-  const [loadingModels, setLoadingModels] = useState(false);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const mountedRef = useRef(true);
   
   // 模型提供商配置
   const [embeddingProvider, setEmbeddingProvider] = useState<string>('ollama');
@@ -157,22 +196,22 @@ export default function MilvusPage() {
 
   // 可视化状态
   const [vectorSpace, setVectorSpace] = useState<{
-    points: Array<{ id: string; x: number; y: number; z?: number; content: string; source: string; cluster: number }>;
+    points: VectorSpacePoint[];
     clusters: Array<{ id: number; name: string; color: string }>;
   } | null>(null);
   const [similarityDist, setSimilarityDist] = useState<{
     distribution: Record<string, number>;
     statistics: { mean: number; max: number; min: number; median: number };
-    results: any[];
+    results: SearchResult[];
   } | null>(null);
   const [queryPath, setQueryPath] = useState<{
-    nodes: any[];
-    edges: any[];
+    nodes: QueryPathNode[];
+    edges: Array<{ source: string; target: string; weight: number }>;
     timing: { embedding: number; search: number; total: number };
   } | null>(null);
   const [visualizeQuery, setVisualizeQuery] = useState('');
   const [loadingVisualize, setLoadingVisualize] = useState(false);
-  const [selectedPoint, setSelectedPoint] = useState<any>(null);
+  const [selectedPoint, setSelectedPoint] = useState<VectorSpacePoint | QueryPathNode | null>(null);
 
   // 显示通知
   const showNotification = (type: 'success' | 'error' | 'info', message: string) => {
@@ -181,90 +220,95 @@ export default function MilvusPage() {
   };
 
   // 加载模型配置（先检查系统配置，再加载 Ollama 模型）
-  const loadOllamaModels = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      let configuredModel: string | undefined;
+  const loadOllamaModels = useCallback(() => {
+    // 初始请求的加载状态由初值表示；状态更新订阅真实配置请求的完成。
+    return fetch('/rag-api/model-config')
+      .then(response => response.json() as Promise<ModelConfigurationResponse>)
+      .then(async (configData) => {
+        if (!mountedRef.current) return;
+        let configuredModel: string | undefined;
 
-      // 首先获取统一模型配置，确定使用哪个提供商
-      const configResponse = await fetch('/rag-api/model-config');
-      const configData = await configResponse.json();
-      
-      if (configData.config?.embedding) {
-        const embConfig = configData.config.embedding;
-        setEmbeddingProvider(embConfig.provider || 'ollama');
-        setEmbeddingDimension(embConfig.dimension || 768);
-        configuredModel = embConfig.model;
-        
-        // 如果是远程提供商，直接使用配置的模型
-        if (embConfig.provider && embConfig.provider !== 'ollama') {
-          setSelectedEmbeddingModel(embConfig.model);
-          setEmbeddingModels([{
-            name: embConfig.model,
-            size: 0,
-            modified_at: new Date().toISOString(),
-          }]);
-          return;
+        // 首先获取统一模型配置，确定使用哪个提供商
+        if (configData.config?.embedding) {
+          const embConfig = configData.config.embedding;
+          setEmbeddingProvider(embConfig.provider || 'ollama');
+          setEmbeddingDimension(embConfig.dimension || 768);
+          configuredModel = embConfig.model;
+
+          // 如果是远程提供商，直接使用配置的模型
+          if (embConfig.provider && embConfig.provider !== 'ollama') {
+            setSelectedEmbeddingModel(embConfig.model);
+            setEmbeddingModels([{
+              name: embConfig.model,
+              size: 0,
+              modified_at: new Date().toISOString(),
+            }]);
+            return;
+          }
         }
-      }
-      
-      // Ollama 提供商：从本地加载模型列表
-      const response = await fetch('/rag-api/ollama/models');
-      const data = await response.json();
 
-      if (data.providerConfig?.embedding) {
-        const embConfig = data.providerConfig.embedding;
-        setEmbeddingProvider(embConfig.provider || 'ollama');
-        setEmbeddingDimension(embConfig.dimension || 768);
-        configuredModel = embConfig.model || configuredModel;
-      }
+        // Ollama 提供商：从本地加载模型列表
+        const response = await fetch('/rag-api/ollama/models');
+        const data: OllamaModelsResponse = await response.json();
+        if (!mountedRef.current) return;
 
-      if (data.success && data.embeddingModels) {
-        const availableModels = data.embeddingModels as OllamaModel[];
-        setEmbeddingModels(availableModels);
-        setSelectedEmbeddingModel((currentModel) =>
-          resolveEmbeddingModelSelection({
-            currentModel,
-            configuredModel,
-            availableModels,
-          }),
-        );
-      }
-    } catch (err) {
-      console.error('Failed to load Ollama models:', err);
-    } finally {
-      setLoadingModels(false);
-    }
+        if (data.providerConfig?.embedding) {
+          const embConfig = data.providerConfig.embedding;
+          setEmbeddingProvider(embConfig.provider || 'ollama');
+          setEmbeddingDimension(embConfig.dimension || 768);
+          configuredModel = embConfig.model || configuredModel;
+        }
+
+        if (data.success && data.embeddingModels) {
+          const availableModels = data.embeddingModels;
+          setEmbeddingModels(availableModels);
+          setSelectedEmbeddingModel((currentModel) =>
+            resolveEmbeddingModelSelection({
+              currentModel,
+              configuredModel,
+              availableModels,
+            }),
+          );
+        }
+      }).catch((err) => {
+        console.error('Failed to load Ollama models:', err);
+      }).finally(() => {
+        if (mountedRef.current) setLoadingModels(false);
+      });
   }, []);
 
   // 加载状态
-  const loadStatus = useCallback(async () => {
-    try {
-      const response = await fetch('/rag-api/milvus?action=status');
-      const data = await response.json();
+  const loadStatus = useCallback(() => {
+    return fetch('/rag-api/milvus?action=status')
+      .then(response => response.json())
+      .then((data) => {
+        if (!mountedRef.current) return;
 
-      if (data.success) {
-        setConnected(data.connected);
-        setHealth(data.health);
-        setStats(data.stats);
-        setConfig(data.config);
-        setNewAddress(data.config?.address || '');
-        setNewCollection(data.config?.collectionName || '');
-        setSelectedIndexType(data.config?.indexType || 'IVF_FLAT');
-        setSelectedMetricType(data.config?.metricType || 'COSINE');
-      } else {
-        setError(data.error);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load status');
-    } finally {
-      setLoading(false);
-    }
+        if (data.success) {
+          setConnected(data.connected);
+          setHealth(data.health);
+          setStats(data.stats);
+          setConfig(data.config);
+          setNewAddress(data.config?.address || '');
+          setNewCollection(data.config?.collectionName || '');
+          setSelectedIndexType(data.config?.indexType || 'IVF_FLAT');
+          setSelectedMetricType(data.config?.metricType || 'COSINE');
+        } else {
+          setError(data.error);
+        }
+      }).catch((err: unknown) => {
+        if (mountedRef.current) setError(err instanceof Error ? err.message : 'Failed to load status');
+      }).finally(() => {
+        if (mountedRef.current) setLoading(false);
+      });
   }, []);
 
   useEffect(() => {
-    loadStatus();
-    loadOllamaModels();
+    mountedRef.current = true;
+    void loadStatus();
+    void loadOllamaModels();
+    // 页面离开后，不让旧请求写入状态或继续触发本地模型查询。
+    return () => { mountedRef.current = false; };
   }, [loadStatus, loadOllamaModels]);
 
   // 连接/断开
@@ -389,16 +433,17 @@ export default function MilvusPage() {
   }, [isRemoteEmbedding, embeddingDimension, selectedEmbeddingModel]);
 
   // 检查维度是否匹配
+  const collectionDimension = stats?.embeddingDimension;
   const isDimensionMismatch = useMemo(() => {
-    if (!stats?.embeddingDimension) {
+    if (!collectionDimension) {
       console.log('[isDimensionMismatch] No stats or embeddingDimension, returning false');
       return false;
     }
     const selectedDimension = getCurrentModelDimension();
-    const mismatch = stats.embeddingDimension !== selectedDimension;
-    console.log(`[isDimensionMismatch] Collection: ${stats.embeddingDimension}D, Selected model (${selectedEmbeddingModel}): ${selectedDimension}D, Mismatch: ${mismatch}, Provider: ${embeddingProvider}`);
+    const mismatch = collectionDimension !== selectedDimension;
+    console.log(`[isDimensionMismatch] Collection: ${collectionDimension}D, Selected model (${selectedEmbeddingModel}): ${selectedDimension}D, Mismatch: ${mismatch}, Provider: ${embeddingProvider}`);
     return mismatch;
-  }, [stats?.embeddingDimension, selectedEmbeddingModel, getCurrentModelDimension, embeddingProvider]);
+  }, [collectionDimension, selectedEmbeddingModel, getCurrentModelDimension, embeddingProvider]);
 
   // 搜索
   const handleSearch = async () => {
@@ -632,7 +677,7 @@ export default function MilvusPage() {
       } else {
         showNotification('error', data.error);
       }
-    } catch (err) {
+    } catch {
       showNotification('error', '加载向量空间失败');
     } finally {
       setLoadingVisualize(false);
@@ -663,7 +708,7 @@ export default function MilvusPage() {
       } else {
         showNotification('error', data.error);
       }
-    } catch (err) {
+    } catch {
       showNotification('error', '加载相似度分布失败');
     } finally {
       setLoadingVisualize(false);
@@ -694,7 +739,7 @@ export default function MilvusPage() {
       } else {
         showNotification('error', data.error);
       }
-    } catch (err) {
+    } catch {
       showNotification('error', '加载查询路径失败');
     } finally {
       setLoadingVisualize(false);
@@ -827,7 +872,10 @@ export default function MilvusPage() {
                   </span>
                 )}
                 <button
-                  onClick={loadOllamaModels}
+                  onClick={() => {
+                    setLoadingModels(true);
+                    void loadOllamaModels();
+                  }}
                   disabled={loadingModels}
                   className="p-1.5 text-gray-400 hover:text-white transition-colors"
                   title="刷新模型列表"
@@ -868,16 +916,16 @@ export default function MilvusPage() {
       <div className="max-w-7xl mx-auto px-6 py-8">
         {/* 标签页 */}
         <div className="flex gap-2 mb-8 overflow-x-auto">
-          {[
+          {([
             { id: 'dashboard', label: '📊 仪表盘' },
             { id: 'pipeline', label: '📥 导入' },
             { id: 'search', label: '🔍 搜索' },
             { id: 'visualize', label: '🎨 可视化' },
             { id: 'config', label: '⚙️ 配置' },
-          ].map(tab => (
+          ] as const).map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => setActiveTab(tab.id)}
               className={`px-6 py-3 rounded-xl font-medium transition-all ${activeTab === tab.id
                 ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30'
                 : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'
@@ -1330,15 +1378,15 @@ export default function MilvusPage() {
             {/* 导入类型选择 */}
             <div className="bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 p-6">
               <div className="flex gap-2 mb-6">
-                {[
+                {([
                   { id: 'text', icon: '📄', label: '文本' },
                   { id: 'file', icon: '📁', label: '文件' },
                   { id: 'url', icon: '🌐', label: 'URL' },
                   { id: 'youtube', icon: '📺', label: 'YouTube' },
-                ].map(tab => (
+                ] as const).map(tab => (
                   <button
                     key={tab.id}
-                    onClick={() => setImportTab(tab.id as any)}
+                    onClick={() => setImportTab(tab.id)}
                     className={`px-5 py-2.5 rounded-xl font-medium transition-all flex items-center gap-2 ${importTab === tab.id
                       ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30'
                       : 'bg-black/30 text-gray-400 hover:bg-black/50 hover:text-white'
@@ -1802,7 +1850,7 @@ export default function MilvusPage() {
                     })}
 
                     {/* 节点 */}
-                    {queryPath.nodes.map((node, i) => (
+                    {queryPath.nodes.map((node) => (
                       <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
                         {/* 节点圆圈 */}
                         <circle

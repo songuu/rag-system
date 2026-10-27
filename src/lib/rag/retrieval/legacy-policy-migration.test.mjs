@@ -5,7 +5,7 @@ import test from 'node:test';
 const [agenticSource, adaptiveSource, askRouteSource] = await Promise.all([
   readFile(new URL('../../agentic-rag.ts', import.meta.url), 'utf8'),
   readFile(new URL('../../adaptive-entity-rag.ts', import.meta.url), 'utf8'),
-  readFile(new URL('../../../app/api/ask/route.ts', import.meta.url), 'utf8'),
+  readFile(new URL('../../../app/api/ask/runtime.ts', import.meta.url), 'utf8'),
 ]);
 
 test('agentic initial and rewrite retrieval share the server-scope resolver', () => {

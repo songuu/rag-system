@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Search,
+  Trash2,
   Type,
   UploadCloud,
   X,
@@ -24,6 +25,7 @@ import {
   type FormEvent,
 } from 'react';
 import styles from './KnowledgeWorkspace.module.css';
+import type { DocumentCatalogSummary } from '@/lib/documents/document-catalog';
 
 type SourceTab = 'file' | 'url' | 'text';
 type IndexStatus = 'ready' | 'pending' | 'failed' | 'disabled' | 'unknown';
@@ -42,14 +44,8 @@ interface CatalogDocument {
   updatedAt: string;
   milvusStatus: IndexStatus;
   elasticsearchStatus: IndexStatus;
-}
-
-interface CatalogSummary {
-  documentCount: number;
-  chunkCount: number;
-  byteSize: number;
-  syncedCount: number;
-  elasticsearchMode: 'off' | 'shadow' | 'active';
+  enabled: boolean;
+  lifecycle: 'active' | 'deleting';
 }
 
 interface WorkspaceRuntime {
@@ -59,15 +55,19 @@ interface WorkspaceRuntime {
 }
 
 const API_ROOT = '/rag-api';
-const ACCEPTED_FILES = '.txt,.md,.markdown,.pdf,.docx,.xlsx,.xls,.csv,.json';
-const FORMATS = ['PDF', 'DOCX', 'XLSX', 'CSV', 'MD', 'TXT', 'JSON'];
+const ACCEPTED_FILES = '.txt,.md,.markdown,.pdf,.docx,.xlsx,.xls,.csv,.json,.epub,.mobi';
+const FORMATS = ['PDF', 'DOCX', 'XLSX', 'CSV', 'MD', 'TXT', 'JSON', 'EPUB', 'MOBI'];
 
 export default function DocumentManagementWorkspace() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [documents, setDocuments] = useState<CatalogDocument[]>([]);
-  const [summary, setSummary] = useState<CatalogSummary>({
+  const [summary, setSummary] = useState<DocumentCatalogSummary>({
     documentCount: 0,
+    enabledDocumentCount: 0,
+    disabledDocumentCount: 0,
     chunkCount: 0,
+    searchableChunkCount: 0,
+    disabledChunkCount: 0,
     byteSize: 0,
     syncedCount: 0,
     elasticsearchMode: 'off',
@@ -91,6 +91,42 @@ export default function DocumentManagementWorkspace() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [mutatingId, setMutatingId] = useState<string | null>(null);
+  const mutationInFlight = useRef(false);
+  const [deleteTarget, setDeleteTarget] = useState<CatalogDocument | null>(null);
+  const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = deleteDialogRef.current;
+    if (!dialog) return;
+    if (deleteTarget && !dialog.open) dialog.showModal();
+    else if (!deleteTarget && dialog.open) dialog.close();
+  }, [deleteTarget]);
+
+  const mutateDocument = async (document: CatalogDocument, method: 'PATCH' | 'DELETE') => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setMutatingId(document.id);
+    setError('');
+    setNotice('');
+    let failure = '';
+    try {
+      const response = await fetch(`${API_ROOT}/documents`, {
+        method, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: document.id, ...(method === 'PATCH' ? { enabled: !document.enabled } : {}) }),
+      });
+      const payload = await response.json();
+      if (!response.ok || payload.success !== true) throw new Error(readApiError(payload, '文档操作失败'));
+      setNotice(method === 'DELETE' ? `已删除 ${document.name}` : `已${document.enabled ? '禁用' : '启用'} ${document.name}`);
+      setDeleteTarget(null);
+    } catch (mutationError) {
+      failure = mutationError instanceof Error ? mutationError.message : '文档操作失败';
+    } finally {
+      await loadWorkspace();
+      if (failure) setError(failure);
+      setMutatingId(null);
+      mutationInFlight.current = false;
+    }
+  };
 
   const loadWorkspace = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -168,7 +204,7 @@ export default function DocumentManagementWorkspace() {
       return [...unique.values()];
     });
     if (accepted.length !== incoming.length) {
-      setError('已忽略不支持的文件；仅接收 PDF、Word、Excel、CSV、Markdown、TXT 和 JSON。');
+      setError('已忽略不支持的文件；仅接收 PDF、Word、Excel、CSV、Markdown、TXT、JSON、EPUB 和 MOBI。');
     } else {
       setError('');
     }
@@ -203,6 +239,7 @@ export default function DocumentManagementWorkspace() {
       setSourceName('');
       if (inputRef.current) inputRef.current.value = '';
       await loadWorkspace();
+      if (Number(payload.failed) > 0) setError(readApiError(payload, '部分文档导入失败'));
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : '文档导入失败');
     } finally {
@@ -215,7 +252,6 @@ export default function DocumentManagementWorkspace() {
     selectedFiles.forEach(file => form.append('files', file));
     form.append('chunkSize', String(chunkSize));
     form.append('chunkOverlap', String(chunkOverlap));
-    form.append('embeddingModel', runtime.embeddingModel);
     return fetch(`${API_ROOT}/pipeline`, { method: 'POST', body: form });
   };
 
@@ -227,7 +263,6 @@ export default function DocumentManagementWorkspace() {
           ...(isYoutube ? { videoUrl: url.trim() } : { url: url.trim() }),
           chunkSize,
           chunkOverlap,
-          embeddingModel: runtime.embeddingModel,
         }
       : {
           action: 'process-text',
@@ -235,7 +270,6 @@ export default function DocumentManagementWorkspace() {
           source: sourceName.trim() || `粘贴文本-${new Date().toISOString().slice(0, 10)}.txt`,
           chunkSize,
           chunkOverlap,
-          embeddingModel: runtime.embeddingModel,
         };
     return fetch(`${API_ROOT}/pipeline`, {
       method: 'POST',
@@ -263,10 +297,12 @@ export default function DocumentManagementWorkspace() {
       </section>
 
       <section className={styles.metricGrid} aria-label="文档统计">
-        <Metric label="文档资产" value={loading ? '—' : String(summary.documentCount)} />
-        <Metric label="向量文档块" value={loading ? '—' : summary.chunkCount.toLocaleString('zh-CN')} />
-        <Metric label="原始资料体积" value={loading ? '—' : formatBytes(summary.byteSize)} />
-        <Metric label="双索引就绪" value={loading ? '—' : `${summary.syncedCount}/${summary.documentCount}`} />
+        <Metric label="文档资产" value={loading ? '—' : String(summary.documentCount)}
+          detail={loading ? undefined : `已启用 ${summary.enabledDocumentCount} · 已停用 ${summary.disabledDocumentCount}`} />
+        <Metric label="可检索文档块" value={loading ? '—' : summary.searchableChunkCount.toLocaleString('zh-CN')}
+          detail={loading ? undefined : `已存储 ${summary.chunkCount.toLocaleString('zh-CN')} · 已停用 ${summary.disabledChunkCount.toLocaleString('zh-CN')}`} />
+        <Metric label="原始资料体积" value={loading ? '—' : formatBytes(summary.byteSize)} detail="包含保留的已停用文档" />
+        <Metric label="双索引就绪" value={loading ? '—' : `${summary.syncedCount}/${summary.documentCount}`} detail="索引存储状态，包含已停用文档" />
       </section>
 
       <div className={styles.managementGrid}>
@@ -396,6 +432,8 @@ export default function DocumentManagementWorkspace() {
               <option value="docx">Word</option>
               <option value="xlsx">Excel</option>
               <option value="markdown">Markdown</option>
+              <option value="epub">EPUB</option>
+              <option value="mobi">MOBI</option>
               <option value="text">文本</option>
               <option value="url">网页 / 视频</option>
             </select>
@@ -414,11 +452,28 @@ export default function DocumentManagementWorkspace() {
                 </div>
               </div>
             ) : filteredDocuments.map(document => (
-              <DocumentRow key={document.id} document={document} />
+              <DocumentRow key={document.id} document={document} busy={mutatingId !== null}
+                onToggle={() => void mutateDocument(document, 'PATCH')} onDelete={() => setDeleteTarget(document)} />
             ))}
           </div>
         </section>
       </div>
+      <dialog ref={deleteDialogRef} className={styles.deleteDialog} aria-labelledby="delete-document-title" aria-describedby="delete-document-description"
+        onCancel={event => { event.preventDefault(); if (!mutatingId) setDeleteTarget(null); }}>
+            <h2 id="delete-document-title">删除文档</h2>
+            <p id="delete-document-description">
+              确认删除「{deleteTarget?.name}」？原文、文档块和索引将被清理，此操作无法撤销。
+              如果只想暂停检索，请使用禁用。
+            </p>
+            {error ? <p className={styles.errorNotice} role="alert">{error}</p> : null}
+            <div className={styles.documentActions}>
+              <button type="button" className={styles.secondaryButton} disabled={mutatingId !== null} onClick={() => setDeleteTarget(null)}>取消</button>
+              <button type="button" className={`${styles.secondaryButton} ${styles.dangerAction}`} disabled={mutatingId !== null}
+                onClick={() => { if (deleteTarget) void mutateDocument(deleteTarget, 'DELETE'); }}>
+                {mutatingId ? <LoaderCircle size={14} className={styles.spin} /> : <Trash2 size={14} />} {mutatingId ? '正在清理…' : '确认删除'}
+              </button>
+            </div>
+      </dialog>
     </main>
   );
 }
@@ -427,8 +482,8 @@ function BackendNode({ step, label, detail }: { step: string; label: string; det
   return <div className={styles.backendNode}><span>{step}</span><strong>{label}</strong><small>{detail}</small></div>;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className={styles.metric}><span>{label}</span><strong>{value}</strong></div>;
+function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div className={styles.metric}><span>{label}</span><strong>{value}</strong>{detail ? <small className={styles.metricDetail}>{detail}</small> : null}</div>;
 }
 
 function SourceTabButton({
@@ -449,7 +504,9 @@ function SourceTabButton({
   );
 }
 
-function DocumentRow({ document }: { document: CatalogDocument }) {
+function DocumentRow({ document, busy, onToggle, onDelete }: {
+  document: CatalogDocument; busy: boolean; onToggle: () => void; onDelete: () => void;
+}) {
   const type = displayKind(document.sourceKind, document.name);
   const searchHref = `/document-search?documentId=${encodeURIComponent(document.documentId)}`;
   return (
@@ -462,20 +519,31 @@ function DocumentRow({ document }: { document: CatalogDocument }) {
             <span>{formatBytes(document.byteSize)}</span>
             <span>更新于 {formatDate(document.updatedAt)}</span>
             <span>{document.trustLevel}</span>
+            <span className={document.enabled ? styles.documentEnabled : styles.documentDisabled}>
+              {document.lifecycle === 'deleting' ? '删除未完成 · 可重试' : document.enabled ? '已启用' : '已禁用 · 不参与检索'}
+            </span>
           </div>
         </div>
       </div>
-      <div className={styles.documentStat}><span>Chunks</span><strong>{document.chunkCount}</strong></div>
+      <div className={styles.documentStat}><span>已存储块</span><strong>{document.chunkCount}</strong></div>
       <div className={styles.indexCell}>
-        <span>Index health</span>
+        <span>索引存储状态</span>
         <div className={styles.indexStack}>
           <IndexLine label="Milvus" status={document.milvusStatus} />
           <IndexLine label="Elasticsearch" status={document.elasticsearchStatus} />
         </div>
       </div>
-      <Link className={styles.rowAction} href={searchHref} title={`在 ${document.name} 中搜索`} aria-label={`在 ${document.name} 中搜索`}>
+      <div className={styles.documentActions}>
+        <button type="button" className={styles.secondaryButton} disabled={busy || document.lifecycle === 'deleting'}
+          aria-label={`${document.enabled ? '禁用' : '启用'} ${document.name}`} onClick={onToggle}>
+          {document.enabled ? '禁用' : '启用'}
+        </button>
+        <button type="button" className={`${styles.rowAction} ${styles.dangerAction}`} disabled={busy}
+          title={document.lifecycle === 'deleting' ? '重试删除' : '删除文档'} aria-label={`删除 ${document.name}`} onClick={onDelete}><Trash2 size={15} /></button>
+      {document.enabled ? <Link className={styles.rowAction} href={searchHref} title={`在 ${document.name} 中搜索`} aria-label={`在 ${document.name} 中搜索`}>
         <ArrowUpRight size={16} />
-      </Link>
+      </Link> : null}
+      </div>
     </article>
   );
 }
@@ -502,7 +570,7 @@ function runtimeLabel(status: WorkspaceRuntime['milvus'] | WorkspaceRuntime['ela
 }
 
 function supportedFilename(filename: string): boolean {
-  return /\.(?:txt|md|markdown|pdf|docx|xlsx|xls|csv|json)$/i.test(filename);
+  return ACCEPTED_FILES.split(',').some(extension => filename.toLowerCase().endsWith(extension));
 }
 
 function fileKey(file: File): string {
@@ -536,11 +604,15 @@ function formatDate(value: string): string {
 
 function readApiError(payload: unknown, fallback: string): string {
   if (!payload || typeof payload !== 'object') return fallback;
-  const value = payload as { error?: unknown };
+  const value = payload as { error?: unknown; results?: { success?: boolean; filename?: string; error?: unknown }[] };
   if (typeof value.error === 'string' && value.error.trim()) return value.error;
   if (value.error && typeof value.error === 'object' && 'message' in value.error) {
     const message = (value.error as { message?: unknown }).message;
     if (typeof message === 'string' && message.trim()) return message;
   }
+  const failed = Array.isArray(value.results)
+    ? value.results.filter(result => result.success === false && typeof result.error === 'string')
+    : [];
+  if (failed.length > 0) return failed.map(result => `${result.filename || '文档'}：${result.error}`).join('；');
   return fallback;
 }

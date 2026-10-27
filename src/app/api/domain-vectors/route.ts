@@ -12,6 +12,45 @@ const EMBEDDING_MODEL = 'nomic-embed-text';
 // 质心数据存储路径
 const CENTROIDS_FILE = path.join(process.cwd(), 'data', 'centroids.json');
 
+interface CentroidVector extends Record<string, unknown> {
+  centroid: number[];
+}
+
+interface CentroidCalculationResult {
+  wordCount: number;
+  dimension: number;
+}
+
+interface SimilarityDetails {
+  dotProduct: number;
+  queryNorm: number;
+  centroidNorm: number;
+  wordCount?: number;
+  dimension?: number;
+  topDimensions: Array<{ dim: number; queryVal: number; centroidVal: number; contrib: number }>;
+  seedSample: string[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string');
+}
+
+function isNumberArray(value: unknown): value is number[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'number' && Number.isFinite(item));
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === 'string';
+}
+
+function isCentroidVector(value: unknown): value is CentroidVector {
+  return isRecord(value) && isNumberArray(value.centroid);
+}
+
 // 预定义的领域配置
 const DOMAIN_CONFIG = {
   tech: {
@@ -81,12 +120,14 @@ function ensureDataDir() {
 }
 
 // 加载已保存的质心数据
-function loadCentroids(): Record<string, any> {
+function loadCentroids(): Record<string, unknown> {
   try {
     ensureDataDir();
     if (fs.existsSync(CENTROIDS_FILE)) {
       const data = fs.readFileSync(CENTROIDS_FILE, 'utf-8');
-      return JSON.parse(data);
+      const parsed: unknown = JSON.parse(data);
+      // Preserve opaque legacy fields; validation belongs at the actual read site.
+      return isRecord(parsed) ? parsed : {};
     }
   } catch (error) {
     console.error('Failed to load centroids:', error);
@@ -95,7 +136,7 @@ function loadCentroids(): Record<string, any> {
 }
 
 // 保存质心数据
-function saveCentroids(centroids: Record<string, any>) {
+function saveCentroids(centroids: Record<string, unknown>) {
   try {
     ensureDataDir();
     fs.writeFileSync(CENTROIDS_FILE, JSON.stringify(centroids, null, 2), 'utf-8');
@@ -134,8 +175,11 @@ async function generateSeedWords(domain: string, customPrompt?: string): Promise
       throw new Error(`Ollama LLM request failed: ${response.statusText}`);
     }
     
-    const data = await response.json();
-    const text = data.response || '';
+    const data: unknown = await response.json();
+    const text = isRecord(data) ? data.response || '' : null;
+    if (typeof text !== 'string') {
+      throw new Error('Invalid Ollama generation response');
+    }
     
     // 解析返回的词汇（支持逗号、顿号、换行分隔）
     const words = text
@@ -166,8 +210,12 @@ async function getEmbedding(text: string): Promise<number[]> {
       throw new Error(`Ollama embedding request failed: ${response.statusText}`);
     }
     
-    const data = await response.json();
-    return data.embedding || [];
+    const data: unknown = await response.json();
+    const embedding = isRecord(data) ? data.embedding || [] : null;
+    if (!isNumberArray(embedding)) {
+      throw new Error('Invalid Ollama embedding response');
+    }
+    return embedding;
   } catch (error) {
     console.error('Failed to get embedding:', error);
     throw error;
@@ -238,10 +286,11 @@ export async function GET(request: NextRequest) {
   if (action === 'centroids') {
     // 返回已保存的质心数据
     const centroids = loadCentroids();
+    const metadata = centroids._meta;
     return NextResponse.json({
       success: true,
       centroids,
-      savedAt: centroids._meta?.savedAt
+      savedAt: isRecord(metadata) && typeof metadata.savedAt === 'string' ? metadata.savedAt : undefined
     });
   }
   
@@ -257,21 +306,24 @@ export async function GET(request: NextRequest) {
         throw new Error('Ollama service not responding');
       }
       
-      const data = await response.json();
-      const models = data.models || [];
-      const hasLLM = models.some((m: any) => m.name.includes('llama3.1'));
-      const hasEmbed = models.some((m: any) => m.name.includes('nomic-embed-text'));
+      const data: unknown = await response.json();
+      const models = isRecord(data) ? data.models || [] : null;
+      if (!Array.isArray(models) || !models.every((model): model is { name: string } => isRecord(model) && typeof model.name === 'string')) {
+        throw new Error('Invalid Ollama model list response');
+      }
+      const hasLLM = models.some(model => model.name.includes('llama3.1'));
+      const hasEmbed = models.some(model => model.name.includes('nomic-embed-text'));
       
       return NextResponse.json({
         success: true,
         status: 'online',
-        models: models.map((m: any) => m.name),
+        models: models.map(model => model.name),
         requirements: {
           llm: { model: LLM_MODEL, available: hasLLM },
           embedding: { model: EMBEDDING_MODEL, available: hasEmbed }
         }
       });
-    } catch (error) {
+    } catch {
       return NextResponse.json({
         success: false,
         status: 'offline',
@@ -290,12 +342,24 @@ export async function GET(request: NextRequest) {
 // POST: 处理各种操作
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
+    const body: unknown = await request.json();
+    if (!isRecord(body)) {
+      if (body === null || body === undefined) {
+        throw new Error('Invalid domain vectors request: body must be an object');
+      }
+      return NextResponse.json({ success: false, error: 'Unknown action' }, { status: 400 });
+    }
     const { action } = body;
     
     // 生成种子词
     if (action === 'generate-seeds') {
       const { domain, customPrompt } = body;
+      if (typeof domain !== 'string') {
+        throw new Error('Invalid generate-seeds request: domain must be a string');
+      }
+      if (!isOptionalString(customPrompt)) {
+        throw new Error('Invalid generate-seeds request: customPrompt must be a string');
+      }
       const words = await generateSeedWords(domain, customPrompt);
       return NextResponse.json({
         success: true,
@@ -309,7 +373,7 @@ export async function POST(request: NextRequest) {
     if (action === 'calculate-centroid') {
       const { domain, seedWords } = body;
       
-      if (!seedWords || seedWords.length === 0) {
+      if (typeof domain !== 'string' || !isStringArray(seedWords) || seedWords.length === 0) {
         return NextResponse.json({
           success: false,
           error: 'No seed words provided'
@@ -359,14 +423,17 @@ export async function POST(request: NextRequest) {
     // 批量计算所有领域的质心
     if (action === 'calculate-all') {
       const { domains } = body; // domains: { tech: [...words], business: [...words], ... }
+      if (!isRecord(domains)) {
+        throw new Error('Invalid calculate-all request: domains must be an object');
+      }
       
-      const results: Record<string, any> = {};
+      const results: Record<string, CentroidCalculationResult> = {};
       const centroids = loadCentroids();
       
       for (const [domain, seedWords] of Object.entries(domains)) {
-        if (!Array.isArray(seedWords) || seedWords.length === 0) continue;
+        if (!isStringArray(seedWords) || seedWords.length === 0) continue;
         
-        const embeddings = await getEmbeddings(seedWords as string[]);
+        const embeddings = await getEmbeddings(seedWords);
         const centroid = calculateCentroid(embeddings.map(e => e.embedding));
         
         const config = DOMAIN_CONFIG[domain as keyof typeof DOMAIN_CONFIG];
@@ -377,14 +444,14 @@ export async function POST(request: NextRequest) {
           color: config?.color || '#6B7280',
           icon: config?.icon || '📁',
           seedWords,
-          wordCount: (seedWords as string[]).length,
+          wordCount: seedWords.length,
           centroid,
           dimension: centroid.length,
           calculatedAt: new Date().toISOString()
         };
         
         results[domain] = {
-          wordCount: (seedWords as string[]).length,
+          wordCount: seedWords.length,
           dimension: centroid.length
         };
       }
@@ -419,7 +486,11 @@ export async function POST(request: NextRequest) {
       
       // 加载质心数据
       const centroids = loadCentroids();
-      const domainCount = Object.keys(centroids).filter(k => k !== '_meta').length;
+      // Invalid neighboring disk entries cannot make a usable vector query fail.
+      const domainCentroids = Object.entries(centroids).filter(
+        (entry): entry is [string, CentroidVector] => entry[0] !== '_meta' && isCentroidVector(entry[1])
+      );
+      const domainCount = domainCentroids.length;
       
       if (domainCount === 0) {
         return NextResponse.json({
@@ -451,15 +522,13 @@ export async function POST(request: NextRequest) {
       const similarities: Array<{ 
         domain: string; 
         similarity: number; 
-        name: string; 
-        icon: string;
+        name?: string;
+        icon?: string;
         color: string;
-        details?: any;
+        details?: SimilarityDetails;
       }> = [];
       
-      for (const [domain, data] of Object.entries(centroids)) {
-        if (domain === '_meta' || !data.centroid) continue;
-        
+      for (const [domain, data] of domainCentroids) {
         const centroid = data.centroid;
         
         // 余弦相似度（使用归一化后的向量）
@@ -480,23 +549,23 @@ export async function POST(request: NextRequest) {
           dotProduct,
           queryNorm: Math.sqrt(normA),
           centroidNorm: Math.sqrt(normB),
-          wordCount: data.wordCount,
-          dimension: data.dimension,
+          wordCount: typeof data.wordCount === 'number' && Number.isFinite(data.wordCount) ? data.wordCount : undefined,
+          dimension: typeof data.dimension === 'number' && Number.isFinite(data.dimension) ? data.dimension : undefined,
           // 找出贡献最大的维度
           topDimensions: normalizedQuery
             .map((v, i) => ({ dim: i, queryVal: v, centroidVal: centroid[i], contrib: v * centroid[i] }))
             .sort((a, b) => Math.abs(b.contrib) - Math.abs(a.contrib))
             .slice(0, 10),
           // 种子词样本
-          seedSample: data.seedWords?.slice(0, 10) || []
+          seedSample: isStringArray(data.seedWords) ? data.seedWords.slice(0, 10) : []
         } : undefined;
         
         similarities.push({
           domain,
           similarity,
-          name: data.name,
-          icon: data.icon,
-          color: data.color || '#6B7280',
+          name: typeof data.name === 'string' ? data.name : undefined,
+          icon: typeof data.icon === 'string' ? data.icon : undefined,
+          color: typeof data.color === 'string' && data.color || '#6B7280',
           details
         });
       }
@@ -545,7 +614,8 @@ export async function POST(request: NextRequest) {
     if (action === 'add-custom-domain') {
       const { domainId, name, description, color, icon, seedWords } = body;
       
-      if (!domainId || !seedWords || seedWords.length === 0) {
+      if (typeof domainId !== 'string' || !domainId || !isStringArray(seedWords) || seedWords.length === 0
+        || !isOptionalString(name) || !isOptionalString(description) || !isOptionalString(color) || !isOptionalString(icon)) {
         return NextResponse.json({
           success: false,
           error: 'Missing required fields'
@@ -588,6 +658,9 @@ export async function POST(request: NextRequest) {
     // 删除领域
     if (action === 'delete-domain') {
       const { domainId } = body;
+      if (typeof domainId !== 'string') {
+        throw new Error('Invalid delete-domain request: domainId must be a string');
+      }
       
       const centroids = loadCentroids();
       if (centroids[domainId]) {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -810,8 +811,19 @@ test('remote gateway and watcher gate remains inside the release transaction', (
   assert.match(postReleaseGate, /RAG_BASE_PATH}\/api\/health\/live/);
   assert.match(postReleaseGate, /restore_watcher_state/);
   assert.match(postReleaseGate, /verify_restored_snapshots/);
-  assert.match(postReleaseGate, /verify_gateway \|\| rollback_failed=1/);
+  assert.match(postReleaseGate, /verify_gateway "\$\(cat "\$STATE_ROOT\/gateway-ui\.status"\)"/);
+  assert.match(postReleaseGate, /gateway-api\.status"\)" \|\| rollback_failed=1/);
   assert.match(postReleaseGate, /systemctl reload nginx/);
   assert.match(remoteStep, /post-release-gate-state\/rollback\.failed/);
   assert.match(remoteStep, /Preserving protected staging after post-release rollback failure/);
+});
+
+
+test('RAG gateway public access preserves Pipeline authentication and isolated bearer rotation', () => {
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const result = spawnSync(python, [path.join(directory, 'patch-nginx.test.py')], {
+    encoding: 'utf8',
+  });
+  assert.equal(result.error, undefined, `Could not run ${python}: ${result.error?.message}`);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 });

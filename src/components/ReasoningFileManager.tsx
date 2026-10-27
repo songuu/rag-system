@@ -38,6 +38,17 @@ interface ReasoningFileManagerProps {
   onStatusChange?: (isReady: boolean, docCount: number) => void;
 }
 
+async function fetchReasoningData(signal?: AbortSignal): Promise<[
+  { success: boolean; files?: FileInfo[] },
+  VectorStats & { success: boolean },
+]> {
+  const [filesRes, statsRes] = await Promise.all([
+    fetch('/rag-api/reasoning-rag/files', { signal }),
+    fetch('/rag-api/reasoning-rag/vectorize', { signal }),
+  ]);
+  return Promise.all([filesRes.json(), statsRes.json()]);
+}
+
 // ==================== 文件管理组件 ====================
 
 const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
@@ -62,17 +73,9 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
   const SUPPORTED_EXTENSIONS = ['.txt', '.md', '.pdf', '.xlsx', '.xls', '.csv', '.docx', '.doc', '.json'];
 
   // 加载文件列表和统计
-  const loadData = useCallback(async () => {
-    try {
-      // 并行加载文件列表和向量状态
-      const [filesRes, statsRes] = await Promise.all([
-        fetch('/rag-api/reasoning-rag/files'),
-        fetch('/rag-api/reasoning-rag/vectorize')
-      ]);
-
-      const filesData = await filesRes.json();
-      const statsData = await statsRes.json();
-
+  const loadData = useCallback((signal?: AbortSignal) => fetchReasoningData(signal)
+    .then(([filesData, statsData]) => {
+      if (signal?.aborted) return;
       if (filesData.success) {
         setFiles(filesData.files || []);
       }
@@ -81,13 +84,14 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
         setVectorStats(statsData);
         onStatusChange?.(statsData.isReady, statsData.collectionStats?.rowCount || 0);
       }
-    } catch (err) {
-      console.error('Failed to load data:', err);
-    }
-  }, [onStatusChange]);
+    }).catch((err) => {
+      if (!signal?.aborted) console.error('Failed to load data:', err);
+    }), [onStatusChange]);
 
   useEffect(() => {
-    loadData();
+    const controller = new AbortController();
+    void loadData(controller.signal);
+    return () => controller.abort();
   }, [loadData]);
 
   // 拖放处理
@@ -397,7 +401,7 @@ const ReasoningFileManager: React.FC<ReasoningFileManagerProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-400">已上传文件</span>
                 <button
-                  onClick={loadData}
+                  onClick={() => { void loadData(); }}
                   className="text-xs text-emerald-400 hover:text-emerald-300"
                 >
                   🔄 刷新

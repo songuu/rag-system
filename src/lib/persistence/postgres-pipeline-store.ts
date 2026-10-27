@@ -41,6 +41,12 @@ export class PostgresPipelineStore {
   }
 
   async recordCompletedDocument(input: CompletedPipelineDocument): Promise<string> {
+    return this.client.withTransaction
+      ? this.client.withTransaction('persist completed pipeline document', client => this.persistCompletedDocument(input, client))
+      : this.persistCompletedDocument(input, this.client);
+  }
+
+  private async persistCompletedDocument(input: CompletedPipelineDocument, client: PostgresQueryClient): Promise<string> {
     this.assertScope(input);
     const source = input.source === undefined
       ? null
@@ -56,11 +62,13 @@ export class PostgresPipelineStore {
     };
 
     const result = await queryPostgres<AssetIdRow>(
-      this.client,
+      client,
       `with deduplicated as (
          delete from document_assets
          where tenant_id = $1 and corpus_id = $2 and source_hash = $7
            and external_document_id <> $3
+           and coalesce(metadata->>'lifecycle', 'active') = 'active'
+           and metadata->>'retrieval_enabled' is distinct from 'false'
          returning id
        ), stored_blob as (
          insert into object_blobs (
@@ -99,9 +107,16 @@ export class PostgresPipelineStore {
          raw_blob_filename = coalesce(excluded.raw_blob_filename, document_assets.raw_blob_filename),
          parsed_blob_filename = coalesce(excluded.parsed_blob_filename, document_assets.parsed_blob_filename),
          parse_method = excluded.parse_method,
-         metadata = excluded.metadata,
+         metadata = excluded.metadata || case
+           when document_assets.metadata->>'lifecycle' = 'deleted'
+             then jsonb_build_object('retrieval_enabled', true, 'lifecycle', 'active')
+           else jsonb_build_object(
+           'retrieval_enabled', coalesce(document_assets.metadata->'retrieval_enabled', 'true'::jsonb),
+           'lifecycle', coalesce(document_assets.metadata->'lifecycle', '"active"'::jsonb)
+           ) end,
          created_by = excluded.created_by,
          updated_at = now()
+       where coalesce(document_assets.metadata->>'lifecycle', 'active') <> 'deleting'
        returning id`,
       [
         input.tenantId,

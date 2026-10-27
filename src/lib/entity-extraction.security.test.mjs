@@ -24,6 +24,27 @@ const {
   calculateEntityExtractionPromptCharacters,
 } = await import('./entity-extraction.ts');
 
+test('repeated entity mentions keep unique source chunks across and within chunks', async () => {
+  const entity = { name: 'Alice', type: 'PERSON', description: 'A repeated entity.' };
+  const extractor = createExtractor({
+    async invoke() {
+      return { content: JSON.stringify({ entities: [entity, entity], relations: [] }) };
+    },
+  }, `unique-entity-sources:${Date.now()}`, 1_000, {
+    chunkSize: 5,
+    baseChunkTime: 1_000,
+  }, {
+    async embedQuery() { return [1, 0]; },
+    async embedDocuments(documents) { return documents.map(() => [1, 0]); },
+  });
+
+  const graph = await extractor.extract('abcdefghij', 'repeated-entity-document');
+  assert.equal(graph.entities.size, 1);
+  const [merged] = graph.entities.values();
+  assert.equal(merged.mentions, 4);
+  assert.deepEqual(merged.sourceChunks, [...graph.chunks.keys()]);
+});
+
 test('chunkDocument emits only bounded verbatim source slices with exact overlap', async () => {
   const source = `  heading\n\n${'x'.repeat(27)}\n tail  `;
   const extractor = createExtractor({

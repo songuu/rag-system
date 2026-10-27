@@ -1,0 +1,40 @@
+{
+  "runId": "f70101ca-d6d3-4eab-8183-1cbe425440bf",
+  "startedAt": "2026-10-27T06:18:53.135Z",
+  "mockedResponses": false,
+  "tests": [
+    {
+      "round": 1,
+      "httpStatus": 504,
+      "success": false,
+      "request": {
+        "datasetId": "rag-evaluation",
+        "datasetVersion": "1",
+        "count": 5,
+        "documentAssetIds": [
+          "89d16c8d-0023-48a8-823c-a54f40e8cc81"
+        ]
+      },
+      "error": {
+        "code": "DATASET_GENERATION_TIMEOUT",
+        "message": "生成测试集超时，请减少题数或资料长度后重试。"
+      }
+    }
+  ],
+  "passed": false,
+  "document": {
+    "id": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+    "name": "重构契丹早期史.epub",
+    "documentId": "重构契丹早期史.epub",
+    "version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+    "chunks": 645
+  },
+  "error": {
+    "phase": "generate-1",
+    "message": "Actual generation failed: {\"code\":\"DATASET_GENERATION_TIMEOUT\",\"message\":\"生成测试集超时，请减少题数或资料长度后重试。\"}"
+  },
+  "visibleAlerts": [
+    "生成测试集超时，请减少题数或资料长度后重试。",
+    ""
+  ]
+}

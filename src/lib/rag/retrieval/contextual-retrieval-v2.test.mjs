@@ -412,6 +412,86 @@ test('contextual v2 rejects call and total-input amplification before provider w
   assert.equal(calls, 0);
 });
 
+test('explicit fallback keeps all raw chunks without provider work when enhancement exceeds budgets', async () => {
+  let calls = 0;
+  for (const mode of ['active', 'shadow']) {
+    for (const budget of [
+      { maxProviderCalls: 1 },
+      { maxDocumentCharacters: 6, maxTotalInputCharacters: 10 },
+    ]) {
+      const options = baseOptions(2);
+      const result = await contextualizeChunksV2({
+        ...options,
+        ...budget,
+        mode,
+        failureMode: 'fallback',
+        contextualizer: {
+          async generateContext() { calls++; return 'must not run'; },
+        },
+      });
+      assert.equal(result.mode, mode);
+      assert.equal(result.fallbackCount, options.chunks.length);
+      assert.equal(result.generatedCharacters, 0);
+      for (const [index, chunk] of result.chunks.entries()) {
+        assert.equal(chunk.denseText, options.chunks[index].text);
+        assert.equal(chunk.rawContent, options.chunks[index].text);
+        assert.equal(chunk.status, 'fallback');
+        assert.equal(chunk.errorCode, 'CONTEXTUALIZER_BUDGET_EXCEEDED');
+        assert.equal(chunk.generatedContext, '');
+        assert.equal(chunk.participatesInDenseIndex, mode === 'active');
+      }
+    }
+  }
+  assert.equal(calls, 0);
+});
+
+test('explicit throw still rejects enhancement budgets before provider work', async () => {
+  await assert.rejects(contextualizeChunksV2({
+    ...baseOptions(2),
+    mode: 'active',
+    failureMode: 'throw',
+    maxTotalInputCharacters: 1,
+    contextualizer: { async generateContext() { assert.fail('must not run'); } },
+  }), /provider input/);
+});
+
+test('exact contextual budgets still generate context with explicit fallback', async () => {
+  let calls = 0;
+  const result = await contextualizeChunksV2({
+    ...baseOptions(2),
+    mode: 'active',
+    failureMode: 'fallback',
+    maxProviderCalls: 2,
+    maxDocumentCharacters: 6,
+    maxTotalInputCharacters: 12,
+    contextualizer: { async generateContext() { calls++; return 'context'; } },
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.fallbackCount, 0);
+  assert.ok(result.chunks.every(chunk => chunk.status === 'contextualized'));
+});
+
+test('budget fallback cannot swallow invalid spans, invalid configuration or cancellation', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const options = baseOptions(2);
+  for (const mutation of [
+    { signal: controller.signal },
+    { chunks: [{ ...options.chunks[0], text: 'forged' }] },
+    { maxDocumentCharacters: 0 },
+    { maxChunks: 1 },
+  ]) {
+    await assert.rejects(contextualizeChunksV2({
+      ...options,
+      mode: 'active',
+      failureMode: 'fallback',
+      maxTotalInputCharacters: 1,
+      ...mutation,
+      contextualizer: { async generateContext() { assert.fail('must not run'); } },
+    }));
+  }
+});
+
 test('contextual identity rejects spans that do not map to source text', async () => {
   const options = baseOptions();
   await assert.rejects(

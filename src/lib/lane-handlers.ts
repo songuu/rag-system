@@ -8,14 +8,12 @@
  * 已更新为使用统一模型配置系统 (model-config.ts)
  */
 
-import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { Embeddings } from '@langchain/core/embeddings';
-import { getMilvusInstance } from './milvus-client';
-import { IntentClassification } from './intent-router';
-import { createLLM, createEmbedding, createReasoningModel, selectModelByDimension, getModelFactory } from './model-config';
+import { getMilvusInstance, type MilvusSearchResult } from './milvus-client';
+import type { IntentClassification } from './intent-router';
+import { createLLM, createEmbedding, createReasoningModel, selectModelByDimension } from './model-config';
 
 // 帮助函数：从 LLM 响应中提取内容
-function extractContent(response: any): string {
+function extractContent(response: unknown): string {
   if (typeof response === 'string') return response;
   if (response && typeof response === 'object' && 'content' in response) {
     return typeof response.content === 'string' ? response.content : '';
@@ -25,11 +23,62 @@ function extractContent(response: any): string {
 
 // ==================== 流式事件类型 ====================
 
-export interface StreamEvent {
-  type: 'routing' | 'thinking' | 'retrieval' | 'generation' | 'complete' | 'error' | 'lane_start';
-  data: any;
+interface LaneThinkingContent {
+  id: string;
+  type: 'planning' | 'decision' | 'reasoning' | 'reflection';
+  content: string;
+  confidence: number;
+}
+
+interface LaneThinkingStep extends LaneThinkingContent {
   timestamp: number;
 }
+
+interface LaneRetrievalStats {
+  totalCount: number;
+  retrievalTime: number;
+  finalCount?: number;
+  queriesUsed?: number;
+}
+
+interface LaneCompletion {
+  lane: 1 | 2 | 3;
+  laneName: string;
+  answer: string;
+  thinkingProcess: LaneThinkingStep[];
+  retrieval?: { documents: MilvusSearchResult[]; stats: LaneRetrievalStats };
+  workflow: {
+    totalDuration: number;
+    iterations: number;
+    phases?: string[];
+    nodeExecutions: Array<{ node: string; status: 'completed'; duration: number }>;
+  };
+  routing?: { classification: IntentClassification; routingTime: number };
+}
+
+interface LaneEventPayloads {
+  routing: { status: 'analyzing'; message: string }
+    | { status: 'complete'; classification: IntentClassification; message: string };
+  thinking: LaneThinkingContent & {
+    step: number;
+    status: 'in_progress' | 'completed';
+    metadata?: { plan: string };
+  };
+  retrieval: {
+    documents: Array<{ id: number; content: string; score: number; source: MilvusSearchResult['metadata']['source'] }>;
+    stats: LaneRetrievalStats;
+  };
+  generation: { status: 'start'; content: string }
+    | { status: 'streaming'; content: string; fullContent: string };
+  complete: LaneCompletion;
+  error: { message: string; stack?: string };
+  lane_start: { lane: 1 | 2 | 3; laneName: string; description: string; estimatedTime: string; model: string };
+}
+
+// Keep each payload correlated with its event kind for producers and SSE consumers.
+export type StreamEvent = {
+  [Kind in keyof LaneEventPayloads]: { type: Kind; data: LaneEventPayloads[Kind]; timestamp: number };
+}[keyof LaneEventPayloads];
 
 // ==================== 公共配置接口 ====================
 
@@ -200,7 +249,7 @@ export async function* executeLane2(
     timestamp: Date.now()
   };
 
-  const thinkingSteps: any[] = [];
+  const thinkingSteps: LaneThinkingStep[] = [];
 
   try {
     // Step 1: 检索
@@ -224,7 +273,7 @@ export async function* executeLane2(
 
     // 获取集合统计信息
     const stats = await milvus.getCollectionStats();
-    const dimension = (stats as any)?.embeddingDimension || 768;
+    const dimension = stats?.embeddingDimension || 768;
     const embeddingModelName = selectModelByDimension(dimension) || config.embeddingModel || 'nomic-embed-text';
 
     console.log(`[Lane 2] 向量维度: ${dimension}, 嵌入模型: ${embeddingModelName}`);
@@ -263,7 +312,7 @@ export async function* executeLane2(
     yield {
       type: 'retrieval',
       data: {
-        documents: retrievedDocs.slice(0, 5).map((doc: any, i: number) => ({
+        documents: retrievedDocs.slice(0, 5).map((doc, i) => ({
           id: i,
           content: doc.content?.substring(0, 200) + (doc.content?.length > 200 ? '...' : ''),
           score: doc.score,
@@ -298,7 +347,7 @@ export async function* executeLane2(
 
     // 构建上下文
     const context = retrievedDocs.length > 0
-      ? retrievedDocs.slice(0, 5).map((doc: any, i: number) => 
+      ? retrievedDocs.slice(0, 5).map((doc, i) =>
           `[文档 ${i + 1}] (相关度: ${((doc.score || 0) * 100).toFixed(1)}%)\n${doc.content || ''}`
         ).join('\n\n---\n\n')
       : '';
@@ -438,7 +487,7 @@ export async function* executeLane3(
     timestamp: Date.now()
   };
 
-  const thinkingSteps: any[] = [];
+  const thinkingSteps: LaneThinkingStep[] = [];
 
   try {
     // Phase 1: 查询分解 (Planner)
@@ -512,7 +561,7 @@ export async function* executeLane3(
     await milvus.connect();
 
     const stats = await milvus.getCollectionStats();
-    const dimension = (stats as any)?.embeddingDimension || 768;
+    const dimension = stats?.embeddingDimension || 768;
     const embeddingModelName = selectModelByDimension(dimension) || config.embeddingModel || 'nomic-embed-text';
 
     console.log(`[Lane 3] 向量维度: ${dimension}, 嵌入模型: ${embeddingModelName}`);
@@ -535,7 +584,7 @@ export async function* executeLane3(
 
     console.log(`[Lane 3] 检索查询数: ${queries.length}`);
 
-    const allResults: any[] = [];
+    const allResults: MilvusSearchResult[] = [];
     for (const q of queries) {
       const queryVector = await embeddings.embedQuery(q);
       const results = await milvus.search(queryVector, Math.ceil(topK / queries.length), threshold);
@@ -547,7 +596,7 @@ export async function* executeLane3(
     // 去重和排序
     const uniqueResults = Array.from(
       new Map(allResults.map(r => [r.content, r])).values()
-    ).sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+    ).sort((a, b) => (b.score || 0) - (a.score || 0));
 
     const topResults = uniqueResults.slice(0, rerankTopK);
     const retrievalTime = Date.now() - retrievalStartTime;
@@ -578,7 +627,7 @@ export async function* executeLane3(
     yield {
       type: 'retrieval',
       data: {
-        documents: topResults.map((doc: any, i: number) => ({
+        documents: topResults.map((doc, i) => ({
           id: i,
           content: doc.content?.substring(0, 200) + (doc.content?.length > 200 ? '...' : ''),
           score: doc.score,
@@ -614,7 +663,7 @@ export async function* executeLane3(
     });
 
     // 构建详细上下文
-    const context = topResults.map((doc: any, i: number) => 
+    const context = topResults.map((doc, i) =>
       `[来源 ${i + 1}] (相关度: ${((doc.score || 0) * 100).toFixed(1)}%)\n${doc.content || ''}`
     ).join('\n\n---\n\n');
 

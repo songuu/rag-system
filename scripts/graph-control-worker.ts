@@ -22,6 +22,8 @@ import {
   getPostgresRuntimeConfig,
 } from '../src/lib/postgres/env';
 import { createRetrievalScope } from '../src/lib/security/retrieval-scope';
+import { canonicalJson } from '../src/lib/rag/eval/canonical-json';
+import { createBuildPublicationManifest, validateBuildPublicationManifest, type BuildPublicationManifest } from '../src/lib/knowledge-graph/build-publication-manifest';
 
 export interface GraphControlWorkerOptions {
   once: boolean;
@@ -89,6 +91,7 @@ interface BuildJobWorkerStore {
     progress: number;
     artifactDigest: string;
     leaseToken: string;
+    publicationManifest: BuildPublicationManifest;
   }): Promise<KnowledgeGraphBuildJob>;
   transition(input: {
     jobId: string;
@@ -107,7 +110,7 @@ export async function runGraphControlIteration(input: {
   publicationStore: PostgresKnowledgeGraphPublicationStore;
   commandStore: Pick<
     Neo4jKnowledgeGraphCommandStore,
-    'deleteSnapshotWithPostgresLease' | 'snapshotExists' | 'getCompatibilityDescriptor'
+    'deleteSnapshotWithPostgresLease' | 'snapshotExists' | 'getCompatibilityDescriptor' | 'getSnapshot'
   > & Partial<Pick<Neo4jKnowledgeGraphCommandStore, 'getActive' | 'compareAndSetActive'>>;
   publish?: (event: ClaimedKnowledgeGraphPublicationEvent) => Promise<void>;
   buildStore?: BuildJobWorkerStore;
@@ -176,7 +179,21 @@ export async function runGraphControlIteration(input: {
             graphVersion: job.graphVersion,
           }, scope);
           assertCompletedBuildDescriptor(job, result.artifactDigest, descriptor);
+          const snapshot = await input.commandStore.getSnapshot({
+            tenantId: job.tenantId, corpusId: job.corpusId, graphVersion: job.graphVersion,
+          }, scope);
+          if (!snapshot || snapshot.status === 'failed') throw new Error('Neo4j lacks a valid full graph build Snapshot.');
+          const manifest = createBuildPublicationManifest({
+            tenantId: snapshot.tenantId, corpusId: snapshot.corpusId, graphVersion: snapshot.graphVersion,
+            artifactDigest: snapshot.artifactDigest, documents: snapshot.documents,
+          });
+          const expected = requiredBuildDocumentIdentity(job.metadata.documentIdentity);
+          if (manifest.tenantId !== job.tenantId || manifest.corpusId !== job.corpusId || manifest.graphVersion !== job.graphVersion
+            || manifest.artifactDigest !== result.artifactDigest || canonicalJson(manifest.documents) !== canonicalJson([{
+              documentId: expected.documentId, documentVersion: expected.documentVersion, trustLevel: expected.trustLevel,
+            }])) throw new Error('Full Neo4j Snapshot does not match the durable graph build identity.');
           await input.publicationStore.registerStagedSnapshot(scope, job.graphVersion);
+          return manifest;
         },
       })
     : { claimed: 0, validated: 0, failed: 0, retried: 0 };
@@ -189,7 +206,7 @@ export async function processNextGraphBuildJob(input: {
   finalizeStaged?: (
     job: KnowledgeGraphBuildJob,
     result: Extract<GraphBuildWebhookResult, { status: 'staged' }>
-  ) => Promise<void>;
+  ) => Promise<BuildPublicationManifest>;
   maxAttempts?: number;
   leaseMs?: number;
 }): Promise<{ claimed: number; validated: number; failed: number; retried: number }> {
@@ -213,12 +230,15 @@ export async function processNextGraphBuildJob(input: {
       if (!input.store.completeValidated) {
         throw new Error('Graph build store requires atomic staged validation support.');
       }
-      await input.finalizeStaged(job, result);
+      const manifest = validateBuildPublicationManifest(await input.finalizeStaged(job, result));
+      if (manifest.tenantId !== job.tenantId || manifest.corpusId !== job.corpusId || manifest.graphVersion !== job.graphVersion
+        || manifest.artifactDigest !== result.artifactDigest) throw new Error('Finalized publication manifest does not match the claimed graph build.');
       await input.store.completeValidated({
         jobId: job.id,
         progress: result.progress,
         artifactDigest: result.artifactDigest,
         leaseToken: job.leaseToken,
+        publicationManifest: manifest,
       });
       return { claimed: 1, validated: 1, failed: 0, retried: 0 };
     }

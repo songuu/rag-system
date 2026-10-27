@@ -21,17 +21,17 @@ interface WorkflowStepDetails {
   responseLength?: number;
   extractedEntities?: Array<{name: string; type: string; confidence: number}>;
   validatedEntities?: Array<{original: string; normalized?: string; type: string; isValid: boolean}>;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface WorkflowStep {
   step: string;
-  status: 'pending' | 'running' | 'completed' | 'skipped' | 'error';
+  status: 'pending' | 'running' | 'completed' | 'skipped' | 'error' | 'failed';
   startTime?: number;
   endTime?: number;
   duration?: number;
-  input?: any;
-  output?: any;
+  input?: unknown;
+  output?: unknown;
   error?: string;
   details?: WorkflowStepDetails;
 }
@@ -54,7 +54,11 @@ interface QueryAnalysis {
   confidence: number;
   entities: ExtractedEntity[];
   keywords: string[];
-  logicalRelations?: any[];
+  logicalRelations?: Array<{
+    operator: 'AND' | 'OR' | 'NOT';
+    entities: string[];
+    description: string;
+  }>;
 }
 
 interface EntityValidation {
@@ -69,8 +73,13 @@ interface EntityValidation {
 interface RoutingDecision {
   action: string;
   reason: string;
-  constraints?: any;
-  relaxedConstraints?: any;
+  constraints?: Array<{
+    field: string;
+    operator: 'eq' | 'contains' | 'in' | 'range' | 'not';
+    value: string | string[] | { min?: unknown; max?: unknown };
+    priority: number;
+  }>;
+  relaxedConstraints?: string[];
   retryCount?: number;
 }
 
@@ -194,22 +203,25 @@ export default function AdaptiveEntityWorkflowPanel({
     });
   };
 
+  const queryEntities = queryAnalysis?.entities;
+  const workflowSteps = workflow?.steps;
+
   // 计算实体统计
   const entityStats = useMemo<Partial<Record<EntityType, number>>>(() => {
-    if (!queryAnalysis?.entities) return {};
+    if (!queryEntities) return {};
     const stats = {} as Record<EntityType, number>;
-    queryAnalysis.entities.forEach(e => {
+    queryEntities.forEach(e => {
       stats[e.type] = (stats[e.type] || 0) + 1;
     });
     return stats;
-  }, [queryAnalysis?.entities]);
+  }, [queryEntities]);
 
   // 计算总体进度
   const progress = useMemo(() => {
-    if (!workflow?.steps?.length) return 0;
-    const completed = workflow.steps.filter(s => s.status === 'completed').length;
-    return (completed / workflow.steps.length) * 100;
-  }, [workflow?.steps]);
+    if (!workflowSteps?.length) return 0;
+    const completed = workflowSteps.filter(s => s.status === 'completed').length;
+    return (completed / workflowSteps.length) * 100;
+  }, [workflowSteps]);
 
   // 渲染工作流步骤
   const renderWorkflowSteps = () => {

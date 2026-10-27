@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import * as d3 from 'd3';
 
@@ -71,6 +71,26 @@ interface ExtractionProgress {
   message: string;
 }
 
+interface GraphNode extends Entity, d3.SimulationNodeDatum {}
+
+type GraphLink = Omit<Relation, 'source' | 'target'> & d3.SimulationLinkDatum<GraphNode>;
+type GraphDragEvent = d3.D3DragEvent<SVGCircleElement, GraphNode, GraphNode>;
+
+const ENTITY_COLORS = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C'];
+
+type StoredGraphResult = { graph: KnowledgeGraph } | null;
+
+async function readStoredGraph(): Promise<StoredGraphResult> {
+  try {
+    const response = await fetch('/rag-api/entity-extraction?action=graph');
+    const data = await response.json();
+    return data.success && data.hasGraph ? { graph: data.graph } : null;
+  } catch (err) {
+    console.error('加载图谱失败:', err);
+    return null;
+  }
+}
+
 // ==================== 组件 ====================
 
 export default function EntityExtractionPage() {
@@ -99,14 +119,11 @@ export default function EntityExtractionPage() {
   // 图谱展示状态
   const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
   const [isFullScreen, setIsFullScreen] = useState<boolean>(false);
-  const [entityTypes, setEntityTypes] = useState<Array<{ name: string; count: number; color: string }>>([]);
 
   // DOM引用
   const graphContainerRef = useRef<HTMLDivElement>(null);
   const graphSvgRef = useRef<SVGSVGElement>(null);
-
-  // 颜色配置
-  const colors = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C'];
+  const graphLoadActiveRef = useRef(false);
 
   // ==================== 提取实体 ====================
 
@@ -181,43 +198,40 @@ export default function EntityExtractionPage() {
     }, 2000);
   };
 
-  // 加载已有图谱
-  const loadGraph = async () => {
-    try {
-      const response = await fetch('/rag-api/entity-extraction?action=graph');
-      const data = await response.json();
+  const applyStoredGraph = useCallback((result: StoredGraphResult) => {
+    if (graphLoadActiveRef.current && result) setGraph(result.graph);
+  }, []);
 
-      if (data.success && data.hasGraph) {
-        setGraph(data.graph);
-      }
-    } catch (err) {
-      console.error('加载图谱失败:', err);
-    }
-  };
+  // 初始加载和手动刷新复用读取，状态只在真实 I/O 完成后更新。
+  const loadGraph = async () => applyStoredGraph(await readStoredGraph());
 
   // 初始化时加载图谱
   useEffect(() => {
-    loadGraph();
-  }, []);
+    graphLoadActiveRef.current = true;
+    let cancelled = false;
+    readStoredGraph().then(result => {
+      if (!cancelled) applyStoredGraph(result);
+    });
+    return () => {
+      cancelled = true;
+      graphLoadActiveRef.current = false;
+    };
+  }, [applyStoredGraph]);
 
-  // 提取实体类型统计
-  useEffect(() => {
-    if (!graph?.entities) {
-      setEntityTypes([]);
-      return;
-    }
+  // 图例必须与当前图谱在同一次提交中更新，避免 Effect 产生上一份图谱的统计。
+  const entityTypes = useMemo(() => {
+    if (!graph?.entities) return [];
 
     const typeMap: Record<string, number> = {};
     graph.entities.forEach(entity => {
       typeMap[entity.type] = (typeMap[entity.type] || 0) + 1;
     });
 
-    const types = Object.entries(typeMap).map(([name, count], index) => ({
+    return Object.entries(typeMap).map(([name, count], index) => ({
       name,
       count,
-      color: colors[index % colors.length],
+      color: ENTITY_COLORS[index % ENTITY_COLORS.length],
     }));
-    setEntityTypes(types);
   }, [graph]);
 
   // 渲染图谱
@@ -234,7 +248,7 @@ export default function EntityExtractionPage() {
     svg.attr('width', width).attr('height', height);
 
     // 节点和边数据
-    const nodes = graph.entities.map(e => ({
+    const nodes: GraphNode[] = graph.entities.map(e => ({
       ...e,
       id: e.id,
       name: e.name,
@@ -243,7 +257,7 @@ export default function EntityExtractionPage() {
 
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
 
-    const links = graph.relations
+    const links: GraphLink[] = graph.relations
       .filter(r => nodeMap.has(r.source) && nodeMap.has(r.target))
       .map(r => ({
         ...r,
@@ -253,8 +267,8 @@ export default function EntityExtractionPage() {
       }));
 
     // 力导向图
-    const simulation = d3.forceSimulation(nodes as d3.SimulationNodeDatum[])
-      .force('link', d3.forceLink(links).id((d: any) => d.id).distance(100))
+    const simulation = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink<GraphNode, GraphLink>(links).id(d => d.id).distance(100))
       .force('charge', d3.forceManyBody().strength(-300))
       .force('center', d3.forceCenter(width / 2, height / 2))
       .force('collision', d3.forceCollide().radius(40));
@@ -270,32 +284,32 @@ export default function EntityExtractionPage() {
 
     // 节点
     const node = svg.append('g')
-      .selectAll('circle')
+      .selectAll<SVGCircleElement, GraphNode>('circle')
       .data(nodes)
       .join('circle')
       .attr('r', 12)
-      .attr('fill', (d: any) => colors[Object.keys(nodeMap).indexOf(d.id) % colors.length])
+      .attr('fill', d => ENTITY_COLORS[Object.keys(nodeMap).indexOf(d.id) % ENTITY_COLORS.length])
       .attr('stroke', '#fff')
       .attr('stroke-width', 2)
       .style('cursor', 'pointer')
-      .call((d3.drag<SVGCircleElement, any>() as any)
-        .on('start', (event: any, d: any) => {
+      .call(d3.drag<SVGCircleElement, GraphNode>()
+        .on('start', (event: GraphDragEvent, d) => {
           if (!event.active) simulation.alphaTarget(0.3).restart();
-          (d as any).fx = d.x;
-          (d as any).fy = d.y;
+          d.fx = d.x;
+          d.fy = d.y;
         })
-        .on('drag', (event: any, d: any) => {
-          (d as any).fx = event.x;
-          (d as any).fy = event.y;
+        .on('drag', (event: GraphDragEvent, d) => {
+          d.fx = event.x;
+          d.fy = event.y;
         })
-        .on('end', (event: any, d: any) => {
+        .on('end', (event: GraphDragEvent, d) => {
           if (!event.active) simulation.alphaTarget(0);
-          (d as any).fx = null;
-          (d as any).fy = null;
+          d.fx = null;
+          d.fy = null;
         }))
       .on('click', (event, d) => {
         event.stopPropagation();
-        setSelectedEntity(d as Entity);
+        setSelectedEntity(d);
       });
 
     // 标签
@@ -312,18 +326,19 @@ export default function EntityExtractionPage() {
     // 更新位置
     simulation.on('tick', () => {
       link
-        .attr('x1', d => (d.source as any).x)
-        .attr('y1', d => (d.source as any).y)
-        .attr('x2', d => (d.target as any).x)
-        .attr('y2', d => (d.target as any).y);
+        // forceLink 在初始化时将已过滤的端点 ID 替换为同一批 GraphNode。
+        .attr('x1', d => (d.source as GraphNode).x!)
+        .attr('y1', d => (d.source as GraphNode).y!)
+        .attr('x2', d => (d.target as GraphNode).x!)
+        .attr('y2', d => (d.target as GraphNode).y!);
 
       node
-        .attr('cx', (d: any) => d.x!)
-        .attr('cy', (d: any) => d.y!);
+        .attr('cx', d => d.x!)
+        .attr('cy', d => d.y!);
 
       label
-        .attr('x', (d: any) => d.x!)
-        .attr('y', (d: any) => d.y!);
+        .attr('x', d => d.x!)
+        .attr('y', d => d.y!);
     });
   }, [graph]);
 

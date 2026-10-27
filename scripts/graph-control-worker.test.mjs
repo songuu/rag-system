@@ -308,6 +308,7 @@ test('build completion verifies Neo4j identity and digest before the atomic vali
       assert.equal(claimed.graphVersion, 'graph-v1');
       assert.equal(result.artifactDigest, `sha256:${'a'.repeat(64)}`);
       registrations.push(claimed.graphVersion);
+      return buildManifest(claimed);
     },
   });
 
@@ -315,6 +316,7 @@ test('build completion verifies Neo4j identity and digest before the atomic vali
   assert.deepEqual(transitions, []);
   assert.equal(completions.length, 1);
   assert.equal(completions[0].leaseToken, job.leaseToken);
+  assert.deepEqual(completions[0].publicationManifest, buildManifest(job));
   assert.deepEqual(registrations, ['graph-v1']);
 });
 
@@ -336,7 +338,7 @@ test('atomic validation failure leaves the running lease retryable instead of st
     handle: async () => ({
       status: 'staged', progress: 1, artifactDigest: `sha256:${'a'.repeat(64)}`,
     }),
-    finalizeStaged: async () => {},
+    finalizeStaged: async job => buildManifest(job),
     leaseMs: 180_000,
   });
 
@@ -387,6 +389,54 @@ test('control iteration refuses to validate a webhook result whose Neo4j digest 
   assert.equal(registrations, 0);
   assert.equal(transitions[0].status, 'queued');
   assert.match(transitions[0].metadata.lastDeliveryError, /digest/i);
+});
+
+test('full Snapshot documents, not webhook labels, supply the persisted publication manifest', async () => {
+  const doc = { documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' };
+  const job = buildJob({ metadata: { documentIdentity: { tenantId: 'tenant-a', corpusId: 'corpus-a', ...doc } } });
+  for (const edit of [() => {}, s => { s.documents = []; }, s => { s.documents.push({ ...doc, documentId: 'extra' }); },
+    s => { s.documents[0].documentVersion = 'old'; }, s => { s.tenantId = 'other'; }, s => { s.artifactDigest = `sha256:${'b'.repeat(64)}`; }]) {
+    const snapshot = { tenantId: job.tenantId, corpusId: job.corpusId, graphVersion: job.graphVersion,
+      status: 'staging', artifactDigest: `sha256:${'a'.repeat(64)}`, documents: [{ ...doc }] }; edit(snapshot);
+    let completions = 0; let registrations = 0;
+    const result = await runGraphControlIteration({
+      publicationStore: { async listExpiredSnapshotMutations() { return []; }, async registerStagedSnapshot() { registrations++; } },
+      commandStore: { async getCompatibilityDescriptor() { return { graphVersion: job.graphVersion, artifactDigest: `sha256:${'a'.repeat(64)}`, document: doc }; },
+        async getSnapshot() { return snapshot; } },
+      buildStore: { async claimNext() { return job; }, async transition(input) { return { ...job, status: input.status }; },
+        async completeValidated(input) { completions++; assert.deepEqual(input.publicationManifest.documents, [doc]); return { ...job, status: 'validated' }; } },
+      handleBuild: async () => ({ status: 'staged', progress: 1, artifactDigest: `sha256:${'a'.repeat(64)}` }), batchSize: 10,
+    });
+    const valid = snapshot.tenantId === job.tenantId && snapshot.artifactDigest === `sha256:${'a'.repeat(64)}`
+      && snapshot.documents.length === 1 && snapshot.documents[0].documentVersion === 'v1';
+    assert.equal(result.build.validated, valid ? 1 : 0); assert.equal(result.build.retried, valid ? 0 : 1);
+    assert.equal(completions, valid ? 1 : 0); assert.equal(registrations, valid ? 1 : 0);
+  }
+});
+
+function buildManifest(job) {
+  return { schemaVersion: 'kg-build-publication-manifest/v1', tenantId: job.tenantId, corpusId: job.corpusId, graphVersion: job.graphVersion,
+    artifactDigest: `sha256:${'a'.repeat(64)}`, documents: [{ documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' }] };
+}
+
+test('opaque document identities accepted by existing contracts still complete the actual Snapshot worker path', async () => {
+  for (const [documentId, documentVersion] of [['课程甲', 'v1'], ['doc/a', 'v1'], ['doc-a', '版本/一']]) {
+    const doc = { documentId, documentVersion, trustLevel: 'reviewed' };
+    const job = buildJob({ metadata: { documentIdentity: { tenantId: 'tenant-a', corpusId: 'corpus-a', ...doc } } });
+    const snapshot = { tenantId: job.tenantId, corpusId: job.corpusId, graphVersion: job.graphVersion,
+      status: 'staging', artifactDigest: `sha256:${'a'.repeat(64)}`, documents: [doc] };
+    let completions = 0; let registrations = 0;
+    const result = await runGraphControlIteration({
+      publicationStore: { async listExpiredSnapshotMutations() { return []; }, async registerStagedSnapshot() { registrations++; } },
+      commandStore: { async getCompatibilityDescriptor() { return { graphVersion: job.graphVersion, artifactDigest: snapshot.artifactDigest, document: doc }; },
+        async getSnapshot() { return snapshot; } },
+      buildStore: { async claimNext() { return job; }, async transition(input) { return { ...job, status: input.status }; },
+        async completeValidated(input) { completions++; assert.deepEqual(input.publicationManifest.documents, [doc]); return { ...job, status: 'validated' }; } },
+      handleBuild: async () => ({ status: 'staged', progress: 1, artifactDigest: snapshot.artifactDigest }), batchSize: 10,
+    });
+    assert.equal(result.build.validated, 1); assert.equal(result.build.retried, 0);
+    assert.equal(completions, 1); assert.equal(registrations, 1);
+  }
 });
 
 function buildJob(overrides = {}) {

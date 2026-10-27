@@ -1,17 +1,18 @@
 'use client';
 
 import React from 'react';
+import type { QueryVectorizationProgress, RetrievalDetails, VectorizationProgress } from '@/lib/rag-system';
 
 interface RealtimeMonitoringProps {
   showVectorization: boolean;
-  vectorizationDetails: any;
+  vectorizationDetails: Partial<VectorizationProgress> | null;
   vectorizationProgress: number;
   vectorizationStatus: string;
   showQueryProcessing: boolean;
   queryProcessingStatus: string;
   isLoading: boolean;
-  queryAnalysis: any;
-  retrievalDetails: any;
+  queryAnalysis: Pick<QueryVectorizationProgress, 'tokenization' | 'embedding'> | null;
+  retrievalDetails: Partial<Pick<RetrievalDetails, 'searchResults' | 'searchTime'>> | null;
 }
 
 export default function RealtimeMonitoring({
@@ -159,7 +160,7 @@ export default function RealtimeMonitoring({
               {retrievalDetails.searchResults && retrievalDetails.searchResults.length > 0 && (
                 <div className="space-y-1.5">
                   <div className="text-[10px] text-gray-500 uppercase tracking-wider">相似度排名</div>
-                  {retrievalDetails.searchResults.slice(0, 3).map((result: any, index: number) => {
+                  {retrievalDetails.searchResults.slice(0, 3).map((result, index) => {
                     const similarity = (result.similarity || 0) * 100;
                     const barColor = similarity >= 80 ? 'bg-green-500' : 
                                      similarity >= 60 ? 'bg-blue-500' : 

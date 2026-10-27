@@ -10,10 +10,9 @@
 
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { StringOutputParser } from "@langchain/core/output_parsers";
-import { Document } from "@langchain/core/documents";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Embeddings } from "@langchain/core/embeddings";
-import { MilvusVectorStore, getMilvusInstance, MilvusConfig, MilvusSearchResult } from "./milvus-client";
+import { MilvusVectorStore, getMilvusInstance, MilvusConfig } from "./milvus-client";
 import { ObservabilityEngine, type Trace } from "./observability";
 import { v4 as uuidv4 } from 'uuid';
 import { createLLM, createEmbedding, getModelFactory, isOllamaProvider } from "./model-config";
@@ -36,7 +35,7 @@ export interface MilvusRAGConfig {
 export interface RAGSearchResult {
   content: string;
   similarity: number;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
   id: string;
 }
 
@@ -121,7 +120,7 @@ export class MilvusRAGSystem {
   /**
    * 添加文档
    */
-  async addDocuments(documents: Array<{ content: string; metadata?: Record<string, any> }>): Promise<string[]> {
+  async addDocuments(documents: Array<{ content: string; metadata?: Record<string, unknown> }>): Promise<string[]> {
     await this.ensureInitialized();
 
     const ids: string[] = [];

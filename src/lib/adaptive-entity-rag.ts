@@ -1802,7 +1802,9 @@ export class EntityMetadataStore {
   private resolvePersistPath(): string {
     const normalizedPersistPath = this.persistPath.replace(/\\/g, '/').replace(/^\.\//, '');
     if (normalizedPersistPath.startsWith('data/')) {
-      return path.join(process.cwd(), 'data', normalizedPersistPath.slice('data/'.length));
+      // Runtime entity state is not a build asset. A dynamic name must not
+      // collect sibling private session files into every importing route.
+      return path.join(/*turbopackIgnore: true*/ process.cwd(), 'data', normalizedPersistPath.slice('data/'.length));
     }
     return path.resolve(/*turbopackIgnore: true*/ process.cwd(), this.persistPath);
   }

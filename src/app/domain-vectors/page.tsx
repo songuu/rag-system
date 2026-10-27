@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 
 // 领域配置类型
@@ -36,6 +36,39 @@ interface OllamaStatus {
   };
 }
 
+interface DomainSimilarity {
+  domain: string;
+  similarity: number;
+  name?: string;
+  icon?: string;
+  color: string;
+  details?: {
+    dotProduct: number;
+    queryNorm: number;
+    centroidNorm: number;
+    wordCount?: number;
+    dimension?: number;
+    topDimensions: Array<{ dim: number; queryVal: number; centroidVal: number; contrib: number }>;
+    seedSample: string[];
+  };
+}
+
+interface DomainQueryResult {
+  query: string;
+  similarities: DomainSimilarity[];
+  topDomain: DomainSimilarity | null;
+  stats: { mean: number; std: number; range: number; queryDim: number };
+  queryVector?: { dimension: number; norm: number; sample: string[] };
+}
+
+async function fetchDomainVectorData<T>(
+  action: 'check-ollama' | 'config' | 'centroids',
+  signal?: AbortSignal,
+): Promise<T> {
+  const response = await fetch(`/rag-api/domain-vectors?action=${action}`, { signal });
+  return response.json();
+}
+
 // 预定义种子词
 const DEFAULT_SEEDS: Record<string, string[]> = {
   tech: ['代码', '算法', '架构', '数据库', '并发', '接口', '部署', '系统', '开发', '模型', '训练', '硬件', '网络', '加密', 'API', '框架', '编程', '调试', '测试', '版本控制', '前端', '后端', '云计算', '容器', '微服务'],
@@ -59,7 +92,7 @@ export default function DomainVectorsPage() {
   const [isGenerating, setIsGenerating] = useState<Record<string, boolean>>({});
   const [isCalculating, setIsCalculating] = useState<Record<string, boolean>>({});
   const [testQuery, setTestQuery] = useState('');
-  const [testResults, setTestResults] = useState<any>(null);
+  const [testResults, setTestResults] = useState<DomainQueryResult | null>(null);
   const [customDomain, setCustomDomain] = useState({
     id: '',
     name: '',
@@ -69,6 +102,12 @@ export default function DomainVectorsPage() {
     seeds: ''
   });
   const [notification, setNotification] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
+  const seedEditVersions = useRef(new Map<string, number>());
+
+  const updateDomainSeeds = (domain: string, words: string[]) => {
+    seedEditVersions.current.set(domain, (seedEditVersions.current.get(domain) ?? 0) + 1);
+    setSeedWords(prev => ({ ...prev, [domain]: words }));
+  };
 
   // 显示通知
   const showNotification = useCallback((type: 'success' | 'error' | 'info', message: string) => {
@@ -77,11 +116,9 @@ export default function DomainVectorsPage() {
   }, []);
 
   // 检查 Ollama 状态
-  const checkOllamaStatus = useCallback(async () => {
-    setOllamaStatus(prev => ({ ...prev, status: 'checking' }));
-    try {
-      const response = await fetch('/rag-api/domain-vectors?action=check-ollama');
-      const data = await response.json();
+  const checkOllamaStatus = useCallback((signal?: AbortSignal) =>
+    fetchDomainVectorData<OllamaStatus & { success: boolean }>('check-ollama', signal).then((data) => {
+      if (signal?.aborted) return;
       if (data.success) {
         setOllamaStatus({
           status: data.status,
@@ -91,50 +128,58 @@ export default function DomainVectorsPage() {
       } else {
         setOllamaStatus({ status: 'offline', models: [] });
       }
-    } catch (error) {
-      setOllamaStatus({ status: 'offline', models: [] });
-    }
-  }, []);
+    }).catch(() => {
+      if (!signal?.aborted) setOllamaStatus({ status: 'offline', models: [] });
+    }), []);
+
+  const refreshOllamaStatus = async () => {
+    setOllamaStatus(prev => ({ ...prev, status: 'checking' }));
+    await checkOllamaStatus();
+  };
 
   // 加载领域配置
-  const loadDomainConfig = useCallback(async () => {
-    try {
-      const response = await fetch('/rag-api/domain-vectors?action=config');
-      const data = await response.json();
+  const loadDomainConfig = useCallback((signal?: AbortSignal) =>
+    fetchDomainVectorData<{ success: boolean; domains: Record<string, DomainConfig> }>('config', signal).then((data) => {
+      if (signal?.aborted) return;
       if (data.success) {
         setDomainConfig(data.domains);
       }
-    } catch (error) {
-      console.error('Failed to load domain config:', error);
-    }
-  }, []);
+    }).catch((error) => {
+      if (!signal?.aborted) console.error('Failed to load domain config:', error);
+    }), []);
 
   // 加载已保存的质心
-  const loadCentroids = useCallback(async () => {
-    try {
-      const response = await fetch('/rag-api/domain-vectors?action=centroids');
-      const data = await response.json();
+  const loadCentroids = useCallback((signal?: AbortSignal) => {
+    const editsAtRequest = new Map(seedEditVersions.current);
+    return fetchDomainVectorData<{ success: boolean; centroids?: Record<string, CentroidData> }>('centroids', signal).then((data) => {
+      if (signal?.aborted) return;
       if (data.success && data.centroids) {
         setCentroids(data.centroids);
-        // 同步种子词
-        const newSeeds = { ...seedWords };
-        for (const [domain, centroid] of Object.entries(data.centroids)) {
-          if (domain !== '_meta' && (centroid as CentroidData).seedWords) {
-            newSeeds[domain] = (centroid as CentroidData).seedWords;
+        const savedSeeds = Object.entries(data.centroids);
+        setSeedWords(prev => {
+          const newSeeds = { ...prev };
+          for (const [domain, centroid] of savedSeeds) {
+            // A late read must not overwrite seed edits made while it was in flight.
+            if (domain !== '_meta' && centroid.seedWords
+              && seedEditVersions.current.get(domain) === editsAtRequest.get(domain)) {
+              newSeeds[domain] = centroid.seedWords;
+            }
           }
-        }
-        setSeedWords(newSeeds);
+          return newSeeds;
+        });
       }
-    } catch (error) {
-      console.error('Failed to load centroids:', error);
-    }
+    }).catch((error) => {
+      if (!signal?.aborted) console.error('Failed to load centroids:', error);
+    });
   }, []);
 
   // 初始化
   useEffect(() => {
-    checkOllamaStatus();
-    loadDomainConfig();
-    loadCentroids();
+    const controller = new AbortController();
+    void checkOllamaStatus(controller.signal);
+    void loadDomainConfig(controller.signal);
+    void loadCentroids(controller.signal);
+    return () => controller.abort();
   }, [checkOllamaStatus, loadDomainConfig, loadCentroids]);
 
   // 使用 LLM 生成种子词
@@ -148,12 +193,12 @@ export default function DomainVectorsPage() {
       });
       const data = await response.json();
       if (data.success) {
-        setSeedWords(prev => ({ ...prev, [domain]: data.words }));
+        updateDomainSeeds(domain, data.words);
         showNotification('success', `成功生成 ${data.words.length} 个种子词`);
       } else {
         showNotification('error', data.error || '生成失败');
       }
-    } catch (error) {
+    } catch {
       showNotification('error', '生成种子词失败');
     } finally {
       setIsGenerating(prev => ({ ...prev, [domain]: false }));
@@ -182,7 +227,7 @@ export default function DomainVectorsPage() {
       } else {
         showNotification('error', data.error || '计算失败');
       }
-    } catch (error) {
+    } catch {
       showNotification('error', '计算质心失败');
     } finally {
       setIsCalculating(prev => ({ ...prev, [domain]: false }));
@@ -224,7 +269,7 @@ export default function DomainVectorsPage() {
       } else {
         showNotification('error', data.error || '批量计算失败');
       }
-    } catch (error) {
+    } catch {
       showNotification('error', '批量计算失败');
     } finally {
       setIsCalculating({});
@@ -315,7 +360,7 @@ export default function DomainVectorsPage() {
       } else {
         showNotification('error', data.error || '添加失败');
       }
-    } catch (error) {
+    } catch {
       showNotification('error', '添加自定义领域失败');
     }
   };
@@ -335,7 +380,7 @@ export default function DomainVectorsPage() {
         showNotification('success', '已删除领域');
         loadCentroids();
       }
-    } catch (error) {
+    } catch {
       showNotification('error', '删除失败');
     }
   };
@@ -343,7 +388,7 @@ export default function DomainVectorsPage() {
   // 更新种子词
   const updateSeedWords = (domain: string, text: string) => {
     const words = text.split(/[,，、\n]+/).map(s => s.trim()).filter(s => s);
-    setSeedWords(prev => ({ ...prev, [domain]: words }));
+    updateDomainSeeds(domain, words);
   };
 
   return (
@@ -402,7 +447,7 @@ export default function DomainVectorsPage() {
                 </div>
               )}
               <button 
-                onClick={checkOllamaStatus}
+                onClick={refreshOllamaStatus}
                 className="ml-2 text-xs hover:underline"
               >
                 刷新
@@ -415,14 +460,14 @@ export default function DomainVectorsPage() {
       {/* 标签页 */}
       <div className="max-w-7xl mx-auto px-6 py-4">
         <div className="flex gap-2">
-          {[
+          {([
             { id: 'manage', label: '领域管理', icon: '⚙️' },
             { id: 'test', label: '向量测试', icon: '🧪' },
             { id: 'custom', label: '自定义领域', icon: '➕' }
-          ].map(tab => (
+          ] as const).map(tab => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => setActiveTab(tab.id)}
               className={`px-4 py-2 rounded-lg font-medium transition-all ${
                 activeTab === tab.id
                   ? 'bg-purple-500 text-white'
@@ -732,7 +777,7 @@ export default function DomainVectorsPage() {
                   {/* 相似度分布排名 */}
                   <div className="space-y-2">
                     <div className="text-sm font-medium text-white/80 mb-3">📈 所有领域相似度分布</div>
-                    {testResults.similarities?.map((item: any, index: number) => {
+                    {testResults.similarities?.map((item, index) => {
                       const deviationFromMean = item.similarity - testResults.stats.mean;
                       const zScore = deviationFromMean / testResults.stats.std;
                       
@@ -832,7 +877,7 @@ export default function DomainVectorsPage() {
                               <div className="p-3 bg-black/20 rounded">
                                 <div className="text-xs text-white/50 mb-2">🎯 贡献最大的维度 (Top 5)</div>
                                 <div className="space-y-1">
-                                  {item.details.topDimensions?.slice(0, 5).map((dim: any, i: number) => (
+                                  {item.details.topDimensions?.slice(0, 5).map((dim, i) => (
                                     <div key={i} className="flex items-center gap-2 text-xs">
                                       <span className="text-white/40 w-4">{i + 1}</span>
                                       <span className="text-white/60 w-12">维度{dim.dim}</span>

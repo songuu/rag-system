@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 // LLM 配置
 interface LLMConfig {
@@ -55,6 +55,11 @@ interface ModelConfigResponse {
   error?: string;
 }
 
+async function requestModelConfig(signal?: AbortSignal): Promise<ModelConfigResponse> {
+  const response = await fetch('/rag-api/model-config', { signal });
+  return response.json();
+}
+
 export function ModelConfigPanel() {
   const [config, setConfig] = useState<ModelConfigSummary | null>(null);
   const [validation, setValidation] = useState<{ llm: ValidationResult; embedding: ValidationResult; overall: ValidationResult } | null>(null);
@@ -62,12 +67,9 @@ export function ModelConfigPanel() {
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
 
-  const fetchConfig = async () => {
-    try {
-      setLoading(true);
-      const response = await fetch('/rag-api/model-config');
-      const data: ModelConfigResponse = await response.json();
-      
+  const fetchConfig = useCallback((signal?: AbortSignal) => requestModelConfig(signal)
+    .then((data) => {
+      if (signal?.aborted) return;
       if (data.success) {
         setConfig(data.config);
         setValidation(data.validation);
@@ -75,16 +77,23 @@ export function ModelConfigPanel() {
       } else {
         setError(data.error || '获取配置失败');
       }
-    } catch (err) {
+    }).catch((err) => {
+      if (signal?.aborted) return;
       setError(err instanceof Error ? err.message : '网络错误');
-    } finally {
-      setLoading(false);
-    }
+    }).finally(() => {
+      if (!signal?.aborted) setLoading(false);
+    }), []);
+
+  const refreshConfig = async () => {
+    setLoading(true);
+    await fetchConfig();
   };
 
   useEffect(() => {
-    fetchConfig();
-  }, []);
+    const controller = new AbortController();
+    void fetchConfig(controller.signal);
+    return () => controller.abort();
+  }, [fetchConfig]);
 
   const handleReloadConfig = async () => {
     try {
@@ -96,7 +105,7 @@ export function ModelConfigPanel() {
       const data = await response.json();
       
       if (data.success) {
-        await fetchConfig();
+        await refreshConfig();
       } else {
         setError(data.error || '重新加载配置失败');
       }
@@ -157,7 +166,7 @@ export function ModelConfigPanel() {
           <span>❌</span>
           <span>{error}</span>
           <button
-            onClick={fetchConfig}
+            onClick={refreshConfig}
             className="ml-auto px-2 py-1 text-xs bg-red-800 hover:bg-red-700 rounded"
           >
             重试
@@ -355,7 +364,7 @@ export function ModelConfigPanel() {
               🔄 重新加载配置
             </button>
             <button
-              onClick={fetchConfig}
+              onClick={refreshConfig}
               className="px-3 py-1.5 text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 rounded transition-colors"
             >
               ↻ 刷新

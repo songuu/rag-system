@@ -1,0 +1,66 @@
+{
+  "kind": "synthetic-component-browser-e2e",
+  "browser": "145.0.7632.6",
+  "checks": [
+    "authorized source and directed relation",
+    "Markdown and invalid-number exclusion",
+    "authorization failure and no cached fallback",
+    "live TTL expiry",
+    "partition switch clearing",
+    "cancelled preview and late response isolation"
+  ],
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/rag-api/ask/citations/preview",
+      "keys": [
+        "locator"
+      ],
+      "locator": "synthetic-opaque-1",
+      "mode": "success"
+    },
+    {
+      "method": "POST",
+      "path": "/rag-api/ask/citations/preview",
+      "keys": [
+        "locator"
+      ],
+      "locator": "synthetic-opaque-1",
+      "mode": "denied"
+    },
+    {
+      "method": "POST",
+      "path": "/rag-api/ask/citations/preview",
+      "keys": [
+        "locator"
+      ],
+      "locator": "synthetic-opaque-1",
+      "mode": "success"
+    },
+    {
+      "method": "POST",
+      "path": "/rag-api/ask/citations/preview",
+      "keys": [
+        "locator"
+      ],
+      "locator": "synthetic-opaque-1",
+      "mode": "late"
+    },
+    {
+      "method": "POST",
+      "path": "/rag-api/ask/citations/preview",
+      "keys": [
+        "locator"
+      ],
+      "locator": "synthetic-opaque-2",
+      "mode": "late"
+    }
+  ],
+  "sourceHashes": {
+    "src/components/ChatMessage.tsx": "cd52d72ef623a5410e48d18679e235396071a7459bda84cfa39d266e70bbfa6e",
+    "src/components/AnswerProcessingPanel.tsx": "f6b41cf51fbe40f436ceae13ed7359ddb1fc1663010e52e7d8d235a57aba1aec",
+    "src/lib/rag/citations/reference-parser.ts": "6a733bc87ac7cb411a380ebf374ff36e954c9ae60a223bbe9bca37d4f6d194d7"
+  },
+  "pageErrors": [],
+  "realNeo4j": false
+}

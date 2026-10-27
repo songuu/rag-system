@@ -19,6 +19,56 @@ registerHooks({
 const enabled = process.env.RAG_NEO4J_INTEGRATION === '1';
 const publicationEnabled = enabled && Boolean(process.env.TEST_DATABASE_URL?.trim());
 
+test('retrieves two-hop claim directions and source passages from real Neo4j', { skip: !enabled }, async () => {
+  const { createNeo4jClient } = await import('../neo4j/driver.ts');
+  const { initializeNeo4jSchema } = await import('../neo4j/schema.ts');
+  const { createRetrievalScope } = await import('../security/retrieval-scope.ts');
+  const { Neo4jKnowledgeGraphCommandStore } = await import('./neo4j-command-store.ts');
+  const { Neo4jGraphRetrievalPort } = await import('./neo4j-retrieval-port.ts');
+  const tenantId = 'codex-chat-chain-' + randomUUID();
+  const corpusId = 'corpus-chat';
+  const graphVersion = 'chain-v1';
+  const client = createNeo4jClient({
+    uri: process.env.RAG_NEO4J_URI || 'neo4j://127.0.0.1:7687',
+    username: process.env.RAG_NEO4J_USERNAME || 'neo4j',
+    password: process.env.RAG_NEO4J_PASSWORD || 'neo4j-local-dev-only',
+    database: process.env.RAG_NEO4J_DATABASE || 'neo4j',
+    connectionTimeoutMs:5000, queryTimeoutMs:10000, writeTimeoutMs:120000,
+    maxTransactionRetryTimeMs:1000, maxConnectionPoolSize:10,
+  });
+  const scope=createRetrievalScope({tenantId,corpusId,allowedTrustLevels:['reviewed'],enforceIsolation:true});
+  try {
+    await client.verifyConnectivity();
+    await initializeNeo4jSchema(client);
+    const commands=new Neo4jKnowledgeGraphCommandStore(client);
+    const snapshot=createSnapshot({tenantId,corpusId,graphVersion});
+    snapshot.entities.forEach(entity=>{entity.summary='';});
+    const content='Acme owns Project X.';
+    snapshot.passages.push({...snapshot.passages[0],id:'passage-project',content,index:1,startOffset:28,endOffset:28+content.length});
+    snapshot.entities.push({id:'entity-project',name:'Project X',normalizedName:'project x',labels:['Project'],summary:'',aliases:[],passageIds:['passage-project'],attributes:{}});
+    snapshot.claims.push({...snapshot.claims[0],id:'claim-owns',predicate:'owns',fact:'Acme owns Project X',sourceEntityId:'entity-acme',sourceEntityName:'Acme',targetEntityId:'entity-project',targetEntityName:'Project X',passageIds:['passage-project']});
+    await commands.stageSnapshot(snapshot);
+    await commands.compareAndSetActive(scope,graphVersion,0);
+    const port=new Neo4jGraphRetrievalPort(client);
+    const query={scope,snapshot:{graphVersion},query:'Alice',laneId:'graph-chat',topK:5,maxHops:1,seedPassageIds:[]};
+    const oneHop=await port.retrieve(query);
+    assert.equal(oneHop.evidence.some(item=>item.metadata.graphPassageId==='passage-project'),false);
+    const twoHop=await port.retrieve({...query,maxHops:2});
+    const paths=twoHop.evidence.flatMap(item=>item.metadata.graphPaths ?? []);
+    const chain=paths.find(path=>path.length===2 && path[0].claimId==='claim-founded' && path[1].claimId==='claim-owns');
+    assert.ok(chain,'real Cypher must preserve the ordered two-hop claim chain');
+    assert.equal(chain[0].sourceEntityName,'Alice');
+    assert.equal(chain[0].targetEntityName,'Acme');
+    assert.equal(chain[1].sourceEntityName,'Acme');
+    assert.equal(chain[1].predicate,'owns');
+    assert.equal(chain[1].targetEntityName,'Project X');
+    assert.deepEqual(chain.map(relation=>relation.passageIds),[['passage-founded'],['passage-project']]);
+  } finally {
+    try { await client.executeWrite('clean isolated chat chain fixture',transaction=>transaction.run('MATCH (node) WHERE node.tenantId = $tenantId DETACH DELETE node',{tenantId})); }
+    finally { await client.close(); }
+  }
+});
+
 test('runs the complete Neo4j snapshot, query, retrieval, CAS, and delete lifecycle', { skip: !enabled }, async () => {
   const { createNeo4jClient } = await import('../neo4j/driver.ts');
   const { initializeNeo4jSchema } = await import('../neo4j/schema.ts');

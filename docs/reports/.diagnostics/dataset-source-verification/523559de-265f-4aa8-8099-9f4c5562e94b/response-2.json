@@ -1,0 +1,315 @@
+{
+  "success": true,
+  "dataset": {
+    "schemaVersion": "rag-eval-dataset/v1",
+    "datasetId": "rag-evaluation",
+    "datasetVersion": "1",
+    "corpus": [
+      {
+        "evidenceId": "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+        "documentId": "重构契丹早期史.epub",
+        "source": "重构契丹早期史.epub",
+        "content": "版权信息\nCOPYRIGHT\n书名：重构契丹早期史\n作者：苗润博\n出版社：北京大学出版社\n出版时间：2024年2月\nISBN：9787301347492\n字数：199千字",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "trustLevel": "external",
+        "metadata": {
+          "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+          "chunkIndex": 0,
+          "totalChunks": 645,
+          "sourceStartOffset": 0,
+          "sourceEndOffset": 85,
+          "selectedChunks": 6,
+          "sampled": true
+        }
+      },
+      {
+        "evidenceId": "chunk-1df2ccfac7bdbfa1e13d69a27ef64abee7cb7cbf6c8ba309a6c95dade8875e1f",
+        "documentId": "重构契丹早期史.epub",
+        "source": "重构契丹早期史.epub",
+        "content": "\n很长一段时间里，此说似乎成了研究者默认的常识，大家在讨论相关问题时都或明或暗加以因循，却并未见对冯说有所推进。直到近年杨军特撰专文，才进一步论述了《皇朝实录》与《辽史》之关系，力证《营卫志·部族》主体内容出于耶律俨书，实为研究契丹早期史领域最重要的材料，\n并以为基础发表了一系列相关论著。\n傅乐焕：《辽史复文举例》“耶律七部、审密五部、八部”，原刊《中央研究院历史语言研究所集刊》第16本，1948年1月，收入氏著《辽史丛考》，中华书局，1984年，第302—312页。据文末落款，此文作于1945年末。\n就管见所及，惟肖爱民曾注意到傅氏此说，并在其基础上有所推进，惜未能全面深入探讨部族门之史源。参见氏著《契丹遥辇氏阻午可汗二十部考辨》，（韩国）《宋辽金元史研究》第11号，2006年12月；《“分三耶律为七，二审密为五”辨析——契丹遥辇氏阻午可汗二十部研究之二》，《内蒙古社会科学》2005年第2期；《辽朝大贺氏考辨——契丹遥辇氏阻午可汗二十部研究之四》，《内蒙古师范大学学报（哲学社会科学版）》2005年第4期。",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "trustLevel": "external",
+        "metadata": {
+          "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+          "chunkIndex": 129,
+          "totalChunks": 645,
+          "sourceStartOffset": 51577,
+          "sourceEndOffset": 52037,
+          "selectedChunks": 6,
+          "sampled": true
+        }
+      },
+      {
+        "evidenceId": "chunk-baa87c68831705670f3cfed2c56e40c9fbab0ed29bf02b4753d9d2bab14e4280",
+        "documentId": "重构契丹早期史.epub",
+        "source": "重构契丹早期史.epub",
+        "content": "\n此志文作者乃辽末著名史官王师儒，对当时官方历史叙述自然十分熟稔；墓志称遥辇“建国”、太祖“开国”，二者在汉语中原本词义差别不大，但此处显然试图有所区分，来表现两个时代的不同特征，或许“建国”是将遥辇作为契丹集团建立的起点及初始阶段，而“开国”则指发展到最高阶段开创王朝。此外，近年来陆续在契丹文碑刻中发现的阿保机家族先祖习撚·涅里及遥辇可汗鲜质、痕德堇的踪迹，\n所反映的记忆上限亦与上述汉文文献完全相符。\n小川裕人：《遥輦氏伝説成立に関する史的考察》，《滿蒙史論叢》第3輯，“日滿文化協會”，1940年；田村实造：《中国征服王朝の研究》上册，東洋史研究會，1964年，第91页。",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "trustLevel": "external",
+        "metadata": {
+          "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+          "chunkIndex": 258,
+          "totalChunks": 645,
+          "sourceStartOffset": 103377,
+          "sourceEndOffset": 103667,
+          "selectedChunks": 6,
+          "sampled": true
+        }
+      },
+      {
+        "evidenceId": "chunk-c9d32a5029ba9701aec95de4f4340f355e36a8d5494150b7c814d5d633149d6b",
+        "documentId": "重构契丹早期史.epub",
+        "source": "重构契丹早期史.epub",
+        "content": "\n此说甚是。将今本《太祖纪》“十二月，痕德堇可汗殂，群臣奉遗命请立太祖”云云与《仪卫志·国仗》所记“遥辇末主遗制，迎十二神纛、天子旗鼓置太祖帐前”相对照可知，元人所据原始资料中《太祖纪》原文在“群臣奉遗命”下应该还有“迎十二神纛、天子旗鼓置太祖帐前”之类的文字，只不过今本《太祖纪》删去，在同样抄撮本纪相关记载而成的《仪卫志》中得到保留。由此可见，关于阿保机即位的原始记载刻意强调其获得遥辇可汗留下的“天子旗鼓”，这是皇权的象征，而在后来的诸弟之乱中，这又成为交战双方反复争夺的对象。《太祖纪》太祖七年三月云：“剌葛引其众至乙室堇淀，具天子旗鼓，将自立，皇太后阴遣人谕令避去。会弭姑乃、怀里阳言车驾且至，其众惊溃，掠居民北走，上以兵追之。剌葛遣其党寅底石引兵径趋行宫，焚其辎重、庐帐，纵兵大杀。皇后急遣蜀古鲁救之，仅得天子旗鼓而已。”\n当时阿保机只是代遥辇为可汗，尚未称帝，“天子旗鼓”云云显系史官对可汗仪仗的刻意修饰，也是围绕太祖元年即已称帝的说法展开，并有意将称帝的合法性系于遥辇可汗之禅让。",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "trustLevel": "external",
+        "metadata": {
+          "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+          "chunkIndex": 386,
+          "totalChunks": 645,
+          "sourceStartOffset": 152994,
+          "sourceEndOffset": 153442,
+          "selectedChunks": 6,
+          "sampled": true
+        }
+      },
+      {
+        "evidenceId": "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+        "documentId": "重构契丹早期史.epub",
+        "source": "重构契丹早期史.epub",
+        "content": "\n\n结语\n谁的历史？——契丹早期史问题的典型意义\n本书聚焦于契丹早期史这一核心命题，立足于史源学视野下的文本批判，从文本缝隙切入，理清不同文献系统之源流，呈现历史叙述的衍变脉络以及族群记忆被不断改造的复杂过程，进而完成对相关史实的反思性重构。\n从北魏著《国史》、北齐修《魏书》，到唐初《隋书》、开元《国史》、五代《实录》，再到两《唐书》、两《五代史》、宋朝《国史》，皆设《契丹传》，形成一套六七百年赓续不断的文献谱系，贯穿契丹从初现到建国的全过程，这在古代中原关于北族的记载中绝无仅有，也是本项研究得以开展的独特史料基础，然而其中存在的建构与误解一直以来并未引起研究者的重视。本书所剖析的三个案例，即《魏书》虚构的契丹初期发展史、《隋书》将契丹由东夷改为北狄的归类变化以及唐代文献所谓契丹君长姓大贺氏的通行说法，都旨在揭示这套历史叙述存在的系统性问题，对以此为核心搭建的契丹早期史框架重加检讨。",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "trustLevel": "external",
+        "metadata": {
+          "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+          "chunkIndex": 515,
+          "totalChunks": 645,
+          "sourceStartOffset": 202589,
+          "sourceEndOffset": 202986,
+          "selectedChunks": 6,
+          "sampled": true
+        }
+      },
+      {
+        "evidenceId": "chunk-ac196559b0b6a49a66c9f9fa6067bbcf8b638f1688f54a8bc316ad06a59bd003",
+        "documentId": "重构契丹早期史.epub",
+        "source": "重构契丹早期史.epub",
+        "content": "\n家父苗长青老师曾从头到尾通读本书初稿，并指出其中多处文字错讹。作为普通师范毕业生，他对文史之学朴素的喜好和理解，从我孩提时代开始，潜移默化地影响了我的人生选择，这种影响的意义直到今天身为人父之后方才真正有所体悟。内子香钧是书中诸多观点的首位倾听者，相守十五年间，她事靡巨细、有怨无悔的付出深深地改变了我对生活、对生命的态度。博士论文写作阶段，常常是她一边听我谈着新发现，一边提问：“你确定吗？能自圆其说吗？”现如今，长子以铎会习惯性地在我给他讲故事时来一句口头禅“你确定吗”，随即抛出灵魂之问：“过去为什么总是打打杀杀？”次子以麾偶尔也在一旁歪着小脑袋，嘴里不断咿咿呀呀，仿佛是在附和哥哥、追问着我。\n本书的出版于我个人而言，标志着学生时代积攒下的一点“老本”已彻底“吃光用尽”。如何突破自己、开出新局的问题，早在脑海中盘桓许久，现在终于可以放手去尝试回答了，忐忑却又热切地期待着。\n癸卯孟冬，于京西闹不机迷斋",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "trustLevel": "external",
+        "metadata": {
+          "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+          "chunkIndex": 644,
+          "totalChunks": 645,
+          "sourceStartOffset": 252812,
+          "sourceEndOffset": 253218,
+          "selectedChunks": 6,
+          "sampled": true
+        }
+      }
+    ],
+    "cases": [
+      {
+        "id": "case-1-1578e4745dfe74879b190711",
+        "query": "这本书的作者是谁？",
+        "tags": [
+          "ai-generated",
+          "needs-review"
+        ],
+        "goldEvidence": [
+          {
+            "evidenceId": "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+            "relevance": 3,
+            "spans": [
+              {
+                "startOffset": 26,
+                "endOffset": 32
+              },
+              {
+                "startOffset": 15,
+                "endOffset": 25
+              }
+            ]
+          }
+        ],
+        "expectedAnswer": {
+          "requiredFacts": [
+            [
+              "书名：重构契丹早期史",
+              "这本书的书名是重构契丹早期史"
+            ],
+            [
+              "作者：苗润博",
+              "这本书的作者是苗润博"
+            ]
+          ],
+          "referenceAnswer": "苗润博"
+        },
+        "expectedAbstain": false
+      },
+      {
+        "id": "case-2-7d630a31d6a95d3aaad56cbc",
+        "query": "什么是《营卫志·部族》主体内容的来源？",
+        "tags": [
+          "ai-generated",
+          "needs-review"
+        ],
+        "goldEvidence": [
+          {
+            "evidenceId": "chunk-1df2ccfac7bdbfa1e13d69a27ef64abee7cb7cbf6c8ba309a6c95dade8875e1f",
+            "relevance": 3,
+            "spans": [
+              {
+                "startOffset": 129,
+                "endOffset": 145
+              },
+              {
+                "startOffset": 110,
+                "endOffset": 128
+              }
+            ]
+          }
+        ],
+        "expectedAnswer": {
+          "requiredFacts": [
+            [
+              "《营卫志·部族》主体内容的来源",
+              "《营卫志·部族》内容的来源是谁的书"
+            ]
+          ],
+          "referenceAnswer": "《营卫志·部族》主体内容出于耶律俨书。"
+        },
+        "expectedAbstain": false
+      },
+      {
+        "id": "case-3-8eeb52bef327d7c21e10ae6d",
+        "query": "《太祖纪》中关于阿保机即位的原始记载中，哪些内容被删去？",
+        "tags": [
+          "ai-generated",
+          "needs-review"
+        ],
+        "goldEvidence": [
+          {
+            "evidenceId": "chunk-c9d32a5029ba9701aec95de4f4340f355e36a8d5494150b7c814d5d633149d6b",
+            "relevance": 3,
+            "spans": [
+              {
+                "startOffset": 79,
+                "endOffset": 169
+              }
+            ]
+          }
+        ],
+        "expectedAnswer": {
+          "requiredFacts": [
+            [
+              "遥辇可汗留下的“天子旗鼓”",
+              "遥辇可汗的遗制"
+            ]
+          ],
+          "referenceAnswer": "《太祖纪》删去关于遥辇可汗留下的“天子旗鼓”的文字。"
+        },
+        "expectedAbstain": false
+      },
+      {
+        "id": "case-4-2e2c48b27d731f952fe44d79",
+        "query": "这套历史叙述存在的系统性问题是哪些？",
+        "tags": [
+          "ai-generated",
+          "needs-review"
+        ],
+        "goldEvidence": [
+          {
+            "evidenceId": "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+            "relevance": 3,
+            "spans": [
+              {
+                "startOffset": 261,
+                "endOffset": 288
+              },
+              {
+                "startOffset": 361,
+                "endOffset": 397
+              }
+            ]
+          }
+        ],
+        "expectedAnswer": {
+          "requiredFacts": [
+            [
+              "系统性问题",
+              "存在问题"
+            ],
+            [
+              "虚构",
+              "建构与误解"
+            ],
+            [
+              "系统性问题",
+              "存在问题"
+            ]
+          ],
+          "referenceAnswer": "这套历史叙述存在虚构、建构与误解的系统性问题。"
+        },
+        "expectedAbstain": false
+      },
+      {
+        "id": "case-5-576e382334354c20f8d34ac8",
+        "query": "这本书的作者是什么人？",
+        "tags": [
+          "ai-generated",
+          "needs-review"
+        ],
+        "goldEvidence": [
+          {
+            "evidenceId": "chunk-ac196559b0b6a49a66c9f9fa6067bbcf8b638f1688f54a8bc316ad06a59bd003",
+            "relevance": 3,
+            "spans": [
+              {
+                "startOffset": 1,
+                "endOffset": 19
+              },
+              {
+                "startOffset": 32,
+                "endOffset": 56
+              }
+            ]
+          }
+        ],
+        "expectedAnswer": {
+          "requiredFacts": [
+            [
+              "家父苗长青老师",
+              "这本书的作者"
+            ]
+          ],
+          "referenceAnswer": "这本书的作者是家父苗长青老师。"
+        },
+        "expectedAbstain": false
+      }
+    ]
+  },
+  "sourceCoverage": [
+    {
+      "documentAssetId": "89d16c8d-0023-48a8-823c-a54f40e8cc81",
+      "source": "重构契丹早期史.epub",
+      "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+      "totalChunks": 645,
+      "selectedChunks": 6,
+      "characterCount": 2086,
+      "sampled": true
+    }
+  ]
+}

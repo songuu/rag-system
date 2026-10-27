@@ -2,11 +2,14 @@
 
 import React, { useState } from 'react';
 import ModelManagementPanel from './ModelManagementPanel';
+import { isSameModel } from '@/lib/model-selection';
 interface ParameterControlsProps {
   topK: number;
   threshold: number;
   llmModel: string;
   embeddingModel: string;
+  llmProvider?: string;
+  embeddingProvider?: string;
   onTopKChange: (value: number) => void;
   onThresholdChange: (value: number) => void;
   onLLMModelChange: (value: string) => void;
@@ -40,6 +43,8 @@ export default function ParameterControls({
   threshold,
   llmModel,
   embeddingModel,
+  llmProvider = 'ollama',
+  embeddingProvider = 'ollama',
   onTopKChange,
   onThresholdChange,
   onLLMModelChange,
@@ -202,12 +207,12 @@ export default function ParameterControls({
                 {availableModels.llmModels.length > 0 ? (
                   <>
                     <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">
-                      {availableModels.llmModels.map((model: any) => (
+                      {availableModels.llmModels.map(model => (
                         <button
                           key={model.name}
                           onClick={() => onLLMModelChange(model.name)}
                           className={`p-3 text-left rounded-lg border-2 transition-all ${
-                            llmModel === model.name
+                            isSameModel(llmModel, model.name, llmProvider)
                               ? 'border-purple-500 bg-purple-50 shadow-md'
                               : 'border-gray-200 hover:border-purple-300 hover:bg-gray-50'
                           }`}
@@ -216,7 +221,7 @@ export default function ParameterControls({
                             <div className="text-sm font-semibold text-gray-800 truncate">
                               {model.displayName}
                             </div>
-                            {llmModel === model.name && (
+                            {isSameModel(llmModel, model.name, llmProvider) && (
                               <svg className="w-4 h-4 text-purple-600" fill="currentColor" viewBox="0 0 20 20">
                                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                               </svg>
@@ -263,12 +268,12 @@ export default function ParameterControls({
                 {availableModels.embeddingModels.length > 0 ? (
                   <>
                     <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-1">
-                      {availableModels.embeddingModels.map((model: any) => (
+                      {availableModels.embeddingModels.map(model => (
                         <button
                           key={model.name}
                           onClick={() => onEmbeddingModelChange(model.name)}
                           className={`p-3 text-left rounded-lg border-2 transition-all ${
-                            embeddingModel === model.name
+                            isSameModel(embeddingModel, model.name, embeddingProvider)
                               ? 'border-blue-500 bg-blue-50 shadow-md'
                               : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
                           }`}
@@ -277,7 +282,7 @@ export default function ParameterControls({
                             <div className="text-sm font-semibold text-gray-800 truncate">
                               {model.displayName}
                             </div>
-                            {embeddingModel === model.name && (
+                            {isSameModel(embeddingModel, model.name, embeddingProvider) && (
                               <svg className="w-4 h-4 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
                                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                               </svg>

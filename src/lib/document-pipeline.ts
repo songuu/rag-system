@@ -7,6 +7,7 @@
  * - 文本文件 (.txt)
  * - PDF 文件 (.pdf)
  * - Word 文件 (.docx)
+ * - 电子书 (.epub, .mobi)
  * - URL 网页
  * - YouTube 视频字幕
  * - 纯文本内容
@@ -41,7 +42,6 @@ import { createCanonicalPdfDocumentText } from './rag/multimodal/pdf-asset-manif
 import { safeFetchExternalUrl } from './security/safe-external-url';
 import {
   createRetrievalScope,
-  isTenantIsolationRequired,
   type RagRetrievalScope,
   type RagTrustLevel,
 } from './security/retrieval-scope';
@@ -61,7 +61,7 @@ import {
 // ============== 类型定义 ==============
 
 // 支持的数据源类型
-export type DataSourceType = 'text' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'json' | 'markdown' | 'url' | 'youtube' | 'raw';
+export type DataSourceType = 'text' | 'pdf' | 'docx' | 'xlsx' | 'csv' | 'json' | 'markdown' | 'epub' | 'mobi' | 'url' | 'youtube' | 'raw';
 
 // 文档元数据
 export interface DocumentMetadata {
@@ -696,6 +696,24 @@ export async function loadDocument(
   // 如果是 Buffer，根据文件名推断类型
   if (Buffer.isBuffer(input)) {
     const ext = filename?.toLowerCase().split('.').pop();
+
+    if (ext === 'epub' || ext === 'mobi' || type === 'epub' || type === 'mobi') {
+      const format = ext === 'epub' || ext === 'mobi' ? ext : type as 'epub' | 'mobi';
+      const { parseEbookBuffer } = await import('./ebook-parser');
+      const ebook = await parseEbookBuffer(input, format);
+      return {
+        content: ebook.content,
+        metadata: {
+          source: filename || `document.${format}`,
+          type: format,
+          title: ebook.title || filename,
+          author: ebook.author,
+          chapterCount: ebook.chapterCount,
+          parseMethod: ebook.parseMethod,
+          createdAt: new Date().toISOString(),
+        },
+      };
+    }
     
     // PDF
     if (ext === 'pdf' || type === 'pdf') {
@@ -943,8 +961,9 @@ export async function storeToMilvus(
   });
   
   await milvus.connect();
-  // 使用 autoRecreate=true 以便在维度不匹配时自动重建集合
-  await milvus.initializeCollection(!isTenantIsolationRequired());
+  // An upload must never drop existing vectors to accommodate a different model.
+  // Index replacement belongs to the explicit reindex workflow, even locally.
+  await milvus.initializeCollection(false);
   
   onProgress?.({
     stage: 'storing',

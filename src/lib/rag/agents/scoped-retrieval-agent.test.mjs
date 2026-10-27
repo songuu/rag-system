@@ -296,6 +296,11 @@ test('createAgent executes the scoped evidence tool and feeds its result back to
     ]
   );
   assert.equal(result.totalDuration >= 0, true);
+  assert.equal(result.workflowSteps[0].metrics.toolCallCount, 1);
+  assert.equal(result.workflowSteps[0].metrics.modelCallIndex, 1);
+  assert.equal(result.workflowSteps[1].metrics.evidenceCount, 1);
+  assert.equal(result.workflowSteps[2].metrics.toolCallCount, 0);
+  assert.equal(result.workflowSteps[2].metrics.modelCallIndex, 2);
   const toolMessage = result.messages.find(message => message.getType() === 'tool');
   assert.match(String(toolMessage?.content), /evidence-1/);
   assert.doesNotMatch(String(toolMessage?.content), /evidence-2/);

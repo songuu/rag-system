@@ -22,6 +22,76 @@ registerHooks({
 const { createRetrievalScope } = await import('../security/retrieval-scope.ts');
 const { Neo4jGraphRetrievalPort } = await import('./neo4j-retrieval-port.ts');
 
+function relation(claimId, sourceEntityId, targetEntityId, passageIds) {
+  return { claimId, sourceEntityId, sourceEntityName: sourceEntityId,
+    predicate: 'RELATED_TO', targetEntityId, targetEntityName: targetEntityId, passageIds };
+}
+
+function sourcePassage(passageId) {
+  return { passageId, documentId: 'doc-a', documentVersion: 'graph-v1', trustLevel: 'reviewed',
+    content: 'Original source for ' + passageId, startOffset: 0, endOffset: 40 };
+}
+
+test('preserves ordered two-hop claim direction only on its supporting source passages', async () => {
+  const first = relation('claim-1', 'entity-b', 'entity-a', ['passage-1']);
+  const second = relation('claim-2', 'entity-b', 'entity-c', ['passage-2']);
+  const client = fakeClient([
+    { records: [record({ seedId: 'entity-a', entityId: 'entity-c', hop: 2,
+      entityPassageIds: ['unrelated'], claimPassageIds: ['passage-1', 'passage-2'],
+      claimIds: ['claim-1', 'claim-2'], communityIds: [], relations: [first, second] })] },
+    { records: ['passage-1', 'passage-2', 'unrelated'].map(id => record({ passage: sourcePassage(id) })) },
+  ]);
+  const result = await new Neo4jGraphRetrievalPort(client).retrieve(request());
+  for (const evidence of result.evidence.slice(0, 2)) assert.deepEqual(evidence.metadata.graphPaths, [[first, second]]);
+  assert.deepEqual(result.evidence[2].metadata.graphPaths, []);
+  assert.match(client.calls[0].cypher, /sourceEntityId: claim\.sourceEntityId/);
+  assert.match(client.calls[0].cypher, /targetEntityId: claim\.targetEntityId/);
+  assert.match(client.calls[0].cypher, /pathSource\.trustLevel IN \$allowedTrustLevels/);
+});
+
+test('does not emit unsupported, disconnected or over-budget relationship paths', async () => {
+  for (const relations of [
+    [relation('claim-empty', 'a', 'b', [])],
+    [relation('claim-1', 'a', 'b', ['passage-1']), relation('claim-2', 'c', 'd', ['passage-1'])],
+    [relation('claim-1', 'a', 'b', ['passage-1']), relation('claim-2', 'b', 'c', ['passage-1'])],
+  ]) {
+    const client = fakeClient([
+      { records: [record({ seedId: 'a', entityId: 'b', hop: 1,
+        entityPassageIds: ['passage-1'], claimPassageIds: ['passage-1'],
+        claimIds: relations.map(item => item.claimId), communityIds: [], relations })] },
+      { records: [record({ passage: { ...sourcePassage('passage-1'), metadataJson: JSON.stringify({ graphPaths: [[relation('spoof', 'a', 'b', ['passage-1'])]] }) } })] },
+    ]);
+    const result = await new Neo4jGraphRetrievalPort(client).retrieve(request({ maxHops: 1 }));
+    assert.deepEqual(result.evidence[0].metadata.graphPaths, []);
+  }
+});
+
+test('only emits complete relationship paths whose sources survived the passage budget', async () => {
+  const relations = [relation('claim-1', 'a', 'b', ['passage-1']), relation('claim-2', 'b', 'c', ['not-delivered'])];
+  const client = fakeClient([
+    { records: [record({ seedId: 'a', entityId: 'c', hop: 2,
+      entityPassageIds: [], claimPassageIds: ['passage-1', 'not-delivered'],
+      claimIds: ['claim-1', 'claim-2'], communityIds: [], relations })] },
+    { records: [record({ passage: sourcePassage('passage-1') })] },
+  ]);
+  const result = await new Neo4jGraphRetrievalPort(client).retrieve(request({ topK: 1 }));
+  assert.deepEqual(result.evidence[0].metadata.graphPaths, []);
+});
+
+test('bounds per-passage relationship paths and reports truncation without changing the hop limit', async () => {
+  const client = fakeClient([
+    { records: Array.from({ length: 12 }, (_, index) => record({
+      seedId: 'a', entityId: 'b', hop: 1, entityPassageIds: [], claimPassageIds: ['passage-1'],
+      claimIds: ['claim-' + index], communityIds: [], relations: [relation('claim-' + index, 'a', 'b', ['passage-1'])],
+    })) },
+    { records: [record({ passage: sourcePassage('passage-1') })] },
+  ]);
+  const result = await new Neo4jGraphRetrievalPort(client).retrieve(request({ maxHops: 1 }));
+  assert.equal(result.evidence[0].metadata.graphPaths.length, 8);
+  assert.equal(result.diagnostics.truncated, true);
+  assert.ok(result.evidence[0].metadata.graphPaths.every(path => path.length === 1));
+});
+
 function record(values) {
   return { get: key => values[key] };
 }

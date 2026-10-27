@@ -34,7 +34,7 @@ export async function POST(request: Request) {
       enableValidation,
     } = body;
 
-    let currentEngine = getEngine();
+    const currentEngine = getEngine();
 
     // 更新配置（如果提供）
     if (llmModel || embeddingModel || maxSuggestions || minRelevanceScore !== undefined || enableValidation !== undefined) {
@@ -57,7 +57,7 @@ export async function POST(request: Request) {
         }
 
         // 转换文档格式
-        const chunks: DocumentChunk[] = (contextChunks || []).map((chunk: any, index: number) => ({
+        const chunks: DocumentChunk[] = (contextChunks || []).map((chunk: Partial<DocumentChunk> & { pageContent?: string }, index: number) => ({
           id: chunk.id || `chunk-${index}`,
           content: chunk.content || chunk.pageContent || '',
           metadata: chunk.metadata || {},

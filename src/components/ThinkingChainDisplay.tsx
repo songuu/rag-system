@@ -10,7 +10,7 @@ interface ThinkingStep {
   type: 'reasoning' | 'planning' | 'reflection' | 'decision' | 'tool_call';
   content: string;
   confidence?: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 interface ThinkingChainDisplayProps {
@@ -61,7 +61,7 @@ export default function ThinkingChainDisplay({
         </div>
         
         <div className="flex flex-wrap gap-1.5">
-          {steps.map((step, idx) => {
+          {steps.map((step) => {
             const config = typeConfig[step.type] || typeConfig.reasoning;
             return (
               <div

@@ -66,6 +66,8 @@ test('completed pipeline documents atomically persist an optional blob and metad
   ]);
   assert.ok(Buffer.isBuffer(calls[0].values[7]));
   assert.equal(calls[0].text.includes('知识正文'), false);
+  assert.match(calls[0].text, /when document_assets\.metadata->>'lifecycle' = 'deleted'/);
+  assert.match(calls[0].text, /'retrieval_enabled', true, 'lifecycle', 'active'/);
 });
 
 test('pipeline persistence rejects request scope different from configured PostgreSQL scope', async () => {

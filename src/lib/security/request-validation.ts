@@ -1,3 +1,5 @@
+import { getActiveEmbeddingIndex } from '../embedding-index-state';
+
 export const REQUEST_LIMITS = {
   askJsonBytes: 64 * 1024,
   pipelineJsonBytes: 2 * 1024 * 1024,
@@ -161,12 +163,7 @@ export function validateAskInput(
     ['memory', 'milvus'] as const,
     'memory'
   );
-  const llmModel = validatedModel(
-    raw.llmModel,
-    'llmModel',
-    env.RAG_ALLOWED_LLM_MODELS,
-    resolveRuntimeLlmModel(env)
-  );
+  const llmModel = validateLlmModelSelection(raw.llmModel, env);
   const embeddingModel = validatedModel(
     raw.embeddingModel,
     'embeddingModel',
@@ -214,6 +211,13 @@ export function validateExternalUrlInput(value: unknown, field = 'url'): string 
   return requiredString(value, field, REQUEST_LIMITS.urlCharacters);
 }
 
+export function validateLlmModelSelection(
+  value: unknown,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  return validatedModel(value, 'llmModel', env.RAG_ALLOWED_LLM_MODELS, resolveRuntimeLlmModel(env));
+}
+
 export function validateEmbeddingModelSelection(
   value: unknown,
   env: NodeJS.ProcessEnv = process.env
@@ -256,7 +260,9 @@ export function resolveRuntimeLlmModel(env: NodeJS.ProcessEnv = process.env): st
  * indexing with another.
  */
 export function resolveRuntimeEmbeddingModel(env: NodeJS.ProcessEnv = process.env): string {
-  const provider = env.EMBEDDING_PROVIDER || (env.SILICONFLOW_API_KEY ? 'siliconflow' : 'ollama');
+  const active = env === process.env ? getActiveEmbeddingIndex() : undefined;
+  if (active) return active.model;
+  const provider = resolveRuntimeEmbeddingProvider(env);
 
   switch (provider) {
     case 'siliconflow':
@@ -269,6 +275,10 @@ export function resolveRuntimeEmbeddingModel(env: NodeJS.ProcessEnv = process.en
     default:
       return env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text';
   }
+}
+
+export function resolveRuntimeEmbeddingProvider(env: NodeJS.ProcessEnv = process.env): string {
+  return env.EMBEDDING_PROVIDER || (env.SILICONFLOW_API_KEY ? 'siliconflow' : 'ollama');
 }
 
 export interface RuntimeModelAllowlistValidation {

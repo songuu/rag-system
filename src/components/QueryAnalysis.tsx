@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import type { QueryAnalysisResult, SemanticContext, VectorFeatures } from '@/lib/semantic-analyzer';
 
 const ReactECharts = dynamic(() => import('echarts-for-react'), { ssr: false });
 
@@ -33,12 +34,41 @@ const ENTITY_TYPE_CONFIG: Record<string, { icon: string; color: string; bg: stri
   OTHER: { icon: '🏷️', color: 'text-slate-600', bg: 'bg-slate-100 border-slate-200', label: '其他' },
 };
 
+interface SemanticAnalysisData extends Partial<Omit<SemanticContext, 'semanticClusters' | 'intentAnalysis'>> {
+  vectorFeatures?: Partial<VectorFeatures>;
+  semanticClusters?: Array<Pick<SemanticContext['semanticClusters'][number], 'name' | 'similarity'>>;
+  intentAnalysis?: {
+    primaryIntent: string;
+    intentConfidence?: number;
+    possibleIntents?: string[];
+  };
+}
+
+interface QueryAnalysisData {
+  tokenization?: Partial<Omit<QueryAnalysisResult['tokenization'], 'tokenTypes'>> & {
+    tokenTypes?: Partial<QueryAnalysisResult['tokenization']['tokenTypes']>;
+    tokens?: TokenInfo[];
+  };
+  embedding?: {
+    embeddingDimension?: number;
+    semanticAnalysis?: SemanticAnalysisData;
+  };
+  quality?: Partial<QueryAnalysisResult['quality']>;
+  adaptiveEntityAnalysis?: {
+    entities?: ExtractedEntity[];
+    intent?: string;
+    complexity?: string;
+    confidence?: number;
+    keywords?: string[];
+  };
+}
+
 interface QueryAnalysisProps {
-  analysis: any;
-  radarChartData?: any;
+  analysis: QueryAnalysisData | null | undefined;
+  radarChartData?: Partial<VectorFeatures> | null;
   topK: number;
   threshold: number;
-  getRadarChartOption: () => any;
+  getRadarChartOption: () => Record<string, unknown> | null;
 }
 
 // 进度条组件
@@ -146,17 +176,24 @@ function IntentBadge({ intent, confidence, isPrimary = false }: {
   );
 }
 
-export default function QueryAnalysis({ 
+export default function QueryAnalysis(props: QueryAnalysisProps) {
+  if (!props.analysis) return null;
+
+  // Mount chart hooks only for a present analysis, so loading/reset renders do
+  // not change a component's hook order or eagerly compute hidden charts.
+  return <QueryAnalysisContent {...props} analysis={props.analysis} />;
+}
+
+function QueryAnalysisContent({
   analysis, 
   radarChartData, 
   topK, 
   threshold, 
   getRadarChartOption 
-}: QueryAnalysisProps) {
-  if (!analysis) return null;
-
+}: QueryAnalysisProps & { analysis: QueryAnalysisData }) {
   const vectorFeatures = analysis.embedding?.semanticAnalysis?.vectorFeatures;
   const semanticAnalysis = analysis.embedding?.semanticAnalysis;
+  const categoryDistribution = semanticAnalysis?.categoryDistribution;
   const quality = analysis.quality;
 
   // 领域雷达图配置
@@ -220,17 +257,17 @@ export default function QueryAnalysis({
           { value: vectorFeatures.vectorSparsity || 0, itemStyle: { color: '#F59E0B' } },
         ],
         barWidth: '50%',
-        label: { show: true, position: 'right', fontSize: 10, formatter: (p: any) => (p.value * 100).toFixed(0) + '%' }
+        label: { show: true, position: 'right', fontSize: 10, formatter: (p: { value: number }) => (p.value * 100).toFixed(0) + '%' }
       }]
     };
   }, [vectorFeatures]);
 
   // 类别分布饼图配置
   const categoryDistOption = useMemo(() => {
-    if (!semanticAnalysis?.categoryDistribution) return null;
+    if (!categoryDistribution) return null;
     
-    const data = Object.entries(semanticAnalysis.categoryDistribution)
-      .map(([name, value]) => ({ name, value: parseFloat((value as number * 100).toFixed(1)) }))
+    const data = Object.entries(categoryDistribution)
+      .map(([name, value]) => ({ name, value: parseFloat((value * 100).toFixed(1)) }))
       .filter(item => item.value > 1)
       .sort((a, b) => b.value - a.value);
     
@@ -249,7 +286,7 @@ export default function QueryAnalysis({
         data: data.map((item, i) => ({ ...item, itemStyle: { color: colors[i % colors.length] } }))
       }]
     };
-  }, [semanticAnalysis?.categoryDistribution]);
+  }, [categoryDistribution]);
   
   return (
     <div className="space-y-4">
@@ -573,7 +610,7 @@ export default function QueryAnalysis({
               <div className="grid grid-cols-2 gap-3">
                 <ReactECharts option={categoryDistOption} style={{ height: '120px' }} />
                 <div className="space-y-1">
-                  {semanticAnalysis?.semanticClusters?.slice(0, 4).map((cluster: any, i: number) => (
+                  {semanticAnalysis?.semanticClusters?.slice(0, 4).map((cluster, i: number) => (
                     <div key={i} className="flex items-center justify-between text-xs">
                       <span className="text-gray-600">{cluster.name}</span>
                       <div className="flex items-center gap-2">

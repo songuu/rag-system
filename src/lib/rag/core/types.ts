@@ -1,6 +1,7 @@
 import type { RunnableConfig } from '@langchain/core/runnables';
 import type { RagRetrievalPlan } from '../retrieval/retrieval-plan';
 import type { RagSecurityContext } from '../../security/request-context';
+import type { RagCitations } from '../citations/types';
 import type {
   RagRetrievalScope,
   RagTrustLevel,
@@ -139,6 +140,11 @@ export interface RagLaneExecution {
   retriever: string;
   status: RagLaneExecutionStatus;
   retrievedEvidenceIds: string[];
+  /** Captured by the executor only after a successful rerank transform. */
+  reranking?: {
+    beforeEvidenceIds: string[];
+    afterEvidenceIds: string[];
+  };
   retrievalQuality?: number;
   generationUtility?: number;
   uncertainty?: number;
@@ -189,6 +195,7 @@ export interface RagAnswerEnvelope {
   success: boolean;
   question: string;
   answer: string;
+  citations?: RagCitations;
   storageBackend?: RagStorageBackend;
   context?: string;
   traceId?: string;

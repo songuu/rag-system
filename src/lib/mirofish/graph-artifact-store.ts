@@ -1105,8 +1105,10 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
   }
 
   private getQuotaReservationFile(identity: MiroFishGraphArtifactIdentity): string {
+    // Graph JSON files are mutable runtime state, not deployment assets.
+    const directory = this.getQuotaReservationDirectory();
     return path.join(
-      this.getQuotaReservationDirectory(),
+      /*turbopackIgnore: true*/ directory,
       `${createIdentityDigest(identity)}.json`
     );
   }
@@ -1117,7 +1119,8 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
 
   private getArtifactFile(identity: MiroFishGraphArtifactIdentity): string {
     const digest = createIdentityDigest(identity);
-    return path.join(this.rootDir, digest.slice(0, 2), `${digest}.json`);
+    const rootDir = this.rootDir;
+    return path.join(/*turbopackIgnore: true*/ rootDir, digest.slice(0, 2), `${digest}.json`);
   }
 
   private getCatalogDirectory(scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>): string {
@@ -1125,8 +1128,9 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
   }
 
   private getDescriptorFile(identity: MiroFishGraphArtifactIdentity): string {
+    const directory = this.getCatalogDirectory(identity);
     return path.join(
-      this.getCatalogDirectory(identity),
+      /*turbopackIgnore: true*/ directory,
       `${createIdentityDigest(identity)}.json`
     );
   }
@@ -1138,8 +1142,9 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
   }
 
   private getTombstoneFile(identity: MiroFishGraphArtifactIdentity): string {
+    const directory = this.getTombstoneDirectory(identity);
     return path.join(
-      this.getTombstoneDirectory(identity),
+      /*turbopackIgnore: true*/ directory,
       `${createIdentityDigest(identity)}.json`
     );
   }
@@ -1154,8 +1159,9 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
     scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>,
     revision: number
   ): string {
+    const directory = this.getActiveDirectory(scope);
     return path.join(
-      this.getActiveDirectory(scope),
+      /*turbopackIgnore: true*/ directory,
       `${String(revision).padStart(16, '0')}.json`
     );
   }
