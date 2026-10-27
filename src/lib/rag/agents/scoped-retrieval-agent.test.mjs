@@ -111,7 +111,7 @@ test('createAgent versions the numbered citation prompt and measures returned mo
     { input_tokens: 30, output_tokens: 8, total_tokens: 38 },
     { input_tokens: 70, output_tokens: 12, total_tokens: 82 },
   ]);
-  assert.equal(SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION, 'scoped-rag-answer-v3');
+  assert.equal(SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION, 'scoped-rag-answer-v4');
   assert.equal(result.runtime, 'langchain-create-agent-v1');
   assert.deepEqual(result.diagnostics, {
     version: 'scoped-agent-diagnostics-v1',
@@ -130,6 +130,20 @@ test('createAgent versions the numbered citation prompt and measures returned mo
       citedEvidenceIds: ['evidence-1'],
     },
   });
+});
+
+test('Agent trusted policy requires user language, final replies and clarification of unclear references', async () => {
+  const model = answerModel('契丹人的活动中心位于大凌河流域。[1]');
+  const generate = model._generate.bind(model);
+  const systemPolicies = [];
+  model._generate = async (messages, ...args) => {
+    systemPolicies.push(...messages.filter(message => message.getType() === 'system').map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)));
+    return generate(messages, ...args);
+  };
+  await invokeScopedRetrievalAgent({ model, question: '契丹人主要分布在哪里？', contextPack: contextPack([evidence('evidence-1', '契丹人的活动中心位于大凌河流域。', 0.9)]), scope, traceId: 'language-policy' });
+  assert.match(systemPolicies[0], /中文问题使用简体中文/);
+  assert.match(systemPolicies[0], /最终答复/);
+  assert.match(systemPolicies[0], /指代不清.*澄清/);
 });
 
 for (const [name, answer, expected] of [
@@ -928,7 +942,7 @@ test('structured agent answers complete evidence without search and preserves pr
   const fixture = structuredModel([answerDecision()], { ollama: true });
   const result = await invokeStructured(fixture.model);
   const { SCOPED_STRUCTURED_AGENT_PROMPT_VERSION } = await import('./scoped-retrieval-agent.ts');
-  assert.equal(SCOPED_STRUCTURED_AGENT_PROMPT_VERSION, 'scoped-rag-structured-answer-v5');
+  assert.equal(SCOPED_STRUCTURED_AGENT_PROMPT_VERSION, 'scoped-rag-structured-answer-v6');
   assert.equal(result.answer, 'Known fact.\n\n[1]');
   assert.equal(result.answerDisposition, 'answer');
   assert.equal(result.decisionMode, 'structured');

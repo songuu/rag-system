@@ -107,3 +107,14 @@ test('each capability carries its parameters rather than guessing at execution t
   assert.equal(routeConversation('明天是星期几').actions[0].dayOffset, 1);
   assert.equal(routeConversation('计算3+2').actions[0].expression, '3+2');
 });
+
+test('bare referential followups request clarification instead of retrieving an arbitrary entity', () => {
+  for (const query of ['他是谁', '它是谁？', '请问，她是谁呢？', '它有哪些事迹', '他有什么贡献', '它死在哪里', '他什么时候出生', '他为什么去世', '他和耶律阿保机是什么关系', 'Who is he?', 'where did she die']) {
+    const decision = routeConversation(query);
+    assert.equal(decision.route, 'direct', query);
+    assert.deepEqual(decision.actions, [{ intent: 'clarification' }]);
+  }
+  for (const query of ['耶律阿保机是谁', '耶律阿保机死在哪里', '文中他是谁', '契丹人的老大是谁', '他山之石是什么意思', '小说《他是谁》的作者是谁', '解释什么是代词', '他是谁，耶律阿保机是谁']) {
+    assert.equal(routeConversation(query).route, 'rag', query);
+  }
+});

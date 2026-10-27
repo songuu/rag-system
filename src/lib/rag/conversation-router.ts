@@ -2,16 +2,16 @@ export const CONVERSATION_ROUTER_VERSION = 'conversation-router/v1' as const;
 
 export type SocialIntent = 'greeting' | 'presence' | 'thanks' | 'farewell' | 'identity' | 'capability';
 export type ClockIntent = 'current-date' | 'current-time' | 'current-weekday' | 'current-datetime';
-export type ConversationIntent = SocialIntent | ClockIntent | 'calculation' | 'model-info' | 'connectivity' | 'live-data';
+export type ConversationIntent = SocialIntent | ClockIntent | 'calculation' | 'model-info' | 'connectivity' | 'live-data' | 'clarification';
 export type ConversationAction =
-  | { intent: SocialIntent | 'model-info' | 'connectivity' }
+  | { intent: SocialIntent | 'model-info' | 'connectivity' | 'clarification' }
   | { intent: ClockIntent; timeZone: string; zoneLabel: string; dayOffset: number }
   | { intent: 'calculation'; expression: string }
   | { intent: 'live-data'; topic: 'weather' | 'news' | 'market' };
 export interface ConversationRouteDecision {
   version: typeof CONVERSATION_ROUTER_VERSION;
   route: 'direct' | 'rag';
-  reason: 'supported-capabilities' | 'semantic-capabilities' | 'document-context' | 'uncertain' | 'complex-query';
+  reason: 'supported-capabilities' | 'semantic-capabilities' | 'document-context' | 'uncertain' | 'complex-query' | 'missing-referent';
   normalizedQuery: string;
   actions: ConversationAction[];
 }
@@ -38,6 +38,11 @@ export function routeConversation(query: string): ConversationRouteDecision {
   const fallback = (reason: ConversationRouteDecision['reason']): ConversationRouteDecision =>
     ({ ...base, route: 'rag', reason, actions: [] });
   if (!normalizedQuery || normalizedQuery.length > 512) return fallback('complex-query');
+  // This endpoint receives one question, not an authenticated conversation history.
+  // Vector similarity cannot establish who an otherwise unnamed pronoun refers to.
+  if (isUnresolvedReference(unwrap(normalizedQuery))) {
+    return { ...base, route: 'direct', reason: 'missing-referent', actions: [{ intent: 'clarification' }] };
+  }
   // Explicit document scope and explanatory questions win over topic words.
   // Otherwise "the time in this report" could silently lose its corpus scope.
   if (/(?:文档|知识库|附件|报告|原文|文中|章节|第.{0,3}章|历史|含义|定义|原因|原理|为什么|document|report|uploaded|knowledge base|according to|explain|summari[sz]e)/iu.test(normalizedQuery)) {
@@ -56,7 +61,7 @@ export function routeConversation(query: string): ConversationRouteDecision {
     actions.push(action);
   }
   return actions.length
-    ? { ...base, route: 'direct', reason: 'supported-capabilities', actions }
+    ? { ...base, route: 'direct', reason: actions.some(action => action.intent === 'clarification') ? 'missing-referent' : 'supported-capabilities', actions }
     : fallback('uncertain');
 }
 
@@ -76,6 +81,7 @@ function unwrap(query: string): string {
 
 function parseAction(query: string): ConversationAction | null {
   const text = unwrap(query);
+  if (isUnresolvedReference(text)) return { intent: 'clarification' };
   for (const rule of SOCIAL_RULES) if (rule.pattern.test(text)) return { intent: rule.intent };
   // These ask for an explanation, even when the final word names a live topic.
   if (/^(?:怎么|如何|怎样|什么是|介绍|解释|分析|预测|讨论|研究|how to\b)/iu.test(text)) return null;
@@ -96,6 +102,12 @@ function parseAction(query: string): ConversationAction | null {
   if (/^(?:今天的?|最新|当前|实时)(?:新闻|新闻头条|热点新闻)(?:是什么|有哪些)?$/u.test(text)) return { intent: 'live-data', topic: 'news' };
   if (/^(?:今天|现在|当前|实时|最新)[\p{Script=Han}a-z\d.-]{0,24}(?:汇率|股价|股票价格|币价)(?:是多少|怎么样)?$/iu.test(text)) return { intent: 'live-data', topic: 'market' };
   return null;
+}
+
+function isUnresolvedReference(text: string): boolean {
+  // Full short clauses only: do not swallow a second question or a quoted work title.
+  return /^(?:他们|她们|它们|他|她|它)(?:是|叫|有|的|在|到|从|出生|去世|死|何时|什么时候|怎么|如何|为什么|为啥|能|会|做|参加|经历|领导|管理|建立|属于|住|活|成为|曾经|指|和)[^,，;；。！？!?]{0,120}$/u.test(text)
+    || /^(?:who is (?:he|she)|who are they|what is it|where (?:did (?:he|she|they) die|was (?:he|she) born)|what did (?:he|she|they) do)$/iu.test(text);
 }
 
 function parseClock(input: string): Extract<ConversationAction, { timeZone: string }> | null {

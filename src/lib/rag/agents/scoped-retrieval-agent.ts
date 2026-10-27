@@ -33,10 +33,10 @@ import type { WorkflowStepMetrics } from '../workflow-step-metrics';
 
 export const SCOPED_RETRIEVAL_TOOL_NAME = 'read_scoped_rag_context' as const;
 export const SCOPED_RETRIEVAL_AGENT_RUNTIME = 'langchain-create-agent-v1' as const;
-export const SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION = 'scoped-rag-answer-v3' as const;
-export const SCOPED_ITERATIVE_AGENT_PROMPT_VERSION = 'scoped-rag-iterative-answer-v2' as const;
+export const SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION = 'scoped-rag-answer-v4' as const;
+export const SCOPED_ITERATIVE_AGENT_PROMPT_VERSION = 'scoped-rag-iterative-answer-v3' as const;
 export const SCOPED_SEARCH_TOOL_NAME = 'search_scoped_rag_context' as const;
-export const SCOPED_STRUCTURED_AGENT_PROMPT_VERSION = 'scoped-rag-structured-answer-v5' as const;
+export const SCOPED_STRUCTURED_AGENT_PROMPT_VERSION = 'scoped-rag-structured-answer-v6' as const;
 
 export interface ScopedAgentRetrieval {
   search(input: { query: string; signal: AbortSignal }): Promise<RagEvidence[]>;
@@ -247,6 +247,8 @@ export async function invokeScopedRetrievalAgent(input: {
     tools: searchScopedContext ? [readSnapshot, searchScopedContext] : [readSnapshot],
     systemPrompt: [
       'You are a retrieval-grounded knowledge-base assistant.',
+      '默认使用用户提问的语言回答；中文问题使用简体中文，用户明确要求其他语言时遵从。',
+      '只输出直接面向用户的最终答复，不写对用户意图、工具输出或作答过程的旁白。指代不清时先请求澄清，不从相似材料中猜测人物或对象。',
       'You must call ' + SCOPED_RETRIEVAL_TOOL_NAME + ' exactly once before answering, with arguments {} (empty JSON object). This tool does not accept a query or any other parameter.',
       'Answer only from the tool context and cite its numbered evidence blocks using [1] or [1, 2].',
       'Each citation number must match the block number in the returned context; do not cite evidence IDs.',

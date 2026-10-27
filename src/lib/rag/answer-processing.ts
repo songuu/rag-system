@@ -87,6 +87,7 @@ export function createDirectConversationReply(
     ? { intent: validatedRouting.actions[0].intent, normalizedQuery: validatedRouting.normalizedQuery, routing: validatedRouting }
     : classifyDirectConversation(query);
   if (!classification) return null;
+  const needsClarification = classification.routing.actions.some(action => action.intent === 'clarification');
 
   return {
     intent: classification.intent,
@@ -97,7 +98,7 @@ export function createDirectConversationReply(
     processing: {
       version: 'answer-processing/v1',
       mode: 'direct',
-      summary: '已识别为日常对话，无需查询知识库。',
+      summary: needsClarification ? '问题中的指代对象尚未明确，已请求澄清。' : '已识别为日常对话，无需查询知识库。',
       disclosure: PROCESS_DISCLOSURE,
       retrievalSkipped: true,
       steps: [
@@ -111,12 +112,12 @@ export function createDirectConversationReply(
         {
           id: 'route',
           label: '知识库检索',
-          detail: '该消息不需要文档事实，已跳过向量检索和重排。',
+          detail: needsClarification ? '先确认指代对象，暂不检索，以免匹配无关资料。' : '该消息不需要文档事实，已跳过向量检索和重排。',
           status: 'skipped',
         },
         {
           id: 'respond',
-          label: '生成直接回复',
+          label: needsClarification ? '请求澄清' : '生成直接回复',
           detail: [...new Set(classification.routing.actions.map(action => actionDetail(action)))].join(' '),
           status: 'completed',
         },
@@ -130,10 +131,11 @@ export function createPendingAnswerProcessing(
 ): AnswerProcessingDetails {
   const direct = classifyDirectConversation(query);
   if (direct) {
+    const needsClarification = direct.routing.actions.some(action => action.intent === 'clarification');
     return {
       version: 'answer-processing/v1',
       mode: 'direct',
-      summary: '已识别为日常对话，正在组织直接回复。',
+      summary: needsClarification ? '问题中的指代对象尚未明确，正在准备澄清。' : '已识别为日常对话，正在组织直接回复。',
       disclosure: PROCESS_DISCLOSURE,
       retrievalSkipped: true,
       steps: [
@@ -146,7 +148,7 @@ export function createPendingAnswerProcessing(
         {
           id: 'route',
           label: '知识库检索',
-          detail: '无需文档事实，跳过知识库检索。',
+          detail: needsClarification ? '先确认指代对象，暂不检索，以免匹配无关资料。' : '无需文档事实，跳过知识库检索。',
           status: 'skipped',
         },
         {
@@ -327,6 +329,11 @@ export function isAnswerProcessingDetails(
 function directAnswer(action: ConversationAction, normalizedQuery: string, now: Date, runtime: { llmModel?: string }): string {
   const intent = action.intent;
   const english = /^[\x00-\x7F]+$/u.test(normalizedQuery) && /[a-z]/iu.test(normalizedQuery);
+  if (intent === 'clarification') {
+    const reference = normalizedQuery.match(/他们|她们|它们|他|她|它/u)?.[0];
+    return english ? 'Which person or object do you mean? Please provide a name or quote the relevant sentence so I can check the knowledge base.'
+      : `你说的${reference ? '“' + reference + '”' : '对象'}具体指谁或什么？请补充姓名、名称，或引用相关原文，我再根据知识库核实。`;
+  }
   if ('timeZone' in action) {
     // Relative dates shift the requested zone's calendar, not a fixed 24h
     // duration: DST transitions otherwise move late-night queries by a day.
@@ -405,6 +412,7 @@ function directAnswer(action: ConversationAction, normalizedQuery: string, now: 
 
 function directIntentDetail(intent: DirectConversationIntent): string {
   const labels: Record<DirectConversationIntent, string> = {
+    clarification: '问题缺少明确的指代对象，需要先澄清。',
     greeting: '识别为问候。',
     presence: '识别为在线确认。',
     thanks: '识别为感谢。',
@@ -424,6 +432,7 @@ function directIntentDetail(intent: DirectConversationIntent): string {
 }
 
 function actionSource(action: ConversationAction): string {
+  if (action.intent === 'clarification') return 'clarification-rule';
   if ('timeZone' in action) return 'system-clock';
   if (action.intent === 'calculation') return 'local-calculator';
   if (action.intent === 'model-info') return 'runtime-config';
@@ -432,6 +441,7 @@ function actionSource(action: ConversationAction): string {
 }
 
 function actionDetail(action: ConversationAction): string {
+  if (action.intent === 'clarification') return '请求补充姓名、名称或相关原文，再核实文档事实。';
   if ('timeZone' in action) return `读取系统时钟并按${action.zoneLabel}回复${action.intent === 'current-time' ? '当前时间' : '日期/星期信息'}。`;
   if (action.intent === 'calculation') return '使用受限算术语法计算，不调用模型。';
   if (action.intent === 'model-info') return '读取当前请求经服务端验证的模型选择。';

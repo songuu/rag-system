@@ -1,0 +1,266 @@
+{
+  "runId": "a81ec7de-6b1d-494f-93d9-046920d48691",
+  "startedAt": "2026-10-27T09:44:44.299Z",
+  "mockedResponses": false,
+  "passed": true,
+  "tests": [
+    {
+      "case": "who",
+      "question": "他是谁",
+      "answer": "你说的“他”具体指谁或什么？请补充姓名、名称，或引用相关原文，我再根据知识库核实。",
+      "httpStatus": 200,
+      "durationMs": 10041,
+      "conversationIntent": "clarification",
+      "conversationMode": "direct",
+      "modelUsage": {
+        "llm": false,
+        "embedding": false
+      },
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceIds": [],
+      "answerSources": [
+        "clarification-rule"
+      ],
+      "processing": {
+        "version": "answer-processing/v1",
+        "mode": "direct",
+        "summary": "问题中的指代对象尚未明确，已请求澄清。",
+        "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+        "retrievalSkipped": true,
+        "steps": [
+          {
+            "id": "classify",
+            "label": "识别问题类型",
+            "detail": "问题缺少明确的指代对象，需要先澄清。",
+            "status": "completed"
+          },
+          {
+            "id": "route",
+            "label": "知识库检索",
+            "detail": "先确认指代对象，暂不检索，以免匹配无关资料。",
+            "status": "skipped"
+          },
+          {
+            "id": "respond",
+            "label": "请求澄清",
+            "detail": "请求补充姓名、名称或相关原文，再核实文档事实。",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "case": "deeds",
+      "question": "它有哪些事迹",
+      "answer": "你说的“它”具体指谁或什么？请补充姓名、名称，或引用相关原文，我再根据知识库核实。",
+      "httpStatus": 200,
+      "durationMs": 258,
+      "conversationIntent": "clarification",
+      "conversationMode": "direct",
+      "modelUsage": {
+        "llm": false,
+        "embedding": false
+      },
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceIds": [],
+      "answerSources": [
+        "clarification-rule"
+      ],
+      "processing": {
+        "version": "answer-processing/v1",
+        "mode": "direct",
+        "summary": "问题中的指代对象尚未明确，已请求澄清。",
+        "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+        "retrievalSkipped": true,
+        "steps": [
+          {
+            "id": "classify",
+            "label": "识别问题类型",
+            "detail": "问题缺少明确的指代对象，需要先澄清。",
+            "status": "completed"
+          },
+          {
+            "id": "route",
+            "label": "知识库检索",
+            "detail": "先确认指代对象，暂不检索，以免匹配无关资料。",
+            "status": "skipped"
+          },
+          {
+            "id": "respond",
+            "label": "请求澄清",
+            "detail": "请求补充姓名、名称或相关原文，再核实文档事实。",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "case": "death",
+      "question": "它死在哪里",
+      "answer": "你说的“它”具体指谁或什么？请补充姓名、名称，或引用相关原文，我再根据知识库核实。",
+      "httpStatus": 200,
+      "durationMs": 75,
+      "conversationIntent": "clarification",
+      "conversationMode": "direct",
+      "modelUsage": {
+        "llm": false,
+        "embedding": false
+      },
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceIds": [],
+      "answerSources": [
+        "clarification-rule"
+      ],
+      "processing": {
+        "version": "answer-processing/v1",
+        "mode": "direct",
+        "summary": "问题中的指代对象尚未明确，已请求澄清。",
+        "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+        "retrievalSkipped": true,
+        "steps": [
+          {
+            "id": "classify",
+            "label": "识别问题类型",
+            "detail": "问题缺少明确的指代对象，需要先澄清。",
+            "status": "completed"
+          },
+          {
+            "id": "route",
+            "label": "知识库检索",
+            "detail": "先确认指代对象，暂不检索，以免匹配无关资料。",
+            "status": "skipped"
+          },
+          {
+            "id": "respond",
+            "label": "请求澄清",
+            "detail": "请求补充姓名、名称或相关原文，再核实文档事实。",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "case": "english",
+      "question": "Who is he?",
+      "answer": "Which person or object do you mean? Please provide a name or quote the relevant sentence so I can check the knowledge base.",
+      "httpStatus": 200,
+      "durationMs": 57,
+      "conversationIntent": "clarification",
+      "conversationMode": "direct",
+      "modelUsage": {
+        "llm": false,
+        "embedding": false
+      },
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceIds": [],
+      "answerSources": [
+        "clarification-rule"
+      ],
+      "processing": {
+        "version": "answer-processing/v1",
+        "mode": "direct",
+        "summary": "问题中的指代对象尚未明确，已请求澄清。",
+        "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+        "retrievalSkipped": true,
+        "steps": [
+          {
+            "id": "classify",
+            "label": "识别问题类型",
+            "detail": "问题缺少明确的指代对象，需要先澄清。",
+            "status": "completed"
+          },
+          {
+            "id": "route",
+            "label": "知识库检索",
+            "detail": "先确认指代对象，暂不检索，以免匹配无关资料。",
+            "status": "skipped"
+          },
+          {
+            "id": "respond",
+            "label": "请求澄清",
+            "detail": "请求补充姓名、名称或相关原文，再核实文档事实。",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "case": "explicit-subject",
+      "question": "根据知识库资料，契丹人主要分布在哪些地区？",
+      "answer": "根据知识库资料，契丹人主要分布在辽宁朝阳东北数百里范围内，包括今辽宁朝阳、白狼水流域、辽西和大凌河流域等地区。",
+      "httpStatus": 200,
+      "durationMs": 3031,
+      "models": {
+        "llm": "llama3.1",
+        "embedding": "qwen3-embedding:latest"
+      },
+      "evidenceIds": [
+        "重构契丹早期史.epub",
+        "重构契丹早期史.epub",
+        "重构契丹早期史.epub"
+      ],
+      "processing": {
+        "version": "answer-processing/v1",
+        "mode": "rag",
+        "summary": "已检索并验证 3 条证据后生成回答。",
+        "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+        "retrievalSkipped": false,
+        "totalDurationMs": 2590,
+        "steps": [
+          {
+            "id": "route",
+            "label": "选择处理路径",
+            "detail": "已选择知识库检索路径。",
+            "status": "completed"
+          },
+          {
+            "id": "retrieve",
+            "label": "检索并验证资料",
+            "detail": "已获得 3 条可用于回答的证据。",
+            "status": "completed",
+            "durationMs": 853
+          },
+          {
+            "id": "rerank",
+            "label": "重排候选文档",
+            "detail": "已按相关性重新排序候选资料。",
+            "status": "completed",
+            "durationMs": 288
+          },
+          {
+            "id": "generate",
+            "label": "组织回答",
+            "detail": "已基于筛选后的资料生成回答。",
+            "status": "completed",
+            "durationMs": 1736
+          }
+        ]
+      }
+    }
+  ],
+  "readiness": {
+    "model": "llama3.1",
+    "phase": "ready"
+  },
+  "originalDocumentsUnchanged": true,
+  "pageErrors": [],
+  "completedAt": "2026-10-27T09:45:11.218Z",
+  "validation": {
+    "testsPassed": 290,
+    "testConcurrency": 1,
+    "typecheck": "passed",
+    "eslint": "passed"
+  }
+}

@@ -57,6 +57,26 @@ test('cold direct requests do not import any provider or RAG runtime', async () 
   }
 });
 
+test('ambiguous person followups clarify in Chinese without model or retrieval even with Agent enabled', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('Clarification must not call a provider'); };
+  try {
+    for (const question of ['他是谁', '它有哪些事迹', '它死在哪里']) {
+      const response = await POST(request(question, true, { body: { useAgenticRAG: true } }));
+      const body = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(body.conversationIntent, 'clarification');
+      assert.deepEqual(body.modelUsage, { llm: false, embedding: false });
+      assert.deepEqual(body.evidence, []);
+      assert.match(body.answer, /具体指|指的是/);
+      assert.match(body.answer, /姓名|名称/);
+      assert.doesNotMatch(body.answer, /阴山|匈奴|Based on|tool output/);
+      assert.equal(body.processing.retrievalSkipped, true);
+      assert.doesNotMatch(body.processing.summary, /日常对话/);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('knowledge routing delegates already validated identity and input once', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async url => {
