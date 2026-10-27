@@ -34,7 +34,7 @@ const NAVIGATION_GROUPS: readonly { label: string; links: readonly HeaderNavigat
   { label: '观察与评测', links: [
     { href: '/history', label: '历史对话', icon: 'fa-history', color: 'text-slate-500', desktopLabel: false },
     { href: '/observability', label: '可观测性', icon: 'fa-chart-line', color: 'text-blue-500', desktopLabel: false },
-    { href: '/rag-evaluation', label: '效果评测', icon: 'fa-scale-balanced', color: 'text-sky-700', desktopLabel: true },
+    { href: '/rag-evaluation', label: '效果评测', icon: 'fa-scale-balanced', color: 'text-sky-700', desktopLabel: false },
     { href: '/trace-trie', label: 'Trace-Trie', icon: 'fa-sitemap', color: 'text-purple-500', desktopLabel: false },
     { href: '/domain-vectors', label: '领域向量', icon: 'fa-crosshairs', color: 'text-emerald-500', desktopLabel: false },
   ] },
