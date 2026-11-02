@@ -89,6 +89,7 @@ export async function searchElasticsearchLexical(input: {
   laneId: string;
   scope: RagRetrievalScope;
   documentId?: string;
+  documentIds?: string[];
   signal?: AbortSignal;
 }): Promise<RagEvidence[]> {
   const query = requiredScalar(input.query, 'query', 8_000);
@@ -98,6 +99,7 @@ export async function searchElasticsearchLexical(input: {
     : requiredScalar(input.documentId, 'documentId', 256);
   const retrievableDocumentIds = await listRetrievableDocumentIds(input.scope);
   if (retrievableDocumentIds?.length === 0) return [];
+  if (input.documentIds?.length === 0) return [];
   const response = await input.client.search({
     index: input.indexName,
     size: topK,
@@ -121,6 +123,7 @@ export async function searchElasticsearchLexical(input: {
           { terms: { trust_level: [...input.scope.allowedTrustLevels] } },
           ...(retrievableDocumentIds === null ? [] : [{ terms: { document_id: retrievableDocumentIds } }]),
           ...(documentId ? [{ term: { document_id: documentId } }] : []),
+          ...(input.documentIds === undefined ? [] : [{ terms: { document_id: input.documentIds } }]),
         ],
       },
     },

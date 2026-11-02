@@ -122,6 +122,18 @@ test('lexical search can narrow results to one server-validated document', async
   });
 });
 
+test('lexical search applies allowed file-type document ids before limiting candidates', async () => {
+  const calls = [];
+  const client = { async search(input) { calls.push(input); return { hits: { hits: [] } }; } };
+  await searchElasticsearchLexical({ client, indexName: 'rag_chunks_v1', query: 'test', topK: 4,
+    laneId: 'document-search', scope, documentIds: ['target'] });
+  assert.equal(calls[0].size, 4);
+  assert.deepEqual(calls[0].query.bool.filter.at(-1), { terms: { document_id: ['target'] } });
+  await searchElasticsearchLexical({ client, indexName: 'rag_chunks_v1', query: 'test', topK: 4,
+    laneId: 'document-search', scope, documentIds: [] });
+  assert.equal(calls.length, 1);
+});
+
 test('lexical search rejects cross-scope or conflicting provenance hits', async () => {
   const client = {
     async search() {

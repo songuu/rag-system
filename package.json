@@ -5,7 +5,7 @@
   "scripts": {
     "test:agent-trace": "node --test src/components/langsmith-trace-details.test.mjs",
     "test:rag-citations": "node --test src/lib/rag/citations/*.test.mjs src/app/api/ask/citations/preview/route.test.mjs src/components/chat-citations.test.mjs src/lib/indexeddb-citations.test.mjs",
-    "test:documents": "node --test src/lib/documents/*.test.mjs src/app/api/documents/route.test.mjs",
+    "test:documents": "node --test src/lib/documents/*.test.mjs src/app/api/documents/route.test.mjs src/app/api/document-search/route.test.mjs",
     "graph:import": "tsx scripts/import-mirofish-artifacts.ts",
     "graph:control-worker": "tsx scripts/graph-control-worker-entry.ts",
     "graph:control-worker:local": "node --env-file=.env.local --import tsx scripts/graph-control-worker-entry.ts",

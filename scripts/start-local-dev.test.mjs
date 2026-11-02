@@ -94,6 +94,27 @@ test('开发启动端口避开被占用或系统保留的端口，显式端口�
   await assert.rejects(selectDevelopmentPort('invalid', async () => true), /PORT/);
 });
 
+test('自动选端口跳过连续的 Windows 系统保留范围', async () => {
+  const attempted = [];
+  const selected = await selectDevelopmentPort(undefined, async port => {
+    attempted.push(port);
+    return port >= 3200;
+  });
+  assert.equal(selected, 3200);
+  assert.equal(attempted.length, 201);
+  assert.equal(attempted[0], 3000);
+});
+
+test('自动选端口耗尽候选范围时提示显式设置 PORT', async () => {
+  const attempted = [];
+  await assert.rejects(selectDevelopmentPort(undefined, async port => {
+    attempted.push(port);
+    return false;
+  }), /3000–3999.*PORT/);
+  assert.equal(attempted.length, 1000);
+  assert.equal(attempted.at(-1), 3999);
+});
+
 test('Windows 开发启动默认使用 Webpack，允许显式切回 Turbopack', async () => {
   const { selectDevelopmentBundler } = await import('./start-local-dev.mjs');
   assert.equal(typeof selectDevelopmentBundler, 'function');

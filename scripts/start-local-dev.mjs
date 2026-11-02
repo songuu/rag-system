@@ -361,8 +361,9 @@ export async function selectDevelopmentPort(explicitPort, probe = canListenOnPor
     if (!await probe(port)) throw new Error(`指定端口 ${port} 不可用，请检查端口占用或系统保留范围。`);
     return port;
   }
-  for (let port = 3000; port < 3100; port++) if (await probe(port)) return port;
-  throw new Error('3000–3099 没有可用开发端口，请显式设置 PORT。');
+  // Windows may reserve multiple consecutive 100-port blocks for system services.
+  for (let port = 3000; port < 4000; port++) if (await probe(port)) return port;
+  throw new Error('3000–3999 没有可用开发端口，请显式设置 PORT。');
 }
 
 export function selectDevelopmentBundler(explicitBundler, platform = process.platform) {

@@ -8,6 +8,7 @@ import {
   parseDocumentSearchRequest,
   presentDocumentSearchEvidence,
 } from '@/lib/documents/document-search-contract';
+import { applyDocumentTypeToMilvusOptions, DocumentTypeFilterUnavailableError, listDocumentIdsForFileType } from '@/lib/documents/document-type-filter';
 import { getElasticsearchClient } from '@/lib/elasticsearch/client';
 import {
   assertElasticsearchConfigured,
@@ -76,17 +77,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const fileTypeDocumentIds = searchRequest.fileType
+      ? await listDocumentIdsForFileType(scope, searchRequest.fileType, { documentId: searchRequest.documentId })
+      : undefined;
     const candidateLimit = Math.min(100, Math.max(searchRequest.topK, searchRequest.topK * 4));
     const retrieveDense = () => retrieveDenseEvidence({
       query: searchRequest.query,
       topK: candidateLimit,
       documentId: searchRequest.documentId,
+      fileTypeDocumentIds,
       scope,
     });
     const retrieveLexical = () => retrieveLexicalEvidence({
       query: searchRequest.query,
       topK: candidateLimit,
       documentId: searchRequest.documentId,
+      fileTypeDocumentIds,
       scope,
     });
 
@@ -151,6 +157,9 @@ export async function POST(request: NextRequest) {
         'Retry-After': String(error.retryAfterSeconds),
       });
     }
+    if (error instanceof DocumentTypeFilterUnavailableError) {
+      return failureResponse(error.status, error.code, error.message, requestId);
+    }
     if (error instanceof Error && error.message.startsWith('Document search')) {
       return failureResponse(400, 'INVALID_DOCUMENT_SEARCH', error.message, requestId);
     }
@@ -162,6 +171,7 @@ async function retrieveDenseEvidence(input: {
   query: string;
   topK: number;
   documentId?: string;
+  fileTypeDocumentIds?: string[];
   scope: RagRetrievalScope;
 }): Promise<RagEvidence[]> {
   const config = defaultMilvusConfig();
@@ -174,7 +184,9 @@ async function retrieveDenseEvidence(input: {
     getEmbeddingConfigSummary().model
   );
   const embedding = await generateQueryEmbedding(input.query, embeddingModel);
-  const options = buildScopedMilvusSearchOptions(input.scope, { threshold: 0 });
+  const options = applyDocumentTypeToMilvusOptions(
+    buildScopedMilvusSearchOptions(input.scope, { threshold: 0 }), input.fileTypeDocumentIds
+  );
   if (input.documentId) {
     options.filter = [options.filter, 'document_id == {documentId}'].filter(Boolean).join(' && ');
     options.exprValues = { ...(options.exprValues ?? {}), documentId: input.documentId };
@@ -190,6 +202,7 @@ async function retrieveLexicalEvidence(input: {
   query: string;
   topK: number;
   documentId?: string;
+  fileTypeDocumentIds?: string[];
   scope: RagRetrievalScope;
 }): Promise<RagEvidence[]> {
   const config = getElasticsearchRuntimeConfig();
@@ -205,6 +218,7 @@ async function retrieveLexicalEvidence(input: {
     laneId: 'document-search',
     scope: input.scope,
     documentId: input.documentId,
+    documentIds: input.fileTypeDocumentIds,
   });
 }
 

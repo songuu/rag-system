@@ -88,8 +88,15 @@ export function matchesDocumentFileType(
   evidence: RagEvidence,
   fileType: DocumentFileType | undefined
 ): boolean {
+  return matchesDocumentSourceFileType(evidence.source ?? evidence.documentId, fileType);
+}
+
+export function matchesDocumentSourceFileType(
+  documentSource: string,
+  fileType: DocumentFileType | undefined
+): boolean {
   if (!fileType) return true;
-  const source = (evidence.source ?? evidence.documentId).toLowerCase();
+  const source = documentSource.toLowerCase();
   switch (fileType) {
     case 'pdf': return source.endsWith('.pdf');
     case 'docx': return source.endsWith('.docx') || source.endsWith('.doc');
