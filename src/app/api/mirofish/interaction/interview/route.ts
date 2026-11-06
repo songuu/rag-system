@@ -1,85 +1,53 @@
-/**
- * Agent 采访 API
- *
- * POST /api/mirofish/interaction/interview - 采访 Agent
- */
-
 import { NextRequest, NextResponse } from 'next/server';
-import { getInteractionAgent } from '@/lib/mirofish/interaction-agent';
-import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
-import {
-  getHttpModelOverrideErrorResponse,
-  validateHttpModelOverride,
-} from '@/lib/mirofish/model-override';
-
+import { readJsonObjectWithLimit } from '@/lib/security/request-validation';
+import { getMiroFishInteractionRuntime } from '@/lib/mirofish/interaction-runtime';
+import { resolveMiroFishRequestScope } from '@/lib/mirofish/request-scope';
+import { boundedQuestion, MiroFishReportError, publicReportId } from '@/lib/mirofish/report-contracts';
+import { reportBoolean, reportHttpError } from '@/lib/mirofish/report-http';
+import { getHttpModelOverrideErrorResponse, validateHttpModelOverride } from '@/lib/mirofish/model-override';
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { simulation_id, agent_id, question, batch } = body as {
-      simulation_id: string;
-      agent_id?: string;
-      question: string;
-      batch?: boolean;
-    };
+    const { scope, actorId } = await resolveMiroFishRequestScope(request);
+    const body = await readJsonObjectWithLimit(request, 64 * 1024);
     const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
-
-    if (!simulation_id || !question) {
-      return NextResponse.json(
-        { success: false, error: '缺少 simulation_id 或 question' },
-        { status: 400 }
-      );
-    }
-
-    const runner = getSimulationRunner();
-    const snapshot = runner.getSnapshot(simulation_id);
-    if (!snapshot) {
-      return NextResponse.json(
-        { success: false, error: '模拟不存在' },
-        { status: 404 }
-      );
-    }
-
-    const interactionAgent = getInteractionAgent(modelOverride);
-    const allPosts = snapshot.posts;
-
-    // 批量采访所有 Agent
-    if (batch) {
-      const responses = await interactionAgent.batchInterview(
-        snapshot.info.agent_profiles,
-        question,
-        allPosts
-      );
+    const runtime = getMiroFishInteractionRuntime(scope, modelOverride, request.headers.get('accept-language')?.startsWith('en') ? 'en' : 'zh');
+    const simulationId = publicReportId(body.simulation_id);
+    const batch = reportBoolean(body.batch, 'batch');
+    const conversationId = body.conversation_id === undefined ? undefined : publicReportId(body.conversation_id);
+    if (body.interviews !== undefined) {
+      if (!Array.isArray(body.interviews) || !body.interviews.length || body.interviews.length > 10) throw new MiroFishReportError('MIROFISH_INTERVIEW_AGENT_LIMIT', '问卷需包含 1–10 位 Agent。', 400);
+      const inputs = body.interviews.map(item => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) throw new MiroFishReportError('MIROFISH_INTERVIEW_INVALID_QUESTIONNAIRE', '采访问卷格式无效。', 400);
+        return { agentId: publicReportId(item.agent_id), question: boundedQuestion(item.prompt ?? item.question) };
+      });
+      const responses = await runtime.askQuestionnaire({ simulationId, interviews: inputs, actorId, conversationId });
       return NextResponse.json({ success: true, responses });
     }
-
-    // 采访单个 Agent
-    if (!agent_id) {
-      return NextResponse.json(
-        { success: false, error: '缺少 agent_id（单个采访时必需）' },
-        { status: 400 }
-      );
-    }
-
-    const profile = snapshot.info.agent_profiles.find(p => p.entity_id === agent_id);
-    if (!profile) {
-      return NextResponse.json(
-        { success: false, error: 'Agent 不存在' },
-        { status: 404 }
-      );
-    }
-
-    const agentPosts = allPosts.filter(p => p.author_id === agent_id);
-    const response = await interactionAgent.interview(profile, question, agentPosts);
-
-    return NextResponse.json({ success: true, response });
+    const question = boundedQuestion(body.question);
+    let agentIds: string[];
+    if (body.agent_ids !== undefined) {
+      if (!Array.isArray(body.agent_ids) || !body.agent_ids.length || body.agent_ids.length > 10) throw new MiroFishReportError('MIROFISH_INTERVIEW_AGENT_LIMIT', '每次采访请选择 1–10 位 Agent。', 400);
+      agentIds = body.agent_ids.map(publicReportId);
+    } else if (batch) agentIds = (await runtime.profiles(simulationId)).map(profile => profile.entity_id);
+    else agentIds = [publicReportId(body.agent_id)];
+    const responses = await runtime.askMany({ simulationId, agentIds, question, actorId, conversationId });
+    return NextResponse.json({ success: true, responses, ...(responses.length === 1 ? { response: responses[0] } : {}) });
   } catch (error) {
-    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
-    if (modelOverrideError) {
-      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
-    }
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '采访失败' },
-      { status: 500 }
-    );
+    const modelError = getHttpModelOverrideErrorResponse(error);
+    return modelError ? NextResponse.json(modelError.body, { status: modelError.status }) : reportHttpError(error);
   }
+}
+export async function GET(request: NextRequest) {
+  try {
+    const { scope, actorId } = await resolveMiroFishRequestScope(request);
+    const search = request.nextUrl.searchParams;
+    const runtime = getMiroFishInteractionRuntime(scope);
+    const simulationId = publicReportId(search.get('simulation_id'));
+    if (search.get('action') === 'history') {
+      const conversation = await runtime.history(simulationId, publicReportId(search.get('agent_id')), actorId,
+        search.has('conversation_id') ? publicReportId(search.get('conversation_id')) : undefined);
+      return NextResponse.json({ success: true, messages: conversation?.messages ?? [], responses: conversation?.answers ?? [] });
+    }
+    return NextResponse.json({ success: true, profiles: await runtime.profiles(simulationId) });
+  } catch (error) { return reportHttpError(error); }
 }

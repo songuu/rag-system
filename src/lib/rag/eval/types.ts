@@ -54,6 +54,9 @@ export interface RagEvalCase {
   goldEvidence: RagEvalGoldEvidence[];
   expectedAnswer?: RagEvalExpectedAnswer;
   expectedAbstain: boolean;
+  expectedDisposition?: 'answer' | 'abstain' | 'clarify';
+  /** Each group is a necessary fact; IDs inside a group are alternative evidence. */
+  requiredEvidenceGroups?: string[][];
   scope?: RagEvalScope;
   allowedPolicies?: string[];
   allowedLanes?: string[];
@@ -95,6 +98,8 @@ export interface RagEvalRetrievedEvidence {
   documentVersion?: string;
   trustLevel?: 'trusted' | 'reviewed' | 'external' | 'quarantined';
   laneId?: string;
+  /** Verified prefix of canonical chunk content (startOffset=0), as served by the context composer. */
+  servedSpan?: RagEvalSpan;
 }
 
 export interface RagEvalCitation {
@@ -129,6 +134,14 @@ export interface RagEvalTargetResult {
   usage: RagEvalUsage;
   traceId?: string;
   trajectory?: RagEvalAgentTrajectory;
+  retrievalStages?: import('./retrieval-stage-metrics').RagEvalRetrievalStages;
+  disposition?: 'answer' | 'abstain' | 'clarify';
+  observation?: {
+    disposition: 'structured' | 'empty-context' | 'text-rule' | 'unavailable';
+    citations: 'span' | 'reference-only' | 'unavailable';
+    calls: 'provider' | 'unavailable';
+  };
+  usageObservation?: import('./usage-metering').EvalUsageObservation;
 }
 
 export interface RagEvalTargetInput {
@@ -167,7 +180,7 @@ export interface RagEvalSecurityMetrics {
 
 export interface RagEvalAnswerMetrics {
   requiredFactCoverage: number | null;
-  abstainCorrect: boolean;
+  abstainCorrect: boolean | null;
 }
 
 export interface RagEvalCompletedCaseResult {
@@ -187,6 +200,12 @@ export interface RagEvalCompletedCaseResult {
   laneIds?: string[];
   traceId?: string;
   trajectory?: RagEvalAgentTrajectory;
+  retrievalStages?: import('./retrieval-stage-metrics').RagEvalRetrievalStageMetrics;
+  stageEvidenceIds?: import('./retrieval-stage-metrics').RagEvalRetrievalStages;
+  dispositionCorrect?: boolean | null;
+  quality?: import('./quality-scoring').QualityAssessment;
+  observation?: RagEvalTargetResult['observation'];
+  usageObservation?: import('./usage-metering').EvalUsageObservation;
 }
 
 export interface RagEvalFailedCaseResult {
@@ -238,9 +257,11 @@ export interface RagEvalSummary {
     coverageRatio: number;
   };
   calls: {
-    embeddingTotal: number;
-    generationTotal: number;
+    embeddingTotal: number | null;
+    generationTotal: number | null;
+    coverageRatio?: number;
   };
+  measurements?: import('./usage-metering').EvalUsageSummary;
 }
 
 export interface RagEvalRunReport {
@@ -259,6 +280,13 @@ export interface RagEvalRunReport {
   };
   configuration: {
     topK: number;
+    experiment?: import('./experiment-contract').RagEvalExperiment;
+    evaluatorImplementationSha256?: string;
+    usagePricing?: import('./usage-metering').EvalTokenPricing;
+    assessment?: {
+      annotationsSha256: string; contextSha256: string;
+      judge: { id: string; revision: string; rubricVersion: string } | null;
+    };
   };
   metadata?: Record<string, unknown>;
   cases: RagEvalCaseResult[];

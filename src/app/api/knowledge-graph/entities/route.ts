@@ -6,7 +6,7 @@ import {
   projectKnowledgeGraphPathResultsForHttp,
   requireKnowledgeGraphQueryPort,
   requiredString,
-  resolveActiveGraphVersion,
+  withCurrentGraphSource,
   resolveKnowledgeGraphHttpContext,
   withKnowledgeGraphQueryAdmission,
 } from '@/lib/knowledge-graph/http';
@@ -19,9 +19,8 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const entityId = url.searchParams.get('entityId')?.trim();
     const limit = boundedInteger(url.searchParams.get('limit'), 'limit', 25, 1, 100);
-    const result = await withKnowledgeGraphQueryAdmission(context, async () => {
+    const result = await withKnowledgeGraphQueryAdmission(context, () => withCurrentGraphSource(context, async graphVersion => {
       const queryPort = requireKnowledgeGraphQueryPort(context.runtime);
-      const graphVersion = await resolveActiveGraphVersion(context);
       const data = entityId ? projectKnowledgeGraphPathResultsForHttp(await queryPort.getNeighbors({
           scope: context.scope,
           graphVersion,
@@ -37,7 +36,7 @@ export async function GET(request: Request) {
           signal: request.signal,
         }));
       return { data, graphVersion };
-    });
+    }));
     return knowledgeGraphJsonResponse({
       success: true,
       data: result.data.data,

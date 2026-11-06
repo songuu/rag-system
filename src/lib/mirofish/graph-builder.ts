@@ -6,15 +6,22 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { Embeddings } from '@langchain/core/embeddings';
 import {
   EntityExtractor,
   EntityExtractionOutputBudgetError,
+  EntityExtractionProviderTimeoutError,
+  EntityExtractionProviderBusyError,
+  EntityExtractionTruncatedError,
+  EntityExtractionInvalidOutputError,
+  type EntityExtractionCheckpoint,
   type ExtractionConfig,
   type KnowledgeGraph,
 } from '../entity-extraction';
 import { createStableErrorLog } from '../security/error-redaction';
 import { getTaskManager } from './task-manager';
-import { createLLMFromOverride } from './model-override';
+import { createLLMFromOverride, type ServerModelOverride } from './model-override';
+import { isOllamaProvider } from '../model-config';
 import {
   purgeMiroFishLegacyGraphCache,
 } from './artifact-cache';
@@ -31,6 +38,7 @@ import {
 import {
   MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT,
   MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS,
+  MIROFISH_GRAPH_LONG_DOCUMENT_RESOURCE_LIMITS,
   MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT,
 } from './graph-extraction-budget';
 import type {
@@ -50,9 +58,31 @@ const MIROFISH_GRAPH_DEFAULTS = {
   batchSize: 1,
 };
 
-const MIROFISH_GRAPH_OLLAMA_OPTIONS = {
+const MIROFISH_GRAPH_REQUEST_TIMEOUT_MS = 300_000;
+
+export const MIROFISH_GRAPH_EXTRACTION_JSON_SCHEMA = {
+    type: 'object',
+    properties: {
+      entities: {
+        type: 'array', items: {
+          type: 'object', properties: { name: { type: 'string' }, type: { type: 'string' }, description: { type: 'string' } },
+          required: ['name', 'type', 'description'], additionalProperties: false,
+        },
+      },
+      relations: {
+        type: 'array', items: {
+          type: 'object', properties: { source: { type: 'string' }, target: { type: 'string' }, type: { type: 'string' }, description: { type: 'string' } },
+          required: ['source', 'target', 'type', 'description'], additionalProperties: false,
+        },
+      },
+    },
+    required: ['entities', 'relations'], additionalProperties: false,
+};
+
+export const MIROFISH_GRAPH_OLLAMA_OPTIONS = {
   format: 'json',
   num_ctx: 32768,
+  numPredict: 8192,
 };
 
 const GRAPH_PROGRESS_RANGES: Record<string, [number, number]> = {
@@ -317,13 +347,18 @@ export class MiroFishGraphBuilder {
       if (task?.status === 'pending' || task?.status === 'processing') {
         tm.failTask(
           taskId,
-          error instanceof EntityExtractionOutputBudgetError
-            ? MIROFISH_GRAPH_OUTPUT_BUDGET_LIMIT_CODE
-            : error instanceof MiroFishGraphArtifactPublishError
-              ? MIROFISH_GRAPH_ARTIFACT_PUBLISH_CODE
-              : error instanceof MiroFishGraphArtifactLimitError
-                ? MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE
-                : 'MIROFISH_GRAPH_BUILD_FAILED'
+          error instanceof EntityExtractionProviderTimeoutError
+            || error instanceof EntityExtractionProviderBusyError
+            || error instanceof EntityExtractionTruncatedError
+            || error instanceof EntityExtractionInvalidOutputError
+            ? error.code
+            : error instanceof EntityExtractionOutputBudgetError
+              ? MIROFISH_GRAPH_OUTPUT_BUDGET_LIMIT_CODE
+              : error instanceof MiroFishGraphArtifactPublishError
+                ? MIROFISH_GRAPH_ARTIFACT_PUBLISH_CODE
+                : error instanceof MiroFishGraphArtifactLimitError
+                  ? MIROFISH_GRAPH_ARTIFACT_LIMIT_CODE
+                  : 'MIROFISH_GRAPH_BUILD_FAILED'
         );
       }
     });
@@ -492,47 +527,7 @@ export class MiroFishGraphBuilder {
    * 根据 ontology 过滤实体类型，只保留允许的类型
    */
   private applyOntologyFilter(graphData: GraphData): GraphData {
-    if (!this.ontology) {
-      return graphData;
-    }
-
-    // 获取允许的实体类型
-    const allowedTypes = new Set(
-      this.ontology.entity_types.map(e => e.name.toUpperCase())
-    );
-
-    // 过滤节点
-    const filteredNodes = graphData.nodes.filter(node => {
-      // 检查节点标签是否在允许列表中
-      const nodeTypes = node.labels.map(l => l.toUpperCase());
-      return nodeTypes.some(t => allowedTypes.has(t));
-    });
-
-    // 获取过滤后的节点 ID 集合
-    const nodeIds = new Set(filteredNodes.map(n => n.uuid));
-
-    // 过滤边（只保留两端都在过滤后节点中的边）
-    const filteredEdges = graphData.edges.filter(
-      edge =>
-        nodeIds.has(edge.source_node_uuid) && nodeIds.has(edge.target_node_uuid)
-    );
-    const filteredEdgeIds = new Set(filteredEdges.map(edge => edge.uuid));
-    const filteredCommunities = graphData.communities
-      ?.map(community => ({
-        ...community,
-        entities: community.entities.filter(entityId => nodeIds.has(entityId)),
-        relations: community.relations.filter(relationId => filteredEdgeIds.has(relationId)),
-      }))
-      .filter(community => community.entities.length > 0);
-
-    return {
-      ...graphData,
-      nodes: filteredNodes,
-      edges: filteredEdges,
-      node_count: filteredNodes.length,
-      edge_count: filteredEdges.length,
-      communities: filteredCommunities,
-    };
+    return filterMiroFishGraphByOntology(graphData, this.ontology);
   }
 
   /**
@@ -811,15 +806,31 @@ function readOptionalStringArray(
 export function createMiroFishGraphExtractionConfig(config: {
   chunkSize: number;
   chunkOverlap: number;
+  longDocument?: boolean;
 }): Partial<ExtractionConfig> {
+  const llmTimeoutMs = MIROFISH_GRAPH_REQUEST_TIMEOUT_MS;
   return {
     chunkSize: config.chunkSize,
     chunkOverlap: config.chunkOverlap,
     enableGleaning: false,
-    maxChunkTimeout: 45 * 1000,
+    requireCompleteExtraction: true,
+    // Both interactive and durable builds need complete output; checkpointing
+    // changes resumability, not whether an oversized model response can recover.
+    adaptiveChunkSplitting: true,
+    minAdaptiveChunkCharacters: 256,
+    // Local embedding models may need eviction and loading after extraction.
+    // Keep this budget scoped to graph builds instead of slowing interactive retrieval.
+    embeddingTimeoutMs: MIROFISH_GRAPH_REQUEST_TIMEOUT_MS,
+    batchCommunityEmbeddings: true,
+    // Fragment size cannot predict cold loading after switching model families.
+    maxChunkTimeout: llmTimeoutMs,
+    chunkTimeoutMs: llmTimeoutMs,
+    llmOperationTimeoutMs: llmTimeoutMs,
+    maxTotalTimeout: 50 * 60 * 1000,
+    ...(config.longDocument ? { embeddingBatchSize: 32 } : {}),
     maxProviderCalls: MIROFISH_GRAPH_EXTRACTION_CALL_LIMIT,
     maxProviderInputCharacters: MIROFISH_GRAPH_PROVIDER_INPUT_CHARACTER_LIMIT,
-    ...MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS,
+    ...(config.longDocument ? MIROFISH_GRAPH_LONG_DOCUMENT_RESOURCE_LIMITS : MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS),
   };
 }
 
@@ -829,19 +840,43 @@ export async function extractMiroFishGraphData(input: {
   documentId: string;
   chunkSize?: number;
   chunkOverlap?: number;
-  modelOverride?: ModelOverride;
+  modelOverride?: ServerModelOverride;
   onProgress?: (progress: ExtractionProgress) => void;
+  checkpoint?: EntityExtractionCheckpoint;
+  signal?: AbortSignal;
+  embeddingInstance?: Embeddings;
 }): Promise<GraphData> {
+  input.signal?.throwIfAborted();
   const chunkSize = input.chunkSize ?? MIROFISH_GRAPH_DEFAULTS.chunkSize;
   const chunkOverlap = input.chunkOverlap ?? MIROFISH_GRAPH_DEFAULTS.chunkOverlap;
-  const llmInstance = createLLMFromOverride(input.modelOverride, {
+  const defaults = {
     temperature: 0.1,
     ollamaOptions: MIROFISH_GRAPH_OLLAMA_OPTIONS,
-  });
+    requestTimeoutMs: MIROFISH_GRAPH_REQUEST_TIMEOUT_MS,
+  };
+  const useOllamaSchema = input.modelOverride
+    ? input.modelOverride.provider === 'ollama'
+    : isOllamaProvider();
+  const llmInstance: Pick<ReturnType<typeof createLLMFromOverride>, 'invoke'> = {
+    invoke: (modelInput, options) => createLLMFromOverride(input.modelOverride, {
+      ...defaults,
+      // ChatOllama checks invoke's signal only after receiving a stream token.
+      // Bind each operation to its own HTTP transport to cancel cold loads too.
+      requestSignal: useOllamaSchema ? options?.signal : undefined,
+    }).invoke(modelInput, options),
+  };
+  const extractionLlmInstance: Pick<typeof llmInstance, 'invoke'> = useOllamaSchema
+    ? { invoke: (modelInput, options) => llmInstance.invoke(modelInput, {
+        ...options, format: MIROFISH_GRAPH_EXTRACTION_JSON_SCHEMA,
+      } as typeof options) }
+    : llmInstance;
   const extractor = new EntityExtractor(
-    createMiroFishGraphExtractionConfig({ chunkSize, chunkOverlap }),
+    createMiroFishGraphExtractionConfig({ chunkSize, chunkOverlap, longDocument: !!input.checkpoint }),
     {
       llmInstance,
+      extractionLlmInstance,
+      embeddingInstance: input.embeddingInstance,
+      checkpoint: input.checkpoint,
       providerKey: input.modelOverride
         ? [
             input.modelOverride.provider,
@@ -852,9 +887,37 @@ export async function extractMiroFishGraphData(input: {
     }
   );
   if (input.onProgress) extractor.onProgress(input.onProgress);
-  return convertKnowledgeGraphToGraphData(
-    await extractor.extract(input.text, input.documentId)
-  );
+  const abort = () => extractor.abort();
+  input.signal?.addEventListener('abort', abort, { once: true });
+  try {
+    input.signal?.throwIfAborted();
+    const graph = convertKnowledgeGraphToGraphData(
+      await extractor.extract(input.text, input.documentId)
+    );
+    input.signal?.throwIfAborted();
+    assertGraphHasEntities(graph);
+    return graph;
+  } finally {
+    input.signal?.removeEventListener('abort', abort);
+  }
+}
+
+/** Keep interactive and leased builds on the same ontology projection. */
+export function filterMiroFishGraphByOntology(graph: GraphData, ontology?: Ontology | null): GraphData {
+  if (!ontology) return graph;
+  const allowed = new Set(ontology.entity_types.map(entity => entity.name.toUpperCase()));
+  const nodes = graph.nodes.filter(node => node.labels.some(label => allowed.has(label.toUpperCase())));
+  const nodeIds = new Set(nodes.map(node => node.uuid));
+  const edges = graph.edges.filter(edge => nodeIds.has(edge.source_node_uuid) && nodeIds.has(edge.target_node_uuid));
+  const edgeIds = new Set(edges.map(edge => edge.uuid));
+  return { ...graph, nodes, edges, node_count: nodes.length, edge_count: edges.length,
+    communities: graph.communities?.map(community => ({ ...community,
+      entities: community.entities.filter(id => nodeIds.has(id)), relations: community.relations.filter(id => edgeIds.has(id)),
+    })).filter(community => community.entities.length > 0) };
+}
+
+export function assertGraphHasEntities(graph: Pick<GraphData, 'nodes'>): void {
+  if (graph.nodes.length === 0) throw new Error('图谱未提取到实体，请检查模型输出后重试。');
 }
 
 function calculateGraphProgress(progress: ExtractionProgress): number {

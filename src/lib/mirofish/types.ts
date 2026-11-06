@@ -4,6 +4,8 @@
  * 参考 MiroFish 项目: https://github.com/666ghj/MiroFish
  */
 
+import type { MiroFishSeedFileInfo } from './seed-file-contract';
+
 // ==================== 本体类型 ====================
 
 /** 本体属性定义 */
@@ -242,6 +244,7 @@ export interface GraphStatusResponse {
 /** 人设生成请求 */
 export interface ProfileGenerateRequest {
   entity: {
+    id?: string;
     name: string;
     type: string;
     description: string;
@@ -301,12 +304,17 @@ export interface Project {
   current_step: number; // 0-4 对应5个步骤
   simulation_requirement: string;
   texts: string[];
+  seed_files?: MiroFishSeedFileInfo[];
   ontology?: Ontology;
   graph_data?: GraphData;
   graph_id?: string;
+  graph_task_id?: string | null;
+  graph_identity?: ProjectGraphIdentity | null;
   agent_profiles?: EntityProfile[];
   simulation_config?: NormalizedSimulationConfig;
   prepare_id?: string;
+  prepare_task_id?: string | null;
+  selected_entity_ids?: string[];
   prepare_fingerprint?: string;
   prepared_at?: string;
   simulation_id?: string;
@@ -321,6 +329,13 @@ export interface CreateProjectRequest {
   name: string;
   description?: string;
   simulation_requirement: string;
+}
+
+export interface ProjectGraphIdentity {
+  documentId: string;
+  documentVersion: string;
+  trustLevel: 'trusted' | 'reviewed' | 'external' | 'quarantined';
+  graphGeneration?: string;
 }
 
 // ==================== 模拟类型 ====================
@@ -338,7 +353,9 @@ export type AgentActionType =
   | 'debate'
   | 'quote'
   | 'upvote'
-  | 'downvote';
+  | 'downvote'
+  | 'do_nothing' | 'search_posts' | 'search_user' | 'trend' | 'refresh' | 'mute'
+  | 'like_comment' | 'dislike_comment';
 
 /** 模拟配置草稿 */
 export interface SimulationConfigDraft {
@@ -369,7 +386,7 @@ export interface SimulationConfig extends NormalizedSimulationConfig {
 }
 
 /** 模拟状态 */
-export type SimulationStatus = 'created' | 'preparing' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
+export type SimulationStatus = 'created' | 'preparing' | 'ready' | 'running' | 'paused' | 'stopping' | 'stopped' | 'finalizing' | 'completed' | 'failed';
 
 /** 模拟帖子 */
 export interface SimulationPost {
@@ -396,6 +413,8 @@ export interface SimulationPost {
 export interface SimulationInfo {
   simulation_id: string;
   project_id: string;
+  simulation_requirement?: string;
+  seed_files?: MiroFishSeedFileInfo[];
   status: SimulationStatus;
   config: SimulationConfig;
   current_round: number;

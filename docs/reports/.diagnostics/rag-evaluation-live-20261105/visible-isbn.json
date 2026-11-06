@@ -1,0 +1,25 @@
+{
+  "id": "visible-isbn",
+  "question": "《重构契丹早期史》版权页给出的 ISBN 是多少？请依据知识库作答。",
+  "httpStatus": 409,
+  "elapsedMs": 18.941299999991315,
+  "answer": "",
+  "evidenceCount": 0,
+  "goldEvidencePresent": false,
+  "literalFactChecks": [
+    {
+      "alternatives": [
+        "9787301347492"
+      ],
+      "found": false
+    }
+  ],
+  "citationStatus": "unavailable",
+  "providerUsage": "unavailable-over-public-http",
+  "body": {
+    "success": false,
+    "error": "知识库嵌入模型已更新，请刷新页面后重试。",
+    "code": "EMBEDDING_INDEX_CHANGED",
+    "requestId": "1d55e22a-f096-4389-ba3e-9dfb33f6f275"
+  }
+}

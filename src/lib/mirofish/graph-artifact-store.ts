@@ -45,6 +45,7 @@ export interface MiroFishGraphArtifactIdentity {
   documentId: string;
   documentVersion: string;
   trustLevel: RagTrustLevel;
+  graphGeneration?: string;
 }
 
 export interface MiroFishGraphArtifact extends MiroFishGraphArtifactIdentity {
@@ -81,10 +82,15 @@ export interface MiroFishGraphActivePointer {
 export interface MiroFishGraphArtifactLifecycleOptions {
   graphName?: string;
   ttlMs?: number;
+  buildLease?: { jobId: string; leaseToken: string };
 }
 
 export interface MiroFishGraphArtifactListOptions {
   limit?: number;
+  after?: { createdAt: string; graphVersion: string };
+  documentId?: string;
+  documentVersion?: string;
+  trustLevel?: RagTrustLevel;
 }
 
 export interface MiroFishGraphArtifactStore {
@@ -338,6 +344,7 @@ export class InMemoryMiroFishGraphArtifactStore implements MiroFishGraphArtifact
         descriptor.identity.tenantId === scope.tenantId
         && descriptor.identity.corpusId === scope.corpusId
         && scope.allowedTrustLevels.includes(descriptor.identity.trustLevel)
+        && matchesListDocument(descriptor.identity, options)
         && !this.tombstones.has(createArtifactKey(descriptor.identity))
         && !isDescriptorExpired(descriptor, this.now())
       )
@@ -669,6 +676,7 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
     options: MiroFishGraphArtifactListOptions = {}
   ): Promise<MiroFishGraphArtifactDescriptor[]> {
     return this.readDescriptors(scope, {
+      ...options,
       limit: resolveGraphListLimit(options.limit),
       includeExpired: false,
     });
@@ -820,7 +828,7 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
 
   private async readDescriptors(
     scope: RagRetrievalScope,
-    options: { limit: number; includeExpired: boolean }
+    options: MiroFishGraphArtifactListOptions & { limit: number; includeExpired: boolean }
   ): Promise<MiroFishGraphArtifactDescriptor[]> {
     const directory = this.getCatalogDirectory(scope);
     let entries: string[];
@@ -840,6 +848,7 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
       assertManagementIdentityWithinScope(descriptor.identity, scope);
       if (await fileExists(this.getTombstoneFile(descriptor.identity))) continue;
       if (!scope.allowedTrustLevels.includes(descriptor.identity.trustLevel)) continue;
+      if (!matchesListDocument(descriptor.identity, options)) continue;
       if (!options.includeExpired && isDescriptorExpired(descriptor, this.now())) continue;
       descriptors.push(descriptor);
     }
@@ -1172,6 +1181,12 @@ export class FileMiroFishGraphArtifactStore implements MiroFishGraphArtifactStor
     return `${this.rootDir}:${createScopeDigest(scope)}`;
   }
 }
+
+function matchesListDocument(identity: MiroFishGraphArtifactIdentity, options: MiroFishGraphArtifactListOptions): boolean {
+  return (options.documentId === undefined || identity.documentId === options.documentId)
+    && (options.documentVersion === undefined || identity.documentVersion === options.documentVersion)
+    && (options.trustLevel === undefined || identity.trustLevel === options.trustLevel);
+}
 export function assertArtifactAllowed(
   artifact: MiroFishGraphArtifact,
   identity: MiroFishGraphArtifactIdentity,
@@ -1185,6 +1200,7 @@ export function assertArtifactAllowed(
     'documentId',
     'documentVersion',
     'trustLevel',
+    'graphGeneration',
   ] as const) {
     if (artifact[field] !== identity[field]) {
       throw new Error(`Graph artifact ${field} does not match the requested identity.`);
@@ -2086,12 +2102,17 @@ function normalizeIdentity(
     identity.documentVersion,
     'documentVersion'
   );
+  const graphGeneration = identity.graphGeneration;
+  if (graphGeneration !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(graphGeneration)) {
+    throw new Error('graphGeneration must be a lowercase UUID v4.');
+  }
   return {
     tenantId: scope.tenantId,
     corpusId: scope.corpusId,
     documentId,
     documentVersion,
     trustLevel: identity.trustLevel,
+    ...(graphGeneration ? { graphGeneration } : {}),
   };
 }
 
@@ -2104,13 +2125,15 @@ function normalizeDocumentField(value: string, field: string): string {
 }
 
 function createArtifactKey(identity: MiroFishGraphArtifactIdentity): string {
-  return JSON.stringify([
+  const fields = [
     identity.tenantId,
     identity.corpusId,
     identity.documentId,
     identity.documentVersion,
     identity.trustLevel,
-  ]);
+  ];
+  if (identity.graphGeneration) fields.push(identity.graphGeneration);
+  return JSON.stringify(fields);
 }
 
 function clone<T>(value: T): T {

@@ -24,11 +24,9 @@ export function resolveRagAgenticExecutionBudgetMs(provider?: string): number {
 }
 export const RAG_AGENTIC_EXECUTION_BUDGET_MS = resolveRagAgenticExecutionBudgetMs(process.env.MODEL_PROVIDER);
 export const RAG_CLIENT_NETWORK_ALLOWANCE_MS = 15_000;
+// The deployed synchronous proxy permits 300s without a response. Bound all
+// preparation and generation together, leaving time to deliver a terminal error.
+export const RAG_SYNC_REQUEST_BUDGET_MS = 285_000;
 
-export const RAG_CLIENT_REQUEST_TIMEOUT_MS = Math.max(
-  // The browser cannot read the server's private MODEL_PROVIDER setting, so it
-  // must cover the longest supported server budget even for remote providers.
-  RAG_RETRIEVAL_EXECUTION_BUDGET_MS + OLLAMA_GENERATION_EXECUTION_BUDGET_MS,
-  RAG_AGENTIC_EXECUTION_BUDGET_MS
-) + RAG_EMBEDDING_WARMUP_BUDGET_MS + RAG_CLIENT_NETWORK_ALLOWANCE_MS;
+export const RAG_CLIENT_REQUEST_TIMEOUT_MS = RAG_SYNC_REQUEST_BUDGET_MS + RAG_CLIENT_NETWORK_ALLOWANCE_MS;
 

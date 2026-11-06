@@ -16,7 +16,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 } });
 const { POST, GET } = await import('./route.ts');
 
-test('warmup enforces authentication and model allowlists before touching Ollama', async () => {
+for (const semanticRouter of ['off', undefined]) test(`warmup only prepares the selected pair after authentication and allowlists (semantic router ${semanticRouter ?? 'default'})`, async () => {
   const env = { MODEL_PROVIDER: 'ollama', OLLAMA_BASE_URL: 'http://localhost:11434',
     RAG_ACCESS_MODE: 'single-tenant-token', RAG_SINGLE_TENANT_TOKEN: 'fixture-warmup-token',
     RAG_SINGLE_TENANT_ROLE: 'viewer', RAG_SINGLE_TENANT_ACTOR_ID: 'warmup-fixture',
@@ -24,6 +24,7 @@ test('warmup enforces authentication and model allowlists before touching Ollama
     EMBEDDING_PROVIDER: 'ollama', OLLAMA_EMBEDDING_MODEL: 'fixture-embedding', RAG_ALLOWED_EMBEDDING_MODELS: 'fixture-embedding' };
   const previous = new Map(Object.keys(env).map(key => [key, process.env[key]]));
   Object.assign(process.env, env);
+  if (semanticRouter === undefined) delete process.env.RAG_SEMANTIC_ROUTER;
   const previousFetch = globalThis.fetch;
   const calls = [];
   globalThis.fetch = async (url, options) => {
@@ -47,7 +48,7 @@ test('warmup enforces authentication and model allowlists before touching Ollama
     assert.equal((await GET(new Request('http://localhost/api/model-warmup?model=fixture-model'))).status, 401);
     assert.equal(result.headers.get('cache-control'), 'no-store');
     assert.deepEqual(calls.map(call => call.url), ['http://localhost:11434/api/embed', 'http://localhost:11434/api/generate']);
-    assert.equal(calls[0].body.model, 'fixture-embedding');
+    assert.deepEqual(calls.map(call => call.body.model), ['fixture-embedding', 'fixture-model']);
     assert.equal(calls[0].body.options.num_ctx, 8192);
   } finally {
     globalThis.fetch = previousFetch;

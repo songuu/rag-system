@@ -11,6 +11,7 @@ import {
   saveParsedSlidesToCache,
 } from '@/lib/maic/parsed-slides-cache';
 import { mirrorMaicCourseToRagUploads } from '@/lib/maic/rag-bridge';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import {
   MAIC_SUPPORTED_EXTENSIONS,
   isMaicSupportedFile,
@@ -19,6 +20,8 @@ import {
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, error: publicationBlock.message, code: publicationBlock.code }, { status: publicationBlock.status });
   try {
     const form = await req.formData();
     const file = form.get('file');

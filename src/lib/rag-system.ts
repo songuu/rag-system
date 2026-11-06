@@ -151,7 +151,10 @@ class SimpleTokenizer {
         // 如果加载失败，抛出错误
         throw new Error(`Tokenizer initialization failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
-    })();
+    })().finally(() => {
+      // A transient download failure must not permanently poison future attempts.
+      this.loadingPromise = null;
+    });
 
     return this.loadingPromise;
   }
@@ -456,25 +459,36 @@ class SimpleMemoryVectorStore {
   ): Promise<RetrievalDetails> {
     const startTime = Date.now();
 
-    // 1. 词元化
-    onQueryProgress?.({
-      status: 'tokenizing',
-      message: '正在进行词元化...'
-    });
-
-    const tokens = await this.tokenizer.tokenize(query);
-    const tokenizationTime = Date.now() - startTime;
-
-    onQueryProgress?.({
-      status: 'tokenizing',
-      message: '词元化完成',
-      timeTaken: tokenizationTime,
-      tokenization: {
-        tokenCount: tokens.length,
-        tokens,
-        processingTime: tokenizationTime
+    // Tokenization is only used for progress details; the embedding receives
+    // the original query independently of this optional visualization.
+    if (onQueryProgress) {
+      onQueryProgress({ status: 'tokenizing', message: '正在进行词元化...' });
+      let tokens: TokenInfo[] | undefined;
+      try {
+        tokens = await this.tokenizer.tokenize(query);
+      } catch {
+        console.warn('[Tokenizer] 词元详情不可用，继续执行向量检索');
       }
-    });
+      const tokenizationTime = Date.now() - startTime;
+      if (tokens) {
+        onQueryProgress({
+          status: 'tokenizing',
+          message: '词元化完成',
+          timeTaken: tokenizationTime,
+          tokenization: {
+            tokenCount: tokens.length,
+            tokens,
+            processingTime: tokenizationTime,
+          },
+        });
+      } else {
+        onQueryProgress({
+          status: 'tokenizing',
+          message: '词元详情不可用，继续执行向量检索',
+          timeTaken: tokenizationTime,
+        });
+      }
+    }
 
     // 2. 向量化
     onQueryProgress?.({

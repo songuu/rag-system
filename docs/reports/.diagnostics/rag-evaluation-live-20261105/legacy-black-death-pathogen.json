@@ -1,0 +1,776 @@
+{
+  "id": "black-death-pathogen",
+  "question": "根据知识库文档，黑死病的病原体是什么，主要通过什么动物身上的什么媒介传播？",
+  "httpStatus": 200,
+  "elapsedMs": 962.0915999999997,
+  "answer": "根据知识库文档，黑死病的病原体是细菌，而不是病毒。黑死病主要通过老鼠身上的跳蚤传播。",
+  "observedSources": [
+    "重构契丹早期史.epub"
+  ],
+  "evidenceCount": 5,
+  "expectedSourcePresent": false,
+  "literalFactChecks": [
+    {
+      "alternatives": [
+        "鼠疫杆菌"
+      ],
+      "found": false
+    },
+    {
+      "alternatives": [
+        "黑鼠"
+      ],
+      "found": false
+    },
+    {
+      "alternatives": [
+        "跳蚤"
+      ],
+      "found": true
+    }
+  ],
+  "expectedDisposition": "answer",
+  "citationStatus": "missing",
+  "inlineCitationCount": 0,
+  "providerUsage": "unavailable-over-public-http",
+  "body": {
+    "success": true,
+    "question": "根据知识库文档，黑死病的病原体是什么，主要通过什么动物身上的什么媒介传播？",
+    "answer": "根据知识库文档，黑死病的病原体是细菌，而不是病毒。黑死病主要通过老鼠身上的跳蚤传播。",
+    "citations": {
+      "version": "rag-citations/v1",
+      "status": "missing",
+      "partition": "2b33bb8d69c9a257acf188feb1bca752eb74879d5ff6365f59d0e4cbf78e6a0b",
+      "items": [],
+      "diagnostics": {
+        "reason": "no-numbered-citations",
+        "citationCount": 0,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "nomic-embed-text"
+    },
+    "storageBackend": "milvus",
+    "evidence": [
+      {
+        "id": "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n此段原本应出自《明宗实录》记载阿保机死讯之后的附传，所记唐代契丹史事简略而不系统，成书时间虽早，却不易追索史源。相较而言，后一类文献所记更为具体，可资对比之材料更为丰富，以下即由此入手考察相关记载的源头。\n兹先将《旧唐书》《唐会要》相关文本列表对比如下：\n表1.2 《旧唐书》《唐会要》“契丹”小叙对照表\n① 《旧唐书》卷一九九《契丹传》，第5349—5350页。\n② 王溥：《唐会要》卷九六《契丹》，上海古籍出版社，2006年，第2033页。\n表1.2中两栏的总体内容、叙述顺序、文字风格完全一致，显然出自同一文本来源，只不过《唐会要》记载相对简省，保留主干而略去了一部分细节。那么，这一共同史源又是什么呢？\n关于唐朝历次国史修撰、流传的大致情况，参见杜希德：《唐代官修史籍考》，第142—166页。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 37706,
+        "endOffset": 38058,
+        "retrievalScore": 0.015625,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 38058,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 95,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 37706,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:0063ac60aca0e6031443d756c30bda8c7162ff82514ed709bd407b45b90224cd",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 16.08754,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015625,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 4
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00006824835145380348
+      },
+      {
+        "id": "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "这一记载的史源当为金陈大任《辽史·兵志序》。\n如李桂芝所论，其中“分五部为八”的实际所指，应该是《营卫志·部族下》所记阻午可汗将迭剌、品、楮特、乌隗、突吕不五部分为迭剌、乙室、品、楮特、乌隗、涅剌、突举、突吕不八部的过程。\n只不过陈大任根据自己的理解对原始材料进行了加工，将中原文献所谓大贺氏契丹与辽朝文献之遥辇氏对接，这才有了“大贺氏中衰，仅存五部”的说明，恐与史实相去甚远。但无论如何，阻午可汗“分五部为八”确非虚语，那么此次分析部族的背景又是什么呢？\n《旧唐书》卷一九九《契丹传》，第5351页。“四年”原误系作“三年”，据《册府元龟》卷九六四《外臣部·封册二》所载四年八月制书（第11342—11343页）改。\n《册府元龟》卷九七五《外臣部·褒异二》，第11449页。\n吴钢主编：《全唐文补遗》第7辑，三秦出版社，2000年，第90页。\n胡戟、荣新江主编：《大唐西市博物馆藏墓志》，第553页。\n曾成：《唐代幽营地域的族群与政治——以唐与奚、契丹的互动为中心》，第59页。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 104108,
+        "endOffset": 104548,
+        "retrievalScore": 0.015873015873015872,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 104548,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 260,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 104108,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:8ae44df88d43cee0a29462b0b2d3e86d0a7adde9f11e7c624b4e03a41ecb6940",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 17.593838,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015873015873015872,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 3
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00004486959005589597
+      },
+      {
+        "id": "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "以往研究者多据此认为地祇即青牛妪，象征契丹女性始祖，\n而述律后编造这一传说就是要将自己等同于契丹的女性始祖，为回鹘与契丹的结合提供依据。\n与此不同的是，康鹏指出在早期的传说版本中，契丹女性始祖都是比较含糊的女性形象，没有任何迹象表明青牛妪与地祇有什么瓜葛，青牛妪即地祇应当是比较晚出的说法。淳钦皇后正是通过青牛妪避路宣示自己就是新的地祇，取代了原先的旧地祇青牛妪。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 116113,
+        "endOffset": 116295,
+        "retrievalScore": 0.015384615384615385,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 116295,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 291,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 116113,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:cb4c51e71dd26845063a24f143fa212fff9dd0531ab8abf8f03c05a1735319f8",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 15.143376,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015384615384615385,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 5
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.000034497126762289554
+      },
+      {
+        "id": "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n将此段与上引文中“今永州木叶山有契丹始祖庙，奇首可汗、可敦并八子像在焉”对比可知，二者当同出一源而详略有别，《地理志》所记更为具体（如提到可汗、可敦分居南、北两庙），“古八部条”则概括性更强。很明显，后者不会是原始记载的本来面目，而是剪裁加工之后的产物，只不过其中“今永州”一语保存了其所据史源的原文罢了。那么，今本《辽史·地理志》与《营卫志·部族》上述记载的共同史源又是什么呢？结合全书情况判断，它们很可能出自耶律俨《皇朝实录·本纪》中的先祖事迹。冯家昇曾根据今本《辽史·世表》引“耶律俨《纪》”有关阿保机四世祖的记载指出，《皇朝实录》原本在《太祖纪》前可能有类似《魏书·序纪》的先祖事迹。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 55080,
+        "endOffset": 55377,
+        "retrievalScore": 0.01639344262295082,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 55377,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 138,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 55080,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:72c039c0697787403956b0ec8ed9b75eb115b182f7608d2e7a53fd7ad20b375b",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 19.462055,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.01639344262295082,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 1
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00002664087514858693
+      },
+      {
+        "id": "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "三、开国年代的改写与契丹王朝的正统来源问题\n通过以上分析可以确知，本节开头所举与太祖元年建国有关的一整套系统性记载当出于后世之重塑，并非阿保机时期的原貌。那么，今本《辽史》所见契丹开国年代的这副模样究竟形成于何时？换句话说，是什么时代的人对此进行了改写？这自然要在辽朝官方历史叙述的确立过程中寻找答案。\n按此碑碑额残缺不全，今名乃考古研究者所取，恐与实际情况存在一定差异。今权采其说。\n董新林、康鹏、汪盈：《辽太祖纪功碑初步整理与研究》，第75—105页。\n参见董新林、康鹏、汪盈：《辽太祖纪功碑初步整理与研究》，第99页。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 161890,
+        "endOffset": 162152,
+        "retrievalScore": 0.016129032258064516,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 162152,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 408,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 161890,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:17076ef22e00ca0d1cd47aee2e41b01eab71196546826037cea69b89ba4fe9b0",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 19.225212,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.016129032258064516,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 2
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.000025922819986590184
+      }
+    ],
+    "laneExecutions": [
+      {
+        "laneId": "dense-vector-required",
+        "retriever": "milvus-elasticsearch-rrf-v1",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+          "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5",
+          "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+          "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43"
+        ],
+        "latencyMs": 163,
+        "stopReason": "sufficient",
+        "metadata": {
+          "searchTime": 163,
+          "vectorizationTime": 149,
+          "elasticsearch": {
+            "version": "milvus-elasticsearch-rrf/v1",
+            "mode": "active",
+            "status": "fused",
+            "denseCandidateCount": 0,
+            "lexicalCandidateCount": 5,
+            "fusedCandidateCount": 5
+          }
+        }
+      },
+      {
+        "laneId": "rerank-optional",
+        "retriever": "rerank:siliconflow:BAAI/bge-reranker-v2-m3",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+          "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+          "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5"
+        ],
+        "reranking": {
+          "beforeEvidenceIds": [
+            "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+            "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5",
+            "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+            "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+            "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43"
+          ],
+          "afterEvidenceIds": [
+            "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+            "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+            "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+            "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+            "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5"
+          ]
+        },
+        "latencyMs": 196,
+        "stopReason": "sufficient"
+      }
+    ],
+    "execution": {
+      "budget": {
+        "maxLanes": 2,
+        "maxEvidence": 5,
+        "maxDurationMs": 30000
+      },
+      "stopReason": "sufficient"
+    },
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "summary": "已检索并验证 5 条证据后生成回答。",
+      "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+      "retrievalSkipped": false,
+      "totalDurationMs": 944,
+      "steps": [
+        {
+          "id": "route",
+          "label": "选择处理路径",
+          "detail": "已选择知识库检索路径。",
+          "status": "completed"
+        },
+        {
+          "id": "retrieve",
+          "label": "检索并验证资料",
+          "detail": "已获得 5 条可用于回答的证据。",
+          "status": "completed",
+          "durationMs": 359
+        },
+        {
+          "id": "rerank",
+          "label": "重排候选文档",
+          "detail": "已按相关性重新排序候选资料。",
+          "status": "completed",
+          "durationMs": 196
+        },
+        {
+          "id": "generate",
+          "label": "组织回答",
+          "detail": "已基于筛选后的资料生成回答。",
+          "status": "completed",
+          "durationMs": 584
+        }
+      ]
+    },
+    "cacheIdentity": {
+      "version": "rag-cache-identity/v1",
+      "context": "rag:context:2eac3e9176c1d172f4ec432e0c625cc902ea18f9c40a0bcbd20ab9fe6f964520",
+      "answer": "rag:answer:7ce0597da7cffb4420ffc7ffdb871a7129a9bed7462339c3f1d20356ee3300e3"
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "version": "retrieval-diagnostics/v1",
+        "qualityMeasurement": "unmeasured",
+        "candidateCount": 5,
+        "contextCount": 5,
+        "citedCount": 0,
+        "rows": [
+          {
+            "evidenceId": "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015625,
+            "rerankScore": 0.00006824835145380348,
+            "beforeRerankRank": 4,
+            "afterRerankRank": 1,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015873015873015872,
+            "rerankScore": 0.00004486959005589597,
+            "beforeRerankRank": 3,
+            "afterRerankRank": 2,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015384615384615385,
+            "rerankScore": 0.000034497126762289554,
+            "beforeRerankRank": 5,
+            "afterRerankRank": 3,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.01639344262295082,
+            "rerankScore": 0.00002664087514858693,
+            "beforeRerankRank": 1,
+            "afterRerankRank": 4,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.016129032258064516,
+            "rerankScore": 0.000025922819986590184,
+            "beforeRerankRank": 2,
+            "afterRerankRank": 5,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          }
+        ]
+      },
+      "searchResults": [],
+      "queryEmbedding": [
+        -0.010553658,
+        0.02581073,
+        -0.1508517,
+        0.011940892,
+        -0.0048457887,
+        0.021900142,
+        0.009440504,
+        0.045533206,
+        -0.049633645,
+        0.00028503078
+      ],
+      "threshold": 0.1,
+      "topK": 5,
+      "totalDocuments": 42,
+      "searchTime": 163,
+      "vectorizationTime": 149,
+      "llmTime": 582,
+      "retrievalRoute": {
+        "version": "retrieval-router/rules-v1",
+        "route": "dense",
+        "queryKind": "semantic",
+        "reason": "semantic_dense_default",
+        "signals": []
+      },
+      "rerank": {
+        "requested": true,
+        "applied": true,
+        "provider": "rerank:siliconflow:BAAI/bge-reranker-v2-m3"
+      },
+      "hybrid": {
+        "requestedMode": "off",
+        "effectiveMode": "off",
+        "suppressedByElasticsearch": false,
+        "probed": false,
+        "usable": false,
+        "active": false
+      },
+      "elasticsearch": {
+        "requestedMode": "active",
+        "indexName": "rag_chunks_v1",
+        "active": true,
+        "diagnostics": {
+          "version": "milvus-elasticsearch-rrf/v1",
+          "mode": "active",
+          "status": "fused",
+          "denseCandidateCount": 0,
+          "lexicalCandidateCount": 5,
+          "fusedCandidateCount": 5
+        }
+      },
+      "pdfVisual": {
+        "requestedMode": "off",
+        "requestedVisual": false,
+        "usable": false,
+        "active": false,
+        "capabilityReason": "feature_off",
+        "evidenceCount": 0
+      },
+      "graph": {
+        "requestedMode": "active",
+        "intent": "none",
+        "planned": false,
+        "executed": false,
+        "active": false,
+        "servedEvidenceCount": 0,
+        "citedEvidenceCount": 0,
+        "availability": "unavailable-or-unpublished",
+        "evidenceCount": 0,
+        "shadowEvidenceCount": 0
+      },
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "order": "retrieval",
+        "tokenEstimate": 1548,
+        "includedEvidenceIds": [
+          "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+          "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+          "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5"
+        ],
+        "excludedEvidenceIds": [],
+        "truncated": false,
+        "requestedRolloutMode": "off",
+        "active": false,
+        "activationReason": "semantic_dense_default",
+        "orderedReadTime": 0
+      },
+      "abstention": {
+        "mode": "shadow",
+        "version": "rag-abstention/per-lane-v1",
+        "calibrationVersion": "milvus-dense-calibration-v1",
+        "abstain": false,
+        "reason": "sufficient_evidence",
+        "qualifiedEvidenceIds": [
+          "chunk-7a606d1ae85fbad71a475ce479b18d74cc94ba72ad63005d82d86d0390d81ec0",
+          "chunk-b8b531b51ce227e2e494a934119a879dd726d83a17e6c1b730b128a9c148b98d",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-2d742bb1ab3aeaf4d92d05d7982cfe47c12a8804dca55d43b584cf935b2dc01c",
+          "chunk-57b0e767645dba8a5614977a70f2124ee697bdc1bf38859dead63b908f7375a5"
+        ],
+        "distinctDocumentCount": 1,
+        "laneSummaries": [
+          {
+            "laneId": "dense-vector-required",
+            "kind": "hybrid",
+            "threshold": 0,
+            "total": 5,
+            "qualified": 5,
+            "maximumScore": 0.01639344262295082
+          }
+        ]
+      },
+      "milvusStats": {
+        "name": "rag_documents",
+        "rowCount": 42,
+        "embeddingDimension": 768,
+        "indexType": "IVF_FLAT",
+        "metricType": "COSINE",
+        "loaded": true
+      }
+    },
+    "queryAnalysis": {
+      "tokenization": {
+        "tokenCount": 27,
+        "avgTokenLength": 1.26,
+        "processingTime": 149,
+        "originalText": "根据知识库文档，黑死病的病原体是什么，主要通过什么动物身上的什么媒介传播？",
+        "tokenTypes": {
+          "chinese": 34,
+          "english": 0,
+          "numbers": 0,
+          "punctuation": 3
+        }
+      },
+      "embedding": {
+        "embedding": [
+          -0.010553658,
+          0.02581073,
+          -0.1508517,
+          0.011940892,
+          -0.0048457887,
+          0.021900142,
+          0.009440504,
+          0.045533206,
+          -0.049633645,
+          0.00028503078,
+          -0.036209445,
+          -0.038035303,
+          0.017920876,
+          0.030868283,
+          0.05469622,
+          -0.045914058,
+          0.032799255,
+          -0.034330882,
+          -0.037080232,
+          0.009430897
+        ],
+        "embeddingDimension": 768,
+        "semanticAnalysis": {
+          "context": "通用信息查询语境",
+          "semanticCategory": "通用问答",
+          "confidence": 0.4516,
+          "nearestConcepts": [
+            "什么",
+            "如何",
+            "为什么"
+          ],
+          "categoryDistribution": {
+            "AI技术": 0.2171,
+            "技术开发": 0.101,
+            "商业管理": 0.1782,
+            "学术研究": 0.1056,
+            "日常生活": 0.0802,
+            "情感表达": 0.0846,
+            "通用问答": 0.2333
+          },
+          "semanticClusters": [
+            {
+              "name": "通用问答",
+              "similarity": 0.2333,
+              "centroidDistance": 0.7667
+            },
+            {
+              "name": "AI技术",
+              "similarity": 0.2171,
+              "centroidDistance": 0.7829
+            },
+            {
+              "name": "商业管理",
+              "similarity": 0.1782,
+              "centroidDistance": 0.8218
+            }
+          ],
+          "intentAnalysis": {
+            "primaryIntent": "查询信息",
+            "intentConfidence": 1,
+            "possibleIntents": [
+              "查询信息"
+            ]
+          },
+          "vectorFeatures": {
+            "techScore": 0.4586,
+            "businessScore": 0.2484,
+            "dailyScore": 0.4956,
+            "emotionScore": 0.2626,
+            "academicScore": 0.4672,
+            "vectorMagnitude": 1,
+            "vectorEntropy": 9.1832,
+            "vectorSparsity": 0.2109,
+            "vectorKurtosis": 0.1697,
+            "informationDensity": 0.756,
+            "semanticClarity": 0.3526
+          }
+        },
+        "modelInfo": {
+          "name": "nomic-embed-text",
+          "vocabularySize": 50000,
+          "embeddingNorm": 1
+        }
+      },
+      "quality": {
+        "queryQualityScore": 0.3107,
+        "specificity": 0.0419,
+        "ambiguity": 0.599,
+        "retrievability": 0.4445
+      }
+    },
+    "context": "[1] (score: 0.0001) (source: 重构契丹早期史.epub)\n\n此段原本应出自《明宗实录》记载阿保机死讯之后的附传，所记唐代契丹史事简略而不系统，成书时间虽早，却不易追索史源。相较而言，后一类文献所记更为具体，可资对比之材料更为丰富，以下即由此入手考察相关记载的源头。\n兹先将《旧唐书》《唐会要》相关文本列表对比如下：\n表1.2 《旧唐书》《唐会要》“契丹”小叙对照表\n① 《旧唐书》卷一九九《契丹传》，第5349—5350页。\n② 王溥：《唐会要》卷九六《契丹》，上海古籍出版社，2006年，第2033页。\n表1.2中两栏的总体内容、叙述顺序、文字风格完全一致，显然出自同一文本来源，只不过《唐会要》记载相对简省，保留主干而略去了一部分细节。那么，这一共同史源又是什么呢？\n关于唐朝历次国史修撰、流传的大致情况，参见杜希德：《唐代官修史籍考》，第142—166页。\n\n[2] (score: 0.0000) (source: 重构契丹早期史.epub)\n这一记载的史源当为金陈大任《辽史·兵志序》。\n如李桂芝所论，其中“分五部为八”的实际所指，应该是《营卫志·部族下》所记阻午可汗将迭剌、品、楮特、乌隗、突吕不五部分为迭剌、乙室、品、楮特、乌隗、涅剌、突举、突吕不八部的过程。\n只不过陈大任根据自己的理解对原始材料进行了加工，将中原文献所谓大贺氏契丹与辽朝文献之遥辇氏对接，这才有了“大贺氏中衰，仅存五部”的说明，恐与史实相去甚远。但无论如何，阻午可汗“分五部为八”确非虚语，那么此次分析部族的背景又是什么呢？\n《旧唐书》卷一九九《契丹传》，第5351页。“四年”原误系作“三年”，据《册府元龟》卷九六四《外臣部·封册二》所载四年八月制书（第11342—11343页）改。\n《册府元龟》卷九七五《外臣部·褒异二》，第11449页。\n吴钢主编：《全唐文补遗》第7辑，三秦出版社，2000年，第90页。\n胡戟、荣新江主编：《大唐西市博物馆藏墓志》，第553页。\n曾成：《唐代幽营地域的族群与政治——以唐与奚、契丹的互动为中心》，第59页。\n\n[3] (score: 0.0000) (source: 重构契丹早期史.epub)\n以往研究者多据此认为地祇即青牛妪，象征契丹女性始祖，\n而述律后编造这一传说就是要将自己等同于契丹的女性始祖，为回鹘与契丹的结合提供依据。\n与此不同的是，康鹏指出在早期的传说版本中，契丹女性始祖都是比较含糊的女性形象，没有任何迹象表明青牛妪与地祇有什么瓜葛，青牛妪即地祇应当是比较晚出的说法。淳钦皇后正是通过青牛妪避路宣示自己就是新的地祇，取代了原先的旧地祇青牛妪。\n\n[4] (score: 0.0000) (source: 重构契丹早期史.epub)\n\n将此段与上引文中“今永州木叶山有契丹始祖庙，奇首可汗、可敦并八子像在焉”对比可知，二者当同出一源而详略有别，《地理志》所记更为具体（如提到可汗、可敦分居南、北两庙），“古八部条”则概括性更强。很明显，后者不会是原始记载的本来面目，而是剪裁加工之后的产物，只不过其中“今永州”一语保存了其所据史源的原文罢了。那么，今本《辽史·地理志》与《营卫志·部族》上述记载的共同史源又是什么呢？结合全书情况判断，它们很可能出自耶律俨《皇朝实录·本纪》中的先祖事迹。冯家昇曾根据今本《辽史·世表》引“耶律俨《纪》”有关阿保机四世祖的记载指出，《皇朝实录》原本在《太祖纪》前可能有类似《魏书·序纪》的先祖事迹。\n\n[5] (score: 0.0000) (source: 重构契丹早期史.epub)\n三、开国年代的改写与契丹王朝的正统来源问题\n通过以上分析可以确知，本节开头所举与太祖元年建国有关的一整套系统性记载当出于后世之重塑，并非阿保机时期的原貌。那么，今本《辽史》所见契丹开国年代的这副模样究竟形成于何时？换句话说，是什么时代的人对此进行了改写？这自然要在辽朝官方历史叙述的确立过程中寻找答案。\n按此碑碑额残缺不全，今名乃考古研究者所取，恐与实际情况存在一定差异。今权采其说。\n董新林、康鹏、汪盈：《辽太祖纪功碑初步整理与研究》，第75—105页。\n参见董新林、康鹏、汪盈：《辽太祖纪功碑初步整理与研究》，第99页。",
+    "traceId": "ask-1793879506728",
+    "timestamp": "2026-11-05T11:51:47.675Z"
+  }
+}

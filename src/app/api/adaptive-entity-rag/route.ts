@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { 
   createAdaptiveEntityRAG, 
@@ -63,6 +64,8 @@ async function getRAGInstance(config?: {
 export async function GET(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   const searchParams = request.nextUrl.searchParams;
   const action = searchParams.get('action') || 'status';
 
@@ -221,6 +224,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   try {
     const body = await request.json();
     const { action = 'query', ...params } = body;
@@ -581,6 +586,8 @@ export async function POST(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   try {
     const searchParams = request.nextUrl.searchParams;
     const action = searchParams.get('action') || 'clear-cache';

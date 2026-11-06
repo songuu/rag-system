@@ -269,6 +269,8 @@ async function startDockerServices({ rebuild }) {
     await run("docker", buildComposeArgs(["build", "app"]), {
       env: composeEnv,
     });
+  } else {
+    log("使用已有 Worker 镜像；修改图谱或索引 Worker 代码后，请运行 pnpm dev:rebuild 更新镜像。");
   }
 
 }
@@ -280,7 +282,8 @@ export async function startBackgroundWorkers(runCommand = run) {
     buildComposeArgs(["up", "-d", "search-index-worker", "graph-control-worker"]),
     {
       // Compose interpolates this address into the container, whose loopback is not the host.
-      env: { ...localRuntimeEnv(), OLLAMA_BASE_URL: "http://host.docker.internal:11434" },
+      env: { ...localRuntimeEnv(), OLLAMA_BASE_URL: "http://host.docker.internal:11434",
+        RAG_EMBEDDING_INDEX_IDENTITY_ADDRESS: localRuntimeEnv().MILVUS_LOCAL_ADDRESS },
     },
   );
 }
@@ -294,31 +297,64 @@ async function isHttpReady(url) {
   }
 }
 
-async function ensureOllamaReady() {
-  const tagsUrl = "http://127.0.0.1:11434/api/tags";
-  if (await isHttpReady(tagsUrl)) {
+export function buildOllamaServerEnv(baseEnv = process.env) {
+  const result = { ...baseEnv };
+  const policy = [
+    ['OLLAMA_NUM_PARALLEL', 1, 16],
+    ['OLLAMA_MAX_LOADED_MODELS', 1, 16],
+    ['OLLAMA_MAX_QUEUE', 16, 512],
+  ];
+  for (const [key, fallback, maximum] of policy) {
+    const raw = baseEnv[key];
+    const value = raw === undefined || raw === '' ? String(fallback) : raw;
+    if (!/^\d+$/u.test(value) || !Number.isSafeInteger(Number(value))
+      || Number(value) < 1 || Number(value) > maximum) {
+      throw new Error(`${key} 必须是 1–${maximum} 的整数；本地启动不使用自动容量值 0。`);
+    }
+    result[key] = String(Number(value));
+  }
+  return result;
+}
+
+export async function ensureOllamaReady({
+  env = process.env,
+  isReady = isHttpReady,
+  runQuietCommand = runQuiet,
+  spawnCommand = spawn,
+  waitUntilReady = waitUntil,
+  logMessage = log,
+} = {}) {
+  // Model enumeration can stall independently of the daemon. It is not a
+  // liveness check and must not cause a second daemon to be launched.
+  const versionUrl = "http://127.0.0.1:11434/api/version";
+  if (await isReady(versionUrl)) {
+    logMessage('复用已有 Ollama；无法核验其服务端容量。应用环境不会修改已运行服务，请按 docs/deployment/ollama-capacity.md 配置宿主 Ollama。');
     return;
   }
 
-  if (runQuiet("ollama", ["--version"]).status !== 0) {
+  const serverEnv = buildOllamaServerEnv(env);
+  if (runQuietCommand("ollama", ["--version"]).status !== 0) {
     throw new Error(
       "未检测到 Ollama。请先安装 Ollama，并确保 ollama 命令已加入 PATH。",
     );
   }
 
-  log("Ollama 尚未运行，正在启动本地 Ollama 服务…");
-  const ollama = spawn("ollama", ["serve"], {
+  logMessage(`Ollama 尚未响应，正在启动本地服务（NUM_PARALLEL=${serverEnv.OLLAMA_NUM_PARALLEL}、MAX_LOADED_MODELS=${serverEnv.OLLAMA_MAX_LOADED_MODELS}、MAX_QUEUE=${serverEnv.OLLAMA_MAX_QUEUE}）…`);
+  if (serverEnv.OLLAMA_NUM_PARALLEL !== '1' || serverEnv.OLLAMA_MAX_LOADED_MODELS !== '1') {
+    logMessage('已保留显式 Ollama 容量配置；此服务不再是单执行槽，请确认显存及多模型并发压测结果。');
+  }
+  const ollama = spawnCommand("ollama", ["serve"], {
     cwd: PROJECT_ROOT,
     detached: true,
-    env: process.env,
+    env: serverEnv,
     stdio: "ignore",
     windowsHide: true,
   });
   ollama.on("error", () => {});
   ollama.unref();
 
-  await waitUntil(
-    () => isHttpReady(tagsUrl),
+  await waitUntilReady(
+    () => isReady(versionUrl),
     60_000,
     "等待 Ollama 就绪超时，请检查 11434 端口或 Ollama 日志。",
   );

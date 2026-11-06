@@ -48,3 +48,21 @@ test('real citation route rejects document locators from another actor before lo
   assert.equal(response.status, 404); assert.equal((await response.json()).error.code, 'RAG_CITATION_INVALID');
   assert.equal(sourceRuntimeLoads, 0);
 }));
+
+test('unified publication authenticates and validates locators before loading published sources', async () => withConfiguration(async () => {
+  const old = process.env.RAG_UNIFIED_PUBLICATION_MODE;
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  try {
+    assert.equal((await GET(new Request('http://localhost/api/ask/citations/preview'))).status, 401);
+    const response = await POST(new Request('http://localhost/api/ask/citations/preview', {
+      method: 'POST', headers: { authorization: 'Bearer synthetic-preview-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ locator: 'opaque' }),
+    }));
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).error.code, 'RAG_CITATION_INVALID');
+    assert.equal(sourceRuntimeLoads, 0);
+  } finally {
+    if (old === undefined) delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    else process.env.RAG_UNIFIED_PUBLICATION_MODE = old;
+  }
+}));

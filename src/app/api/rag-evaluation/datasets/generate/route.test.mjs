@@ -58,6 +58,20 @@ test('knowledge generation resolves selected assets inside server scope and incl
   try {
     assert.equal((await POST(request(selection))).status, 401);
     assert.equal(loads, 0);
+    const previousMode = process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    try {
+      process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+      const blocked = await POST(request(selection, authorized));
+      assert.equal(blocked.status, 503);
+      assert.equal((await blocked.json()).error.code, 'PUBLICATION_LEGACY_WRITE_UNAVAILABLE');
+      assert.equal(loads, 0);
+      const manual = await POST(request(input, authorized));
+      assert.equal(manual.status, 200);
+      calls = 0;
+    } finally {
+      if (previousMode === undefined) delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+      else process.env.RAG_UNIFIED_PUBLICATION_MODE = previousMode;
+    }
     assert.equal((await POST(request({ ...selection, count: 0 }, authorized))).status, 400);
     assert.equal(loads, 0);
     for (const extra of [{ sources: input.sources }, { tenantId: 'tenant-b' }, { model: 'evil' }]) {

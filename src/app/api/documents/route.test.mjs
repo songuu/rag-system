@@ -78,3 +78,18 @@ test('authenticated viewers cannot mutate documents and missing authentication r
   assert.equal((await DELETE(request('DELETE', { id: 'asset-1' }, headers))).status, 403);
   assert.deepEqual(globalThis.documentMutationCalls, []);
 }));
+
+test('unified publication refuses old document mutations before storage work', async () => local(async () => {
+  const old = process.env.RAG_UNIFIED_PUBLICATION_MODE;
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  try {
+    for (const response of [await PATCH(request('PATCH', { id: 'asset-1', enabled: false })), await DELETE(request('DELETE', { id: 'asset-1' }))]) {
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).error.code, 'PUBLICATION_LEGACY_WRITE_UNAVAILABLE');
+    }
+    assert.deepEqual(globalThis.documentMutationCalls, []);
+  } finally {
+    if (old === undefined) delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    else process.env.RAG_UNIFIED_PUBLICATION_MODE = old;
+  }
+}));

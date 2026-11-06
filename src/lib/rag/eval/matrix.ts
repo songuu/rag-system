@@ -6,6 +6,7 @@ import type {
   RagEvalRunReport,
   RagEvalTarget,
 } from './types';
+import { compareRagEvalReports } from './report-presentation';
 
 export interface RagEvalMatrixDelta {
   meanRecallAtK: number | null;
@@ -74,6 +75,8 @@ export async function runRagEvalMatrix(
           matrix_run_id: matrixRunId,
           baseline_target_id: baselineTargetId,
         },
+        experiment: options.experiment, assessment: options.assessment, usagePricing: options.usagePricing,
+        evaluatorImplementationSha256: options.evaluatorImplementationSha256,
       })
     );
   }
@@ -98,33 +101,10 @@ function createDelta(
   report: RagEvalRunReport,
   baseline: RagEvalRunReport
 ): RagEvalMatrixDelta {
+  const paired = compareRagEvalReports(baseline, report);
+  const value = (id: string) => paired.metrics.find(item => item.id === id)?.delta ?? null;
   return {
-    meanRecallAtK: subtractNullable(
-      report.summary.meanRecallAtK,
-      baseline.summary.meanRecallAtK
-    ),
-    meanNdcgAtK: subtractNullable(
-      report.summary.meanNdcgAtK,
-      baseline.summary.meanNdcgAtK
-    ),
-    meanRequiredFactCoverage: subtractNullable(
-      report.summary.meanRequiredFactCoverage,
-      baseline.summary.meanRequiredFactCoverage
-    ),
-    meanCitationCoverage: subtractNullable(
-      report.summary.citation.meanCoverage,
-      baseline.summary.citation.meanCoverage
-    ),
-    p95LatencyMs: subtractNullable(
-      report.summary.latencyMs.p95,
-      baseline.summary.latencyMs.p95
-    ),
+    meanRecallAtK: value('recall'), meanNdcgAtK: value('ndcg'), meanRequiredFactCoverage: value('facts'),
+    meanCitationCoverage: value('citations'), p95LatencyMs: value('latency'),
   };
-}
-
-function subtractNullable(
-  value: number | null,
-  baseline: number | null
-): number | null {
-  return value === null || baseline === null ? null : value - baseline;
 }

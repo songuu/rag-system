@@ -28,7 +28,6 @@ import { getMilvusInstance, type MilvusConfig } from './milvus-client';
 import { 
   createLLM, 
   createEmbedding, 
-  selectModelByDimension,
 } from './model-config';
 import {
   applyStatePatch,
@@ -138,6 +137,7 @@ export interface SCRAGState {
   
   // Milvus 配置
   milvusConfig?: MilvusConfig;
+  embeddingModel?: string;
 }
 
 // ==================== LangChain Runnable 状态定义 ====================
@@ -175,6 +175,7 @@ function createSCRAGWorkflowState(input: Partial<SCRAGWorkflowState>): SCRAGWork
     totalDuration: input.totalDuration,
     error: input.error,
     milvusConfig: input.milvusConfig,
+    embeddingModel: input.embeddingModel,
   };
 }
 
@@ -212,15 +213,8 @@ async function retrieveNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWor
     // 获取 Milvus 实例
     const milvus = await getMilvusInstance(state.milvusConfig);
     
-    // 获取 collection 统计信息以确定维度
-    const stats = await milvus.getCollectionStats();
-    const dimension = stats?.embeddingDimension || 768;
-    const embeddingModel = selectModelByDimension(dimension);
-    
-    console.log(`[RETRIEVE] Embedding 模型: ${embeddingModel}, 维度: ${dimension}`);
-    
-    // 生成查询向量 (使用统一配置系统)
-    const embeddings = createEmbedding(embeddingModel);
+    // A matching dimension alone does not identify the model that built the index.
+    const embeddings = createEmbedding(state.embeddingModel);
     
     const queryVector = await embeddings.embedQuery(query);
     
@@ -262,7 +256,10 @@ async function retrieveNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWor
     };
     
   } catch (error) {
-    const message = getErrorMessage(error);
+    const originalMessage = getErrorMessage(error);
+    const message = /vector dimension mismatch/i.test(originalMessage)
+      ? `嵌入向量维度不匹配，请使用构建当前索引的嵌入模型，或使用当前模型重建索引。${originalMessage}`
+      : originalMessage;
     console.error(`[RETRIEVE] ❌ 检索失败:`, message);
     
     const execution: NodeExecution = {
@@ -278,7 +275,11 @@ async function retrieveNode(state: SCRAGWorkflowState): Promise<Partial<SCRAGWor
       retrievedDocuments: [],
       currentNode: 'retrieve',
       nodeExecutions: [execution],
+      finalAnswer: `检索失败: ${message}`,
+      shouldContinue: false,
       error: `检索失败: ${message}`,
+      endTime: Date.now(),
+      totalDuration: Date.now() - state.startTime,
       decisionPath: [`RETRIEVE: 检索失败 - ${message}`],
     };
   }
@@ -863,6 +864,7 @@ function buildSCRAGGraph(): SCRAGWorkflow {
 
       while (state.shouldContinue) {
         state = mergeSCRAGState(state, await retrieve.invoke(state, config));
+        if (!state.shouldContinue) return state;
         state = mergeSCRAGState(state, await grade.invoke(state, config));
 
         if (routeAfterGrade(state) !== 'rewrite') break;
@@ -888,6 +890,7 @@ export interface SCRAGInput {
   maxRewriteAttempts?: number;
   gradePassThreshold?: number;
   milvusConfig?: MilvusConfig;
+  embeddingModel?: string;
 }
 
 export interface SCRAGOutput {
@@ -924,9 +927,10 @@ export async function executeSCRAG(input: SCRAGInput): Promise<SCRAGOutput> {
     currentQuery: input.query,
     topK: input.topK || 5,
     similarityThreshold: input.similarityThreshold || 0.3,
-    maxRewriteAttempts: input.maxRewriteAttempts || 3,
+    maxRewriteAttempts: input.maxRewriteAttempts ?? 3,
     gradePassThreshold: input.gradePassThreshold || 0.6,
     milvusConfig: input.milvusConfig,
+    embeddingModel: input.embeddingModel,
     startTime,
     currentRewriteCount: 0,
     rewriteHistory: [],

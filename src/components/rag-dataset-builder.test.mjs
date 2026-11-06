@@ -199,6 +199,18 @@ test('knowledge mode selects existing document identities without uploading text
     documentItem('asset-4', { name: '超大文档.md', chunkCount: 100001 })] }));
 });
 
+test('allows a document with unverified index status and explains the readback', async () => {
+  let request;
+  await mount(async ui => {
+    assert.equal(ui.field('选择文档 说明.md').disabled, false);
+    assert.match(ui.container.textContent, /生成时.*核验/);
+    await ui.click(ui.field('选择文档 说明.md'));
+    await ui.click(ui.button('生成测试集'));
+    assert.deepEqual(JSON.parse(request.body).documentAssetIds, ['asset-1']);
+  }, async (_url, options) => { request = options; return response({ success: true, dataset: dataset() }); },
+  async () => response({ success: true, documents: [documentItem('asset-1', { milvusStatus: 'unknown' })] }));
+});
+
 test('knowledge catalog failure can retry and an empty catalog links to document management', async () => {
   let reads = 0;
   await mount(async ui => {

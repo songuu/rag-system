@@ -30,6 +30,7 @@ const {
   projectClaimSourcesForHttp,
   resetKnowledgeGraphQueryAdmissionForTests,
   resolveActiveGraphVersion,
+  withCurrentGraphSource,
   requiredString,
   requiredTrustLevel,
 } = await import('./http.ts');
@@ -190,6 +191,15 @@ test('resolves the active graph version from the complete immutable identity', a
   assert.notEqual(await resolveActiveGraphVersion(context), identity.documentVersion);
 });
 
+test('local file backend keeps its existing snapshot contract without PostgreSQL graph lifecycle', async () => {
+  const identity = { tenantId: 'tenant-a', corpusId: 'corpus-a', documentId: 'doc', documentVersion: 'v1', trustLevel: 'reviewed' };
+  const context = {
+    scope: { tenantId: 'tenant-a', corpusId: 'corpus-a', allowedTrustLevels: ['reviewed'], enforceIsolation: true },
+    runtime: { backend: 'file', store: { async getActive() { return { identity, revision: 1 }; } } },
+  };
+  assert.equal(await withCurrentGraphSource(context, async version => version), createMiroFishGraphVersion(identity));
+});
+
 test('projects claim sources into a bounded response without metadata', () => {
   const content = '图'.repeat(20_000);
   const result = projectClaimSourcesForHttp({
@@ -325,7 +335,7 @@ test('projects graph build status without worker leases, metadata, or raw errors
   assert.deepEqual(projected, {
     id: '5bc631c8-4c86-4b87-af1f-055321563402',
     graphVersion: 'graph-v1', status: 'running', progress: 0.5,
-    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED', errorMessage: null,
     createdAt: '2026-09-07T00:00:00.000Z',
     updatedAt: '2026-09-07T00:00:30.000Z',
   });
@@ -333,4 +343,59 @@ test('projects graph build status without worker leases, metadata, or raw errors
   assert.equal(serialized.includes('leaseToken'), false);
   assert.equal(serialized.includes('secret-pass'), false);
   assert.equal(serialized.includes('metadata'), false);
+});
+
+test('reports missing source chunks without exposing arbitrary worker errors', () => {
+  const job = { id: 'job', graphVersion: 'version', status: 'failed', progress: 0,
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    errorMessage: 'Local graph build expected 645 chunks, received 0.', createdAt: '', updatedAt: '' };
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /重新向量化/);
+  job.errorMessage = 'https://secret-user:secret-pass@internal.example/private';
+  const message = projectKnowledgeGraphBuildJobForHttp(job).errorMessage;
+  assert.match(message, /联系管理员/);
+  assert.doesNotMatch(message, /secret|internal/);
+});
+
+test('reports incompatible graph worker versions without exposing internal error details', () => {
+  const job = { id: 'job', graphVersion: 'version', status: 'failed', progress: 0,
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    errorMessage: 'Local graph build version does not match its document identity.', createdAt: '', updatedAt: '' };
+  const message = projectKnowledgeGraphBuildJobForHttp(job).errorMessage;
+  assert.match(message, /版本不一致/);
+  assert.match(message, /更新并重启/);
+  assert.doesNotMatch(message, /Local graph build/);
+});
+
+test('reports mismatched embedding index identity safely', () => {
+  const job = { id: 'job', graphVersion: 'version', status: 'failed', progress: 0,
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    errorMessage: '活动嵌入索引身份不匹配，请检查图谱服务的索引身份配置。', createdAt: '', updatedAt: '' };
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /索引身份配置/);
+});
+
+test('reports a model extraction timeout without exposing raw provider errors', () => {
+  const job = { id: 'job', graphVersion: 'version', status: 'failed', progress: 0,
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    errorMessage: '单块提取超时 (45秒)', createdAt: '', updatedAt: '' };
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /模型.*超时/);
+});
+
+test('explains resource and structured-output failures without exposing provider details', () => {
+  const job = { id: 'job', graphVersion: 'version', status: 'failed', progress: 0.4,
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    errorMessage: 'Entity extraction output budget exceeded.', createdAt: '', updatedAt: '' };
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /资源.*上限/);
+  job.errorMessage = 'Entity extraction provider budget exceeded.';
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /资源.*上限/);
+  job.errorMessage = '模型输出已截断，无法完整提取当前文本块。';
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /截断/);
+  job.errorMessage = '模型输出无法解析为完整的实体和关系。';
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /实体和关系/);
+});
+
+test('reports a graph with no extracted entities as a failure', () => {
+  const job = { id: 'job', graphVersion: 'version', status: 'failed', progress: 0,
+    artifactDigest: null, errorCode: 'GRAPH_BUILD_DELIVERY_FAILED',
+    errorMessage: '图谱未提取到实体，请检查模型输出后重试。', createdAt: '', updatedAt: '' };
+  assert.match(projectKnowledgeGraphBuildJobForHttp(job).errorMessage, /未提取到实体/);
 });

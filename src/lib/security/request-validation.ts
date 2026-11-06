@@ -5,6 +5,9 @@ export const REQUEST_LIMITS = {
   pipelineJsonBytes: 2 * 1024 * 1024,
   milvusJsonBytes: 4 * 1024 * 1024,
   questionCharacters: 8_000,
+  conversationHistoryItems: 8,
+  conversationMessageCharacters: 1_000,
+  conversationHistoryCharacters: 6_000,
   textCharacters: 2_000_000,
   urlCharacters: 2_048,
   batchItems: 20,
@@ -16,8 +19,14 @@ export const REQUEST_LIMITS = {
 
 export type SupportedStorageBackend = 'memory' | 'milvus';
 
+export interface ConversationHistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface ValidatedAskInput {
   question: string;
+  conversationHistory: ConversationHistoryMessage[];
   topK: number;
   executionMode: 'sync' | 'durable';
   similarityThreshold: number;
@@ -114,6 +123,7 @@ export function validateAskInput(
 ): ValidatedAskInput {
   assertKnownKeys(raw, new Set([
     'question',
+    'conversationHistory',
     'topK',
     'similarityThreshold',
     'llmModel',
@@ -132,6 +142,7 @@ export function validateAskInput(
   ]));
 
   const question = requiredString(raw.question, 'question', REQUEST_LIMITS.questionCharacters);
+  const conversationHistory = validateConversationHistory(raw.conversationHistory);
   const topK = boundedInteger(raw.topK, 'topK', 1, 50, 3);
   const executionMode = optionalEnum(
     raw.executionMode,
@@ -173,6 +184,7 @@ export function validateAskInput(
 
   return {
     question,
+    conversationHistory,
     topK,
     executionMode,
     similarityThreshold,
@@ -187,6 +199,28 @@ export function validateAskInput(
     enableReranking: optionalBoolean(raw.enableReranking, 'enableReranking', true),
     raw,
   };
+}
+
+function validateConversationHistory(value: unknown): ConversationHistoryMessage[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > REQUEST_LIMITS.conversationHistoryItems) {
+    fail('INVALID_CONVERSATION_HISTORY', 'Conversation history must be a bounded array of messages.');
+  }
+  let totalCharacters = 0;
+  return value.map((message, index) => {
+    if (!isRecord(message) || Array.isArray(message)
+      || Object.keys(message).some(key => key !== 'role' && key !== 'content')
+      || (message.role !== 'user' && message.role !== 'assistant')
+      || typeof message.content !== 'string' || !message.content.trim()
+      || message.content.length > REQUEST_LIMITS.conversationMessageCharacters) {
+      fail('INVALID_CONVERSATION_HISTORY', `Conversation history message ${index} is invalid.`);
+    }
+    totalCharacters += message.content.length;
+    if (totalCharacters > REQUEST_LIMITS.conversationHistoryCharacters) {
+      fail('INVALID_CONVERSATION_HISTORY', 'Conversation history exceeds the total character limit.');
+    }
+    return { role: message.role, content: message.content };
+  });
 }
 
 export function validateChunking(input: {

@@ -7,6 +7,8 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { TextModelClient } from '../models/text-model';
+import { MiroFishReportError } from './report-contracts';
 import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
 import type {
@@ -50,10 +52,42 @@ const INTERVIEW_PROMPT = `你正在扮演以下角色接受采访。请严格按
 \`\`\``;
 
 export class InteractionAgent {
-  private llm: BaseChatModel;
+  private llm?: BaseChatModel;
+  private readonly modelOverride?: ModelOverride;
 
   constructor(modelOverride?: ModelOverride) {
-    this.llm = createLLMFromOverride(modelOverride, { temperature: 0.7 });
+    this.modelOverride = modelOverride;
+  }
+
+  /** Continue the actual simulated actor, including its recorded memory and this actor's conversation only. */
+  async interviewWithMemory(profile: EntityProfile, question: string, posts: SimulationPost[], context: {
+    observations: string[]; actions: Array<Record<string, unknown>>;
+    history: Array<{ role: 'user' | 'assistant'; content: string }>;
+    platforms: string[]; signal?: AbortSignal; locale?: 'zh' | 'en';
+  }, model: TextModelClient): Promise<InterviewResponse & { platform_answers: Record<string, string> }> {
+    const response = await model.complete({ operation: 'mirofish.interaction.interview-memory', signal: context.signal, messages: [
+      { role: 'system', content: '你是本次模拟中该Agent本人。依据真实人设、历史行动、观察记忆和已有对话回答，保持身份一致。不要调用工具，不要把未发生的行为说成事实；无法确认时明确说明。仅JSON：{"answer":"回答","sentiment":"positive|neutral|negative","confidence":0.8,"platform_answers":{"twitter":"有该平台依据才填写","reddit":"有该平台依据才填写"}}。\n'
+        + JSON.stringify({ output_language: context.locale === 'en' ? 'English' : '中文', profile: { id: profile.entity_id, name: profile.entity_name, type: profile.entity_type,
+          occupation: profile.occupation, personality: profile.personality_traits, speaking_style: profile.speaking_style,
+          background: profile.background.slice(0, 1500), viewpoints: profile.viewpoints, anchors: formatBehavioralAnchors(profile) },
+          observations: context.observations.slice(-12).map(value => value.slice(0, 400)), actions: context.actions.slice(-12),
+          posts: posts.slice(-10).map(post => ({ id: post.id, platform: post.platform, content: post.content.slice(0, 600) })), platforms: context.platforms }).slice(0, 17_000) },
+      ...context.history.slice(-6).map(message => ({ ...message, content: message.content.slice(0, 1000) })),
+      { role: 'user', content: question },
+    ] });
+    let data;
+    try { data = this.parseResponse(response.text); } catch { throw new MiroFishReportError('MIROFISH_INTERVIEW_INVALID_RESPONSE', 'Agent 未返回可用回答，请重试。', 502); }
+    if (typeof data.answer !== 'string' || !data.answer.trim() || data.answer.length > 6000) throw new MiroFishReportError('MIROFISH_INTERVIEW_INVALID_RESPONSE', 'Agent 未返回可用回答，请重试。', 502);
+    const platformAnswers: Record<string, string> = {};
+    if (data.platform_answers && typeof data.platform_answers === 'object' && !Array.isArray(data.platform_answers)) {
+      for (const platform of context.platforms) {
+        const value = (data.platform_answers as Record<string, unknown>)[platform];
+        if (typeof value === 'string' && value.trim()) platformAnswers[platform] = value.slice(0, 3000);
+      }
+    }
+    return { agent_id: profile.entity_id, agent_name: profile.entity_name, question, answer: data.answer.trim(),
+      sentiment: this.validateSentiment(String(data.sentiment || 'neutral')), confidence: normalizeConfidence(data.confidence),
+      timestamp: new Date().toISOString(), platform_answers: platformAnswers };
   }
 
   /** 采访单个 Agent */
@@ -85,6 +119,7 @@ export class InteractionAgent {
       .replace('{question}', question);
 
     try {
+      this.llm ??= createLLMFromOverride(this.modelOverride, { temperature: 0.7 });
       const response = await this.llm.invoke([
         { role: 'user', content: prompt },
       ]);

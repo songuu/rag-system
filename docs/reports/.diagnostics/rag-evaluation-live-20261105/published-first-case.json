@@ -1,0 +1,224 @@
+{
+  "schemaVersion": "rag-live-smoke/v1",
+  "reviewStatus": "not-human-reviewed",
+  "productionQualityMeasured": false,
+  "question": "按照《统一发布验收说明.txt》，文档什么时候才对用户可见？",
+  "httpStatus": 200,
+  "elapsedMs": 76361.24729999999,
+  "body": {
+    "success": true,
+    "question": "按照《统一发布验收说明.txt》，文档什么时候才对用户可见？",
+    "answer": "根据上下文信息，文档只有三库全部验证通过后才对用户可见。具体来说，这三个库是 Elasticsearch、Milvus 和 Neo4j。\n\n有依据的事实：只有三库全部验证通过后文档才对用户可见。\n无法确认的部分：无法确认具体哪个时间点或者阶段的文档才对用户可见。",
+    "storageBackend": "milvus",
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest"
+    },
+    "modelUsage": {
+      "llm": true,
+      "embedding": true
+    },
+    "evidence": [
+      {
+        "id": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+        "tenantId": "publication-demo-tenant",
+        "corpusId": "publication-demo-corpus",
+        "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+        "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+        "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+        "source": "统一发布验收说明.txt",
+        "trustLevel": "external",
+        "laneId": "document-search",
+        "retrievalScore": 0.03278688524590164,
+        "metadata": {
+          "chunkIndex": 0,
+          "corpusId": "publication-demo-corpus",
+          "corpus_id": "publication-demo-corpus",
+          "createdAt": "2026-11-04T01:34:57.582Z",
+          "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+          "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "document_id": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+          "document_version": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "endOffset": 131,
+          "source": "统一发布验收说明.txt",
+          "sourceTextHash": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "sourceTextLength": 131,
+          "startOffset": 0,
+          "tenantId": "publication-demo-tenant",
+          "tenant_id": "publication-demo-tenant",
+          "title": "统一发布验收说明.txt",
+          "totalChunks": 1,
+          "trustLevel": "external",
+          "trust_level": "external",
+          "type": "text",
+          "publicationGeneration": "1",
+          "denseMatch": true,
+          "lexicalMatch": true
+        }
+      }
+    ],
+    "citations": {
+      "version": "rag-citations/v1",
+      "partition": "314c3e338133370beecab0351b43817d9fe505d6a103361c74bb425a1d64fc2b",
+      "status": "missing",
+      "items": [],
+      "diagnostics": {
+        "reason": "no-numbered-citations",
+        "citationCount": 0,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "laneExecutions": [],
+    "answerSources": [
+      "documents"
+    ],
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "retrievalSkipped": false,
+      "summary": "已检索当前发布版本并根据资料组织回复。",
+      "steps": [
+        {
+          "id": "retrieve",
+          "label": "知识库检索",
+          "detail": "已检索 1 条已发布资料。",
+          "status": "completed"
+        },
+        {
+          "id": "respond",
+          "label": "组织回复",
+          "detail": "根据检索资料生成回复。",
+          "status": "completed"
+        }
+      ]
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "status": "published-view",
+        "mode": "unified",
+        "viewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+        "denseCandidateCount": 1,
+        "lexicalCandidateCount": 1
+      },
+      "topK": 3,
+      "searchTime": 3250,
+      "llmTime": 35510,
+      "totalDocuments": 1,
+      "searchResults": [
+        {
+          "document": {
+            "id": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+            "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+            "metadata": {
+              "chunkIndex": 0,
+              "corpusId": "publication-demo-corpus",
+              "corpus_id": "publication-demo-corpus",
+              "createdAt": "2026-11-04T01:34:57.582Z",
+              "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+              "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "document_id": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+              "document_version": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "endOffset": 131,
+              "source": "统一发布验收说明.txt",
+              "sourceTextHash": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "sourceTextLength": 131,
+              "startOffset": 0,
+              "tenantId": "publication-demo-tenant",
+              "tenant_id": "publication-demo-tenant",
+              "title": "统一发布验收说明.txt",
+              "totalChunks": 1,
+              "trustLevel": "external",
+              "trust_level": "external",
+              "type": "text",
+              "publicationGeneration": "1",
+              "denseMatch": true,
+              "lexicalMatch": true
+            }
+          },
+          "similarity": 0.03278688524590164,
+          "index": 0
+        }
+      ],
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "includedEvidenceIds": [
+          "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080"
+        ],
+        "excludedEvidenceIds": [],
+        "tokenEstimate": 118,
+        "truncated": false
+      }
+    },
+    "traceId": "publication-64444153-a393-4f85-9f12-9a35a9059757",
+    "requestId": "64444153-a393-4f85-9f12-9a35a9059757",
+    "publicationViewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+    "timestamp": "2026-11-05T11:47:18.345Z"
+  },
+  "usage": {
+    "tokens": {
+      "measurement": "provider",
+      "inputTokens": 575,
+      "outputTokens": 82
+    },
+    "calls": {
+      "generation": 1,
+      "embedding": 1,
+      "rerank": 0
+    },
+    "latencyMs": {
+      "total": 76230.2708,
+      "generation": 35515.2066,
+      "rerank": 0
+    }
+  },
+  "configuration": {
+    "implementationSha256": "a64ae4b60060c4a09ecd5bd46347ec6ddd8291f867697772f54dcb3619334c6b",
+    "promptSha256": "c1e21840240a1020584723509042b4917efcd72b4bb57965539591d902c23992",
+    "model": {
+      "provider": "ollama",
+      "name": "llama3.1",
+      "revision": "sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+      "parameters": {
+        "temperature": 0.7,
+        "numCtx": 8192,
+        "keepAlive": "15m",
+        "maxRetries": 0,
+        "providerVersion": "0.40.14",
+        "environmentSha256": "885038a39a4903decfd688ae974b2e44076c4d638be870efe6555f4e84c13852",
+        "routingModel": {
+          "name": "qwen2.5:0.5b",
+          "revision": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67"
+        }
+      }
+    },
+    "embedding": {
+      "provider": "ollama",
+      "name": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest",
+      "revision": "sha256:80f35a7586f4a4b83f90d317d4f93fa2dba8a8af257f1d0b3b7eacd6f7caa9a4",
+      "dimensions": 768
+    },
+    "index": {
+      "id": "sha256:3480c66e18fa1da2cf5451d359716e70f97346523eff2cc6cc7e679378fccd6d",
+      "revision": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184"
+    },
+    "retrieval": {
+      "topK": 3,
+      "similarityThreshold": 0
+    },
+    "rerank": {
+      "enabled": false,
+      "provider": "none",
+      "model": "none",
+      "revision": "none",
+      "topN": 3
+    },
+    "context": {
+      "maxTokens": 4000
+    },
+    "cache": {
+      "mode": "disabled",
+      "identity": "none"
+    }
+  }
+}

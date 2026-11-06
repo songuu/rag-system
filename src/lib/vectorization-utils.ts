@@ -6,15 +6,16 @@
  */
 
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
+import { assertUnifiedPublicationLegacyWriteAllowed } from './security/unified-publication-write-guard';
 import { Embeddings } from '@langchain/core/embeddings';
 import { v4 as uuidv4 } from 'uuid';
-import { MilvusVectorStore, MilvusDocument, MilvusSearchResult, getMilvusInstance } from './milvus-client';
+import { getMilvusInstance, type MilvusVectorStore, type MilvusDocument, type MilvusSearchResult } from './milvus-client';
 import { 
   createEmbedding, 
   getModelDimension as getModelDimensionFromConfig,
   getModelFactory,
   selectModelByDimension as selectModelByDimensionFromConfig,
-  ModelConfig 
+  type ModelConfig
 } from './model-config';
 import { getEmbeddingConfigSummary } from './embedding-config';
 import { loadContextualRetrievalConfig, contextualizeChunks } from './contextual-retrieval';
@@ -303,6 +304,7 @@ export async function vectorizeAndInsert(
   documents: DocumentInput[],
   options: VectorizeOptions = {}
 ): Promise<VectorizeResult> {
+  assertUnifiedPublicationLegacyWriteAllowed();
   const {
     embeddingModel = DEFAULT_EMBEDDING_MODEL,
     chunkSize = DEFAULT_CHUNK_SIZE,
@@ -432,6 +434,7 @@ export async function vectorizeAndInsert(
       metadata: chunk.metadata,
     }));
     const tInsert = Date.now();
+    assertUnifiedPublicationLegacyWriteAllowed();
     const insertedIds = await milvus.insertDocuments(milvusDocs);
     insertMs = Date.now() - tInsert;
     const totalInserted = insertedIds.length;
@@ -472,6 +475,7 @@ export async function insertDocumentsWithEmbeddings(
   documents: Array<{ content: string; metadata?: Record<string, unknown> }>,
   options: InsertDocumentsOptions = {}
 ): Promise<InsertResult> {
+  assertUnifiedPublicationLegacyWriteAllowed();
   const { embeddingModel = DEFAULT_EMBEDDING_MODEL } = options;
 
   console.log(`[VectorizationUtils] ========== 开始导入 ==========`);
@@ -565,6 +569,7 @@ export async function insertDocumentsWithEmbeddings(
     // 插入
     console.log(`[VectorizationUtils] ✅ 维度匹配，开始插入...`);
     const tInsert = Date.now();
+    assertUnifiedPublicationLegacyWriteAllowed();
     const ids = await milvus.insertDocuments(milvusDocs);
     insertMs = Date.now() - tInsert;
     console.log(`[VectorizationUtils] ✅ 成功插入 ${ids.length} 个文档`);
@@ -737,6 +742,6 @@ export function createVectorizeManager(config: {
       embeddingModel: config.embeddingModel,
       ...options,
     }),
-    clear: () => milvus.clearCollection(),
+    clear: () => { assertUnifiedPublicationLegacyWriteAllowed(); return milvus.clearCollection(); },
   };
 }

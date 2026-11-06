@@ -32,7 +32,10 @@ export interface DocumentSearchItem {
   match: 'hybrid' | 'semantic' | 'keyword';
   chunkIndex?: number;
   totalChunks?: number;
+  highlights?: { content?: HighlightRange[]; source?: HighlightRange[] };
 }
+
+interface HighlightRange { start: number; end: number }
 
 const STRATEGIES = new Set<DocumentSearchStrategy>(['hybrid', 'semantic', 'keyword']);
 const FILE_TYPES = new Set<DocumentFileType>([
@@ -65,12 +68,21 @@ export function parseDocumentSearchRequest(value: unknown): DocumentSearchReques
 export function presentDocumentSearchEvidence(
   evidence: readonly RagEvidence[]
 ): DocumentSearchItem[] {
-  return evidence.map((item) => ({
+  return evidence.map((item) => {
+    const rawHighlights = isRecord(item.metadata?.lexicalHighlights) ? item.metadata.lexicalHighlights : {};
+    const contentRanges = validRanges(rawHighlights.content, item.content.length);
+    const title = item.source?.trim() || item.documentId;
+    const sourceRanges = item.source ? validRanges(rawHighlights.source, title.length) : [];
+    const snippet = highlightedSnippet(item.content, contentRanges);
+    return ({
     id: item.id,
     documentId: item.documentId,
     documentVersion: item.documentVersion,
-    title: item.source?.trim() || item.documentId,
-    snippet: boundedSnippet(item.content),
+    title,
+    snippet: snippet.text,
+    ...(snippet.ranges.length || sourceRanges.length ? { highlights: {
+      content: snippet.ranges, source: sourceRanges,
+    } } : {}),
     ...(item.page === undefined ? {} : { page: item.page }),
     score: finiteScore(item.retrievalScore ?? item.score ?? 0),
     trustLevel: item.trustLevel,
@@ -81,7 +93,8 @@ export function presentDocumentSearchEvidence(
     ...(readPositiveInteger(item.metadata, ['totalChunks', 'total_chunks']) === undefined
       ? {}
       : { totalChunks: readPositiveInteger(item.metadata, ['totalChunks', 'total_chunks']) }),
-  }));
+  });
+  });
 }
 
 export function matchesDocumentFileType(
@@ -123,6 +136,31 @@ function resolveMatch(item: RagEvidence): DocumentSearchItem['match'] {
 function boundedSnippet(content: string): string {
   const normalized = content.replace(/\s+/g, ' ').trim();
   return normalized.length <= 900 ? normalized : normalized.slice(0, 897) + '...';
+}
+
+function validRanges(value: unknown, length: number): HighlightRange[] {
+  if (!Array.isArray(value)) return [];
+  const ranges: HighlightRange[] = [];
+  for (const range of value) {
+    if (!isRecord(range) || !Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.end)
+      || Number(range.start) < (ranges.at(-1)?.end ?? 0) || Number(range.end) <= Number(range.start)
+      || Number(range.end) > length) return [];
+    ranges.push({ start: Number(range.start), end: Number(range.end) });
+  }
+  return ranges;
+}
+
+function highlightedSnippet(content: string, ranges: HighlightRange[]): { text: string; ranges: HighlightRange[] } {
+  if (!ranges.length) return { text: boundedSnippet(content), ranges: [] };
+  const start = Math.max(0, Math.min(ranges[0].start - 200, content.length - 894));
+  const end = Math.min(content.length, start + 894);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < content.length ? '...' : '';
+  return { text: prefix + content.slice(start, end) + suffix,
+    ranges: ranges.filter(range => range.start < end && range.end > start).map(range => ({
+      start: Math.max(range.start, start) - start + prefix.length,
+      end: Math.min(range.end, end) - start + prefix.length,
+    })) };
 }
 
 function boundedText(value: unknown, field: string, maxLength: number): string {

@@ -126,7 +126,11 @@ export type KnowledgeGraphCompatibilityAvailability =
 
 export interface KnowledgeGraphCompatibilityListOptions {
   limit?: number;
+  after?: { createdAt: string; graphVersion: string };
   availability?: KnowledgeGraphCompatibilityAvailability;
+  documentId?: string;
+  documentVersion?: string;
+  trustLevel?: RagTrustLevel;
 }
 
 export interface KnowledgeGraphActivePointer {

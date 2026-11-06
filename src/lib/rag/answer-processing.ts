@@ -74,8 +74,7 @@ export function classifyDirectConversation(
 export function createDirectConversationReply(
   query: string,
   now: Date = new Date(),
-  runtime: { llmModel?: string } = {},
-  validatedRouting?: ConversationRouteDecision
+  runtime: { llmModel?: string } = {}
 ): {
   intent: DirectConversationIntent;
   answer: string;
@@ -83,9 +82,7 @@ export function createDirectConversationReply(
   routing: ConversationRouteDecision;
   answerSources: string[];
 } | null {
-  const classification = validatedRouting?.route === 'direct' && validatedRouting.actions.length > 0
-    ? { intent: validatedRouting.actions[0].intent, normalizedQuery: validatedRouting.normalizedQuery, routing: validatedRouting }
-    : classifyDirectConversation(query);
+  const classification = classifyDirectConversation(query);
   if (!classification) return null;
   const needsClarification = classification.routing.actions.some(action => action.intent === 'clarification');
 
@@ -105,8 +102,7 @@ export function createDirectConversationReply(
         {
           id: 'classify',
           label: '识别问题类型',
-          detail: (classification.routing.reason === 'semantic-capabilities' ? '使用轻量模型识别能力，参数已通过服务端校验。' : '')
-            + classification.routing.actions.map(action => directIntentDetail(action.intent)).join(' '),
+          detail: classification.routing.actions.map(action => directIntentDetail(action.intent)).join(' '),
           status: 'completed',
         },
         {

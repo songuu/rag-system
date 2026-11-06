@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type ComponentProps } from 'react';
 import Link from 'next/link';
 import { dbManager, projectMessageCitations, type ConversationMessage } from '@/lib/indexeddb';
-import type { RagCitations } from '@/lib/rag/citations/types';
+import type { ChatQueryAnalysis, ChatRetrievalDetails, ChatSearchResult, QueryToken } from '@/lib/rag/chat-types';
 import HomeHeader from '@/components/HomeHeader';
 import { formatDocumentChunkCounts, parseDocumentChunkCounts, type DocumentChunkCounts } from '@/lib/documents/document-counts';
 import ChatMessage from '@/components/ChatMessage';
+import ResizableChatArea from '@/components/ResizableChatArea';
 import AnswerProcessingPanel from '@/components/AnswerProcessingPanel';
 import QueryAnalysis from '@/components/QueryAnalysis';
 import QuestionSelector from '@/components/QuestionSelector';
@@ -24,7 +25,7 @@ import SuggestedQuestions from '@/components/SuggestedQuestions';
 import ConversationExpansionWorkflow from '@/components/ConversationExpansionWorkflow';
 import { ModelConfigPanel } from '@/components/ModelConfigPanel';
 import { RAG_CLIENT_REQUEST_TIMEOUT_MS } from '@/lib/rag/core/request-budgets';
-import { routeConversation } from '@/lib/rag/conversation-router';
+import { readAskProgressResponse } from '@/lib/rag/ask-progress-client';
 import {
   resolveSessionModelConfig,
   requestSessionModelSelection,
@@ -32,24 +33,43 @@ import {
   type SessionModelConfig,
 } from '@/lib/model-selection';
 import {
-  classifyDirectConversation,
-  createPendingAnswerProcessing,
   resolveAnswerProcessing,
   type AnswerProcessingDetails,
 } from '@/lib/rag/answer-processing';
 const ASK_SLOW_HINT_MS = 8_000;
+const ANSWER_DRAFT_RENDER_MS = 40;
 
-interface Message {
-  id: string;
-  type: 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
-  traceId?: string;
-  storageBackend?: 'memory' | 'milvus';
-  retrievalDetails?: any;
-  queryAnalysis?: any;
-  processingDetails?: AnswerProcessingDetails;
-  citations?: RagCitations;
+interface AnswerDraft {
+  controller: AbortController;
+  signal: AbortSignal;
+  historyRevision: number;
+  partition: string;
+  text: string;
+  timer: number | null;
+}
+
+interface Message extends ConversationMessage {
+  retryStatus?: 'failed' | 'retrying';
+}
+
+type AgenticPanelProps = ComponentProps<typeof AgenticWorkflowPanel>;
+type AdaptivePanelProps = ComponentProps<typeof AdaptiveEntityWorkflowPanel>;
+type SuggestionsProps = ComponentProps<typeof SuggestedQuestions>;
+type TraceViewerProps = ComponentProps<typeof LangSmithTraceViewer>;
+type ModelWarmupIdentity = Readonly<{
+  provider: string | undefined; model: string; embeddingModel: string; attempt: number;
+}>;
+
+type ConversationHistoryMessage = { role: 'user' | 'assistant'; content: string };
+
+function appendCompletedTurn(
+  history: ConversationHistoryMessage[], question: string, answer: string
+): ConversationHistoryMessage[] {
+  // Keep whole turns: truncation could change meaning or leave a misleading answer.
+  if (!question.trim() || !answer.trim() || question.length > 1000 || answer.length > 1000) return [];
+  const next: ConversationHistoryMessage[] = [...history, { role: 'user', content: question }, { role: 'assistant', content: answer }];
+  while (next.length > 8 || next.reduce((sum, item) => sum + item.content.length, 0) > 6000) next.splice(0, 2);
+  return next;
 }
 
 interface Toast {
@@ -58,7 +78,7 @@ interface Toast {
   type: 'success' | 'error' | 'warning' | 'info';
 }
 
-interface CanonicalCreateAgentQueryAnalysis {
+interface CanonicalCreateAgentQueryAnalysis extends ChatQueryAnalysis {
   analysisMode: 'canonical-create-agent';
 }
 
@@ -76,7 +96,7 @@ function isCanonicalCreateAgentQueryAnalysis(
  * 安全提取 API 响应中的回答内容为字符串
  * 防止 LangChain 对象被传递给 React 组件
  */
-function safeAnswerString(answer: any): string {
+function safeAnswerString(answer: unknown): string {
   if (typeof answer === 'string') {
     return answer;
   }
@@ -104,10 +124,13 @@ function safeAnswerString(answer: any): string {
 
 export default function HomePage() {
   const [messages, setMessages] = useState<Message[]>([]);
+  const latestUserMessageId = messages.findLast(message => message.type === 'user')?.id;
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isRequestSlow, setIsRequestSlow] = useState(false);
   const [activeProcessing, setActiveProcessing] = useState<AnswerProcessingDetails | null>(null);
+  const [answerDraft, setAnswerDraft] = useState('');
+  const answerDraftRef = useRef<AnswerDraft | null>(null);
   const [topK, setTopK] = useState(3);
   const [threshold, setThreshold] = useState(0.0);
   const [llmModel, setLlmModel] = useState('llama3.1');
@@ -116,8 +139,8 @@ export default function HomePage() {
     llm: { provider: string; model: string };
     embedding: { provider: string; model: string; dimension: number };
   } | undefined>(undefined);
-  const [queryAnalysis, setQueryAnalysis] = useState<any>(null);
-  const [showParams, setShowParams] = useState(true);
+  const [queryAnalysis, setQueryAnalysis] = useState<ChatQueryAnalysis | null>(null);
+  const [showParams, setShowParams] = useState(false);
   const [showQueryAnalysis, setShowQueryAnalysis] = useState(false);
   const [docCount, setDocCount] = useState(0);
   const [embeddingDim, setEmbeddingDim] = useState(0);
@@ -128,12 +151,12 @@ export default function HomePage() {
   const [queryProcessingStatus, setQueryProcessingStatus] = useState('');
   const [showQueryProcessing, setShowQueryProcessing] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [radarChartData, setRadarChartData] = useState<any>(null);
+  const [radarChartData, setRadarChartData] = useState<ComponentProps<typeof QueryAnalysis>['radarChartData']>(null);
   const [currentQuery, setCurrentQuery] = useState('');
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [viewingAnalysisFor, setViewingAnalysisFor] = useState<string | null>(null);
-  const [retrievalDetails, setRetrievalDetails] = useState<any>(null);
-  const [vectorizationDetails, setVectorizationDetails] = useState<any>(null);
+  const [retrievalDetails, setRetrievalDetails] = useState<ChatRetrievalDetails | null>(null);
+  const [vectorizationDetails, setVectorizationDetails] = useState<ComponentProps<typeof RealtimeMonitoring>['vectorizationDetails']>(null);
   const [showIntentDistillation, setShowIntentDistillation] = useState(false);
 
   // Milvus 相关状态
@@ -141,45 +164,58 @@ export default function HomePage() {
   // the canonical Milvus retrieval path. The old in-memory route is local-only.
   const [storageBackend] = useState<'memory' | 'milvus'>('milvus');
   const [milvusConnected, setMilvusConnected] = useState(false);
+  const [publicationMode, setPublicationMode] = useState(false);
+  const publicationModeRef = useRef(false);
   const [vectorBackendDisabled, setVectorBackendDisabled] = useState(false);
   const [runtimeStatusLoaded, setRuntimeStatusLoaded] = useState(false);
-  const [milvusStats, setMilvusStats] = useState<any>(null);
+  const [milvusStats, setMilvusStats] = useState<{ embeddingDimension?: number } | null>(null);
   const [documentCounts, setDocumentCounts] = useState<DocumentChunkCounts | null>(null);
   const documentCountsRequestRef = useRef<AbortController | null>(null);
+  const documentCountsRefreshRef = useRef<Promise<void> | null>(null);
+  const invalidateDocumentCounts = useCallback(() => {
+    documentCountsRequestRef.current?.abort();
+    documentCountsRequestRef.current = null;
+    documentCountsRefreshRef.current = null;
+    setDocumentCounts(null);
+  }, []);
 
   // Agentic RAG 相关状态
   const [useAgenticRAG, setUseAgenticRAG] = useState(false);
-  const [agenticWorkflow, setAgenticWorkflow] = useState<any>(null);
-  const [agenticQueryAnalysis, setAgenticQueryAnalysis] = useState<any>(null);
-  const [agenticRetrievalQuality, setAgenticRetrievalQuality] = useState<any>(null);
-  const [agenticSelfReflection, setAgenticSelfReflection] = useState<any>(null);
-  const [agenticHallucinationCheck, setAgenticHallucinationCheck] = useState<any>(null);
-  const [agenticRetrievalGrade, setAgenticRetrievalGrade] = useState<any>(null);
-  const [agenticDebugInfo, setAgenticDebugInfo] = useState<any>(null);
+  const [agenticWorkflow, setAgenticWorkflow] = useState<AgenticPanelProps['workflow'] | null>(null);
+  const [agenticQueryAnalysis, setAgenticQueryAnalysis] = useState<AgenticPanelProps['queryAnalysis'] | null>(null);
+  const [agenticRetrievalQuality, setAgenticRetrievalQuality] = useState<AgenticPanelProps['retrievalQuality'] | null>(null);
+  const [agenticSelfReflection, setAgenticSelfReflection] = useState<AgenticPanelProps['selfReflection'] | null>(null);
+  const [agenticHallucinationCheck, setAgenticHallucinationCheck] = useState<AgenticPanelProps['hallucinationCheck'] | null>(null);
+  const [agenticRetrievalGrade, setAgenticRetrievalGrade] = useState<TraceViewerProps['retrievalGrade'] | null>(null);
+  const [agenticDebugInfo, setAgenticDebugInfo] = useState<TraceViewerProps['debugInfo'] | null>(null);
   const [showAgenticPanel, setShowAgenticPanel] = useState(false);
 
   // 自适应实体路由 RAG 相关状态
   const [useAdaptiveEntityRAG, setUseAdaptiveEntityRAG] = useState(false);
-  const [adaptiveEntityWorkflow, setAdaptiveEntityWorkflow] = useState<any>(null);
-  const [adaptiveEntityQueryAnalysis, setAdaptiveEntityQueryAnalysis] = useState<any>(null);
-  const [adaptiveEntityValidation, setAdaptiveEntityValidation] = useState<any>(null);
-  const [adaptiveEntityRoutingDecision, setAdaptiveEntityRoutingDecision] = useState<any>(null);
-  const [adaptiveEntityRetrievalDetails, setAdaptiveEntityRetrievalDetails] = useState<any>(null);
+  const [adaptiveEntityWorkflow, setAdaptiveEntityWorkflow] = useState<AdaptivePanelProps['workflow'] | null>(null);
+  const [adaptiveEntityQueryAnalysis, setAdaptiveEntityQueryAnalysis] = useState<AdaptivePanelProps['queryAnalysis'] | null>(null);
+  const [adaptiveEntityValidation, setAdaptiveEntityValidation] = useState<AdaptivePanelProps['entityValidation'] | null>(null);
+  const [adaptiveEntityRoutingDecision, setAdaptiveEntityRoutingDecision] = useState<AdaptivePanelProps['routingDecision'] | null>(null);
+  const [adaptiveEntityRetrievalDetails, setAdaptiveEntityRetrievalDetails] = useState<AdaptivePanelProps['retrievalDetails'] | null>(null);
   const [showAdaptiveEntityPanel, setShowAdaptiveEntityPanel] = useState(false);
 
   // 对话延伸（推荐问题）相关状态
   const [enableSuggestions, setEnableSuggestions] = useState(true);
-  const [suggestedQuestions, setSuggestedQuestions] = useState<any[]>([]);
-  const [suggestionAnchor, setSuggestionAnchor] = useState<any>(null);
+  const [suggestedQuestions, setSuggestedQuestions] = useState<SuggestionsProps['suggestions']>([]);
+  const [suggestionAnchor, setSuggestionAnchor] = useState<NonNullable<SuggestionsProps['anchor']> | null>(null);
   const [isSuggestionsLoading, setIsSuggestionsLoading] = useState(false);
   const [showSuggestionDetails, setShowSuggestionDetails] = useState(false);
-  const [suggestionTimings, setSuggestionTimings] = useState<any>(null);
+  const [suggestionTimings, setSuggestionTimings] = useState<NonNullable<SuggestionsProps['timings']> | null>(null);
   const [suggestionProcessingTime, setSuggestionProcessingTime] = useState<number>(0);
   const [lastUserQuery, setLastUserQuery] = useState<string>('');
   const [lastAiResponse, setLastAiResponse] = useState<string>('');
   const [showExpansionWorkflow, setShowExpansionWorkflow] = useState(true);
 
   const askAbortControllerRef = useRef<AbortController | null>(null);
+  const conversationHistoryRef = useRef<ConversationHistoryMessage[]>([]);
+  const conversationHistoryRevisionRef = useRef(0);
+  const conversationHistoryPartitionRef = useRef<string | null>(null);
+  const conversationVerifiedPartitionRef = useRef<string | null>(null);
   const sessionLlmSelectionRef = useRef<SessionLlmSelection | null>(null);
   const [citationPartition, setCitationPartition] = useState<string | null>(null);
   const [citationAccessStatus, setCitationAccessStatus] = useState<'loading' | 'ready' | 'unavailable'>('loading');
@@ -187,14 +223,72 @@ export default function HomePage() {
   const citationPartitionRef = useRef<string | null>(null);
   const citationClockOffsetRef = useRef<number | null>(null);
   const citationIdentityRequestRef = useRef<AbortController | null>(null);
+  const citationIdentityPendingRef = useRef<Promise<void> | null>(null);
   const citationIdentityRevisionRef = useRef(0);
   const citationInvalidationRevisionRef = useRef(0);
   const citationMountedRef = useRef(false);
-  const [modelReadiness, setModelReadiness] = useState<{ model: string; phase: 'loading' | 'ready' | 'failed'; detail?: string } | null>(null);
+  const [modelReadinessResult, setModelReadinessResult] = useState<{
+    key: ModelWarmupIdentity; value: NonNullable<ComponentProps<typeof SystemInfo>['modelReadiness']>;
+  } | null>(null);
   const [modelWarmupAttempt, setModelWarmupAttempt] = useState(0);
+  const modelWarmupKey = useMemo<ModelWarmupIdentity>(() => ({ provider: modelConfig?.llm.provider,
+    model: llmModel, embeddingModel, attempt: modelWarmupAttempt }),
+  [modelConfig?.llm.provider, llmModel, embeddingModel, modelWarmupAttempt]);
+  // Derive loading immediately from the selection/attempt. Resetting it in an
+  // effect briefly presents the previous model's readiness before that effect runs.
+  const modelReadiness = useMemo(() => modelConfig?.llm.provider !== 'ollama' ? null
+    : modelReadinessResult?.key === modelWarmupKey ? modelReadinessResult.value
+      : { model: llmModel, phase: 'loading' as const, detail: '正在准备回答和检索模型，知识库问答会等待准备完成后继续。' },
+  [modelConfig?.llm.provider, modelWarmupKey, modelReadinessResult, llmModel]);
+
+  const clearAnswerDraft = useCallback((controller?: AbortController) => {
+    const draft = answerDraftRef.current;
+    if (controller && draft?.controller !== controller) return;
+    if (draft?.timer !== null && draft?.timer !== undefined) window.clearTimeout(draft.timer);
+    answerDraftRef.current = null;
+    if (citationMountedRef.current) setAnswerDraft('');
+  }, []);
+
+  const flushAnswerDraft = useCallback(() => {
+    const draft = answerDraftRef.current;
+    if (!draft) return;
+    if (draft.timer !== null) window.clearTimeout(draft.timer);
+    draft.timer = null;
+    if (!citationMountedRef.current || draft.signal.aborted || askAbortControllerRef.current !== draft.controller
+      || draft.historyRevision !== conversationHistoryRevisionRef.current) {
+      clearAnswerDraft(draft.controller);
+      return;
+    }
+    // A focus refresh can temporarily hide a valid account. Retain the bounded
+    // draft in memory, but expose it only after that same identity is verified.
+    setAnswerDraft(!citationIdentityPendingRef.current
+      && draft.partition === conversationVerifiedPartitionRef.current
+      && draft.partition === conversationHistoryPartitionRef.current ? draft.text : '');
+  }, [clearAnswerDraft]);
+
+  const waitForCitationIdentity = useCallback(async (signal: AbortSignal) => {
+    while (citationIdentityPendingRef.current && !signal.aborted) {
+      const pending = citationIdentityPendingRef.current;
+      await new Promise<void>(resolve => {
+        const finish = () => { signal.removeEventListener('abort', finish); resolve(); };
+        signal.addEventListener('abort', finish, { once: true });
+        void pending.then(finish);
+        if (signal.aborted) finish();
+      });
+    }
+  }, []);
 
   const refreshCitationPartition = useCallback(async (clearExisting = false) => {
     if (!citationMountedRef.current) return;
+    // Defer completed answers until the refreshed identity is known.
+    let resolveVerification!: () => void;
+    const verification = new Promise<void>(resolve => { resolveVerification = resolve; });
+    citationIdentityPendingRef.current = verification;
+    setAnswerDraft('');
+    if (answerDraftRef.current?.timer !== null && answerDraftRef.current?.timer !== undefined) {
+      window.clearTimeout(answerDraftRef.current.timer);
+      answerDraftRef.current.timer = null;
+    }
     citationIdentityRequestRef.current?.abort();
     const controller = new AbortController();
     citationIdentityRequestRef.current = controller;
@@ -202,6 +296,7 @@ export default function HomePage() {
     const isCurrent = () => citationMountedRef.current && !controller.signal.aborted
       && revision === citationIdentityRevisionRef.current;
     citationPartitionRef.current = null;
+    conversationVerifiedPartitionRef.current = null;
     citationClockOffsetRef.current = null;
     dbManager.setCitationClockOffset(null);
     setCitationPartition(null);
@@ -221,11 +316,22 @@ export default function HomePage() {
       if (clearExisting) await clearHandles();
       await dbManager.waitForCitationClear();
       if (!isCurrent()) return;
-      const response = await fetch('/rag-api/ask/citations/preview', {
+      let response = await fetch('/rag-api/ask/citations/preview', {
         method: 'GET', credentials: 'same-origin', cache: 'no-store',
         signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
       });
       if (!isCurrent()) return;
+      let citationsAvailable = response.ok;
+      if (response.status === 503) {
+        // The retrieval guard can disable citation preview while direct chat
+        // remains usable; verify the account independently in that case.
+        response = await fetch('/rag-api/ask/conversation-identity', {
+          method: 'GET', credentials: 'same-origin', cache: 'no-store',
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]),
+        });
+        citationsAvailable = false;
+        if (!isCurrent()) return;
+      }
       if (response.status === 401 || response.status === 403) {
         await clearHandles();
         throw new Error('Citation identity is no longer authorized.');
@@ -241,35 +347,64 @@ export default function HomePage() {
       const partition = identity.partition;
       await dbManager.waitForCitationClear();
       if (!isCurrent()) return;
-      dbManager.setCitationIdentity(partition);
+      if (conversationHistoryPartitionRef.current !== partition) {
+        conversationHistoryRef.current = [];
+        if (conversationHistoryPartitionRef.current !== null) {
+          conversationHistoryRevisionRef.current++;
+          askAbortControllerRef.current?.abort(new DOMException('会话身份已更改', 'AbortError'));
+          invalidateDocumentCounts();
+        }
+      }
+      conversationHistoryPartitionRef.current = partition;
+      conversationVerifiedPartitionRef.current = partition;
+      dbManager.setCitationIdentity(citationsAvailable ? partition : null);
       const offsetMs = Date.now() - identity.now;
       citationClockOffsetRef.current = offsetMs;
       dbManager.setCitationClockOffset(offsetMs);
-      citationPartitionRef.current = partition;
-      setCitationPartition(partition);
+      citationPartitionRef.current = citationsAvailable ? partition : null;
+      setCitationPartition(citationsAvailable ? partition : null);
       setCitationClockOffsetMs(offsetMs);
-      setCitationAccessStatus('ready');
-      setMessages(current => current.map(message => ({
+      setCitationAccessStatus(citationsAvailable ? 'ready' : 'unavailable');
+      if (citationsAvailable) setMessages(current => current.map(message => ({
         ...message, citations: projectMessageCitations(message.citations, partition, identity.now as number),
       })));
       // One shared identity read covers the whole conversation; preview still reauthorizes each click.
       await dbManager.init();
-      if (isCurrent()) {
+      if (isCurrent() && citationsAvailable) {
         await dbManager.pruneConversationCitations(partition, identity.now);
       }
     } catch {
       if (isCurrent()) {
+        conversationHistoryRef.current = [];
+        conversationHistoryPartitionRef.current = null;
+        conversationVerifiedPartitionRef.current = null;
+        conversationHistoryRevisionRef.current++;
+        askAbortControllerRef.current?.abort(new DOMException('会话身份无法验证', 'AbortError'));
         citationPartitionRef.current = null;
         setCitationPartition(null);
         setCitationAccessStatus('unavailable');
+        invalidateDocumentCounts();
       }
+    } finally {
+      if (citationIdentityPendingRef.current === verification) {
+        citationIdentityPendingRef.current = null;
+        flushAnswerDraft();
+      }
+      resolveVerification();
     }
-  }, []);
+  }, [invalidateDocumentCounts, flushAnswerDraft]);
 
   useEffect(() => {
     citationMountedRef.current = true;
     const refresh = () => { void refreshCitationPartition(); };
-    const invalidate = () => { void refreshCitationPartition(true); };
+    const invalidate = () => {
+      conversationHistoryRevisionRef.current++;
+      conversationHistoryRef.current = [];
+      conversationHistoryPartitionRef.current = null;
+      conversationVerifiedPartitionRef.current = null;
+      askAbortControllerRef.current?.abort(new DOMException('会话上下文已更改', 'AbortError'));
+      void refreshCitationPartition(true);
+    };
     refresh();
     window.addEventListener('focus', refresh);
     window.addEventListener('storage', refresh);
@@ -286,11 +421,22 @@ export default function HomePage() {
   }, [refreshCitationPartition]);
 
   useEffect(() => {
-    if (modelConfig?.llm.provider !== 'ollama') { setModelReadiness(null); return; }
+    if (modelConfig?.llm.provider !== 'ollama') return;
     const controller = new AbortController();
     const model = llmModel;
-    setModelReadiness({ model, phase: 'loading', detail: '正在准备回答和检索模型，知识库问答会等待准备完成后继续。' });
-    void (async () => {
+    let inFlight = false;
+    let wasHidden = document.visibilityState !== 'visible';
+    let refreshTimer: number | undefined;
+    const clearRefreshTimer = () => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
+      refreshTimer = undefined;
+    };
+    const refresh = async () => {
+      if (controller.signal.aborted || inFlight) return;
+      if (document.visibilityState !== 'visible') { wasHidden = true; return; }
+      clearRefreshTimer();
+      inFlight = true;
+      let ready = false;
       try {
         const response = await fetch('/rag-api/model-warmup', {
           method: 'POST', headers: { 'content-type': 'application/json' },
@@ -317,23 +463,40 @@ export default function HomePage() {
           throw new Error(data.readiness?.detail || '模型预加载未完成，请重试加载。');
         }
         if (controller.signal.aborted) return;
-        if (!controller.signal.aborted) setModelReadiness({ model, phase: 'ready' });
+        ready = true;
+        setModelReadinessResult({ key: modelWarmupKey, value: { model, phase: 'ready' } });
       } catch (error) {
-        if (!controller.signal.aborted) setModelReadiness({ model, phase: 'failed',
-          detail: error instanceof Error ? error.message : '模型预加载失败，请检查本地服务。' });
+        if (!controller.signal.aborted) setModelReadinessResult({ key: modelWarmupKey, value: { model, phase: 'failed',
+          detail: error instanceof Error ? error.message : '模型预加载失败，请检查本地服务。' } });
+      } finally {
+        inFlight = false;
+        if (ready && !controller.signal.aborted && document.visibilityState === 'visible') {
+          refreshTimer = window.setTimeout(() => { void refresh(); }, 5 * 60_000);
+        }
       }
-    })();
-    // A late response from the previous selection must not mark the new model ready.
-    return () => controller.abort();
-  }, [llmModel, embeddingModel, modelConfig?.llm.provider, modelWarmupAttempt]);
-
-  useEffect(() => {
-    if (modelReadiness?.phase !== 'ready' || modelReadiness.model !== llmModel) return;
-    // Keep the selected model warm while the page is open; residency is still
-    // finite after the page closes, rather than permanently consuming VRAM.
-    const timer = window.setTimeout(() => setModelWarmupAttempt(attempt => attempt + 1), 5 * 60_000);
-    return () => window.clearTimeout(timer);
-  }, [llmModel, modelReadiness]);
+    };
+    const refreshOnReturn = () => {
+      if (document.visibilityState !== 'visible') {
+        wasHidden = true;
+        clearRefreshTimer();
+        return;
+      }
+      if (!wasHidden) return;
+      wasHidden = false;
+      void refresh();
+    };
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    window.addEventListener('focus', refreshOnReturn);
+    void refresh();
+    // Hiding only stops future work; another tab may share the existing load.
+    // Selection changes/unmount still retire this client's stale responses.
+    return () => {
+      controller.abort();
+      clearRefreshTimer();
+      document.removeEventListener('visibilitychange', refreshOnReturn);
+      window.removeEventListener('focus', refreshOnReturn);
+    };
+  }, [llmModel, embeddingModel, modelConfig?.llm.provider, modelWarmupKey]);
 
   useEffect(() => () => {
     askAbortControllerRef.current?.abort(
@@ -342,10 +505,16 @@ export default function HomePage() {
   }, []);
 
   // 检查系统健康状态
-  const checkSystemHealth = useCallback(async (): Promise<'enabled' | 'disabled' | 'unavailable'> => {
+  const checkSystemHealth = useCallback(async (): Promise<'enabled' | 'disabled' | 'unavailable' | 'publication'> => {
     try {
-      const response = await fetch('/rag-api/health');
+      const response = await fetch('/rag-api/health', { signal: AbortSignal.timeout(30_000) });
       const data = await response.json();
+      // A transport error must not switch a known published session to probes
+      // against mutable legacy indexes. An explicit healthy response may switch.
+      const published = data.publication?.mode === 'active'
+        || (data.success !== true && publicationModeRef.current);
+      publicationModeRef.current = published;
+      setPublicationMode(published);
       const disabled = data.vectorBackend?.disabled === true;
       setVectorBackendDisabled(disabled);
       if (disabled) {
@@ -366,18 +535,18 @@ export default function HomePage() {
         }
       }
       if (data.success) {
-        setSystemStatus(disabled ? '知识库维护中' : '运行中');
+        setSystemStatus(published ? '发布目录就绪' : disabled ? '知识库维护中' : '运行中');
         setDocCount(data.ragSystem?.documentCount || 0);
         setEmbeddingDim(data.modelConfig?.embedding?.dimension || data.ragSystem?.embeddingDimension || 0);
       } else {
         setSystemStatus('错误');
-        return 'unavailable';
+        return published ? 'publication' : 'unavailable';
       }
-      return disabled ? 'disabled' : 'enabled';
+      return published ? 'publication' : disabled ? 'disabled' : 'enabled';
     } catch (error) {
       setSystemStatus('错误');
       setVectorBackendDisabled(false);
-      return 'unavailable';
+      return publicationModeRef.current ? 'publication' : 'unavailable';
     }
   }, []);
 
@@ -403,37 +572,65 @@ export default function HomePage() {
     }
   }, []);
 
-  const refreshDocumentCounts = useCallback(async () => {
+  const refreshDocumentCounts = useCallback((invalidate = false): Promise<void> => {
+    // Focus and visibility often arrive together. Only a scope change should
+    // replace an authorized read; aborting ordinary refreshes repeats server work.
+    if (!invalidate && documentCountsRefreshRef.current) return documentCountsRefreshRef.current;
     documentCountsRequestRef.current?.abort();
     const controller = new AbortController();
     documentCountsRequestRef.current = controller;
-    try {
-      const response = await fetch('/rag-api/documents', { cache: 'no-store', signal: controller.signal });
-      const data = await response.json();
-      if (!controller.signal.aborted) {
-        setDocumentCounts(response.ok && data.success === true ? parseDocumentChunkCounts(data.summary) : null);
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]);
+    const refresh = Promise.resolve().then(async () => {
+      try {
+        await waitForCitationIdentity(signal);
+        signal.throwIfAborted();
+        const partition = conversationVerifiedPartitionRef.current;
+        const identityRevision = conversationHistoryRevisionRef.current;
+        if (!partition) { setDocumentCounts(null); return; }
+        const response = await fetch('/rag-api/documents', { cache: 'no-store', signal });
+        const data = await response.json();
+        await waitForCitationIdentity(signal);
+        if (!controller.signal.aborted) {
+          setDocumentCounts(!signal.aborted && partition === conversationVerifiedPartitionRef.current
+            && identityRevision === conversationHistoryRevisionRef.current && response.ok && data.success === true
+            ? parseDocumentChunkCounts(data.summary) : null);
+        }
+      } catch {
+        // Storage counts cannot substitute for an unavailable visibility-aware count.
+        if (!controller.signal.aborted) setDocumentCounts(null);
+      } finally {
+        if (documentCountsRequestRef.current === controller) {
+          documentCountsRequestRef.current = null;
+          documentCountsRefreshRef.current = null;
+        }
       }
-    } catch {
-      // Storage counts cannot substitute for an unavailable visibility-aware count.
-      if (!controller.signal.aborted) setDocumentCounts(null);
-    } finally {
-      if (documentCountsRequestRef.current === controller) documentCountsRequestRef.current = null;
-    }
-  }, []);
+    });
+    documentCountsRefreshRef.current = refresh;
+    return refresh;
+  }, [waitForCitationIdentity]);
 
-  const refreshRuntimeStatus = useCallback(async () => {
-    setRuntimeStatusLoaded(false);
-    const [runtimeStatus] = await Promise.all([checkSystemHealth(), refreshDocumentCounts()]);
+  useEffect(() => {
+    // Storage/focus can reveal a new account without a rag-auth-change event.
+    // Refill counts only after that identity has been verified.
+    if (citationAccessStatus !== 'loading' && conversationVerifiedPartitionRef.current) void refreshDocumentCounts();
+  }, [citationAccessStatus, citationPartition, refreshDocumentCounts]);
+
+  const refreshRuntimeStatus = useCallback(() => Promise.all([checkSystemHealth(), refreshDocumentCounts()]).then(async ([runtimeStatus]) => {
     // /api/health 在 Elasticsearch 或 PostgreSQL 未就绪时也返回 503，此时 Milvus
     // 可能完好；徽标只应反映 Milvus 自身探测结果，仅显式维护模式才跳过探测。
-    if (runtimeStatus !== 'disabled') await checkMilvusStatus();
+    if (runtimeStatus !== 'disabled' && runtimeStatus !== 'publication') await checkMilvusStatus();
     setRuntimeStatusLoaded(true);
-  }, [checkMilvusStatus, checkSystemHealth, refreshDocumentCounts]);
+  }), [checkMilvusStatus, checkSystemHealth, refreshDocumentCounts]);
+
+  const handleRuntimeStatusRefresh = () => {
+    setRuntimeStatusLoaded(false);
+    void refreshRuntimeStatus();
+  };
 
   useEffect(() => {
     const refresh = () => { void refreshDocumentCounts(); };
     const refreshVisible = () => { if (document.visibilityState === 'visible') refresh(); };
-    const invalidate = () => { setDocumentCounts(null); refresh(); };
+    const invalidate = () => { setDocumentCounts(null); void refreshDocumentCounts(true); };
     // Disabling documents in another tab must update every home counter on return.
     window.addEventListener('focus', refreshVisible);
     document.addEventListener('visibilitychange', refreshVisible);
@@ -447,6 +644,8 @@ export default function HomePage() {
       window.removeEventListener('rag-auth-change', invalidate);
       window.removeEventListener('rag-corpus-change', invalidate);
       documentCountsRequestRef.current?.abort();
+      documentCountsRequestRef.current = null;
+      documentCountsRefreshRef.current = null;
     };
   }, [refreshDocumentCounts]);
 
@@ -472,18 +671,19 @@ export default function HomePage() {
     setEmbeddingModel(data.config.embedding.model);
     setEmbeddingDim(activeConfig.embedding.dimension);
     setModelConfig(activeConfig);
-    await Promise.all([checkMilvusStatus(), refreshDocumentCounts()]);
+    setRuntimeStatusLoaded(false);
+    await refreshRuntimeStatus();
     showToast(`已应用模型：${data.config.llm.model}；向量模型：${data.config.embedding.model}`, 'success');
   };
 
   // Toast 通知
-  const showToast = (message: string, type: Toast['type'] = 'info') => {
+  const showToast = useCallback((message: string, type: Toast['type'] = 'info') => {
     const id = Date.now().toString();
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
     }, 5000);
-  };
+  }, []);
 
   // 高亮匹配文本
   const highlightMatchingText = (content: string, query: string) => {
@@ -531,24 +731,18 @@ export default function HomePage() {
     }
   };
 
-  // 从 IndexedDB 加载最新对话
-  const loadLatestConversation = async () => {
+  // Initialize external status and restore the latest persisted conversation.
+  useEffect(() => {
+    void refreshRuntimeStatus();
     const invalidationRevision = citationInvalidationRevisionRef.current;
-    try {
-      console.log('[IndexedDB] 开始加载最新对话...');
-      await dbManager.init();
-
-      // 先尝试获取所有对话，看看数据库里有什么
-      const allConversations = await dbManager.getAllConversations();
-      console.log(`[IndexedDB] 数据库中共有 ${allConversations.length} 个对话`);
-
-      if (allConversations.length > 0) {
-        allConversations.forEach((conv, index) => {
-          console.log(`[IndexedDB] 对话 ${index + 1}: ID=${conv.id}, 消息数=${conv.messages?.length || 0}, 更新时间=${conv.updatedAt}`);
-        });
-      }
-
-      const latestConv = await dbManager.getLatestConversation();
+    // getLatestConversation already enumerates the store. A second full read
+    // solely for debug logging doubles startup IO for long conversation histories.
+    void dbManager.init().then(() => dbManager.getLatestConversation()).then(latestConv => {
+      // Restoring a different conversation must not retain or complete a turn
+      // from the session that was visible while IndexedDB was loading.
+      conversationHistoryRevisionRef.current++;
+      conversationHistoryRef.current = [];
+      askAbortControllerRef.current?.abort(new DOMException('会话已切换', 'AbortError'));
 
       if (latestConv) {
         console.log(`[IndexedDB] 找到最新对话: ${latestConv.id}`);
@@ -628,11 +822,14 @@ export default function HomePage() {
         setLastUserQuery('');
         setLastAiResponse('');
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('[IndexedDB] 加载历史对话失败:', error);
       console.error('[IndexedDB] 错误详情:', error instanceof Error ? error.stack : String(error));
       showToast('加载历史对话失败: ' + (error instanceof Error ? error.message : String(error)), 'error');
       // 即使失败，也清空状态
+      conversationHistoryRevisionRef.current++;
+      conversationHistoryRef.current = [];
+      askAbortControllerRef.current?.abort(new DOMException('会话加载失败', 'AbortError'));
       setMessages([]);
       setCurrentConversationId(null);
       // 清空对话延伸引擎相关状态
@@ -641,8 +838,8 @@ export default function HomePage() {
       setSuggestionTimings(null);
       setLastUserQuery('');
       setLastAiResponse('');
-    }
-  };
+    });
+  }, [refreshRuntimeStatus, showToast]);
 
   // 一键删除所有对话
   const handleDeleteAllConversations = async () => {
@@ -651,6 +848,9 @@ export default function HomePage() {
     try {
       await dbManager.init();
       await dbManager.deleteAllConversations();
+      conversationHistoryRevisionRef.current++;
+      conversationHistoryRef.current = [];
+      askAbortControllerRef.current?.abort(new DOMException('会话已删除', 'AbortError'));
       setMessages([]);
       setCurrentConversationId(null);
       setViewingAnalysisFor(null);
@@ -677,7 +877,7 @@ export default function HomePage() {
 
   // 生成模拟 Token（智能分词）
   const generateMockTokens = (text: string) => {
-    const tokens: any[] = [];
+    const tokens: QueryToken[] = [];
     // 使用简单规则分词：中文按字符，英文按单词，数字按连续数字
     const pattern = /[\u4e00-\u9fff]|[a-zA-Z]+|[0-9]+|[.,!?:;()\-？！。，、；：（）]/g;
     let match;
@@ -698,9 +898,9 @@ export default function HomePage() {
   };
   
   // 生成基于实体和关键词的增强 Token
-  const generateEnhancedTokens = (text: string, entities?: any[], keywords?: string[]) => {
+  const generateEnhancedTokens = (text: string, entities?: Array<{ name: string; type?: string; confidence?: number }>, keywords?: string[]) => {
     const MAX_TOKENS = 100; // 限制最大 Token 数量
-    const tokens: any[] = [];
+    const tokens: QueryToken[] = [];
     let tokenId = 1000;
     
     // 安全检查：限制输入长度
@@ -783,7 +983,7 @@ export default function HomePage() {
   const generateSuggestedQuestions = async (
     userQuery: string,
     aiResponse: string,
-    contextChunks: any[]
+    contextChunks: ChatSearchResult[]
   ) => {
     setIsSuggestionsLoading(true);
     setSuggestedQuestions([]);
@@ -839,28 +1039,14 @@ export default function HomePage() {
   };
 
 
-  // 提交问题
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const submittedQuestion = input.trim();
+  const handleSendQuestion = async (question: string, userMessageId: string, isRetry = false) => {
+    const submittedQuestion = question.trim();
+    if (!submittedQuestion || isLoading || askAbortControllerRef.current) return;
+    if (isRetry && (userMessageId !== latestUserMessageId
+      || !messages.some(message => message.id === userMessageId
+        && message.type === 'user' && message.retryStatus === 'failed'))) return;
     const citationInvalidationRevision = citationInvalidationRevisionRef.current;
-    if (!submittedQuestion || isLoading) return;
-    const isDirectConversation = classifyDirectConversation(submittedQuestion) !== null;
-    const requiresKnowledge = !isDirectConversation && routeConversation(submittedQuestion).reason !== 'uncertain';
-
-    // Knowledge questions require Milvus, while self-contained conversational
-    // turns are answered without touching the vector or model providers.
-    if (vectorBackendDisabled && requiresKnowledge) {
-      showToast('知识库维护中：向量检索已临时关闭，暂不支持知识库提问。', 'info');
-      return;
-    }
-
-    if (!milvusConnected && requiresKnowledge) {
-      showToast('知识库暂不可用：向量服务未连接，恢复后即可继续提问。', 'error');
-      return;
-    }
-
-    const userMessageId = Date.now().toString();
+    const historyRevision = conversationHistoryRevisionRef.current;
     const userMessage: Message = {
       id: userMessageId,
       type: 'user',
@@ -868,9 +1054,21 @@ export default function HomePage() {
       timestamp: new Date()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    if (isRetry) {
+      // Reuse the failed turn so retries never duplicate the question or stale error.
+      setMessages(prev => prev.filter(message => message.id !== `${userMessageId}-error`)
+        .map(message => message.id === userMessageId ? { ...message, retryStatus: 'retrying' as const } : message));
+    } else {
+      setMessages(prev => [...prev, userMessage]);
+    }
     setCurrentQuery(submittedQuestion);
-    setActiveProcessing(createPendingAnswerProcessing(submittedQuestion));
+    // The client cannot know whether the server will use direct or RAG routing.
+    setActiveProcessing({
+      version: 'answer-processing/v1', mode: 'rag', retrievalSkipped: false,
+      summary: '正在等待服务端判断处理路径。',
+      disclosure: '最终处理阶段和是否检索以服务端返回结果为准。',
+      steps: [{ id: 'route', label: '处理请求', detail: '正在等待服务端处理。', status: 'active' }],
+    });
     setIsLoading(true);
     setShowQueryAnalysis(false);
     setShowQueryProcessing(true);
@@ -882,15 +1080,28 @@ export default function HomePage() {
       requestTimeoutSignal,
     ]);
     askAbortControllerRef.current = requestController;
+    const discardDraft = () => clearAnswerDraft(requestController);
+    requestSignal.addEventListener('abort', discardDraft, { once: true });
     setIsRequestSlow(false);
     const slowHintTimer = window.setTimeout(() => setIsRequestSlow(true), ASK_SLOW_HINT_MS);
     try {
-      await saveMessageToDB({
+      if (!isRetry) await saveMessageToDB({
         id: userMessageId,
         type: 'user',
         content: submittedQuestion,
         timestamp: new Date()
       });
+      await waitForCitationIdentity(requestSignal);
+      if (requestSignal.aborted || historyRevision !== conversationHistoryRevisionRef.current) {
+        throw new DOMException('会话上下文已更改或请求已取消', 'AbortError');
+      }
+      const historyPartition = conversationVerifiedPartitionRef.current;
+      if (!historyPartition || historyPartition !== conversationHistoryPartitionRef.current) {
+        throw new Error('无法验证会话身份，请稍后重试。');
+      }
+      const conversationHistory = conversationHistoryRef.current.map(item => ({ ...item }));
+      answerDraftRef.current = { controller: requestController, signal: requestSignal,
+        historyRevision, partition: historyPartition, text: '', timer: null };
 
       // 清空之前的 Agentic RAG 状态
       if (useAgenticRAG) {
@@ -901,7 +1112,7 @@ export default function HomePage() {
         setAgenticHallucinationCheck(null);
         setAgenticRetrievalGrade(null);
         setAgenticDebugInfo(null);
-        setShowAgenticPanel(!isDirectConversation);
+        setShowAgenticPanel(false);
       }
 
       // 清空之前的自适应实体 RAG 状态
@@ -911,17 +1122,21 @@ export default function HomePage() {
         setAdaptiveEntityValidation(null);
         setAdaptiveEntityRoutingDecision(null);
         setAdaptiveEntityRetrievalDetails(null);
-        setShowAdaptiveEntityPanel(!isDirectConversation);
+        setShowAdaptiveEntityPanel(false);
       }
 
-      const response = await fetch('/rag-api/ask', {
+      const response = await readAskProgressResponse(await fetch('/rag-api/ask', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Accept': 'text/event-stream',
+          ...(historyPartition
+            ? { 'x-rag-conversation-partition': historyPartition } : {}),
         },
         signal: requestSignal,
         body: JSON.stringify({
           question: submittedQuestion,
+          conversationHistory,
           topK,
           similarityThreshold: threshold,
           llmModel,
@@ -934,9 +1149,37 @@ export default function HomePage() {
           maxRetries: 2,
           enableReranking: true,
         }),
-      });
+      }), { signal: requestSignal, onProgress: progress => {
+        if (requestSignal.aborted || historyRevision !== conversationHistoryRevisionRef.current) return;
+        setActiveProcessing({ version: 'answer-processing/v1', mode: 'rag', retrievalSkipped: false,
+          summary: progress.label,
+          disclosure: '完整回答和引用将在校验完成后保存。',
+          steps: [{ id: progress.stage, label: progress.label, detail: '服务端正在处理。', status: 'active' }],
+        });
+      }, onAnswerDelta: delta => {
+        const draft = answerDraftRef.current;
+        if (!draft || draft.controller !== requestController || askAbortControllerRef.current !== requestController
+          || requestSignal.aborted || historyRevision !== conversationHistoryRevisionRef.current) return;
+        draft.text += delta.text;
+        if (draft.timer === null) draft.timer = window.setTimeout(flushAnswerDraft, ANSWER_DRAFT_RENDER_MS);
+      } });
+
+      clearAnswerDraft(requestController);
 
       const data = await response.json();
+      // A same-account refresh must not cancel a long request. Do not expose
+      // its response until every concurrent identity check has settled.
+      await waitForCitationIdentity(requestSignal);
+      if (requestSignal.aborted || historyRevision !== conversationHistoryRevisionRef.current) {
+        throw new DOMException('会话上下文已更改或请求已取消', 'AbortError');
+      }
+      if (response.status === 409 && data.code === 'CONVERSATION_PARTITION_MISMATCH') {
+        conversationHistoryRef.current = [];
+        conversationHistoryPartitionRef.current = null;
+        showToast('会话身份已变更，请重新提问。', 'error');
+        void refreshCitationPartition(true);
+        return;
+      }
 
       console.log('data', data);
       if (data.conversationMode === 'direct') {
@@ -946,6 +1189,7 @@ export default function HomePage() {
 
       // 处理自适应实体 RAG 响应
       if (data.adaptiveEntityMode) {
+        setShowAdaptiveEntityPanel(true);
         setAdaptiveEntityWorkflow(data.workflow);
         setAdaptiveEntityQueryAnalysis(data.queryAnalysis);
         setAdaptiveEntityValidation(data.entityValidation);
@@ -955,6 +1199,7 @@ export default function HomePage() {
 
       // 处理 Agentic RAG 响应
       if (data.agenticMode) {
+        setShowAgenticPanel(true);
         setAgenticWorkflow(data.workflow);
         setAgenticQueryAnalysis(data.queryAnalysis);
         setAgenticRetrievalQuality(data.retrievalDetails?.quality);
@@ -965,7 +1210,7 @@ export default function HomePage() {
       }
 
       if (data.success) {
-        let queryAnalysisData: any;
+        let queryAnalysisData: ChatQueryAnalysis | null;
         const processingDetails = resolveAnswerProcessing(data) || undefined;
         // 重要：始终使用用户原始输入，防止 LLM 返回错误的 originalQuery
         const userOriginalInput = submittedQuestion;
@@ -996,7 +1241,7 @@ export default function HomePage() {
             tokenization: {
               tokenCount: enhancedTokens.length,
               tokens: enhancedTokens,
-              processingTime: data.workflow?.steps?.find((s: any) => s.step?.includes('认知解析'))?.duration || 0,
+              processingTime: data.workflow?.steps?.find((s: { step?: string; duration?: number }) => s.step?.includes('认知解析'))?.duration || 0,
               originalText: userOriginalInput
             },
             embedding: {
@@ -1058,7 +1303,7 @@ export default function HomePage() {
                 tokenId: 1000 + i,
                 type: /[\u4e00-\u9fff]/.test(kw) ? 'chinese' : 'english'
               })) || generateMockTokens(userOriginalInput),
-              processingTime: data.workflow?.steps?.find((s: any) => s.step === '查询分析与优化')?.duration || 0,
+              processingTime: data.workflow?.steps?.find((s: { step?: string; duration?: number }) => s.step === '查询分析与优化')?.duration || 0,
               // 始终使用用户原始输入，不信任 API 返回的 originalQuery（可能被 LLM 错误修改）
               originalText: userOriginalInput
             },
@@ -1116,10 +1361,10 @@ export default function HomePage() {
             embedding: {
               embeddingDimension: 768,
               semanticAnalysis: {
-                context: input.includes('智能') ? '人工智能语境' : '通用语境',
-                semanticCategory: input.includes('智能') ? 'AI技术' : '一般',
+                context: submittedQuestion.includes('智能') ? '人工智能语境' : '通用语境',
+                semanticCategory: submittedQuestion.includes('智能') ? 'AI技术' : '一般',
                 confidence: 0.85,
-                nearestConcepts: input.includes('智能')
+                nearestConcepts: submittedQuestion.includes('智能')
                   ? ['人工智能', '机器学习', '深度学习']
                   : ['文本', '信息', '内容'],
                 vectorFeatures: {
@@ -1167,13 +1412,21 @@ export default function HomePage() {
 
         // 安全提取回答内容，防止 LangChain 对象被传递给 React
         const answerContent = safeAnswerString(data.answer);
+        await waitForCitationIdentity(requestSignal);
+        if (requestSignal.aborted || historyRevision !== conversationHistoryRevisionRef.current) return;
+        if (historyPartition && historyPartition === conversationVerifiedPartitionRef.current
+          && historyPartition === conversationHistoryPartitionRef.current) {
+          conversationHistoryRef.current = appendCompletedTurn(conversationHistoryRef.current, submittedQuestion, answerContent);
+        }
         const citations = citationInvalidationRevision === citationInvalidationRevisionRef.current
           ? projectMessageCitations(data.citations, undefined,
+            // eslint-disable-next-line react-hooks/purity -- Expiry is checked after the event's Ask response, outside rendering.
             citationClockOffsetRef.current === null ? null : Date.now() - citationClockOffsetRef.current)
           : undefined;
         if (citations && citations.partition !== citationPartitionRef.current) void refreshCitationPartition();
         
         const assistantMessage: Message = {
+          // eslint-disable-next-line react-hooks/purity -- A completed request allocates its message ID in the submit/retry event.
           id: (Date.now() + 1).toString(),
           type: 'assistant',
           content: answerContent,
@@ -1185,7 +1438,8 @@ export default function HomePage() {
           citations,
         };
 
-        setMessages(prev => [...prev, assistantMessage]);
+        setMessages(prev => [...prev.map(message => message.id === userMessageId
+          ? { ...message, retryStatus: undefined } : message), assistantMessage]);
         setShowQueryAnalysis(true);
         setQueryAnalysis(queryAnalysisData);
         setRetrievalDetails(data.retrievalDetails || null);
@@ -1214,6 +1468,17 @@ export default function HomePage() {
         throw new Error(data.error || '请求失败');
       }
     } catch (error) {
+      if (historyRevision !== conversationHistoryRevisionRef.current) {
+        if (requestController.signal.reason instanceof DOMException
+          && requestController.signal.reason.message === '会话身份无法验证') {
+          setMessages(prev => [...prev.map(message => message.id === userMessageId
+            ? { ...message, retryStatus: 'failed' as const } : message), {
+            id: `${userMessageId}-error`, type: 'assistant',
+            content: '无法验证会话身份，请稍后重试。', timestamp: new Date(),
+          }]);
+        }
+        return;
+      }
       console.error('Error:', error);
       const failureMessage = requestTimeoutSignal.aborted
         ? `请求超过 ${RAG_CLIENT_REQUEST_TIMEOUT_MS / 1000} 秒，已自动停止。建议切换到“模型选择”中的轻量模型后重试。`
@@ -1221,30 +1486,38 @@ export default function HomePage() {
           ? '请求已取消。'
           : `抱歉，处理您的问题时出现了错误：${error instanceof Error ? error.message : '未知错误'}`;
       const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: `${userMessageId}-error`,
         type: 'assistant',
         content: failureMessage,
         timestamp: new Date()
       };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages(prev => [...prev.map(message => message.id === userMessageId
+        ? { ...message, retryStatus: 'failed' as const } : message), errorMessage]);
     } finally {
+      requestSignal.removeEventListener('abort', discardDraft);
+      clearAnswerDraft(requestController);
       window.clearTimeout(slowHintTimer);
+      if (isRetry) {
+        // Identity/session changes may return before either the success or error path.
+        setMessages(prev => prev.map(message => message.id === userMessageId && message.retryStatus === 'retrying'
+          ? { ...message, retryStatus: 'failed' as const } : message));
+      }
       if (askAbortControllerRef.current === requestController) {
         askAbortControllerRef.current = null;
       }
       setIsRequestSlow(false);
       setActiveProcessing(null);
       setIsLoading(false);
-      setInput('');
+      if (!isRetry) setInput('');
       setShowQueryProcessing(false);
     }
   };
 
-  // 初始化时加载数据
-  useEffect(() => {
-    void refreshRuntimeStatus();
-    loadLatestConversation();
-  }, [refreshRuntimeStatus]);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    // eslint-disable-next-line react-hooks/purity -- This clock is read only by the native form submission handler.
+    await handleSendQuestion(input, Date.now().toString());
+  };
 
   // 雷达图配置
   const getRadarChartOption = () => {
@@ -1304,7 +1577,8 @@ export default function HomePage() {
       <HomeHeader
         vectorBackendDisabled={vectorBackendDisabled}
         milvusConnected={milvusConnected}
-        showRagModes={storageBackend === 'milvus' && !vectorBackendDisabled}
+        publicationMode={publicationMode}
+        showRagModes={storageBackend === 'milvus' && !vectorBackendDisabled && !publicationMode}
         useAgenticRAG={useAgenticRAG}
         useAdaptiveEntityRAG={useAdaptiveEntityRAG}
         systemStatus={systemStatus}
@@ -1323,11 +1597,11 @@ export default function HomePage() {
           }
         }}
         onClearConversations={handleDeleteAllConversations}
-        onRefreshStatus={() => { void refreshRuntimeStatus(); }}
+        onRefreshStatus={handleRuntimeStatusRefresh}
       />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Milvus 查询可视化 - 当选择 Milvus 后端时显示 */}
-        {runtimeStatusLoaded && storageBackend === 'milvus' && !vectorBackendDisabled && systemStatus === '运行中' && !useAgenticRAG && !useAdaptiveEntityRAG && (
+        {runtimeStatusLoaded && !publicationMode && storageBackend === 'milvus' && !vectorBackendDisabled && systemStatus === '运行中' && !useAgenticRAG && !useAdaptiveEntityRAG && (
           <MilvusQueryVisualizer
             embeddingModel={embeddingModel}
             documentCounts={documentCounts}
@@ -1339,11 +1613,11 @@ export default function HomePage() {
         {storageBackend === 'milvus' && !vectorBackendDisabled && useAgenticRAG && showAgenticPanel && (
           <div className="mb-6 space-y-4">
             <AgenticWorkflowPanel
-              workflow={agenticWorkflow}
-              queryAnalysis={agenticQueryAnalysis}
-              retrievalQuality={agenticRetrievalQuality}
-              selfReflection={agenticSelfReflection}
-              hallucinationCheck={agenticHallucinationCheck}
+              workflow={agenticWorkflow ?? undefined}
+              queryAnalysis={agenticQueryAnalysis ?? undefined}
+              retrievalQuality={agenticRetrievalQuality ?? undefined}
+              selfReflection={agenticSelfReflection ?? undefined}
+              hallucinationCheck={agenticHallucinationCheck ?? undefined}
               isLoading={isLoading}
               className="shadow-lg"
             />
@@ -1352,9 +1626,9 @@ export default function HomePage() {
             {agenticWorkflow?.steps && agenticWorkflow.steps.length > 0 && (
               <LangSmithTraceViewer
                 workflowSteps={agenticWorkflow.steps}
-                queryAnalysis={agenticQueryAnalysis}
-                retrievalGrade={agenticRetrievalGrade}
-                debugInfo={agenticDebugInfo}
+                queryAnalysis={agenticQueryAnalysis ?? undefined}
+                retrievalGrade={agenticRetrievalGrade ?? undefined}
+                debugInfo={agenticDebugInfo ?? undefined}
                 totalDuration={agenticWorkflow.totalDuration}
                 defaultExpanded={false}
                 className="shadow-lg"
@@ -1367,11 +1641,11 @@ export default function HomePage() {
         {storageBackend === 'milvus' && !vectorBackendDisabled && useAdaptiveEntityRAG && showAdaptiveEntityPanel && (
           <div className="mb-6">
             <AdaptiveEntityWorkflowPanel
-              workflow={adaptiveEntityWorkflow}
-              queryAnalysis={adaptiveEntityQueryAnalysis}
-              entityValidation={adaptiveEntityValidation}
-              routingDecision={adaptiveEntityRoutingDecision}
-              retrievalDetails={adaptiveEntityRetrievalDetails}
+              workflow={adaptiveEntityWorkflow ?? undefined}
+              queryAnalysis={adaptiveEntityQueryAnalysis ?? undefined}
+              entityValidation={adaptiveEntityValidation ?? undefined}
+              routingDecision={adaptiveEntityRoutingDecision ?? undefined}
+              retrievalDetails={adaptiveEntityRetrievalDetails ?? undefined}
               isLoading={isLoading}
               className="shadow-lg"
               defaultExpanded={false}
@@ -1382,7 +1656,7 @@ export default function HomePage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* 主聊天区域 */}
-          <div className="lg:col-span-2">
+          <div className="min-w-0 lg:col-span-2">
             <div className="bg-white rounded-lg shadow-sm border">
               {/* 聊天头部 */}
               <div className="border-b px-6 py-4">
@@ -1391,7 +1665,7 @@ export default function HomePage() {
               </div>
 
               {/* 聊天消息区域 */}
-              <div className="h-96 overflow-y-auto p-6 space-y-4">
+              <ResizableChatArea>
                 {messages.length === 0 ? (
                   <div className="text-center text-gray-500 text-sm">
                     <i className={`fas ${vectorBackendDisabled ? 'fa-pause-circle text-amber-500' : 'fa-comments'} text-2xl mb-2`}></i>
@@ -1411,8 +1685,19 @@ export default function HomePage() {
                       citationPartition={citationPartition}
                       citationAccessStatus={citationAccessStatus}
                       citationClockOffsetMs={citationClockOffsetMs}
+                      onRetry={message.id === latestUserMessageId && message.type === 'user' && message.retryStatus
+                        ? () => handleSendQuestion(message.content, message.id, true) : undefined}
+                      retryDisabled={isLoading}
+                      isRetrying={message.retryStatus === 'retrying'}
                     />
                   ))
+                )}
+
+                {isLoading && answerDraft && (
+                  <section aria-label="正在生成的回答" aria-busy="true" className="max-w-[85%] rounded-xl border border-slate-700/50 bg-slate-800/80 p-4">
+                    <p className="mb-2 text-sm text-slate-400">正在生成，完成后保存</p>
+                    <p className="whitespace-pre-wrap break-words text-slate-100">{answerDraft}</p>
+                  </section>
                 )}
 
                 {isLoading && activeProcessing && (
@@ -1437,18 +1722,18 @@ export default function HomePage() {
                   <div className="mt-4 p-4 bg-gradient-to-r from-slate-800/80 to-slate-900/80 rounded-xl border border-slate-700/50">
                     <SuggestedQuestions
                       suggestions={suggestedQuestions.filter(q => q.validated)}
-                      anchor={suggestionAnchor}
-                      timings={suggestionTimings}
+                      anchor={suggestionAnchor ?? undefined}
+                      timings={suggestionTimings ?? undefined}
                       isLoading={false}
                       onQuestionClick={handleSuggestionClick}
                       showDetails={false}
                     />
                   </div>
                 )}
-              </div>
+              </ResizableChatArea>
 
               {/* 输入区域 */}
-              <div className="border-t p-6">
+              <div className="border-t p-4 sm:p-6">
                 {!vectorBackendDisabled && (
                   <ParameterControls
                     topK={topK}
@@ -1482,8 +1767,8 @@ export default function HomePage() {
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div className="space-y-3">
-                    <div className="flex space-x-4">
-                      <div className="flex-1">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+                      <div className="min-w-0 flex-[1_0_100%] sm:flex-1">
                         <input
                           type="text"
                           value={input}
@@ -1759,11 +2044,11 @@ export default function HomePage() {
                 <div>
                   <h3 className="text-lg font-medium text-gray-900">受保护的知识库</h3>
                   <p className="mt-1 text-sm text-gray-500">
-                    {vectorBackendDisabled ? '向量检索已临时关闭' : '文件会直接写入当前 Milvus 语料库'}
+                    {publicationMode ? '文档经过三库验证后统一发布，问答使用当前发布版本' : vectorBackendDisabled ? '向量检索已临时关闭' : '文件会直接写入当前 Milvus 语料库'}
                   </p>
                 </div>
                 <button
-                  onClick={() => { void refreshRuntimeStatus(); }}
+                  onClick={handleRuntimeStatusRefresh}
                   className="rounded-lg p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
                   title="刷新知识库状态"
                   aria-label="刷新知识库状态"
@@ -1773,7 +2058,9 @@ export default function HomePage() {
               </div>
               <div className="space-y-2 p-6 text-sm text-gray-600">
                 <p>
-                  {vectorBackendDisabled
+                  {publicationMode
+                    ? documentCounts ? formatDocumentChunkCounts(documentCounts) : '当前发布目录暂不可用，请刷新状态。'
+                    : vectorBackendDisabled
                     ? '维护模式已启用：不会连接 Milvus 或 Zilliz，也不会写入向量库。'
                     : milvusConnected
                     ? formatDocumentChunkCounts(documentCounts)
@@ -1810,14 +2097,14 @@ export default function HomePage() {
             <SystemInfo
               docCount={storageBackend === 'milvus' ? documentCounts?.searchableChunkCount ?? null : docCount}
               documentCounts={documentCounts}
-              embeddingDim={storageBackend === 'milvus' ? (milvusStats?.embeddingDimension || 0) : embeddingDim}
+              embeddingDim={publicationMode ? embeddingDim : storageBackend === 'milvus' ? (milvusStats?.embeddingDimension || 0) : embeddingDim}
               systemStatus={systemStatus}
               llmModel={llmModel}
               embeddingModel={embeddingModel}
               modelConfig={modelConfig}
               modelReadiness={modelReadiness?.model === llmModel ? modelReadiness : null}
               onRetryModelWarmup={() => setModelWarmupAttempt(attempt => attempt + 1)}
-              onRefresh={() => { void refreshRuntimeStatus(); }}
+              onRefresh={handleRuntimeStatusRefresh}
               onModelChange={handleModelChange}
             />
 

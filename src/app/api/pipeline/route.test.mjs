@@ -197,6 +197,7 @@ const environmentKeys = [
   'RAG_PDF_VISUAL_MODE',
   'RAG_VECTOR_BACKEND',
   'RAG_GRAPH_BACKEND',
+  'RAG_UNIFIED_PUBLICATION_MODE',
 ];
 const originalEnvironment = Object.fromEntries(
   environmentKeys.map(key => [key, process.env[key]])
@@ -267,6 +268,62 @@ test('text ingest reserves one build slot and rejects concurrent ingestion', asy
     assert.equal(getVectorIngestSnapshot().status, 'ready');
     resetVectorIngestStateForTests();
   }
+});
+
+test('active unified publication returns unavailable before starting a legacy text write', async () => {
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  resetPipelineCalls();
+  resetPersistenceCalls();
+  resetGraphBuildCalls();
+  try {
+    const response = await POST(pipelineTextRequest('publication-unavailable-text'));
+    const body = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(body.code, 'PUBLICATION_INGEST_UNAVAILABLE');
+    assert.equal(body.success, false);
+    assert.equal(getPipelineCalls().length, 0);
+    assert.equal(getPersistenceCalls().length, 0);
+    assert.equal(getGraphBuildCalls().length, 0);
+  } finally { delete process.env.RAG_UNIFIED_PUBLICATION_MODE; }
+});
+
+for (const action of ['process-url', 'process-youtube', 'batch-process']) {
+  test(`active unified publication rejects ${action} before legacy processing`, async () => {
+    process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+    resetPipelineCalls();
+    resetPersistenceCalls();
+    resetGraphBuildCalls();
+    try {
+      const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+        method: 'POST', headers: { authorization: 'Bearer pipeline-route-token', 'content-type': 'application/json' },
+        body: JSON.stringify({ action, corpusId: 'corpus-a' }),
+      }));
+      const body = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(body.code, 'PUBLICATION_INGEST_UNAVAILABLE');
+      assert.equal(getPipelineCalls().length, 0);
+      assert.equal(getPersistenceCalls().length, 0);
+      assert.equal(getGraphBuildCalls().length, 0);
+    } finally { delete process.env.RAG_UNIFIED_PUBLICATION_MODE; }
+  });
+}
+
+test('active unified publication returns unavailable before starting a legacy multipart write', async () => {
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  resetPipelineCalls();
+  resetPersistenceCalls();
+  const form = new FormData();
+  form.append('files', new File(['fixture'], 'fixture.txt'));
+  try {
+    const response = await POST(new NextRequest('http://localhost/api/pipeline', {
+      method: 'POST', headers: { authorization: 'Bearer pipeline-route-token', 'x-rag-corpus-id': 'corpus-a', 'content-length': '1024' }, body: form,
+    }));
+    const body = await response.json();
+    assert.equal(response.status, 503);
+    assert.equal(body.code, 'PUBLICATION_INGEST_UNAVAILABLE');
+    assert.equal(getPipelineCalls().length, 0);
+    assert.equal(getPersistenceCalls().length, 0);
+  } finally { delete process.env.RAG_UNIFIED_PUBLICATION_MODE; }
 });
 
 test('text ingest maps invalid embedding output to a stable 502 response', async () => {

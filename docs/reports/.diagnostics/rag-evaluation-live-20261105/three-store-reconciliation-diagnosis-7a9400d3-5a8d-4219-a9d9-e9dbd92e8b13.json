@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "rag-eval-readonly-publication-reconciliation-diagnosis/v1",
+  "startedAt": "2026-11-05T12:16:33.016Z",
+  "readOnly": true,
+  "sandboxId": "372b94728dedfdab252e037f",
+  "tenantId": "publication-demo-tenant",
+  "corpusId": "publication-demo-corpus",
+  "accepted": false,
+  "phase": "completed",
+  "backendMutations": false,
+  "modelsInvoked": false,
+  "before": {
+    "viewDigest": "sha256:242cdec6b1d44567f0789600610aa6b6c5931148a27f1f0a8fdb01a89bddad72",
+    "documentCount": 1,
+    "transactionReadOnly": true
+  },
+  "reconciliation": {
+    "version": 1,
+    "sandboxId": "372b94728dedfdab252e037f",
+    "tenantId": "publication-demo-tenant",
+    "corpusId": "publication-demo-corpus",
+    "readOnly": true,
+    "ok": false,
+    "outcome": "mismatch-or-unavailable",
+    "observedAt": "2026-11-05T12:17:18.350Z",
+    "currentHeads": "unchanged",
+    "documents": [
+      {
+        "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+        "generation": "1",
+        "manifestDigest": "sha256:86a09424fb44a2afc53cb337c954c33e45fa5cde9dbd0cca26a0c252d3f8ebf3",
+        "backends": {
+          "elasticsearch": {
+            "status": "verified",
+            "count": 1,
+            "indexUuid": "8St8IN21Qhui-57VQTa39A",
+            "evidenceDigest": "sha256:e2876975e18cda3ebf8e871dee1d90d1b55f75af4e285922e1d7a69646bc97bd"
+          },
+          "milvus": {
+            "status": "verified",
+            "count": 1,
+            "collectionId": "470222165675086283",
+            "evidenceDigest": "sha256:236cdcf44484df7ace98e7aaafaca50932f942407a7c4b8d637230536464dec4"
+          },
+          "neo4j": {
+            "status": "mismatch-or-unavailable",
+            "diagnostic": {
+              "reason": "Graph seal does not match authoritative source compilation."
+            }
+          }
+        }
+      }
+    ],
+    "guarantee": "Read-window observations under trusted local administrators; not a distributed transaction or a new seal."
+  },
+  "graphPreflight": [
+    {
+      "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+      "snapshotJsonMatches": true,
+      "manifestJsonMatches": true,
+      "graphVersionMatches": true,
+      "manifestDigestMatches": true,
+      "evidenceDigestMatches": true,
+      "snapshotDigestMatches": true,
+      "configurationDigestMatches": false
+    }
+  ],
+  "after": {
+    "viewDigest": "sha256:242cdec6b1d44567f0789600610aa6b6c5931148a27f1f0a8fdb01a89bddad72",
+    "documentCount": 1,
+    "transactionReadOnly": true
+  },
+  "checks": {
+    "nonEmpty": true,
+    "viewDigestStable": true,
+    "headsUnchanged": true,
+    "allThreeBackendsVerified": false,
+    "readOnlyPostgres": true
+  },
+  "method": {
+    "script": "scripts/publication-reconcile.mjs",
+    "sourceSha256": "140fc85b239095b302ddc9a7d59d6369421e593d5963997d6edfa6f5d22e6d6f",
+    "changes": "in-memory import normalization plus boolean graph-preflight and allowlisted error labels; existing script was not edited"
+  },
+  "completedAt": "2026-11-05T12:17:19.944Z"
+}

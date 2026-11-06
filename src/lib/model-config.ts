@@ -33,6 +33,9 @@ import {
 import type { EmbeddingModelConfig, EmbeddingProvider } from './embedding-config';
 import { DEFAULT_RUNTIME_MODELS } from './runtime-config-defaults';
 import { resolveOllamaRuntimeSettings } from './ollama-readiness';
+import { createLangChainTextModelClient } from './models/langchain-text-model';
+import type { TextModelClient } from './models/text-model';
+import { createProviderAdmissionFetch } from './models/provider-admission';
 
 // ==================== 类型定义 ====================
 
@@ -52,6 +55,8 @@ export interface ModelConfig {
   maxTokens?: number;
   /** Per-provider request deadline. Provider-specific options cannot loosen it. */
   requestTimeoutMs?: number;
+  /** Request-owned cancellation for transports that do not forward invoke signals. */
+  requestSignal?: AbortSignal;
   /** Transport retries. Workflow/business retries remain caller-owned. */
   maxRetries?: number;
   /** 模型维度 (仅 embedding 模型) */
@@ -239,14 +244,17 @@ export function resolveModelRequestPolicy(
  */
 export function createModelRequestTimeoutFetch(
   timeoutMs: number,
-  fetchImplementation: typeof fetch = globalThis.fetch
+  fetchImplementation: typeof fetch = globalThis.fetch,
+  requestSignal?: AbortSignal
 ): typeof fetch {
   const policy = resolveModelRequestPolicy({ requestTimeoutMs: timeoutMs });
   return ((input: RequestInfo | URL, init?: RequestInit) => {
     const timeoutSignal = AbortSignal.timeout(policy.timeoutMs);
-    const signal = init?.signal
-      ? AbortSignal.any([init.signal, timeoutSignal])
-      : timeoutSignal;
+    const signals = [timeoutSignal];
+    if (init?.signal) signals.push(init.signal);
+    if (init?.signal === undefined && input instanceof Request) signals.push(input.signal);
+    if (requestSignal) signals.push(requestSignal);
+    const signal = AbortSignal.any(signals);
     return fetchImplementation(input, { ...init, signal });
   }) as typeof fetch;
 }
@@ -526,11 +534,17 @@ export class ModelFactory {
    * @param options 额外配置选项。options.provider 可用于 OpenMAIC per-stage 路由。
    */
   createLLM(modelName?: string, options: Partial<ModelConfig> = {}): BaseChatModel {
+    if (options.maxTokens !== undefined
+      && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > 65_536)) {
+      throw new Error('Model maxTokens must be an integer between 1 and 65536.');
+    }
     const provider = options.provider || this.envConfig.MODEL_PROVIDER;
     const cacheKey = `${provider}:${modelName || 'default'}:${JSON.stringify(options)}`;
 
     // 检查缓存
-    if (this.cache.llm.has(cacheKey)) {
+    // AbortSignal serializes to {}, so request-owned models must never enter
+    // the shared cache or inherit another request's cancellation lifecycle.
+    if (!options.requestSignal && this.cache.llm.has(cacheKey)) {
       return this.cache.llm.get(cacheKey)!;
     }
 
@@ -559,7 +573,7 @@ export class ModelFactory {
         throw new Error(`不支持的模型提供商: ${provider}`);
     }
 
-    this.cache.llm.set(cacheKey, llm);
+    if (!options.requestSignal) this.cache.llm.set(cacheKey, llm);
     return llm;
   }
 
@@ -581,13 +595,17 @@ export class ModelFactory {
 
     return new ChatOllama({
       ...extra,
+      // The common output budget must take precedence over provider extras.
+      ...(options.maxTokens === undefined ? {} : { numPredict: options.maxTokens }),
       baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL,
       model: actualModel,
       temperature: options.temperature ?? 0.7,
       numCtx,
       keepAlive: runtimeSettings.keepAlive,
       maxRetries: 0,
-      fetch: createModelRequestTimeoutFetch(requestPolicy.timeoutMs),
+      fetch: createModelRequestTimeoutFetch(requestPolicy.timeoutMs, createProviderAdmissionFetch(globalThis.fetch, {
+        provider: 'ollama', baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL,
+      }), options.requestSignal),
     });
   }
 
@@ -789,6 +807,7 @@ export class ModelFactory {
       apiKey: options.apiKey,
       baseUrl: options.baseUrl,
       dimension: options.dimension,
+      requestTimeoutMs: options.requestTimeoutMs,
       options: options.options,
     };
 
@@ -1161,6 +1180,11 @@ export function getModelFactory(): ModelFactory {
  */
 export function createLLM(modelName?: string, options?: Partial<ModelConfig>): BaseChatModel {
   return getModelFactory().createLLM(modelName, options);
+}
+
+/** Text-only consumers share the existing model policy without depending on LangChain. */
+export function createTextModelClient(modelName?: string, options?: Partial<ModelConfig>): TextModelClient {
+  return createLangChainTextModelClient(createLLM(modelName, options));
 }
 
 /**

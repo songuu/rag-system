@@ -1,8 +1,10 @@
 import KnowledgeGraphConsole from '@/components/KnowledgeGraphConsole';
 import Link from 'next/link';
 import { isKnowledgeGraphConsoleAvailable } from '@/lib/knowledge-graph/http';
+import PublishedDocumentGraph from '@/components/PublishedDocumentGraph';
 
 export default function KnowledgeGraphPage() {
+  if (process.env.RAG_UNIFIED_PUBLICATION_MODE?.trim().toLowerCase() === 'active') return <PublishedDocumentGraph />;
   if (!isKnowledgeGraphConsoleAvailable({ NODE_ENV: process.env.NODE_ENV })) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 text-slate-100">

@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { executeReasoningRAG, ReasoningRAGOutput } from '@/lib/reasoning-rag';
 import { MilvusConfig } from '@/lib/milvus-client';
 import { getReasoningRAGConfig, getReasoningRAGConfigSummary } from '@/lib/milvus-config';
@@ -78,6 +79,8 @@ export interface ReasoningRAGRequest {
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   const startTime = Date.now();
   
   try {
@@ -170,6 +173,8 @@ export async function POST(request: NextRequest) {
 export async function GET(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   const searchParams = request.nextUrl.searchParams;
   const action = searchParams.get('action');
   

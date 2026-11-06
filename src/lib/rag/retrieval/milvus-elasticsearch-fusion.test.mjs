@@ -77,3 +77,21 @@ function evidence(id, score, lexical = false) {
   };
 }
 
+
+test('fusion preserves verified lexical highlights for overlapping evidence', async () => {
+  const dense = evidence('a', 1);
+  const lexical = evidence('a', 2, true);
+  lexical.metadata.lexicalHighlights = { content: [{ start: 0, end: 1 }] };
+  const result = await retrieveMilvusElasticsearch({ mode: 'active', topK: 1, laneId: 'search', async retrieveDense() { return [dense]; }, async retrieveLexical() { return [lexical]; } });
+  assert.deepEqual(result.evidence[0].metadata.lexicalHighlights, lexical.metadata.lexicalHighlights);
+});
+
+test('fusion rejects mismatched text or source before transferring lexical ranges', async () => {
+  for (const field of ['content', 'source']) {
+    const dense = evidence('a', 1);
+    const lexical = evidence('a', 2, true);
+    lexical[field] += ' changed';
+    lexical.metadata.lexicalHighlights = { content: [{ start: 0, end: 1 }] };
+    await assert.rejects(retrieveMilvusElasticsearch({ mode: 'active', topK: 1, laneId: 'search', async retrieveDense() { return [dense]; }, async retrieveLexical() { return [lexical]; } }), error => error.code === 'ELASTICSEARCH_INTEGRITY_VIOLATION');
+  }
+});

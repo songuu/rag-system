@@ -107,6 +107,72 @@ test('local graph build reuses an existing staged snapshot without another model
   assert.equal(externalCalls, 0);
 });
 
+test('regeneration preserves its graph generation while reading the original document', async () => {
+  const identity = { ...documentIdentity(), graphGeneration: '5bc631c8-4c86-4b87-af1f-055321563402' };
+  const graphVersion = createMiroFishGraphVersion(identity);
+  let saved;
+  const handler = createLocalGraphBuildHandler({
+    milvus: { async queryDocumentRows() { return [
+      milvusRow(identity, 0, 2, 'Alpha Beta', 0, 10, 'Alpha Beta Gamma'),
+      milvusRow(identity, 1, 2, 'Beta Gamma', 6, 16, 'Alpha Beta Gamma'),
+    ]; } },
+    commandStore: { async getCompatibilityDescriptor() { return null; } },
+    artifactStore: { async put(artifact) { saved = artifact; return {
+      identity, artifactDigest: `sha256:${'a'.repeat(64)}`,
+    }; } },
+    async extractGraph(text, documentId) { return graphData(documentId, text); },
+  });
+  await handler(buildJob(identity, graphVersion));
+  assert.equal(saved.graphGeneration, identity.graphGeneration);
+  assert.equal(saved.documentVersion, identity.documentVersion);
+});
+
+test('local graph build persists its segment checkpoints and renews ownership before staging', async () => {
+  const identity = documentIdentity();
+  const graphVersion = createMiroFishGraphVersion(identity);
+  const events = [];
+  const handler = createLocalGraphBuildHandler({
+    milvus: { async queryDocumentRows() { return [
+      milvusRow(identity, 0, 2, 'Alpha Beta', 0, 10, 'Alpha Beta Gamma'),
+      milvusRow(identity, 1, 2, 'Beta Gamma', 6, 16, 'Alpha Beta Gamma'),
+    ]; } },
+    commandStore: { async getCompatibilityDescriptor() { return null; } },
+    checkpointStore: {
+      async saveExtractionCheckpoint(input) { events.push(['save', input]); },
+      async renewExtractionLease(input) { events.push(['renew', input]); },
+    },
+    leaseMs: 60_000,
+    artifactStore: { async put() { events.push(['stage']); return { identity, artifactDigest: `sha256:${'a'.repeat(64)}` }; } },
+    async extractGraph(text, documentId, options) {
+      await options.checkpoint.save({ key: '0:0:5', sourceDigest: `sha256:${'b'.repeat(64)}`, progress: 0.1 }, { kind: 'split' });
+      return graphData(documentId, text);
+    },
+  });
+  await handler(buildJob(identity, graphVersion));
+  assert.deepEqual(events.map(event => event[0]), ['save', 'renew', 'stage']);
+  assert.equal(events[0][1].graphVersion, graphVersion);
+  assert.equal(events[0][1].leaseToken, buildJob(identity, graphVersion).leaseToken);
+  assert.equal(events[1][1].leaseMs, 60_000);
+});
+
+test('a cancelled lease signal prevents graph staging after extraction', async () => {
+  const identity = documentIdentity();
+  const graphVersion = createMiroFishGraphVersion(identity);
+  const controller = new AbortController();
+  let staged = false;
+  const handler = createLocalGraphBuildHandler({
+    milvus: { async queryDocumentRows() { return [
+      milvusRow(identity, 0, 2, 'Alpha Beta', 0, 10, 'Alpha Beta Gamma'),
+      milvusRow(identity, 1, 2, 'Beta Gamma', 6, 16, 'Alpha Beta Gamma'),
+    ]; } },
+    commandStore: { async getCompatibilityDescriptor() { return null; } },
+    artifactStore: { async put() { staged = true; throw new Error('must not stage'); } },
+    async extractGraph(text, documentId) { controller.abort(new Error('lease lost')); return graphData(documentId, text); },
+  });
+  await assert.rejects(handler(buildJob(identity, graphVersion), controller.signal), /lease lost/);
+  assert.equal(staged, false);
+});
+
 test('local graph build fails closed on incomplete or misaligned Milvus inventories', async () => {
   const identity = documentIdentity();
   const graphVersion = createMiroFishGraphVersion(identity);

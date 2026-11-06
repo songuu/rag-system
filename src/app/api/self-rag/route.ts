@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createModelRequestTimeoutFetch } from '@/lib/model-config';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { getRagSystem } from '@/lib/rag-instance';
 import type { SimilaritySearchResult } from '@/lib/rag-system';
 
@@ -679,6 +680,8 @@ async function processSelfRAG(query: string, options: {
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     const body = await request.json();
     const { query, options = {} } = body;

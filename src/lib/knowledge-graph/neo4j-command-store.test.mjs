@@ -423,7 +423,7 @@ test('reads compatibility descriptors without loading graph payloads or issuing 
     { tenantId: 'tenant-a', corpusId: 'corpus-a', graphVersion: 'graph-v1' },
     scope
   );
-  const listed = await store.listCompatibilityDescriptors(scope, { limit: 20 });
+  const listed = await store.listCompatibilityDescriptors(scope, { limit: 20, documentId: 'doc-1', documentVersion: 'doc-v1', trustLevel: 'reviewed' });
 
   assert.deepEqual(one?.document, document);
   assert.equal(listed.length, 1);
@@ -437,6 +437,10 @@ test('reads compatibility descriptors without loading graph payloads or issuing 
   const listCall = fake.calls[1];
   assert.deepEqual(listCall.parameters.allowedTrustLevels, ['external', 'reviewed', 'trusted']);
   assert.equal(listCall.parameters.availability, 'available');
+  assert.equal(listCall.parameters.documentId, 'doc-1');
+  assert.equal(listCall.parameters.documentVersion, 'doc-v1');
+  assert.equal(listCall.parameters.trustLevel, 'reviewed');
+  assert.ok(listCall.cypher.indexOf('document.documentId = $documentId') < listCall.cypher.indexOf('LIMIT toInteger($limit)'));
   assert.equal(listCall.parameters.now, '2026-09-07T01:00:00.000Z');
   assert.match(listCall.cypher, /document\.trustLevel IN \$allowedTrustLevels/);
   assert.match(listCall.cypher, /snapshot\.expiresAt > \$now/);

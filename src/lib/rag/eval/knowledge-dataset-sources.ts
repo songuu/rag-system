@@ -145,7 +145,9 @@ function validateScope(scope: RagRetrievalScope): RagRetrievalScope {
 }
 
 function assertAvailableDocument(document: DocumentCatalogItem, scope: RagRetrievalScope): void {
-  if (!document.enabled || document.lifecycle !== 'active' || document.milvusStatus !== 'ready'
+  // An unknown catalog status is not evidence of a failed index. The strong,
+  // scoped read below checks the selected rows and their exact revision.
+  if (!document.enabled || document.lifecycle !== 'active' || !['ready', 'unknown'].includes(document.milvusStatus)
     || !Number.isSafeInteger(document.chunkCount) || document.chunkCount < 1 || document.chunkCount > MAX_DOCUMENT_CHUNKS
     || !document.documentVersion?.trim() || ['unknown', 'unversioned'].includes(document.documentVersion)
     || !document.documentId?.trim() || !document.name?.trim()

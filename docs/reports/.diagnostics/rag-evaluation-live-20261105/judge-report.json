@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "rag-live-judge-smoke/v1",
+  "startedAt": "2026-11-05T12:02:37.058Z",
+  "configuration": {
+    "implementationSha256": "030eccbfc93c492bae17b0e4136802004cf3115d5d4e33e3aff8616a83d56655",
+    "promptSha256": "c1e21840240a1020584723509042b4917efcd72b4bb57965539591d902c23992",
+    "model": {
+      "provider": "ollama",
+      "name": "llama3.1",
+      "revision": "sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e",
+      "parameters": {
+        "temperature": 0.7,
+        "numCtx": 8192,
+        "keepAlive": "15m",
+        "maxRetries": 0,
+        "providerVersion": "0.40.14",
+        "environmentSha256": "885038a39a4903decfd688ae974b2e44076c4d638be870efe6555f4e84c13852",
+        "routingModel": {
+          "name": "qwen2.5:0.5b",
+          "revision": "sha256:a8b0c51577010a279d933d14c2a8ab4b268079d44c5c8830c0a93900f1827c67"
+        },
+        "evalJudge": {
+          "name": "llama3.1",
+          "revision": "sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e"
+        }
+      }
+    },
+    "embedding": {
+      "provider": "ollama",
+      "name": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest",
+      "revision": "sha256:80f35a7586f4a4b83f90d317d4f93fa2dba8a8af257f1d0b3b7eacd6f7caa9a4",
+      "dimensions": 768
+    },
+    "index": {
+      "id": "sha256:3480c66e18fa1da2cf5451d359716e70f97346523eff2cc6cc7e679378fccd6d",
+      "revision": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184"
+    },
+    "retrieval": {
+      "topK": 3,
+      "similarityThreshold": 0
+    },
+    "rerank": {
+      "enabled": false,
+      "provider": "none",
+      "model": "none",
+      "revision": "none",
+      "topN": 3
+    },
+    "context": {
+      "maxTokens": 4000
+    },
+    "cache": {
+      "mode": "disabled",
+      "identity": "none"
+    }
+  },
+  "rubricVersion": "rag-eval-semantic-rubric/v2",
+  "judgeCalibrated": false,
+  "humanReviewed": false,
+  "productionQualityMeasured": false,
+  "cases": [
+    {
+      "id": "publication-atomic-switch",
+      "status": "completed",
+      "elapsedMs": 2356.1012999999994,
+      "semantic": {
+        "status": "measured",
+        "scores": {
+          "factualCorrectness": null,
+          "relevance": 1,
+          "keyPointCoverage": null,
+          "citationEntailment": 1,
+          "faithfulness": 1,
+          "businessCorrectness": null
+        },
+        "claims": [
+          {
+            "claim": "负责原子切换已发布版本的数据库是 PostgreSQL。",
+            "evidenceIds": [
+              "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080"
+            ],
+            "supported": true
+          }
+        ],
+        "observedDisposition": "answer"
+      }
+    },
+    {
+      "id": "publication-no-refund",
+      "status": "completed",
+      "elapsedMs": 1052.3964999999998,
+      "semantic": {
+        "status": "measured",
+        "scores": {
+          "factualCorrectness": null,
+          "relevance": 1,
+          "keyPointCoverage": null,
+          "citationEntailment": null,
+          "faithfulness": null,
+          "businessCorrectness": null
+        },
+        "claims": [
+          {
+            "claim": "无法确认关于退款金额和退款期限的任何信息.",
+            "evidenceIds": [
+              "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080"
+            ],
+            "supported": true
+          }
+        ],
+        "observedDisposition": "answer"
+      }
+    }
+  ],
+  "notes": [
+    "No reviewed reference facts or business truth supplied: factual correctness, key point coverage and business correctness remain unmeasured.",
+    "The judge and answer generator share a model; these are interface/grounding smoke checks, not independent human validation."
+  ],
+  "configurationUnchanged": true,
+  "completedAt": "2026-11-05T12:02:40.508Z"
+}

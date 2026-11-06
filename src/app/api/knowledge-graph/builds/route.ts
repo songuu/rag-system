@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { KnowledgeGraphError } from '@/lib/knowledge-graph/contracts';
 import {
   acquireKnowledgeGraphBuildPermit,
@@ -35,7 +36,12 @@ export async function POST(request: Request) {
       requestedCorpusId: request.headers.get('x-rag-corpus-id')?.trim() || undefined,
     });
     requestId = security.requestId;
+    const block = getUnifiedPublicationWriteBlock();
+    if (block) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', block.message);
     const body = await readJsonObjectWithLimit(request, BODY_LIMIT);
+    if (body.regenerate !== undefined && typeof body.regenerate !== 'boolean') {
+      throw new RequestValidationError('INVALID_REGENERATE', 'regenerate must be a boolean.');
+    }
     const scope = createRetrievalScope({
       tenantId: security.tenantId,
       corpusId: security.corpusId,
@@ -66,19 +72,25 @@ export async function POST(request: Request) {
         'Vectorized document source not found in PostgreSQL.'
       );
     }
-    const job = await store.enqueueDocumentBuild(
-      scope,
-      identity,
-      {
-        ...metadata,
-        trigger: 'manual-console',
-        postgresAssetId: source.assetId,
-        actorId: security.actorId,
-        chunkCount: source.chunkCount,
-        sourceName: source.sourceName,
-      },
-      { maxPendingJobs }
-    );
+    if (source.trustLevel !== identity.trustLevel) {
+      throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_NOT_FOUND', 'Vectorized document source not found in PostgreSQL.');
+    }
+    const job = body.resumeJobId !== undefined
+      ? await store.resumeFailedDocumentBuild(scope, identity, requiredJobId(body.resumeJobId), { maxPendingJobs })
+      : await store.enqueueDocumentBuild(
+          scope,
+          identity,
+          {
+            ...metadata,
+            trigger: 'manual-console',
+            postgresAssetId: source.assetId,
+            actorId: security.actorId,
+            chunkCount: source.chunkCount,
+            sourceName: source.sourceName,
+          },
+          // New builds receive a distinct immutable version; recovery reuses its existing job.
+          { maxPendingJobs, regenerate: true }
+        );
     return NextResponse.json({
       success: true,
       data: projectKnowledgeGraphBuildJobForHttp(job),
@@ -97,6 +109,8 @@ export async function GET(request: Request) {
       requestedCorpusId: request.headers.get('x-rag-corpus-id')?.trim() || undefined,
     });
     requestId = security.requestId;
+    const block = getUnifiedPublicationWriteBlock();
+    if (block) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', block.message);
     const scope = createRetrievalScope({
       tenantId: security.tenantId,
       corpusId: security.corpusId,
@@ -107,8 +121,28 @@ export async function GET(request: Request) {
     const store = requireBuildStore();
     const requestedJobId = searchParams.get('jobId');
     if (!requestedJobId) {
+      const requestedDocumentId = searchParams.get('documentId');
+      const requestedDocumentVersion = searchParams.get('documentVersion');
+      const requestedTrustLevel = searchParams.get('trustLevel');
+      if (requestedDocumentId !== null || requestedDocumentVersion !== null || requestedTrustLevel !== null) {
+        const identity = {
+          documentId: requiredString(requestedDocumentId, 'documentId'),
+          documentVersion: requiredString(requestedDocumentVersion, 'documentVersion'),
+          trustLevel: requiredTrustLevel(requestedTrustLevel),
+        };
+        if (!scope.allowedTrustLevels.includes(identity.trustLevel) || !await store.findDocumentSource(scope, identity)) {
+          throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_NOT_FOUND', 'Vectorized document source not found in PostgreSQL.');
+        }
+        const job = await store.findLatestDocumentBuild(scope, identity);
+        return NextResponse.json({
+          success: true,
+          data: { job: job ? projectKnowledgeGraphBuildJobForHttp(job) : null },
+          requestId,
+        });
+      }
       const limit = boundedInteger(searchParams.get('limit'), 'limit', 50, 1, 100);
-      const sources = await store.listDocumentSources(scope, limit);
+      const sources = (await store.listDocumentSources(scope, limit))
+        .filter(source => scope.allowedTrustLevels.includes(source.trustLevel));
       return NextResponse.json({
         success: true,
         data: { sources: sources.map(projectKnowledgeGraphBuildSourceForHttp) },
@@ -138,6 +172,7 @@ function projectKnowledgeGraphBuildSourceForHttp(source: KnowledgeGraphBuildSour
     sourceName: source.sourceName,
     contentType: source.contentType,
     chunkCount: source.chunkCount,
+    trustLevel: source.trustLevel,
     updatedAt: source.updatedAt,
   };
 }

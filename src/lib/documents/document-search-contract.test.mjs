@@ -87,3 +87,12 @@ test('document evidence is exposed as a bounded user-facing result', () => {
   });
   assert.equal('metadata' in result, false);
 });
+
+test('highlighted snippets retain matches beyond the initial excerpt', () => {
+  const content = '前'.repeat(1000) + '关键词' + '后'.repeat(1000);
+  const [item] = presentDocumentSearchEvidence([{ id: 'a', documentId: 'd', documentVersion: 'v', content, source: '关键词.pdf', trustLevel: 'reviewed', metadata: { lexicalMatch: true, lexicalHighlights: { content: [{ start: 1000, end: 1003 }], source: [{ start: 0, end: 3 }] } } }]);
+  assert.ok(item.snippet.length <= 900);
+  const range = item.highlights.content[0];
+  assert.equal(item.snippet.slice(range.start, range.end), '关键词');
+  assert.equal(item.title.slice(item.highlights.source[0].start, item.highlights.source[0].end), '关键词');
+});

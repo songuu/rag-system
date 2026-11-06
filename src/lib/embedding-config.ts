@@ -20,6 +20,8 @@ import { OpenAIEmbeddings } from '@langchain/openai';
 import { Embeddings } from '@langchain/core/embeddings';
 import { getActiveEmbeddingIndex } from './embedding-index-state';
 import { OLLAMA_EMBEDDING_NUM_CTX, resolveOllamaRuntimeSettings } from './ollama-readiness';
+import { createProviderAdmissionFetch } from './models/provider-admission';
+import { getAskExecutionSignal } from './rag/core/provider-usage-observer';
 
 // ==================== SiliconFlow 自定义 Embedding 类 ====================
 
@@ -140,6 +142,8 @@ export interface EmbeddingModelConfig {
   dimension: number;
   maxTokens?: number;
   batchSize?: number;
+  /** Per-client Ollama transport budget; ordinary clients keep the environment default. */
+  requestTimeoutMs?: number;
   options?: Record<string, unknown>;
 }
 
@@ -381,10 +385,33 @@ export class EmbeddingFactory {
     console.log(`[EmbeddingFactory] 创建 Ollama Embedding: ${actualModel}`);
     
     const requestOptions = options.options?.requestOptions;
+    const providerFetch = createProviderAdmissionFetch(
+      typeof options.options?.fetch === 'function' ? options.options.fetch as typeof fetch : globalThis.fetch,
+      { provider: 'ollama', baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL }
+    );
+    const boundedFetch: typeof fetch = (input, init) => {
+      const timeoutMs = options.requestTimeoutMs ?? Number(process.env.OLLAMA_EMBEDDING_REQUEST_TIMEOUT_MS ?? 30_000);
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300_000) {
+        throw new Error('Ollama embedding request timeout must be an integer between 1000 and 300000 ms.');
+      }
+      // This embedding instance is cached. Resolve the Ask signal at call time,
+      // otherwise cancelling one request could poison another request's client.
+      const requestSignal = getAskExecutionSignal();
+      const inputSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+      const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs),
+        ...(requestSignal ? [requestSignal] : []), ...(inputSignal ? [inputSignal] : [])]);
+      signal.throwIfAborted();
+      return providerFetch(input, { ...init, signal });
+    };
     return new OllamaEmbeddings({
       baseUrl: options.baseUrl || this.envConfig.OLLAMA_BASE_URL,
       model: actualModel,
       ...options.options,
+      fetch: boundedFetch,
+      maxRetries: 0,
+      // Admission owns concurrency. The SDK's cached single-slot queue resumes
+      // later requests in the first request's async context (and cancellation).
+      maxConcurrency: Infinity,
       keepAlive: resolveOllamaRuntimeSettings().keepAlive,
       // Match preloading so a short query never allocates the server's huge default KV cache.
       requestOptions: {

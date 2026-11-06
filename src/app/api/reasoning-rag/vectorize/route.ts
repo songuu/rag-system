@@ -6,6 +6,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import { readdir, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
@@ -147,6 +148,8 @@ function splitTextIntoChunks(
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     // 获取 Reasoning RAG 配置
     const ragConfig = getConfig();
@@ -383,6 +386,8 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     // 获取 Reasoning RAG 配置
     const ragConfig = getConfig();
@@ -440,6 +445,8 @@ export async function GET() {
 export async function DELETE() {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     // 获取 Reasoning RAG 配置
     const ragConfig = getConfig();

@@ -9,6 +9,7 @@
  */
 
 import { ChatPromptTemplate } from "@langchain/core/prompts";
+import { assertUnifiedPublicationLegacyWriteAllowed } from './security/unified-publication-write-guard';
 import { StringOutputParser } from "@langchain/core/output_parsers";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Embeddings } from "@langchain/core/embeddings";
@@ -94,6 +95,7 @@ export class MilvusRAGSystem {
    * 初始化系统
    */
   async initialize(): Promise<void> {
+    if (this.config.storageBackend === 'milvus') assertUnifiedPublicationLegacyWriteAllowed();
     if (this.isInitialized) return;
 
     console.log('[MilvusRAG] Initializing with backend:', this.config.storageBackend);
@@ -121,6 +123,7 @@ export class MilvusRAGSystem {
    * 添加文档
    */
   async addDocuments(documents: Array<{ content: string; metadata?: Record<string, unknown> }>): Promise<string[]> {
+    if (this.config.storageBackend === 'milvus') assertUnifiedPublicationLegacyWriteAllowed();
     await this.ensureInitialized();
 
     const ids: string[] = [];
@@ -130,6 +133,7 @@ export class MilvusRAGSystem {
       const embedding = await this.embeddings.embedQuery(doc.content);
 
       if (this.milvus) {
+        assertUnifiedPublicationLegacyWriteAllowed();
         await this.milvus.insertDocuments([{
           id,
           content: doc.content,
@@ -251,6 +255,7 @@ export class MilvusRAGSystem {
    */
   async clear(): Promise<void> {
     if (this.milvus) {
+      assertUnifiedPublicationLegacyWriteAllowed();
       await this.milvus.clearCollection();
     }
   }

@@ -39,6 +39,8 @@ services:
     command: ["node", "graph-control-worker.cjs"]
     environment:
       NODE_ENV: production
+      # Identifies the same index when the host and container use different Milvus addresses.
+      RAG_EMBEDDING_INDEX_IDENTITY_ADDRESS: ${RAG_EMBEDDING_INDEX_IDENTITY_ADDRESS:-}
       POSTGRES_DB: ""
       POSTGRES_USER: ""
       POSTGRES_PASSWORD: ""

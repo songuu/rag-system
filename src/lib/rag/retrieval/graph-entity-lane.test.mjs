@@ -325,6 +325,7 @@ test('handler honors an already-aborted request', async () => {
 test('handler delegates to a graph retrieval port and forwards dense passage seeds', async () => {
   let observed;
   const handler = createGraphEntityLaneHandler({
+    readSourceAuthority: async () => 'stable',
     retrievalPort: {
       retriever: 'neo4j-knowledge-graph-v1',
       async retrieve(input) {
@@ -381,8 +382,40 @@ test('handler delegates to a graph retrieval port and forwards dense passage see
   assert.equal(result.metadata.graphBackend, 'neo4j-knowledge-graph-v1');
 });
 
+test('handler rejects graph evidence when its document is revoked while retrieving', async () => {
+  let authorityReads = 0;
+  let retrievals = 0;
+  const handler = createGraphEntityLaneHandler({
+    readSourceAuthority: async () => ++authorityReads === 1 ? 'before' : null,
+    retrievalPort: {
+      retriever: 'neo4j-knowledge-graph-v1',
+      async retrieve() {
+        retrievals++;
+        return { evidence: [], stopReason: 'sufficient', diagnostics: {} };
+      },
+    },
+  });
+  await assert.rejects(handler.execute(createContext()), error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+  assert.equal(retrievals, 1);
+});
+
+test('active graph lane rejects evidence if publication changes during retrieval', async () => {
+  let revision = 1;
+  const handler = createGraphEntityLaneHandler({
+    store: { async getActive() { return { identity, revision }; } },
+    requireActivePointer: true,
+    readSourceAuthority: async () => 'stable',
+    retrievalPort: {
+      retriever: 'neo4j-knowledge-graph-v1',
+      async retrieve() { revision++; return { evidence: [], stopReason: 'sufficient', diagnostics: {} }; },
+    },
+  });
+  await assert.rejects(handler.execute(createContext()), error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+});
+
 test('handler fails closed when a graph retrieval port returns cross-scope evidence', async () => {
   const handler = createGraphEntityLaneHandler({
+    readSourceAuthority: async () => 'stable',
     retrievalPort: {
       retriever: 'neo4j-knowledge-graph-v1',
       async retrieve(input) {
@@ -430,6 +463,7 @@ test('handler requires every graph evidence field to match the pinned graph iden
 
   for (const [field, mutation] of mutations) {
     const handler = createGraphEntityLaneHandler({
+      readSourceAuthority: async () => 'stable',
       retrievalPort: {
         retriever: 'neo4j-knowledge-graph-v1',
         async retrieve() {
@@ -455,6 +489,7 @@ test('handler requires every graph evidence field to match the pinned graph iden
 
 test('handler degrades optional graph retrieval when Neo4j is unavailable', async () => {
   const handler = createGraphEntityLaneHandler({
+    readSourceAuthority: async () => 'stable',
     retrievalPort: {
       retriever: 'neo4j-knowledge-graph-v1',
       async retrieve() {

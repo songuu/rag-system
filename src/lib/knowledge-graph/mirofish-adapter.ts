@@ -96,7 +96,28 @@ export function createMiroFishGraphVersion(
     documentVersion: identity.documentVersion,
     trustLevel: identity.trustLevel,
   });
-  return `mirofish:${createHash('sha256').update(serializedIdentity).digest('hex')}`;
+  const base = `mirofish:${createHash('sha256').update(serializedIdentity).digest('hex')}`;
+  if (identity.graphGeneration === undefined) return base;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(identity.graphGeneration)) {
+    throw new Error('Graph generation must be a lowercase UUID v4.');
+  }
+  return `${base}:${identity.graphGeneration}`;
+}
+
+/** Restores generation only after checking that the version belongs to this document. */
+export function identityForMiroFishGraphVersion(
+  identity: MiroFishGraphArtifactIdentity,
+  graphVersion: string
+): MiroFishGraphArtifactIdentity | null {
+  const { graphGeneration: _generation, ...baseIdentity } = identity;
+  const base = createMiroFishGraphVersion(baseIdentity);
+  if (graphVersion === base) return baseIdentity;
+  if (!graphVersion.startsWith(`${base}:`)) return null;
+  const graphGeneration = graphVersion.slice(base.length + 1);
+  try {
+    const result = { ...baseIdentity, graphGeneration };
+    return createMiroFishGraphVersion(result) === graphVersion ? result : null;
+  } catch { return null; }
 }
 
 export function mapKnowledgeGraphSnapshotToMiroFishArtifact(

@@ -1,88 +1,45 @@
-/**
- * 单个报告 API
- *
- * GET /api/mirofish/report/[id] - 获取报告详情
- */
-
 import { NextRequest, NextResponse } from 'next/server';
-import { reportStore } from '../route';
-
-interface RouteParams {
-  params: Promise<{ id: string }>;
-}
-
+import { getMiroFishReportRuntime } from '@/lib/mirofish/report-runtime';
+import { resolveMiroFishRequestScope } from '@/lib/mirofish/request-scope';
+import { MiroFishReportError, publicReportId } from '@/lib/mirofish/report-contracts';
+import { reportHttpError, reportInteger } from '@/lib/mirofish/report-http';
+interface RouteParams { params: Promise<{ id: string }> }
 export async function GET(request: NextRequest, { params }: RouteParams) {
-  const { id } = await params;
-  const { searchParams } = new URL(request.url);
-  const action = searchParams.get('action');
-
   try {
-    const report = reportStore.get(id);
-
-    if (!report) {
-      return NextResponse.json(
-        { success: false, error: '报告不存在' },
-        { status: 404 }
-      );
-    }
-
-    // 获取进度/状态
-    if (action === 'progress') {
-      return NextResponse.json({
-        success: true,
-        status: report.status,
-        sections_count: report.sections.length,
-      });
-    }
-
-    // 获取指定章节
+    const { scope } = await resolveMiroFishRequestScope(request);
+    const runtime = await getMiroFishReportRuntime(scope);
+    const report = await runtime.getAuthorized(publicReportId((await params).id));
+    if (!report) throw new MiroFishReportError('MIROFISH_REPORT_NOT_FOUND', '报告不存在。', 404);
+    const search = request.nextUrl.searchParams;
+    const action = search.get('action');
+    if (action === 'progress') return NextResponse.json({ success: true, status: report.status, stage: report.stage,
+      progress: report.progress, current_section: report.current_section, outline: report.outline, sections_count: report.sections.length, recoverable: report.recoverable, error_code: report.error_code });
+    if (action === 'sections') return NextResponse.json({ success: true, sections: report.sections });
     if (action === 'section') {
-      const index = parseInt(searchParams.get('index') || '0');
-      const section = report.sections[index];
-      if (!section) {
-        return NextResponse.json(
-          { success: false, error: '章节不存在' },
-          { status: 404 }
-        );
-      }
+      const section = report.sections[reportInteger(search.get('index'), 0, 7)];
+      if (!section) throw new MiroFishReportError('MIROFISH_REPORT_SECTION_NOT_FOUND', '章节尚未生成。', 404);
       return NextResponse.json({ success: true, section });
     }
-
-    // 下载 Markdown
+    if (['agent-log', 'console-log', 'agent-log-stream', 'console-log-stream'].includes(action ?? '')) {
+      const from = reportInteger(search.get('from_line'), 0, Number.MAX_SAFE_INTEGER);
+      const events = report.events.filter(event => event.sequence > from);
+      const result = { success: true, logs: action?.startsWith('console') ? events.map(event => '[' + event.timestamp + '] ' + event.message) : events,
+        total_lines: report.event_count, from_line: from, first_available_line: report.events[0]?.sequence ?? 0, has_more: false };
+      return NextResponse.json(result, action?.endsWith('stream') ? { headers: { 'Content-Disposition': 'attachment; filename="report-log.json"' } } : undefined);
+    }
     if (action === 'download') {
-      const markdown = generateMarkdown(report);
-      const safeName = (report.title || 'report').replace(/[^\w\s\u4e00-\u9fff-]/g, '').trim().substring(0, 100) || 'report';
-      return new Response(markdown, {
-        headers: {
-          'Content-Type': 'text/markdown',
-          'Content-Disposition': `attachment; filename="${safeName}.md"`,
-        },
-      });
+      if (report.status !== 'completed') throw new MiroFishReportError('MIROFISH_REPORT_NOT_READY', '报告尚未生成完成。');
+      const name = encodeURIComponent((report.title || 'report').replace(/[\r\n]/g, '').slice(0, 100));
+      return new Response(report.markdown_content, { headers: { 'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="report.md"; filename*=UTF-8\'\'' + name + '.md' } });
     }
-
     return NextResponse.json({ success: true, report });
-  } catch (error) {
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '获取报告失败' },
-      { status: 500 }
-    );
-  }
+  } catch (error) { return reportHttpError(error); }
 }
-
-function generateMarkdown(report: { title: string; summary: string; sections: Array<{ title: string; content: string }>; key_findings: string[] }): string {
-  let md = `# ${report.title}\n\n`;
-  md += `> ${report.summary}\n\n`;
-
-  for (const section of report.sections) {
-    md += `## ${section.title}\n\n${section.content}\n\n`;
-  }
-
-  if (report.key_findings.length > 0) {
-    md += `## 关键发现\n\n`;
-    for (const finding of report.key_findings) {
-      md += `- ${finding}\n`;
-    }
-  }
-
-  return md;
+export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { scope } = await resolveMiroFishRequestScope(request, 'delete-document');
+    const deleted = await (await getMiroFishReportRuntime(scope)).delete(publicReportId((await params).id));
+    return NextResponse.json({ success: true, deleted });
+  } catch (error) { return reportHttpError(error); }
 }

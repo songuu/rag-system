@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "rag-live-snapshot-reconciliation/v1",
+  "collection": "rag_documents",
+  "beforeCount": 42,
+  "afterCount": 42,
+  "canonicalBeforeSha256": "5b6e4910a79846fc312d5b4464b9c83a02091b3005a59a40006ba9b8d3c0aa52",
+  "canonicalAfterSha256": "5b6e4910a79846fc312d5b4464b9c83a02091b3005a59a40006ba9b8d3c0aa52",
+  "corpusUnchanged": true,
+  "reason": "Original diagnostic compared JSON property insertion order. This reconciliation sorts object keys and row IDs.",
+  "checkedAt": "2026-11-05T11:59:54.309Z"
+}

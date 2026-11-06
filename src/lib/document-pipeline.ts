@@ -42,9 +42,16 @@ import { createCanonicalPdfDocumentText } from './rag/multimodal/pdf-asset-manif
 import { safeFetchExternalUrl } from './security/safe-external-url';
 import {
   createRetrievalScope,
+  isServerDerivedScope,
   type RagRetrievalScope,
   type RagTrustLevel,
 } from './security/retrieval-scope';
+import {
+  commitPipelinePublication,
+  PublicationIngestUnavailableError,
+  resolvePublicationIngestMode,
+  type PipelinePublicationPublisher,
+} from './documents/publication-ingest';
 import {
   resolvePdfMultimodalMode,
   type PdfMultimodalMode,
@@ -213,6 +220,9 @@ export interface PipelineConfig {
   /** Server-owned PDF visual sidecar rollout. */
   pdfVisualMode?: PdfMultimodalMode;
 
+  /** Internal server adapter; never populated from request-supplied data. */
+  publicationPublisher?: PipelinePublicationPublisher;
+
   // 存储配置
   storageBackend?: 'memory' | 'milvus';
   milvusConfig?: {
@@ -252,6 +262,7 @@ const DEFAULT_CONFIG: Required<PipelineConfig> = {
   contextualRetrievalModel: '',
   contextualizerV2: undefined as unknown as ContextualizerV2Port,
   pdfVisualMode: 'off',
+  publicationPublisher: undefined as unknown as PipelinePublicationPublisher,
   storageBackend: 'milvus',
   milvusConfig: {
     address: 'localhost:19530',
@@ -935,6 +946,8 @@ export async function storeToMilvus(
   } = {},
   onProgress?: (progress: ProcessingProgress) => void
 ): Promise<string[]> {
+  // Direct callers must not bypass the unified publisher in active mode.
+  if (resolvePublicationIngestMode() === 'active') throw new PublicationIngestUnavailableError();
   onProgress?.({
     stage: 'storing',
     current: 0,
@@ -1595,6 +1608,8 @@ export class DocumentPipeline {
       /** Request cancellation propagated to contextual/model/storage boundaries. */
       signal?: AbortSignal;
       maxChunks?: number;
+      /** Server-derived uploaded content type, never an authorization signal. */
+      sourceContentType?: string;
     } = {},
     onProgress?: (progress: ProcessingProgress) => void
   ): Promise<{
@@ -1609,7 +1624,15 @@ export class DocumentPipeline {
       generatedCharacters: number;
     };
     pdfVisual: PipelinePdfVisualSummary;
+    publication?: { status: 'published'; generation: string; revision: string };
   }> {
+    const publicationMode = resolvePublicationIngestMode();
+    if (publicationMode === 'active') {
+      if (!this.config.publicationPublisher) throw new PublicationIngestUnavailableError();
+      if (!isServerDerivedScope(options.metadata)) {
+        throw new PublicationIngestUnavailableError('Publication requires a server-derived scope.');
+      }
+    }
     // 1. 加载文档
     onProgress?.({
       stage: 'loading',
@@ -1710,6 +1733,40 @@ export class DocumentPipeline {
       ollamaBaseUrl: this.config.ollamaBaseUrl,
       signal: options.signal,
     }, onProgress);
+
+    if (publicationMode === 'active') {
+      assertPipelineNotAborted(options.signal);
+      if (document.metadata.type === 'pdf' && this.config.pdfVisualMode !== 'off') {
+        throw new PublicationIngestUnavailableError('Unified publication does not yet support PDF visual sidecars.');
+      }
+      const isRemoteSource = document.metadata.type === 'url' || document.metadata.type === 'youtube';
+      const sourceBytes = Buffer.isBuffer(input) ? Buffer.from(input)
+        : Buffer.from(isRemoteSource ? document.content : input, 'utf8');
+      const identityBytes = typeof sourceIdentity === 'string' ? Buffer.from(sourceIdentity, 'utf8') : Buffer.from(sourceIdentity);
+      const receipt = await commitPipelinePublication({
+        serverMetadata: options.metadata!, documentId, documentVersion,
+        sourceBytes, sourceIdentityBytes: identityBytes,
+        originalName: options.filename || document.metadata.source,
+        contentType: options.sourceContentType || (Buffer.isBuffer(input) ? 'application/octet-stream' : 'text/plain; charset=utf-8'),
+        sourceKind: document.metadata.type,
+        embedding: { model: this.config.embeddingModel, revision: 'unversioned',
+          dimension: processedDocs[0]?.embedding.length ?? 0, indexSchema: 'milvus-publication/v1' },
+        splitter: { name: 'recursive-character', revision: 'pipeline/v1',
+          chunkSize: this.config.chunkSize, chunkOverlap: this.config.chunkOverlap },
+        documents: processedDocs,
+      }, this.config.publicationPublisher, options.signal);
+      const pageCount = document.pdfParsed?.pages
+        ?? (Number.isInteger(document.metadata.pageCount) ? document.metadata.pageCount as number : 0);
+      return {
+        documentId, chunks: chunks.length, ids: receipt.ids, metadata: document.metadata,
+        contextualRetrieval: { version: contextualResult.version, mode: contextualResult.mode,
+          fallbackCount: contextualResult.fallbackCount, generatedCharacters: contextualResult.generatedCharacters },
+        pdfVisual: document.metadata.type === 'pdf'
+          ? { mode: 'off', status: 'disabled', documentId, documentVersion, pageCount, visualPageCount: 0 }
+          : { mode: this.config.pdfVisualMode, status: 'not_applicable', pageCount: 0, visualPageCount: 0 },
+        publication: { status: 'published', generation: receipt.generation, revision: receipt.revision },
+      };
+    }
     
     // 4. 存储
     assertPipelineNotAborted(options.signal);

@@ -1,5 +1,6 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { randomUUID } from 'node:crypto';
+import { observeProviderInvocation } from '../core/provider-usage-observer';
 import { AIMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { GraphRecursionError } from '@langchain/langgraph';
@@ -280,7 +281,7 @@ export async function invokeScopedRetrievalAgent(input: {
             && contextPack.includedEvidence.length < retrieval.maxEvidence
             && estimateEvidenceContextTokens(contextPack.context) < retrieval.maxContextTokens
             ? Math.max(0, retrieval.maxSearches - searchCallCount) : 0;
-          let response = await handler(structuredDecision ? {
+          let response = await observeProviderInvocation('generation', async () => handler(structuredDecision ? {
             ...request,
             tools: [],
             systemMessage: new SystemMessage(buildScopedDecisionSystemPrompt({ searchesRemaining, stopReason: searchStopReason })),
@@ -290,7 +291,7 @@ export async function invokeScopedRetrievalAgent(input: {
               // adapters receive only the locally validated JSON contract.
               ...(input.model._llmType() === 'ollama' ? { format: SCOPED_AGENT_DECISION_SCHEMA } : {}),
             },
-          } : request);
+          } : request));
           signal.throwIfAborted();
           modelResponseCount += 1;
           if (structuredDecision) {

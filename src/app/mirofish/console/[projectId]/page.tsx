@@ -1,373 +1,217 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import StepNav from '@/components/mirofish/StepNav';
 import ModelSelector from '@/components/mirofish/ModelSelector';
 import Step1GraphBuild from '@/components/mirofish/Step1GraphBuild';
-import Step2EnvSetup from '@/components/mirofish/Step2EnvSetup';
+import Step2EnvSetup, { type SimulationConfigInput } from '@/components/mirofish/Step2EnvSetup';
 import Step3Simulation from '@/components/mirofish/Step3Simulation';
 import Step4Report from '@/components/mirofish/Step4Report';
 import Step5Interaction from '@/components/mirofish/Step5Interaction';
-import type { ModelOverride } from '@/lib/mirofish/types';
-
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  status: string;
-  current_step: number;
-  simulation_requirement: string;
-  texts: string[];
-  ontology?: unknown;
-  graph_data?: GraphData;
-  graph_id?: string;
-  agent_profiles?: EntityProfile[];
-  simulation_config?: unknown;
-  simulation_id?: string;
-  report_id?: string;
-  model_config?: ModelOverride;
-}
-
-interface Ontology {
-  entity_types: Array<{
-    name: string;
-    description: string;
-    attributes: Array<{ name: string; type: string; description: string }>;
-    examples: string[];
-  }>;
-  edge_types: Array<{
-    name: string;
-    description: string;
-    source_targets: Array<{ source: string; target: string }>;
-    attributes: unknown[];
-  }>;
-  analysis_summary: string;
-}
-
-interface GraphData {
-  graph_id: string;
-  nodes: Array<{
-    uuid: string;
-    name: string;
-    labels: string[];
-    summary: string;
-    attributes: Record<string, unknown>;
-  }>;
-  edges: Array<{
-    uuid: string;
-    name: string;
-    fact: string;
-    source_node_name: string;
-    target_node_name: string;
-  }>;
-  node_count: number;
-  edge_count: number;
-}
-
-interface EntityProfile {
-  entity_id: string;
-  entity_name: string;
-  entity_type: string;
-  full_name: string;
-  age?: number;
-  gender?: string;
-  occupation?: string;
-  personality_traits: string[];
-  speaking_style: string;
-  social_media_style: string;
-  typical_posts: string[];
-  viewpoints: Record<string, string>;
-  background: string;
-}
-
-const STATUS_CONFIG: Record<string, { label: string; color: string; glow: string }> = {
-  created: { label: '已创建', color: 'bg-slate-500/20 text-slate-300', glow: '' },
-  graph_built: { label: '图谱已建', color: 'bg-blue-500/20 text-blue-300', glow: 'shadow-blue-500/10' },
-  env_setup: { label: '环境就绪', color: 'bg-cyan-500/20 text-cyan-300', glow: 'shadow-cyan-500/10' },
-  simulating: { label: '模拟中', color: 'bg-emerald-500/20 text-emerald-300 animate-pulse', glow: 'shadow-emerald-500/20' },
-  report_generated: { label: '报告完成', color: 'bg-purple-500/20 text-purple-300', glow: 'shadow-purple-500/10' },
-  completed: { label: '全部完成', color: 'bg-emerald-500/20 text-emerald-300', glow: 'shadow-emerald-500/10' },
-};
+import MiroFishGraphWorkbench from '@/components/mirofish/MiroFishGraphWorkbench';
+import { useMiroFishLocale } from '@/components/mirofish/MiroFishLocaleProvider';
+import { loadMiroFishWorkspace } from '@/lib/mirofish/workspace-client';
+import { bindPreparedProfilesToGraph } from '@/lib/mirofish/profile-bindings';
+import type { EntityProfile, GraphData, ModelOverride, Ontology, Project, ProjectGraphIdentity } from '@/lib/mirofish/types';
+import type { MiroFishSeedFileInfo } from '@/lib/mirofish/seed-file-contract';
 
 export default function MiroFishConsolePage() {
-  const params = useParams();
-  const router = useRouter();
-  const projectId = params.projectId as string;
-
+  const { projectId } = useParams<{ projectId: string }>();
+  const query = useSearchParams();
+  const selectedSimulation = query.get('simulationId');
+  const selectedReport = query.get('reportId');
+  const requestedStep = query.get('step');
+  const historical = Boolean(selectedSimulation || selectedReport);
+  const { t } = useMiroFishLocale();
   const [project, setProject] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reload, setReload] = useState(0);
   const [currentStep, setCurrentStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
-
   const [ontology, setOntology] = useState<Ontology | null>(null);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
+  const [graphIdentity, setGraphIdentity] = useState<ProjectGraphIdentity | null>(null);
   const [profiles, setProfiles] = useState<EntityProfile[]>([]);
   const [simulationId, setSimulationId] = useState<string | null>(null);
+  const [simulationStatus, setSimulationStatus] = useState<string>();
   const [reportId, setReportId] = useState<string | null>(null);
   const [modelOverride, setModelOverride] = useState<ModelOverride | null>(null);
   const [persistenceError, setPersistenceError] = useState('');
+  const saveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const writeGeneration = useRef(0);
+  const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const fetchProject = async () => {
+    const controller = new AbortController();
+    writeGeneration.current += 1;
+    void Promise.resolve().then(() => {
+      if (controller.signal.aborted) return null;
+      setLoading(true); setLoadError('');
+      return loadMiroFishWorkspace(projectId, { simulationId: selectedSimulation, reportId: selectedReport,
+        step: requestedStep === null ? undefined : Number(requestedStep), signal: controller.signal });
+    }).then(workspace => {
+      if (!workspace || controller.signal.aborted) return;
+      setProject(workspace.project);
+      setCurrentStep(workspace.currentStep);
+      setMaxStep(workspace.maxStep);
+      setOntology(workspace.ontology);
+      setGraphData(workspace.graphData);
+      setGraphIdentity(workspace.graphIdentity);
+      setProfiles(workspace.profiles);
+      setSimulationId(workspace.simulationId);
+      setSimulationStatus(workspace.simulationStatus);
+      setReportId(workspace.reportId);
+      setModelOverride(workspace.project.model_config || null);
+    }).catch(cause => {
+      if (!controller.signal.aborted) setLoadError(cause instanceof Error ? cause.message : '读取项目失败');
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => { controller.abort(); writeGeneration.current += 1; };
+  }, [projectId, selectedSimulation, selectedReport, requestedStep, reload]);
+
+  useEffect(() => () => { if (draftTimer.current) clearTimeout(draftTimer.current); }, []);
+
+  // Serialize draft and stage writes so a slower request cannot undo a saved transition.
+  const updateProject = useCallback((updates: Record<string, unknown>): Promise<Project | null> => {
+    const generation = writeGeneration.current;
+    const operation = saveQueue.current.then(async () => {
       try {
-        const response = await fetch(`/rag-api/mirofish/project/${projectId}`);
+        const response = await fetch(`/rag-api/mirofish/project/${encodeURIComponent(projectId)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates),
+        });
         const data = await response.json();
-        if (data.success && data.project) {
-          setProject(data.project);
-          setCurrentStep(data.project.current_step);
-          setMaxStep(data.project.current_step);
-          if (data.project.ontology) setOntology(data.project.ontology as Ontology);
-          if (data.project.graph_data) setGraphData(data.project.graph_data);
-          if (data.project.agent_profiles) setProfiles(data.project.agent_profiles);
-          if (data.project.simulation_id) setSimulationId(data.project.simulation_id);
-          if (data.project.report_id) setReportId(data.project.report_id);
-          if (data.project.model_config) setModelOverride(data.project.model_config);
-        } else {
-          router.push('/mirofish');
-        }
-      } catch {
-        router.push('/mirofish');
-      } finally {
-        setLoading(false);
+        if (!response.ok || !data.success || !data.project) throw new Error(data.error || '保存项目进度失败');
+        if (generation !== writeGeneration.current) return null;
+        setProject(data.project);
+        setPersistenceError('');
+        return data.project as Project;
+      } catch (cause) {
+        if (generation === writeGeneration.current) setPersistenceError(cause instanceof Error ? cause.message : '保存项目进度失败');
+        return null;
       }
-    };
-    fetchProject();
-  }, [projectId, router]);
-
-  const updateProject = useCallback(async (updates: Record<string, unknown>) => {
-    try {
-      const response = await fetch(`/rag-api/mirofish/project/${projectId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.success || !data.project) {
-        throw new Error(data.error || '保存项目进度失败');
-      }
-      setProject(data.project);
-      setPersistenceError('');
-    } catch (cause) {
-      setPersistenceError(cause instanceof Error ? cause.message : '保存项目进度失败');
-    }
-  }, [projectId]);
-
-  const handleTextsPersist = useCallback((nextTexts: string[]) => {
-    void updateProject({ texts: nextTexts });
-  }, [updateProject]);
-
-  const handleOntologyGenerated = useCallback((nextOntology: Ontology) => {
-    setOntology(nextOntology);
-    void updateProject({ ontology: nextOntology });
-  }, [updateProject]);
-
-  const handleGraphBuilt = useCallback((nextGraph: GraphData) => {
-    setGraphData(nextGraph);
-    void updateProject({ graph_data: nextGraph, graph_id: nextGraph.graph_id });
-  }, [updateProject]);
-
-  const saveModelConfig = useCallback(async (override: ModelOverride | null) => {
-    const response = await fetch(`/rag-api/mirofish/project/${projectId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model_config: override }),
     });
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.error || '保存模型配置失败');
-    }
+    saveQueue.current = operation;
+    return operation;
   }, [projectId]);
-
-  const handleStep1Complete = () => {
-    const nextStep = 1;
-    setCurrentStep(nextStep);
-    setMaxStep(prev => Math.max(prev, nextStep));
-    updateProject({ current_step: nextStep, status: 'graph_built', ontology, graph_data: graphData });
+  const requireSaved = useCallback(async (updates: Record<string, unknown>) => {
+    const saved = await updateProject(updates);
+    if (!saved) throw new Error('保存项目进度失败，请重试');
+    return saved;
+  }, [updateProject]);
+  const handleTextsPersist = useCallback(async (texts: string[]) => { await requireSaved({ texts }); }, [requireSaved]);
+  const handleSeedFilesPersist = useCallback(async (seed_files: MiroFishSeedFileInfo[]) => {
+    await requireSaved({ seed_files });
+  }, [requireSaved]);
+  const handleOntologyGenerated = useCallback(async (next: Ontology) => {
+    await requireSaved({ ontology: next }); setOntology(next);
+  }, [requireSaved]);
+  const handleGraphTaskStarted = useCallback(async (graph_task_id: string | null) => {
+    await requireSaved({ graph_task_id });
+  }, [requireSaved]);
+  const handleGraphBuilt = useCallback(async (graph: GraphData, identity?: ProjectGraphIdentity) => {
+    await requireSaved({ graph_data: graph, graph_id: graph.graph_id, graph_identity: identity || null,
+      graph_task_id: null, status: 'graph_built' });
+    setGraphData(graph); setGraphIdentity(identity || null); setMaxStep(previous => Math.max(previous, 1));
+  }, [requireSaved]);
+  const handleDraftChange = useCallback((draft: { selectedEntityIds: string[]; config: SimulationConfigInput }) => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    draftTimer.current = setTimeout(() => { void updateProject({ selected_entity_ids: draft.selectedEntityIds,
+      simulation_config: draft.config }); }, 350);
+  }, [updateProject]);
+  const handlePrepareTaskStarted = useCallback(async (prepare_task_id: string) => {
+    await requireSaved({ prepare_task_id });
+  }, [requireSaved]);
+  const handlePrepared = useCallback(async (result: { prepare_id: string; profiles: EntityProfile[];
+    config: SimulationConfigInput; prepared_at: string; prepare_fingerprint: string }) => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    await requireSaved({ prepare_id: result.prepare_id, agent_profiles: result.profiles, simulation_config: result.config,
+      prepared_at: result.prepared_at, prepare_fingerprint: result.prepare_fingerprint, prepare_task_id: null });
+    setProfiles(result.profiles);
+  }, [requireSaved]);
+  const saveModelConfig = useCallback(async (model_config: ModelOverride | null) => {
+    if (historical) return;
+    await requireSaved({ model_config });
+  }, [requireSaved, historical]);
+  const handleStep1Complete = async () => {
+    if (!graphData) return;
+    const saved = await updateProject({ current_step: 1, status: 'graph_built', ontology, graph_data: graphData });
+    if (saved) { setCurrentStep(1); setMaxStep(previous => Math.max(previous, 1)); }
+  };
+  const handleSimulationCreated = async (id: string, config?: SimulationConfigInput) => {
+    if (draftTimer.current) clearTimeout(draftTimer.current);
+    const boundProfiles = bindPreparedProfilesToGraph(profiles, graphData?.nodes ?? []);
+    await requireSaved({ current_step: 2, status: 'env_setup', simulation_id: id, report_id: null,
+      agent_profiles: boundProfiles, selected_entity_ids: boundProfiles.map(profile => profile.entity_id),
+      ...(config ? { simulation_config: config } : {}) });
+    setProfiles(boundProfiles);
+    setSimulationId(id); setReportId(null); setSimulationStatus('ready');
+    setCurrentStep(2); setMaxStep(2);
+  };
+  const handleStep3Complete = async () => {
+    if (!historical) await requireSaved({ current_step: 3, status: 'simulating' });
+    setSimulationStatus('completed'); setCurrentStep(3); setMaxStep(previous => Math.max(previous, 3));
+  };
+  const handleReportGenerated = useCallback(async (id: string) => {
+    if (!historical) await requireSaved({ report_id: id });
+    setReportId(id);
+  }, [historical, requireSaved]);
+  const handleStep4Complete = async () => {
+    if (!reportId) return;
+    if (!historical) await requireSaved({ current_step: 4, status: 'report_generated', report_id: reportId });
+    setCurrentStep(4); setMaxStep(previous => Math.max(previous, 4));
   };
 
-  const handleStep2Complete = (simIdOverride?: string) => {
-    const nextStep = 2;
-    const effectiveSimId = simIdOverride || simulationId;
-    setCurrentStep(nextStep);
-    setMaxStep(prev => Math.max(prev, nextStep));
-    updateProject({ current_step: nextStep, status: 'env_setup', simulation_id: effectiveSimId });
-  };
+  if (loading) return <div className="flex min-h-screen items-center justify-center bg-[#060612] text-slate-300">{t('加载项目中...', 'Loading workspace...')}</div>;
+  if (loadError || !project) return <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#060612] text-slate-200">
+    <p role="alert">{loadError || t('项目不存在', 'Project not found')}</p>
+    <button onClick={() => setReload(previous => previous + 1)} className="rounded-lg bg-purple-600 px-4 py-2">{t('重新读取', 'Retry')}</button>
+    <Link href="/mirofish">{t('返回项目列表', 'Back to projects')}</Link>
+  </div>;
 
-  const handleStep3Complete = () => {
-    const nextStep = 3;
-    setCurrentStep(nextStep);
-    setMaxStep(prev => Math.max(prev, nextStep));
-    updateProject({ current_step: nextStep, status: 'simulating' });
-  };
-
-  const handleStep4Complete = (rptIdOverride?: string) => {
-    const nextStep = 4;
-    const effectiveRptId = rptIdOverride || reportId;
-    setCurrentStep(nextStep);
-    setMaxStep(prev => Math.max(prev, nextStep));
-    updateProject({ current_step: nextStep, status: 'report_generated', report_id: effectiveRptId });
-  };
-
-  if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#060612]">
-        <div className="flex flex-col items-center gap-4">
-          <div className="relative h-12 w-12">
-            <div className="absolute inset-0 animate-spin rounded-full border-2 border-purple-500/30 border-t-purple-500" />
-            <div className="absolute inset-2 animate-spin rounded-full border-2 border-violet-400/20 border-b-violet-400" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }} />
-          </div>
-          <span className="text-sm text-white/40">加载项目中...</span>
-        </div>
+  return <div className="min-h-screen bg-[#060612] text-white">
+    <nav className="sticky top-0 z-50 border-b border-white/10 bg-black/80 backdrop-blur-xl">
+      <div className="mx-auto flex min-h-14 max-w-[1600px] flex-wrap items-center justify-between gap-3 px-6 py-3">
+        <div className="flex items-center gap-4"><Link href="/mirofish" className="font-extrabold tracking-wider text-purple-300">MIROFISH</Link>
+          <span className="max-w-64 truncate text-sm text-slate-300">{project.name}</span></div>
       </div>
-    );
-  }
-
-  if (!project) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#060612] text-white/60">
-        <div className="text-center">
-          <div className="mb-4 text-5xl">🔍</div>
-          <div className="text-lg">项目不存在</div>
-          <Link href="/mirofish" className="mt-4 inline-block text-sm text-purple-400 hover:text-purple-300">
-            返回项目列表 →
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const statusCfg = STATUS_CONFIG[project.status] ?? STATUS_CONFIG.created;
-
-  return (
-    <div className="min-h-screen bg-[#060612]">
-      {/* 背景装饰 */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute -left-40 -top-40 h-80 w-80 rounded-full bg-purple-600/[0.04] blur-[100px]" />
-        <div className="absolute -right-20 top-1/3 h-60 w-60 rounded-full bg-violet-600/[0.03] blur-[80px]" />
-        <div className="absolute bottom-0 left-1/3 h-40 w-80 rounded-full bg-blue-600/[0.03] blur-[60px]" />
-      </div>
-
-      {/* 顶部导航栏 */}
-      <nav className="sticky top-0 z-50 border-b border-white/[0.06] bg-black/60 backdrop-blur-xl">
-        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-6">
-          <div className="flex items-center gap-4">
-            <Link
-              href="/mirofish"
-              className="flex items-center gap-2.5 text-[15px] font-extrabold tracking-wider no-underline"
-            >
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-purple-500 to-violet-600 shadow-lg shadow-purple-500/20">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <circle cx="12" cy="8" r="4" fill="#fff" />
-                  <path d="M4 20C4 16 7.5 13 12 13C16.5 13 20 16 20 20" stroke="#fff" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-              </div>
-              <span className="bg-gradient-to-r from-purple-400 to-violet-300 bg-clip-text text-transparent">
-                MIROFISH
-              </span>
-            </Link>
-
-            <div className="h-5 w-px bg-white/10" />
-
-            <span className="max-w-[200px] truncate text-sm text-white/50">
-              {project.name}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${statusCfg.color} ${statusCfg.glow} shadow-sm`}>
-              {statusCfg.label}
-            </span>
-          </div>
-        </div>
-      </nav>
-
-      {/* 模型选择器 */}
-      <ModelSelector
-        value={modelOverride}
-        onChange={setModelOverride}
-        onSave={saveModelConfig}
-      />
-
-      {/* 步骤导航 */}
-      <StepNav
-        currentStep={currentStep}
-        maxStep={maxStep}
-        onStepChange={setCurrentStep}
-      />
-
-      {/* 内容区域 */}
-      <div className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {persistenceError && (
-          <div role="alert" className="mb-5 rounded-xl border border-rose-500/20 bg-rose-500/[0.06] px-4 py-3 text-sm text-rose-300">
-            PostgreSQL 项目状态保存失败：{persistenceError}
-          </div>
-        )}
-        {currentStep === 0 && (
-          <Step1GraphBuild
-            projectId={projectId}
-            simulationRequirement={project.simulation_requirement}
-            initialTexts={project.texts}
-            ontology={ontology}
-            graphData={graphData}
-            modelOverride={modelOverride}
-            onTextsPersist={handleTextsPersist}
-            onOntologyGenerated={handleOntologyGenerated}
-            onGraphBuilt={handleGraphBuilt}
-            onComplete={handleStep1Complete}
-          />
-        )}
-
-        {currentStep === 1 && graphData && (
-          <Step2EnvSetup
-            projectId={projectId}
-            simulationRequirement={project.simulation_requirement}
-            graphNodes={graphData.nodes}
-            profiles={profiles}
-            modelOverride={modelOverride}
-            onProfilesGenerated={setProfiles}
-            onSimulationCreated={(simId) => {
-              setSimulationId(simId);
-              handleStep2Complete(simId);
-            }}
-            onComplete={() => handleStep2Complete()}
-          />
-        )}
-
-        {currentStep === 2 && simulationId && (
-          <Step3Simulation
-            simulationId={simulationId}
-            onComplete={handleStep3Complete}
-          />
-        )}
-
-        {currentStep === 3 && simulationId && (
-          <Step4Report
-            simulationId={simulationId}
-            projectId={projectId}
-            reportId={reportId}
-            modelOverride={modelOverride}
-            onReportGenerated={setReportId}
-            onComplete={handleStep4Complete}
-          />
-        )}
-
-        {currentStep === 4 && simulationId && reportId && (
-          <Step5Interaction
-            simulationId={simulationId}
-            reportId={reportId}
-            modelOverride={modelOverride}
-            agents={profiles.map(p => ({
-              entity_id: p.entity_id,
-              entity_name: p.entity_name,
-              entity_type: p.entity_type,
-              full_name: p.full_name,
-              occupation: p.occupation,
-            }))}
-          />
-        )}
-      </div>
-    </div>
-  );
+    </nav>
+    {!historical && <ModelSelector value={modelOverride} onChange={setModelOverride} onSave={saveModelConfig} />}
+    <StepNav currentStep={currentStep} maxStep={maxStep} minStep={historical ? 2 : 0}
+      onStepChange={step => { if (!historical || step >= 2) setCurrentStep(step); }} />
+    <main className="relative mx-auto max-w-[1600px] px-4 py-6 sm:px-6">
+      {historical && <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-400/20 bg-sky-400/5 p-3 text-sm text-sky-200">
+        <span>{t('查看历史运行', 'Viewing saved run')} · {simulationId}</span>
+        <Link href={`/mirofish/console/${encodeURIComponent(projectId)}`}>{t('返回当前项目进度', 'Return to current workspace')}</Link>
+      </div>}
+      {persistenceError && <div role="alert" className="mb-5 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 text-sm text-rose-300">
+        {t('项目状态保存失败：', 'Unable to save project progress: ')}{persistenceError}
+      </div>}
+      <MiroFishGraphWorkbench graph={graphData} identity={graphIdentity} simulationId={simulationId || undefined}
+        simulationRunning={['running', 'stopping', 'finalizing'].includes(simulationStatus || '')}>
+        {currentStep === 0 && <Step1GraphBuild projectId={projectId} simulationRequirement={project.simulation_requirement}
+          initialTexts={project.texts} initialSeedFiles={project.seed_files} ontology={ontology} graphData={graphData}
+          modelOverride={modelOverride} initialTaskId={project.graph_task_id} onTaskStarted={handleGraphTaskStarted}
+          onTextsPersist={handleTextsPersist} onSeedFilesPersist={handleSeedFilesPersist} onOntologyGenerated={handleOntologyGenerated}
+          onGraphBuilt={handleGraphBuilt} onComplete={handleStep1Complete} />}
+        {currentStep === 1 && graphData && <Step2EnvSetup projectId={projectId} simulationRequirement={project.simulation_requirement}
+          graphNodes={graphData.nodes} profiles={profiles} modelOverride={modelOverride}
+          initialPrepareTaskId={project.prepare_task_id} initialPrepareId={project.prepare_id}
+          initialSelectedEntityIds={project.selected_entity_ids} initialConfig={project.simulation_config}
+          onPrepareTaskStarted={handlePrepareTaskStarted} onPrepared={handlePrepared} onDraftChange={handleDraftChange}
+          onProfilesGenerated={setProfiles} onSimulationCreated={handleSimulationCreated}
+          onComplete={() => simulationId ? handleSimulationCreated(simulationId) : undefined} />}
+        {currentStep === 2 && simulationId && <Step3Simulation key={simulationId} simulationId={simulationId}
+          onStatusChange={setSimulationStatus} onComplete={handleStep3Complete} />}
+        {currentStep === 3 && simulationId && <Step4Report key={simulationId} simulationId={simulationId} projectId={projectId}
+          reportId={reportId} modelOverride={modelOverride} onReportGenerated={handleReportGenerated} onComplete={handleStep4Complete} />}
+        {currentStep === 4 && simulationId && reportId && <Step5Interaction key={`${simulationId}:${reportId}`}
+          simulationId={simulationId} reportId={reportId} modelOverride={modelOverride} agents={profiles.map(profile => ({
+            entity_id: profile.entity_id, entity_name: profile.entity_name, entity_type: profile.entity_type,
+            full_name: profile.full_name, occupation: profile.occupation,
+          }))} />}
+      </MiroFishGraphWorkbench>
+    </main>
+  </div>;
 }

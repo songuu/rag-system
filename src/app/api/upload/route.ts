@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import path from 'path';
 import { 
   parseDocument, 
@@ -18,6 +19,8 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ error: publicationBlock.message, code: publicationBlock.code }, { status: publicationBlock.status });
   try {
     const { blobStore, manifestStore } = createUploadPersistence({
       uploadDir: UPLOAD_DIR,

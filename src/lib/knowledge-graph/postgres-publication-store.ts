@@ -122,9 +122,29 @@ const CAS_ACTIVE_SQL = [
 ].join('\n');
 
 const CAS_ACTIVE_WITH_LEASE_SQL = CAS_ACTIVE_SQL
+  // Keep the validated build and its exact source locked until the pointer and
+  // outbox commit. A preflight alone races revocation and build cancellation.
+  .replace('with activated as (', () => `with locked_sources as materialized (
+    select job.id
+    from public.graph_build_jobs job
+    join public.document_assets asset
+      on asset.tenant_id = job.tenant_id and asset.corpus_id = job.corpus_id
+      and asset.external_document_id = job.metadata #>> '{documentIdentity,documentId}'
+      and asset.source_hash = job.metadata #>> '{documentIdentity,documentVersion}'
+      and coalesce(nullif(asset.metadata #>> '{document,trustLevel}', ''),
+                   nullif(asset.metadata #>> '{document,trust_level}', ''), 'external') = job.metadata #>> '{documentIdentity,trustLevel}'
+    where job.tenant_id = $1 and job.corpus_id = $2 and job.graph_version = $3
+      and $3 ~ '^mirofish:[0-9a-f]{64}:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      and job.status in ('validated', 'published')
+      and job.metadata #>> '{documentIdentity,graphGeneration}' = right($3, 36)
+      and asset.metadata ? 'source_kind' and asset.metadata->>'persistence_status' = 'ready'
+      and asset.metadata->>'retrieval_enabled' is distinct from 'false'
+      and coalesce(asset.metadata->>'lifecycle', 'active') = 'active'
+    for update of job, asset
+  ), activated as (`)
   .replace(
     '  where ($4::bigint = 0 or exists (\n    select 1 from public.graph_active_snapshots current_pointer\n    where current_pointer.tenant_id = $1 and current_pointer.corpus_id = $2\n      and current_pointer.revision = $4::bigint\n  ))',
-    "  where ($4::bigint = 0 or exists (select 1 from public.graph_active_snapshots current_pointer where current_pointer.tenant_id = $1 and current_pointer.corpus_id = $2 and current_pointer.revision = $4::bigint)) and exists (select 1 from public.graph_snapshot_lifecycle lifecycle where lifecycle.tenant_id = $1 and lifecycle.corpus_id = $2 and lifecycle.graph_version = $3 and lifecycle.state = 'activating' and lifecycle.operation_id = $6::uuid and lifecycle.lease_expires_at > now())"
+    () => "  where ($4::bigint = 0 or exists (select 1 from public.graph_active_snapshots current_pointer where current_pointer.tenant_id = $1 and current_pointer.corpus_id = $2 and current_pointer.revision = $4::bigint)) and ($3 !~ '^mirofish:[0-9a-f]{64}:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' or (select count(*) from locked_sources) = 1) and exists (select 1 from public.graph_snapshot_lifecycle lifecycle where lifecycle.tenant_id = $1 and lifecycle.corpus_id = $2 and lifecycle.graph_version = $3 and lifecycle.state = 'activating' and lifecycle.operation_id = $6::uuid and lifecycle.lease_expires_at > now())"
   )
   .replace(
     '  where public.graph_active_snapshots.revision = $4::bigint',

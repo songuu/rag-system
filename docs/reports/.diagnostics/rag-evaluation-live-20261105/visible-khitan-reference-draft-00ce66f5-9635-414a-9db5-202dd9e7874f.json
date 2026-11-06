@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "rag-visible-reference-draft/v1",
+  "observedAt": "2026-11-05T12:10:01.875Z",
+  "readOnly": true,
+  "labelReviewStatus": "needs-review",
+  "notHumanReviewed": true,
+  "evidence": {
+    "collection": "ragidx_e90dbd90410f4e19b3ab21407d6ae67a",
+    "id": "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+    "documentId": "重构契丹早期史.epub",
+    "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+    "chunkIndex": 0,
+    "sourceText": "版权信息\nCOPYRIGHT\n书名：重构契丹早期史\n作者：苗润博\n出版社：北京大学出版社\n出版时间：2024年2月\nISBN：9787301347492\n字数：199千字"
+  },
+  "questions": [
+    {
+      "id": "khitan-author",
+      "question": "《重构契丹早期史》的作者是谁？",
+      "answer": "苗润博",
+      "requiredEvidenceIds": [
+        "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6"
+      ],
+      "referenceQuote": "作者：苗润博",
+      "labelReviewStatus": "needs-review",
+      "reviewer": null
+    },
+    {
+      "id": "khitan-publication",
+      "question": "《重构契丹早期史》由哪家出版社出版，出版时间是什么？",
+      "answer": "北京大学出版社，2024年2月",
+      "requiredEvidenceIds": [
+        "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6"
+      ],
+      "referenceQuote": "出版社：北京大学出版社\n出版时间：2024年2月",
+      "labelReviewStatus": "needs-review",
+      "reviewer": null
+    },
+    {
+      "id": "khitan-isbn",
+      "question": "《重构契丹早期史》的ISBN是多少？",
+      "answer": "9787301347492",
+      "requiredEvidenceIds": [
+        "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6"
+      ],
+      "referenceQuote": "ISBN：9787301347492",
+      "labelReviewStatus": "needs-review",
+      "reviewer": null
+    }
+  ],
+  "readOnlyChecks": [
+    {
+      "purpose": "early-text-containing-目录",
+      "status": {
+        "extra_info": {},
+        "error_code": "Success",
+        "reason": "",
+        "code": 0,
+        "retriable": false,
+        "detail": ""
+      },
+      "data": []
+    },
+    {
+      "purpose": "visible-book-count",
+      "status": {
+        "extra_info": {},
+        "error_code": "Success",
+        "reason": "",
+        "code": 0,
+        "retriable": false,
+        "detail": ""
+      },
+      "data": [
+        {
+          "count(*)": "645"
+        }
+      ]
+    },
+    {
+      "purpose": "old768-scope-and-visible-document-count",
+      "status": {
+        "extra_info": {},
+        "error_code": "Success",
+        "reason": "",
+        "code": 0,
+        "retriable": false,
+        "detail": ""
+      },
+      "data": [
+        {
+          "count(*)": "0"
+        }
+      ]
+    }
+  ]
+}

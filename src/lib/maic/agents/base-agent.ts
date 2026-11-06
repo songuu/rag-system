@@ -2,8 +2,8 @@
  * Agent 基类: 所有可发言角色共享的实现
  */
 
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { createLLM } from '../../model-config';
+import { createTextModelClient } from '../../model-config';
+import { rethrowTextModelCancellation, type TextModelClient, type TextModelCallOptions } from '../../models/text-model';
 import type {
   AgentProfile,
   AgentRole,
@@ -18,29 +18,35 @@ const MAX_HISTORY = 12;
 
 export class BaseAgent {
   protected profile: AgentProfile;
-  protected llm: BaseChatModel;
+  protected model: TextModelClient;
 
-  constructor(role: AgentRole, temperature = 0.7) {
+  constructor(role: AgentRole, temperature = 0.7, model?: TextModelClient) {
     this.profile = getProfile(role);
-    this.llm = createLLM(undefined, { temperature });
+    this.model = model ?? createTextModelClient(undefined, { temperature });
   }
 
   async respond(
     state: ClassroomState,
     action: TeachingAction,
-    prepared: CoursePrepared | undefined
+    prepared: CoursePrepared | undefined,
+    options: TextModelCallOptions = {}
   ): Promise<Utterance> {
     const context = this.buildContext(state, prepared);
     const userPrompt = this.buildUserPrompt(state, action, context);
 
     let content = '';
     try {
-      const resp = await this.llm.invoke([
-        { role: 'system', content: this.profile.system_prompt },
-        { role: 'user', content: userPrompt },
-      ]);
-      content = this.normalize(String(resp.content));
+      const resp = await this.model.complete({
+        operation: 'maic.classroom.respond',
+        signal: options.signal,
+        messages: [
+          { role: 'system', content: this.profile.system_prompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+      content = this.normalize(resp.text);
     } catch (error) {
+      rethrowTextModelCancellation(error, options.signal);
       content = this.fallback(action);
     }
 

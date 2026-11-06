@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
 import path from 'path';
 import { createUploadPersistence } from '@/lib/persistence/upload-store';
@@ -14,6 +15,8 @@ export async function DELETE(
 ) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     const { filename } = await params;
     const decodedFilename = decodeURIComponent(filename);

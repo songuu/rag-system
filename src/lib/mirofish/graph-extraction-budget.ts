@@ -13,6 +13,17 @@ export const MIROFISH_GRAPH_EXTRACTION_RESOURCE_LIMITS = Object.freeze({
   maxEmbeddingDimensions: 4_096,
 });
 
+// Durable document builds can resume work, but still have finite resource ceilings.
+export const MIROFISH_GRAPH_LONG_DOCUMENT_RESOURCE_LIMITS = Object.freeze({
+  maxProviderOutputCharacters: 4_000_000,
+  maxExtractedEntities: 5_000,
+  maxExtractedRelations: 20_000,
+  maxAggregationLookupComparisons: 20_000_000,
+  maxEntityResolutionComparisons: 2_000_000,
+  maxEntityResolutionVectorOperations: 8_192_000_000,
+  maxEmbeddingDimensions: 4_096,
+});
+
 export interface MiroFishGraphExtractionBudget {
   providerCallCount: number;
   providerInputCharacters: number;

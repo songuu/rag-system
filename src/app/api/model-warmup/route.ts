@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { readJsonObjectWithLimit, validateLlmModelSelection, validateEmbeddingModelSelection,
   resolveRuntimeEmbeddingProvider, publicErrorPayload } from '@/lib/security/request-validation';
 import { resolveRagSecurityContext, RagSecurityError } from '@/lib/security/request-context';
-import { beginOllamaModelWarmup, getOllamaModelReadiness, warmOllamaModel, warmOllamaEmbeddingModel } from '@/lib/ollama-readiness';
+import { beginOllamaModelWarmup, getOllamaModelReadiness, warmOllamaEmbeddingModel } from '@/lib/ollama-readiness';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -17,13 +17,8 @@ export async function POST(request: Request) {
     const embeddingProvider = resolveRuntimeEmbeddingProvider();
     const readiness = (process.env.MODEL_PROVIDER || 'ollama') === 'ollama'
       ? beginOllamaModelWarmup(model, { preparationKey: `embedding:${embeddingProvider}:${embeddingModel}`, prepare: async () => {
-          // Warm the small classifier first. A large model's disk loading can
-          // otherwise occupy Ollama's queue past the classifier's deadline.
-          if (process.env.RAG_SEMANTIC_ROUTER !== 'off') try {
-            await warmOllamaModel(process.env.FAST_LLM_MODEL || 'qwen2.5:0.5b', {
-              settings: { numCtx: 2048, keepAlive: '15m' }, timeoutMs: 10_000,
-            });
-          } catch { /* An unavailable classifier must not block the selected model. */ }
+          // A third classifier would evict this pair on a two-model host;
+          // conversation routing loads its classifier only when actually used.
           if (embeddingProvider === 'ollama') await warmOllamaEmbeddingModel(embeddingModel);
         } }) : { model, phase: 'ready', detail: '远程提供商无需本机预加载。' };
     return NextResponse.json({ success: true, readiness }, { status: readiness.phase === 'loading' ? 202 : 200, headers: { 'cache-control': 'no-store' } });

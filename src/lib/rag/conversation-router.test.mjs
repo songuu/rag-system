@@ -84,6 +84,37 @@ test('compound questions skip retrieval only when every clause is supported', ()
   ]) assert.equal(routeConversation(query).route, 'rag', query);
 });
 
+test('recognizes colloquial self-introductions without swallowing corpus or unsupported questions', () => {
+  for (const query of ['介绍下你自己', '介绍下自己', '介绍一下你自己', '介绍一下你', '你介绍一下自己', '自我介绍一下', '做个自我介绍']) {
+    const decision = routeConversation(query);
+    assert.equal(decision.route, 'direct', query);
+    assert.deepEqual(decision.actions, [{ intent: 'identity' }], query);
+  }
+  assert.deepEqual(routeConversation('介绍下你自己，然后现在几点').actions.map(action => action.intent), ['identity', 'current-time']);
+  for (const query of ['介绍下知识库里的你自己', '介绍下你自己和知识库的内容', '介绍下你自己，然后帮我写一首诗', '介绍下你自己的工作原理']) {
+    const decision = routeConversation(query);
+    assert.equal(decision.route, 'rag', query);
+    assert.deepEqual(decision.actions, [], query);
+  }
+});
+
+test('recognizes polite requests for clock information without losing other content', () => {
+  for (const [query, timeZone] of [
+    ['请告知当前的钟点', 'Asia/Shanghai'],
+    ['请问，请告知当前的钟点，谢谢', 'Asia/Shanghai'],
+    ['请告知东京当前的钟点', 'Asia/Tokyo'],
+    ['告知当前的钟点', 'Asia/Shanghai'],
+  ]) {
+    const decision = routeConversation(query);
+    assert.equal(decision.route, 'direct', query);
+    assert.equal(decision.actions[0].intent, 'current-time', query);
+    assert.equal(decision.actions[0].timeZone, timeZone, query);
+  }
+  for (const query of ['请告知文档中当前的钟点', '请告知当前的钟点并且写一首诗', '请告知当前的钟点帮我写首诗']) {
+    assert.equal(routeConversation(query).route, 'rag', query);
+  }
+});
+
 test('document references, unsupported actions and uncertainty retain knowledge routing', () => {
   for (const query of [
     '文档中的今天的日期是什么', '报告中的当前时间表示什么',

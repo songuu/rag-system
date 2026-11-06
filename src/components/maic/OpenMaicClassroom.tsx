@@ -79,6 +79,11 @@ const SCENE_LABELS: Record<CourseSceneType, string> = {
 };
 
 export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
+  // Each course owns its stream, playback timers and persisted quiz state.
+  return <CourseClassroom key={courseId} courseId={courseId} />;
+}
+
+function CourseClassroom({ courseId }: OpenMaicClassroomProps) {
   const [course, setCourse] = useState<Course | null>(null);
   const [classroomState, setClassroomState] = useState<ClassroomState | null>(null);
   const [utterances, setUtterances] = useState<Utterance[]>([]);
@@ -98,14 +103,20 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
     queued: 0,
     autoPaused: false,
   });
-  const [quizAnswers, setQuizAnswers] = useState<Record<string, number>>({});
+  const quizStorageKey = `maic:${courseId}:quiz-answers`;
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, number>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw: unknown = JSON.parse(window.localStorage.getItem(quizStorageKey) ?? '{}');
+      return raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? normalizeStoredQuizAnswers(raw as Record<string, unknown>) : {};
+    } catch { return {}; }
+  });
   const [codeDraft, setCodeDraft] = useState('const insight = "learning by doing";\nconsole.log(insight);');
   const [runOutput, setRunOutput] = useState('等待运行');
   const [selectedPblRole, setSelectedPblRole] = useState<string | null>(null);
   const chatRef = useRef<HTMLDivElement | null>(null);
   const sceneViewportRef = useRef<HTMLDivElement | null>(null);
-  const quizHydratedRef = useRef(false);
-  const quizInitialSaveSkippedRef = useRef(false);
   const stageAnimationTimersRef = useRef<number[]>([]);
   const ttsQueueRef = useRef<Utterance[]>([]);
   const ttsSeenIdsRef = useRef<Set<string>>(new Set());
@@ -128,22 +139,38 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
       scenes[0],
     [currentPageIndex, scenes]
   );
+  const [selectionPageIndex, setSelectionPageIndex] = useState(currentPageIndex);
+  if (selectionPageIndex !== currentPageIndex) {
+    setSelectionPageIndex(currentPageIndex);
+    setSelectedSceneId(null);
+  }
   const selectedScene = scenes.find(scene => scene.id === selectedSceneId) ?? automaticScene;
+  const [effectScope, setEffectScope] = useState({ scene: selectedScene, page: currentPageIndex });
+  if (effectScope.scene !== selectedScene || effectScope.page !== currentPageIndex) {
+    setEffectScope({ scene: selectedScene, page: currentPageIndex });
+    setStageEffect(null);
+    setHeldFocusEffect(null);
+  }
   const currentPage = pages[currentPageIndex];
   const latestUtterance = utterances.at(-1);
   const courseReady = course?.status === 'ready' && !!course.prepared;
   const courseCompleted = classroomState?.status === 'ended';
+  const [expiredUtteranceId, setExpiredUtteranceId] = useState<string | null>(null);
+  const utteranceEffect = latestUtterance && latestUtterance.id !== expiredUtteranceId
+    && !selectedScene?.actions.some(action => toStageEffectFromSceneAction(action))
+    ? toStageEffect(latestUtterance.action) : null;
   const visibleStageEffect = useMemo(() => {
     if (stageEffect?.kind === 'spotlight' || stageEffect?.kind === 'laser') return stageEffect;
-    return heldFocusEffect ?? stageEffect;
-  }, [heldFocusEffect, stageEffect]);
-  const quizStorageKey = useMemo(() => `maic:${courseId}:quiz-answers`, [courseId]);
+    return heldFocusEffect ?? stageEffect ?? utteranceEffect;
+  }, [heldFocusEffect, stageEffect, utteranceEffect]);
   const completionSummary = useMemo(
     () => buildCompletionSummary(scenes, quizAnswers),
     [quizAnswers, scenes]
   );
-  ttsEnabledRef.current = ttsEnabled;
-  classroomStatusRef.current = classroomState?.status ?? 'idle';
+  useLayoutEffect(() => {
+    ttsEnabledRef.current = ttsEnabled;
+    classroomStatusRef.current = classroomState?.status ?? 'idle';
+  }, [ttsEnabled, classroomState?.status]);
 
   const handleClassroomEvent = useCallback((event: ClassroomEvent) => {
     switch (event.type) {
@@ -216,40 +243,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   }, [courseId, courseReady, handleClassroomEvent]);
 
   useEffect(() => {
-    if (!automaticScene || selectedSceneId) return;
-    setSelectedSceneId(automaticScene.id);
-  }, [automaticScene, selectedSceneId]);
-
-  useEffect(() => {
     if (typeof window === 'undefined') return;
-    quizHydratedRef.current = false;
-    quizInitialSaveSkippedRef.current = false;
-    try {
-      const raw = window.localStorage.getItem(quizStorageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw) as unknown;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          setQuizAnswers(normalizeStoredQuizAnswers(parsed as Record<string, unknown>));
-        } else {
-          setQuizAnswers({});
-        }
-      } else {
-        setQuizAnswers({});
-      }
-    } catch {
-      // Corrupt localStorage should not block classroom playback.
-      setQuizAnswers({});
-    } finally {
-      quizHydratedRef.current = true;
-    }
-  }, [quizStorageKey]);
-
-  useEffect(() => {
-    if (!quizHydratedRef.current || typeof window === 'undefined') return;
-    if (!quizInitialSaveSkippedRef.current) {
-      quizInitialSaveSkippedRef.current = true;
-      return;
-    }
     try {
       window.localStorage.setItem(quizStorageKey, JSON.stringify(quizAnswers));
     } catch {
@@ -258,16 +252,7 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
   }, [quizAnswers, quizStorageKey]);
 
   useEffect(() => {
-    const nextScene = scenes.find(scene =>
-      scene.type === 'slide' && scene.page_refs.includes(currentPageIndex)
-    );
-    if (nextScene) setSelectedSceneId(nextScene.id);
-  }, [currentPageIndex, scenes]);
-
-  useEffect(() => {
     clearStageAnimationTimers();
-    setStageEffect(null);
-    setHeldFocusEffect(null);
     if (!selectedScene || selectedScene.type !== 'slide' || selectedScene.actions.length === 0) {
       return;
     }
@@ -300,9 +285,8 @@ export function OpenMaicClassroom({ courseId }: OpenMaicClassroomProps) {
     if (!latestUtterance) return;
     if (selectedScene?.actions.some(action => toStageEffectFromSceneAction(action))) return;
     const effect = toStageEffect(latestUtterance.action);
-    setStageEffect(effect);
     if (!effect) return;
-    const timer = window.setTimeout(() => setStageEffect(null), 4200);
+    const timer = window.setTimeout(() => setExpiredUtteranceId(latestUtterance.id), 4200);
     return () => window.clearTimeout(timer);
   }, [latestUtterance, selectedScene]);
 

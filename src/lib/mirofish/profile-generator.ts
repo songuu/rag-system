@@ -156,7 +156,7 @@ export class ProfileGenerator {
   /**
    * 批量生成人设
    */
-  async generateProfiles(request: ProfileBatchGenerateRequest): Promise<EntityProfile[]> {
+  async generateProfiles(request: ProfileBatchGenerateRequest & { onProgress?: (current:number,total:number,id:string,profile:EntityProfile)=>Promise<void> | void }): Promise<EntityProfile[]> {
     const { entities, simulationContext, options } = request;
 
     const profiles: EntityProfile[] = [];
@@ -166,6 +166,7 @@ export class ProfileGenerator {
       try {
         const profile = await this.generateProfile({
           entity: {
+            id: entity.id,
             name: entity.name,
             type: entity.type,
             description: entity.description,
@@ -175,9 +176,11 @@ export class ProfileGenerator {
           options,
         });
         profiles.push(profile);
+        await request.onProgress?.(profiles.length,entities.length,entity.id,profile);
       } catch (error) {
-        console.error(`[ProfileGenerator] 生成实体 ${entity.name} 人设失败:`, error);
-        // 继续生成下一个
+        // A partial set silently removes agents from the experiment. Let the
+        // persisted preparation job retain its progress and expose the failure.
+        throw new Error(`Agent profile generation failed for entity ${entity.id}.`, { cause: error });
       }
     }
 
@@ -203,13 +206,13 @@ export class ProfileGenerator {
     if (options?.language === 'en') {
       additionalInstructions += '\n- 请使用英文输出人设内容';
     }
-    if (!options?.includePersonality) {
+    if (options?.includePersonality === false) {
       additionalInstructions += '\n- 不需要生成性格特点';
     }
-    if (!options?.includeViewpoints) {
+    if (options?.includeViewpoints === false) {
       additionalInstructions += '\n- 不需要生成观点倾向';
     }
-    if (!options?.includePosts) {
+    if (options?.includePosts === false) {
       additionalInstructions += '\n- 不需要生成典型发言';
     }
 
@@ -234,7 +237,7 @@ export class ProfileGenerator {
     options?: ProfileGenerationOptions
   ): EntityProfile {
     const profile: EntityProfile = {
-      entity_id: entity.name, // 使用名称作为临时 ID
+      entity_id: entity.id || entity.name,
       entity_name: entity.name,
       entity_type: entity.type,
 
@@ -268,13 +271,13 @@ export class ProfileGenerator {
     };
 
     // 根据选项过滤
-    if (!options?.includePersonality) {
+    if (options?.includePersonality === false) {
       profile.personality_traits = [];
     }
-    if (!options?.includeViewpoints) {
+    if (options?.includeViewpoints === false) {
       profile.viewpoints = {};
     }
-    if (!options?.includePosts) {
+    if (options?.includePosts === false) {
       profile.typical_posts = [];
     }
 

@@ -23,6 +23,7 @@ import { LangChainTracer } from '@langchain/core/tracers/tracer_langchain';
 import { traceable } from 'langsmith/traceable';
 
 const { composeEvidenceContextV2 } = await import('../core/context-composer.ts');
+const { captureAskProviderUsage, readAskProviderUsage } = await import('../core/provider-usage-observer.ts');
 const {
   SCOPED_RETRIEVAL_AGENT_PROMPT_VERSION,
   ScopedRetrievalAgentError,
@@ -105,6 +106,19 @@ function invokeAnswer(answer, usageByResponse = [], pack = contextPack([
     traceId: 'trace-diagnostics',
   });
 }
+
+test('online usage counts both actual Agent model calls', async () => {
+  const response = await captureAskProviderUsage(async () => {
+    await invokeAnswer('First fact. [1]', [
+      { input_tokens: 30, output_tokens: 8, total_tokens: 38 },
+      { input_tokens: 70, output_tokens: 12, total_tokens: 82 },
+    ]);
+    return Response.json({ success: true });
+  });
+  const usage = readAskProviderUsage(response);
+  assert.equal(usage.calls.generation, 2);
+  assert.deepEqual(usage.tokens, { measurement: 'provider', inputTokens: 100, outputTokens: 20 });
+});
 
 test('createAgent versions the numbered citation prompt and measures returned model responses', async () => {
   const result = await invokeAnswer('First fact. [1]', [

@@ -10,6 +10,7 @@ import path from 'path';
 import { createUploadPersistence } from '../persistence/upload-store';
 import type { BlobStore } from '../persistence/ports';
 import type { MaicRagAsset } from './types';
+import { assertUnifiedPublicationLegacyWriteAllowed } from '../security/unified-publication-write-guard';
 
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
 const MANIFEST_FILE = path.join(UPLOAD_DIR, 'file-manifest.json');
@@ -26,6 +27,7 @@ export async function mirrorMaicCourseToRagUploads(input: {
   sourceHash?: string;
   pageCount?: number;
 }, dependencies: MaicRagBridgeDependencies = {}): Promise<MaicRagAsset> {
+  assertUnifiedPublicationLegacyWriteAllowed();
   try {
     const sourceHash = input.sourceHash ?? hashText(input.sourceText);
     const shortHash = sourceHash.slice(0, 12);

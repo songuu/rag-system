@@ -5,16 +5,24 @@
  */
 
 import { NextRequest } from 'next/server';
-import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
+import { getSimulationRunner,isSimulationSnapshotSourceAuthorized } from '@/lib/mirofish/simulation-runner';
+import { simulationApiError } from '@/lib/mirofish/simulation-api-response';
 import type { SimulationEvent } from '@/lib/mirofish/simulation-runner';
+import { resolveMiroFishRequestScope } from '@/lib/mirofish/request-scope';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
 export async function GET(_request: NextRequest, { params }: RouteParams) {
+  try{return await createSimulationStream(_request,{params});}catch(error){return simulationApiError(error,'读取模拟事件失败');}
+}
+
+async function createSimulationStream(_request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
-  const runner = getSimulationRunner();
+  const {scope}=await resolveMiroFishRequestScope(_request);
+  const runner = getSimulationRunner(scope);
+  await runner.ensureLoaded(id);
 
   const info = runner.get(id);
   if (!info) {
@@ -23,6 +31,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       headers: { 'Content-Type': 'application/json' },
     });
   }
+  const snapshot=runner.getSnapshot(id)!;
+  if(!snapshot.sourceGraphIdentity||!await isSimulationSnapshotSourceAuthorized(snapshot,scope))return new Response(JSON.stringify({success:false,error:'模拟来源图谱不可用'}),{status:409,headers:{'Content-Type':'application/json'}});
 
   const encoder = new TextEncoder();
   let cleanupFn: (() => void) | null = null;
@@ -36,7 +46,8 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
           controller.enqueue(encoder.encode(`data: ${eventData}\n\n`));
 
           // 模拟结束时关闭流
-          if (event.type === 'simulation_complete' || event.type === 'simulation_error') {
+          if (event.type === 'simulation_complete' || event.type === 'simulation_error'||(event.type==='state_changed'&&event.data.status!=='running'&&event.data.status!=='stopping'&&event.data.status!=='finalizing')) {
+            cleanupFn?.();
             setTimeout(() => {
               try {
                 controller.close();
@@ -55,6 +66,7 @@ export async function GET(_request: NextRequest, { params }: RouteParams) {
       // 清理函数（SSE listener 必须在断开时移除，防止泄漏）
       cleanupFn = () => {
         runner.removeListener(id, listener);
+        _request.signal.removeEventListener('abort',cleanupFn!);
       };
 
       // 使用 AbortSignal 监听客户端断开

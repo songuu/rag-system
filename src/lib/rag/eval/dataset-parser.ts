@@ -106,6 +106,20 @@ function parseEvalCase(
 ): RagEvalCase {
   const evalCase = expectRecord(input, path);
   const expectedAbstain = expectBoolean(evalCase.expectedAbstain, `${path}.expectedAbstain`);
+  const disposition = evalCase.expectedDisposition;
+  if (disposition !== undefined && (disposition !== 'answer' && disposition !== 'abstain' && disposition !== 'clarify')) {
+    fail(`${path}.expectedDisposition`, 'must be answer, abstain, or clarify');
+  }
+  if (disposition !== undefined && (disposition === 'answer') === expectedAbstain) {
+    fail(`${path}.expectedDisposition`, 'must agree with expectedAbstain');
+  }
+  const requiredEvidenceGroups = evalCase.requiredEvidenceGroups === undefined ? undefined
+    : expectNonEmptyArray(evalCase.requiredEvidenceGroups, `${path}.requiredEvidenceGroups`).map((group, index) => {
+      const ids = parseUniqueStringArray(group, `${path}.requiredEvidenceGroups[${index}]`, true);
+      for (const id of ids) if (!corpusByEvidenceId.has(id)) fail(`${path}.requiredEvidenceGroups[${index}]`, 'references unknown evidence');
+      if (expectedAbstain) fail(`${path}.requiredEvidenceGroups`, 'must be absent for abstain/clarify cases');
+      return ids;
+    });
   const goldInput = expectArray(evalCase.goldEvidence, `${path}.goldEvidence`);
   const goldEvidence = goldInput.map((gold, index) =>
     parseGoldEvidence(
@@ -150,6 +164,16 @@ function parseEvalCase(
   const v2Fields = isV2
     ? parseV2CaseFields(evalCase, path, corpusByEvidenceId, goldEvidence)
     : {};
+  if (isV2 && requiredEvidenceGroups) {
+    const scope = v2Fields.scope!;
+    for (const group of requiredEvidenceGroups) for (const id of group) {
+      const evidence = corpusByEvidenceId.get(id)!;
+      if (evidence.tenantId !== scope.tenantId || evidence.corpusId !== scope.corpusId || evidence.trustLevel === 'quarantined'
+        || !scope.allowedTrustLevels.includes(evidence.trustLevel as 'trusted' | 'reviewed' | 'external')) {
+        fail(`${path}.requiredEvidenceGroups`, 'must reference evidence inside the permitted scope and trust levels');
+      }
+    }
+  }
 
   return {
     id: expectNonEmptyString(evalCase.id, `${path}.id`),
@@ -158,6 +182,8 @@ function parseEvalCase(
     goldEvidence,
     ...(expectedAnswer === undefined ? {} : { expectedAnswer }),
     expectedAbstain,
+    ...(disposition === undefined ? {} : { expectedDisposition: disposition }),
+    ...(requiredEvidenceGroups === undefined ? {} : { requiredEvidenceGroups }),
     ...v2Fields,
   };
 }

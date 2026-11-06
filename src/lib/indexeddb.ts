@@ -1,6 +1,7 @@
 // IndexedDB 工具类，用于存储历史对话
 import type { AnswerProcessingDetails } from '@/lib/rag/answer-processing';
 import type { RagCitations, RagCitationItem } from '@/lib/rag/citations/types';
+import type { ChatQueryAnalysis, ChatRetrievalDetails } from '@/lib/rag/chat-types';
 
 export interface ConversationMessage {
   id: string;
@@ -9,8 +10,8 @@ export interface ConversationMessage {
   timestamp: Date;
   traceId?: string;
   storageBackend?: 'memory' | 'milvus';
-  retrievalDetails?: any;
-  queryAnalysis?: any;
+  retrievalDetails?: ChatRetrievalDetails | null;
+  queryAnalysis?: ChatQueryAnalysis | null;
   processingDetails?: AnswerProcessingDetails;
   citations?: RagCitations;
 }

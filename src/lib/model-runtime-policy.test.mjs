@@ -22,6 +22,7 @@ const {
 } = await import('./model-config.ts');
 const {
   RAG_CLIENT_REQUEST_TIMEOUT_MS,
+  RAG_SYNC_REQUEST_BUDGET_MS,
   RAG_EMBEDDING_WARMUP_BUDGET_MS,
   RAG_GENERATION_EXECUTION_BUDGET_MS,
   RAG_RETRIEVAL_EXECUTION_BUDGET_MS,
@@ -113,7 +114,7 @@ test('per-call request policy bounds each attempt and the logical retry budget',
   );
 });
 
-test('browser request deadline covers the full retrieval and generation budget', () => {
+test('browser allows delivery after the absolute server deadline below the proxy window', () => {
   assert.equal(resolveRagAgenticExecutionBudgetMs('ollama'), 270_000);
   assert.equal(resolveRagAgenticExecutionBudgetMs('openai'), 120_000);
   assert.equal(RAG_AGENTIC_EXECUTION_BUDGET_MS, resolveRagAgenticExecutionBudgetMs(process.env.MODEL_PROVIDER));
@@ -126,9 +127,9 @@ test('browser request deadline covers the full retrieval and generation budget',
   assert.equal(RAG_GENERATION_EXECUTION_BUDGET_MS,
     resolveRagGenerationExecutionBudgetMs(process.env.MODEL_PROVIDER));
   assert.equal(RAG_EMBEDDING_WARMUP_BUDGET_MS, 90_000);
-  assert.equal(RAG_CLIENT_REQUEST_TIMEOUT_MS, 375_000);
-  assert(RAG_CLIENT_REQUEST_TIMEOUT_MS > RAG_EMBEDDING_WARMUP_BUDGET_MS
-    + RAG_RETRIEVAL_EXECUTION_BUDGET_MS + resolveRagGenerationExecutionBudgetMs('ollama'));
+  assert.equal(RAG_SYNC_REQUEST_BUDGET_MS, 285_000);
+  assert.equal(RAG_CLIENT_REQUEST_TIMEOUT_MS, 300_000);
+  assert(RAG_SYNC_REQUEST_BUDGET_MS < 300_000);
   assert(
     RAG_CLIENT_REQUEST_TIMEOUT_MS
       > RAG_RETRIEVAL_EXECUTION_BUDGET_MS + RAG_GENERATION_EXECUTION_BUDGET_MS
@@ -163,6 +164,20 @@ test('timeout fetch preserves caller cancellation instead of remapping it', asyn
   });
   controller.abort(callerReason);
   await assert.rejects(pending, error => error === callerReason);
+});
+
+test('timeout fetch honors explicit signal overrides on an aborted Request', async () => {
+  const previous = new AbortController();
+  previous.abort(new Error('old request cancelled'));
+  const request = new Request('http://provider.invalid', { signal: previous.signal });
+  const timedFetch = createModelRequestTimeoutFetch(30_000, async (_input, init) => {
+    init.signal.throwIfAborted();
+    return new Response('ok');
+  });
+  for (const signal of [new AbortController().signal, null]) {
+    assert.equal(await (await timedFetch(request, { signal })).text(), 'ok');
+  }
+  await assert.rejects(timedFetch(request), /old request cancelled/);
 });
 
 function hangingFetch(_input, init) {

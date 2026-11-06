@@ -15,8 +15,8 @@ import {
   useMemo,
   useState,
   type FormEvent,
-  type ReactNode,
 } from 'react';
+import { SearchHighlight, type HighlightRange } from './SearchHighlight';
 import styles from './KnowledgeWorkspace.module.css';
 
 type SearchStrategy = 'hybrid' | 'semantic' | 'keyword';
@@ -33,6 +33,7 @@ interface SearchResult {
   match: SearchStrategy;
   chunkIndex?: number;
   totalChunks?: number;
+  highlights?: { content?: HighlightRange[]; source?: HighlightRange[] };
 }
 
 interface CatalogDocument {
@@ -320,10 +321,10 @@ function SearchResultCard({
     <article className={styles.resultItem}>
       <div className={styles.resultTopline}>
         <span className={styles.resultIndex}>{String(index + 1).padStart(2, '0')}</span>
-        <h3 className={styles.resultTitle}>{result.title}</h3>
+        <h3 className={styles.resultTitle}><SearchHighlight text={result.title} ranges={result.highlights?.source} query={query} /></h3>
         <span className={styles.resultBadge}>{matchLabel(result.match)}</span>
       </div>
-      <p className={styles.resultSnippet}>{highlight(result.snippet, query)}</p>
+      <p className={styles.resultSnippet}><SearchHighlight text={result.snippet} ranges={result.highlights?.content} query={query} /></p>
       <div className={styles.resultMeta}>
         {result.page && <span>第 {result.page} 页</span>}
         {result.chunkIndex !== undefined && <span>片段 {result.chunkIndex + 1}{result.totalChunks ? ` / ${result.totalChunks}` : ''}</span>}
@@ -333,21 +334,6 @@ function SearchResultCard({
       </div>
     </article>
   );
-}
-
-function highlight(content: string, query: string): ReactNode {
-  const terms = [...new Set(query.trim().split(/\s+/).filter(term => term.length > 1))].slice(0, 8);
-  if (terms.length === 0) return content;
-  const pattern = new RegExp(`(${terms.map(escapeRegExp).join('|')})`, 'gi');
-  return content.split(pattern).map((part, index) => (
-    terms.some(term => term.toLowerCase() === part.toLowerCase())
-      ? <mark key={`${index}:${part}`}>{part}</mark>
-      : part
-  ));
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function matchLabel(match: SearchStrategy): string {

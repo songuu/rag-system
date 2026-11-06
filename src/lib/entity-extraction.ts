@@ -55,6 +55,24 @@ export class EntityExtractionOutputBudgetError extends Error {
   }
 }
 
+export class EntityExtractionTruncatedError extends Error {
+  readonly code = 'ENTITY_EXTRACTION_TRUNCATED';
+
+  constructor() {
+    super('模型输出已截断，无法完整提取当前文本块。');
+    this.name = 'EntityExtractionTruncatedError';
+  }
+}
+
+export class EntityExtractionInvalidOutputError extends Error {
+  readonly code = 'ENTITY_EXTRACTION_INVALID_OUTPUT';
+
+  constructor() {
+    super('模型输出无法解析为完整的实体和关系。');
+    this.name = 'EntityExtractionInvalidOutputError';
+  }
+}
+
 const TIMED_OUT_ENTITY_EXTRACTION_WORK = new Map<string, Set<Promise<void>>>();
 
 function isEntityExtractionFatalError(
@@ -62,11 +80,15 @@ function isEntityExtractionFatalError(
 ): error is EntityExtractionProviderBusyError
   | EntityExtractionProviderTimeoutError
   | EntityExtractionProviderBudgetError
-  | EntityExtractionOutputBudgetError {
+  | EntityExtractionOutputBudgetError
+  | EntityExtractionTruncatedError
+  | EntityExtractionInvalidOutputError {
   return error instanceof EntityExtractionProviderBusyError
     || error instanceof EntityExtractionProviderTimeoutError
     || error instanceof EntityExtractionProviderBudgetError
-    || error instanceof EntityExtractionOutputBudgetError;
+    || error instanceof EntityExtractionOutputBudgetError
+    || error instanceof EntityExtractionTruncatedError
+    || error instanceof EntityExtractionInvalidOutputError;
 }
 
 const ENTITY_EXTRACTION_FIELD_LIMITS = Object.freeze({
@@ -162,6 +184,18 @@ export interface ExtractionConfig {
   // 超时配置
   maxTotalTimeout: number;   // 总体最大超时（毫秒），默认 10 分钟
   maxChunkTimeout: number;   // 单块最大超时（毫秒），默认 60 秒
+  /** Fixed operation budget when loading latency cannot be estimated from text length. */
+  chunkTimeoutMs?: number;
+  /** Graph stages can reload the LLM after embedding work; ordinary callers keep their stage defaults. */
+  llmOperationTimeoutMs?: number;
+  requireCompleteExtraction: boolean; // 任何文本块失败时拒绝部分结果
+  adaptiveChunkSplitting?: boolean;
+  minAdaptiveChunkCharacters?: number;
+  embeddingBatchSize?: number;
+  /** Complete community LLM work before switching to bounded embedding batches. */
+  batchCommunityEmbeddings?: boolean;
+  /** Separate cold-start budget for embeddings; omitted callers retain 30 seconds. */
+  embeddingTimeoutMs?: number;
   baseChunkTime: number;     // 单块基础处理时间（毫秒），默认 10 秒
   timeoutPerChar: number;    // 每字符额外时间（毫秒），默认 20ms
   maxProviderCalls: number;  // 单次抽取允许的 LLM/embedding 调用数
@@ -173,6 +207,26 @@ export interface ExtractionConfig {
   maxEntityResolutionComparisons: number; // 实体消歧两两比较上限
   maxEntityResolutionVectorOperations: number; // 余弦相似度标量运算上限
   maxEmbeddingDimensions: number; // 单个实体向量维度上限
+}
+
+export interface EntityExtractionSegment {
+  key: string;
+  sourceDigest: string;
+  progress: number;
+}
+
+export type EntityExtractionSegmentResult = {
+  entities: Array<{ name: string; type: string; description: string }>;
+  relations: Array<{ source: string; target: string; type: string; description: string }>;
+};
+
+export type EntityExtractionCheckpointValue =
+  | { kind: 'split' }
+  | { kind: 'complete'; result: EntityExtractionSegmentResult };
+
+export interface EntityExtractionCheckpoint {
+  load(segment: EntityExtractionSegment): Promise<EntityExtractionCheckpointValue | null>;
+  save(segment: EntityExtractionSegment, value: EntityExtractionCheckpointValue): Promise<void>;
 }
 
 /** 超时配置常量 */
@@ -202,7 +256,7 @@ export const TIMEOUT_CONSTANTS = {
   },
   
   // 绝对限制
-  ABSOLUTE_MAX_TIMEOUT: 30 * 60 * 1000,  // 绝对最大 30 分钟
+  ABSOLUTE_MAX_TIMEOUT: 55 * 60 * 1000,  // 长文档构建仍受租约和显式任务预算约束
   ABSOLUTE_MIN_TIMEOUT: 30 * 1000,        // 绝对最小 30 秒
 };
 
@@ -242,6 +296,7 @@ function getDefaultExtractionConfig(): ExtractionConfig {
     // 超时配置
     maxTotalTimeout: 10 * 60 * 1000,  // 默认最大 10 分钟
     maxChunkTimeout: 60 * 1000,        // 单块最大 60 秒
+    requireCompleteExtraction: false,
     baseChunkTime: 10 * 1000,          // 基础 10 秒/块
     timeoutPerChar: 20,                // 每字符 20ms
     maxProviderCalls: 10_000,
@@ -273,6 +328,7 @@ export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   // 超时配置
   maxTotalTimeout: 10 * 60 * 1000,
   maxChunkTimeout: 60 * 1000,
+  requireCompleteExtraction: false,
   baseChunkTime: 10 * 1000,
   timeoutPerChar: 20,
   maxProviderCalls: 10_000,
@@ -328,15 +384,18 @@ const ENTITY_EXTRACTION_PROMPT = `你是一个专业的信息抽取专家。请�
 """
 
 ## 输出格式
+请完整提取重要信息，合并重复项，描述尽量简短。关系的源和目标必须在实体列表中。
 请严格按照以下 JSON 格式输出，不要添加任何其他内容：
-{{
+{
   "entities": [
-    {{"name": "实体名称", "type": "PERSON|ORGANIZATION|LOCATION|EVENT|CONCEPT|PRODUCT|DATE|OTHER", "description": "实体描述"}}
+    {"name": "实体名称", "type": "PERSON|ORGANIZATION|LOCATION|EVENT|CONCEPT|PRODUCT|DATE|OTHER", "description": "实体描述"}
   ],
   "relations": [
-    {{"source": "源实体名称", "target": "目标实体名称", "type": "关系类型", "description": "关系描述"}}
+    {"source": "源实体名称", "target": "目标实体名称", "type": "关系类型", "description": "关系描述"}
   ]
-}}`;
+}`;
+
+const ENTITY_EXTRACTION_CONSISTENCY_INSTRUCTIONS = '\n\n重新抽取要求：上一轮结果未通过完整性检查。请重新返回完整 entities 和 relations 数组，不要返回补丁。每条关系的 source 和 target 都必须逐字匹配同一输出 entities 数组中某个实体的 name；关系涉及的有原文依据的实体必须同时完整列出，不得使用实体类型标签代替实体名称。只提取当前文本明确支持的事实，不得补造事实。没有可确认的实体或关系时请使用空数组。';
 
 export function calculateEntityExtractionPromptCharacters(
   chunkContentLength: number
@@ -431,10 +490,12 @@ const COMMUNITY_SUMMARY_PROMPT = `你是一个知识图谱分析专家。请为�
 
 export class EntityExtractor {
   private config: ExtractionConfig;
-  private llm: BaseChatModel;
+  private llm: Pick<BaseChatModel, 'invoke'>;
+  private extractionLlm: Pick<BaseChatModel, 'invoke'>;
   private embeddings: Embeddings;
   private readonly llmAdmissionKey: string;
   private readonly embeddingAdmissionKey: string;
+  private readonly checkpoint?: EntityExtractionCheckpoint;
   private readonly activeProviderControllers = new Set<AbortController>();
   private providerCallCount = 0;
   private providerInputCharacterCount = 0;
@@ -452,15 +513,42 @@ export class EntityExtractor {
   constructor(
     config: Partial<ExtractionConfig> = {},
     options: {
-      llmInstance?: BaseChatModel;
+      llmInstance?: Pick<BaseChatModel, 'invoke'>;
+      extractionLlmInstance?: Pick<BaseChatModel, 'invoke'>;
       embeddingInstance?: Embeddings;
       providerKey?: string;
       embeddingProviderKey?: string;
+      checkpoint?: EntityExtractionCheckpoint;
     } = {}
   ) {
     // 使用动态获取的默认配置，确保使用正确的模型名
     const defaultConfig = getDefaultExtractionConfig();
     this.config = { ...defaultConfig, ...config };
+    this.checkpoint = options.checkpoint;
+    if (this.config.chunkTimeoutMs !== undefined
+      && (!Number.isSafeInteger(this.config.chunkTimeoutMs) || this.config.chunkTimeoutMs < 1)) {
+      throw new Error('Entity extraction chunk timeout must be a positive safe integer.');
+    }
+    if (this.config.llmOperationTimeoutMs !== undefined
+      && (!Number.isSafeInteger(this.config.llmOperationTimeoutMs)
+        || this.config.llmOperationTimeoutMs < 1000 || this.config.llmOperationTimeoutMs > 300_000)) {
+      throw new Error('Entity LLM operation timeout must be an integer between 1000 and 300000 ms.');
+    }
+    if (this.config.minAdaptiveChunkCharacters !== undefined
+      && (!Number.isSafeInteger(this.config.minAdaptiveChunkCharacters)
+        || this.config.minAdaptiveChunkCharacters < 1)) {
+      throw new Error('Adaptive extraction minimum chunk size must be a positive integer.');
+    }
+    if (this.config.embeddingBatchSize !== undefined
+      && (!Number.isSafeInteger(this.config.embeddingBatchSize)
+        || this.config.embeddingBatchSize < 1 || this.config.embeddingBatchSize > 128)) {
+      throw new Error('Entity embedding batch size must be between 1 and 128.');
+    }
+    if (this.config.embeddingTimeoutMs !== undefined
+      && (!Number.isSafeInteger(this.config.embeddingTimeoutMs)
+        || this.config.embeddingTimeoutMs < 1000 || this.config.embeddingTimeoutMs > 300_000)) {
+      throw new Error('Entity embedding timeout must be an integer between 1000 and 300000 ms.');
+    }
     const resourceLimits = [
       this.config.maxProviderCalls,
       this.config.maxProviderInputCharacters,
@@ -484,10 +572,12 @@ export class EntityExtractor {
         temperature: 0.1,
       });
     }
+    this.extractionLlm = options.extractionLlmInstance ?? this.llm;
 
     const factory = getModelFactory();
     this.embeddings = options.embeddingInstance
-      ?? createEmbedding(this.config.embeddingModel !== 'default' ? this.config.embeddingModel : undefined);
+      ?? createEmbedding(this.config.embeddingModel !== 'default' ? this.config.embeddingModel : undefined,
+        this.config.embeddingTimeoutMs === undefined ? undefined : { requestTimeoutMs: this.config.embeddingTimeoutMs });
     this.llmAdmissionKey = options.providerKey?.trim()
       || `${factory.getProvider()}:${this.config.llmModel.trim() || 'default'}`;
     const embeddingConfig = getEmbeddingConfigSummary();
@@ -550,13 +640,18 @@ export class EntityExtractor {
     // 基础时间计算
     // 每个 chunk 的处理时间 = 基础时间 + (字符数 * 每字符时间) * 模型系数
     const avgChunkSize = textLength / Math.max(1, chunkCount);
-    const perChunkTime = (
+    const perChunkTime = this.config.chunkTimeoutMs === undefined ? (
       this.config.baseChunkTime + 
       avgChunkSize * this.config.timeoutPerChar
-    ) * modelFactor;
+    ) * modelFactor : this.calculateChunkTimeout(avgChunkSize);
     
     // 总提取时间 (包括 gleaning)
-    const extractionTime = chunkCount * perChunkTime * gleaningFactor;
+    // Reserve one parent and two child attempts per chunk. Without this
+    // allowance adaptive recovery can run out of its task deadline just after
+    // a parent times out, despite successful smaller requests being possible.
+    // Deeper splits still share the configured total/provider resource limits.
+    const adaptiveCallFactor = this.config.adaptiveChunkSplitting ? 3 : 1;
+    const extractionTime = chunkCount * perChunkTime * gleaningFactor * adaptiveCallFactor;
     
     // 其他阶段的时间估算
     const resolutionTime = Math.min(30000, chunkCount * 2000); // 消歧最多 30 秒
@@ -596,6 +691,9 @@ export class EntityExtractor {
    * 计算单个 chunk 的超时时间
    */
   calculateChunkTimeout(chunkLength: number): number {
+    if (this.config.chunkTimeoutMs !== undefined) {
+      return Math.min(this.config.chunkTimeoutMs, this.config.maxChunkTimeout);
+    }
     const modelFactor = this.getModelSpeedFactor();
     
     const timeout = (
@@ -720,6 +818,26 @@ export class EntityExtractor {
     return Math.min(preferredMs, remainingTime);
   }
 
+  private async waitForTimedOutProviderSettlement(): Promise<boolean> {
+    const pending = TIMED_OUT_ENTITY_EXTRACTION_WORK.get(this.llmAdmissionKey);
+    if (!pending?.size) return true;
+    const remaining = this.getRemainingTime();
+    if (remaining <= 0) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Aborting fetch may need another event-loop turn to close its body.
+      // Give cooperative cancellation a bounded drain window; an orphan that
+      // ignores cancellation still owns admission and must never be overlapped.
+      await Promise.race([
+        Promise.all([...pending]),
+        new Promise(resolve => { timer = setTimeout(resolve, Math.min(250, remaining)); }),
+      ]);
+      return !TIMED_OUT_ENTITY_EXTRACTION_WORK.has(this.llmAdmissionKey);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /**
    * 中止当前抽取任务
    */
@@ -803,14 +921,14 @@ export class EntityExtractor {
       
       this.reportProgress({
         stage: 'extracting',
-        current: i + 1,
+        current: i,
         total: chunks.length,
         message: `正在抽取第 ${i + 1}/${chunks.length} 个文本块...`,
       });
 
       try {
         // 主抽取
-        const extracted = await this.extractFromChunk(chunk);
+        const extracted = await this.extractFromChunk(chunk, chunks.length);
         this.reserveAggregationLookupBudget(
           extracted.entities.length,
           extracted.relations.length,
@@ -872,10 +990,18 @@ export class EntityExtractor {
 
         this.checkTimeout();
 
+        this.reportProgress({
+          stage: 'extracting',
+          current: i + 1,
+          total: chunks.length,
+          message: `已完成第 ${i + 1}/${chunks.length} 个文本块抽取`,
+        });
+
       } catch (error) {
         if (isEntityExtractionFatalError(error)) {
           throw error;
         }
+        if (this.config.requireCompleteExtraction) throw error;
         console.error(
           '[EntityExtractor] chunk extraction failed',
           createStableErrorLog(error)
@@ -1187,31 +1313,139 @@ export class EntityExtractor {
     return null;
   }
 
-  /** 从单个块中提取实体和关系 */
-  private async extractFromChunk(chunk: TextChunk): Promise<{
-    entities: Array<{ name: string; type: string; description: string }>;
-    relations: Array<{ source: string; target: string; type: string; description: string }>;
-  }> {
+  private parseCompleteExtraction(response: string | BaseMessage): { entities: unknown[]; relations: unknown[] } | null {
+    const text = this.extractContent(response).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { return null; }
+    if (!isExtractionRecord(parsed) || !Array.isArray(parsed.entities) || !Array.isArray(parsed.relations)) return null;
+    const validFields = (item: unknown, required: readonly string[]) =>
+      isExtractionRecord(item)
+      && required.every(key => typeof item[key] === 'string' && (key === 'description' || Boolean((item[key] as string).trim())));
+    if (!parsed.entities.every(item => validFields(item, ['name', 'type', 'description']))
+      || !parsed.relations.every(item => validFields(item, ['source', 'target', 'type', 'description']))) return null;
+    const names = new Set(parsed.entities.map(item => (item as { name: string }).name.trim().toLowerCase()));
+    if (parsed.relations.some(item => {
+      const relation = item as { source: string; target: string };
+      return !names.has(relation.source.trim().toLowerCase()) || !names.has(relation.target.trim().toLowerCase());
+    })) return null;
+    return { entities: parsed.entities, relations: parsed.relations };
+  }
+
+  /** Split only incomplete outputs; every successful leaf retains its parent evidence. */
+  private async extractFromChunk(chunk: TextChunk, totalChunks: number): Promise<EntityExtractionSegmentResult> {
+    if (!this.config.adaptiveChunkSplitting) return this.extractOneSegment(chunk);
+    const minimum = this.config.minAdaptiveChunkCharacters ?? 256;
+    const visit = async (start: number, end: number): Promise<EntityExtractionSegmentResult> => {
+      this.checkTimeout();
+      const content = chunk.content.slice(start, end);
+      const segment: EntityExtractionSegment = {
+        key: `${chunk.index}:${start}:${end}`,
+        sourceDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+        progress: Math.min(0.75, 0.75 * (chunk.index + end / chunk.content.length) / totalChunks),
+      };
+      const cached = await this.checkpoint?.load(segment);
+      this.checkTimeout();
+      if (cached?.kind === 'complete') {
+        const encoded = JSON.stringify(cached.result);
+        this.reserveProviderOutput(encoded);
+        const parsed = this.parseCompleteExtraction(encoded);
+        if (!parsed) throw new Error('已保存的图谱抽取结果无效。');
+        return this.normalizeExtractionOutput(parsed);
+      }
+
+      const split = async (): Promise<EntityExtractionSegmentResult> => {
+        if (content.length < minimum * 2) throw new EntityExtractionTruncatedError();
+        let middle = start + Math.floor(content.length / 2);
+        // Never separate a UTF-16 surrogate pair across model requests.
+        const previous = chunk.content.charCodeAt(middle - 1);
+        const next = chunk.content.charCodeAt(middle);
+        if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) middle += 1;
+        if (middle <= start || middle >= end) throw new EntityExtractionTruncatedError();
+        // Small overlaps retain relationships that cross the split boundary.
+        const overlap = Math.min(150, Math.floor(content.length / 16));
+        let leftEnd = Math.min(end, middle + overlap);
+        let rightStart = Math.max(start, middle - overlap);
+        const splitsSurrogate = (position: number) => {
+          const before = chunk.content.charCodeAt(position - 1);
+          const after = chunk.content.charCodeAt(position);
+          return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+        };
+        if (splitsSurrogate(leftEnd)) leftEnd += 1;
+        if (splitsSurrogate(rightStart)) rightStart -= 1;
+        const left = await visit(start, leftEnd);
+        const right = await visit(rightStart, end);
+        return { entities: [...left.entities, ...right.entities], relations: [...left.relations, ...right.relations] };
+      };
+
+      if (cached?.kind === 'split') return split();
+      try {
+        const result = await this.extractOneSegment({ ...chunk, content });
+        this.checkTimeout();
+        await this.checkpoint?.save(segment, { kind: 'complete', result });
+        return result;
+      } catch (error) {
+        if (error instanceof EntityExtractionInvalidOutputError && content.length < minimum * 2) {
+          // A small fragment can still contain several related entities. Ask
+          // for one complete consistency pass instead of dropping dangling
+          // relations or weakening the same strict output validator.
+          const result = await this.extractOneSegment({ ...chunk, content }, true);
+          this.checkTimeout();
+          await this.checkpoint?.save(segment, { kind: 'complete', result });
+          return result;
+        }
+        const maySplit = error instanceof EntityExtractionTruncatedError
+          || error instanceof EntityExtractionInvalidOutputError
+          || error instanceof EntityExtractionProviderTimeoutError;
+        if (!maySplit || content.length < minimum * 2) throw error;
+        this.reportProgress({
+          stage: 'extracting',
+          current: chunk.index + start / chunk.content.length,
+          total: totalChunks,
+          message: `第 ${chunk.index + 1}/${totalChunks} 个文本块输出不完整，正在拆分为更小片段重试...`,
+        });
+        // Persist the decision before its children so a retry does not repeat the failed parent.
+        await this.checkpoint?.save({
+          ...segment,
+          progress: Math.min(0.75, 0.75 * (chunk.index + start / chunk.content.length) / totalChunks),
+        }, { kind: 'split' });
+        // A provider may ignore abort; preserve the split but never overlap its orphaned request.
+        if (!await this.waitForTimedOutProviderSettlement()) throw error;
+        this.checkTimeout();
+        return split();
+      }
+    };
+    return visit(0, chunk.content.length);
+  }
+
+  /** 从单个片段中提取实体和关系 */
+  private async extractOneSegment(chunk: TextChunk, recheckConsistency = false): Promise<EntityExtractionSegmentResult> {
     // 检查是否已中止
     if (this.aborted) {
-      return { entities: [], relations: [] };
+      throw new Error('抽取任务已被中止');
     }
 
-    const prompt = ENTITY_EXTRACTION_PROMPT.replace('{text}', () => chunk.content);
+    const prompt = ENTITY_EXTRACTION_PROMPT.replace('{text}', () => chunk.content)
+      + (recheckConsistency ? ENTITY_EXTRACTION_CONSISTENCY_INSTRUCTIONS : '');
     const chunkTimeout = this.getOperationTimeout(this.calculateChunkTimeout(chunk.content.length));
     
     try {
       // 使用超时包装 LLM 调用
       const response = await this.withTimeout(
-        signal => this.llm.invoke(prompt, { signal }),
+        signal => this.extractionLlm.invoke(prompt, { signal }),
         chunkTimeout,
         `单块提取超时 (${Math.round(chunkTimeout / 1000)}秒)`,
         prompt.length
       );
       this.reserveProviderOutput(response);
+      if (this.config.adaptiveChunkSplitting && typeof response !== 'string'
+        && response.response_metadata?.done_reason === 'length') {
+        throw new EntityExtractionTruncatedError();
+      }
       
       // 使用安全的 JSON 解析
-      const result = this.safeParseJson(response);
+      const result = this.config.requireCompleteExtraction
+        ? this.parseCompleteExtraction(response)
+        : this.safeParseJson(response);
       
       if (result) {
         const {
@@ -1227,6 +1461,10 @@ export class EntityExtractor {
         };
       }
       
+      if (this.config.requireCompleteExtraction && this.config.adaptiveChunkSplitting) {
+        throw new EntityExtractionInvalidOutputError();
+      }
+      if (this.config.requireCompleteExtraction) throw new Error('模型输出无法解析。');
       console.warn('[EntityExtractor] 无法解析 JSON，跳过当前块');
     } catch (error) {
       if (isEntityExtractionFatalError(error)) {
@@ -1239,6 +1477,9 @@ export class EntityExtractor {
         throw new EntityExtractionProviderTimeoutError(
           'Entity extraction provider request timed out.'
         );
+      }
+      if (this.config.requireCompleteExtraction) {
+        throw new Error('文本块抽取失败，请检查模型服务和输出。', { cause: error });
       }
       if (error instanceof Error && error.message.includes('超时')) {
         console.warn(
@@ -1418,15 +1659,25 @@ export class EntityExtractor {
     // 计算实体嵌入
     const entityTexts = entityArray.map(e => `${e.name}: ${e.description}`);
     const embeddingTimeout = this.getOperationTimeout(
-      Math.min(30_000, this.config.maxChunkTimeout)
+      Math.min(this.config.embeddingTimeoutMs ?? 30_000, this.config.maxChunkTimeout)
     );
-    const entityEmbeddings = await this.withTimeout(
-      () => this.embeddings.embedDocuments(entityTexts),
-      embeddingTimeout,
-      `实体嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
-      countProviderInputCharacters(entityTexts),
-      this.embeddingAdmissionKey
-    );
+    const entityEmbeddings: number[][] = [];
+    const batchSize = this.config.embeddingBatchSize ?? entityTexts.length;
+    for (let offset = 0; offset < entityTexts.length; offset += batchSize) {
+      const batch = entityTexts.slice(offset, offset + batchSize);
+      const vectors = await this.withTimeout(
+        () => this.embeddings.embedDocuments(batch),
+        this.getOperationTimeout(embeddingTimeout),
+        `实体嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
+        countProviderInputCharacters(batch),
+        this.embeddingAdmissionKey
+      );
+      if (!Array.isArray(vectors) || vectors.length !== batch.length) {
+        throw new EntityExtractionOutputBudgetError();
+      }
+      entityEmbeddings.push(...vectors);
+      this.checkTimeout();
+    }
     this.checkTimeout();
 
     if (
@@ -1576,7 +1827,7 @@ export class EntityExtractor {
         .replace('{desc2}', () => entity2.description)
         .replace('{context}', '无额外上下文');
 
-      const mergeTimeout = this.getOperationTimeout(Math.min(15000, this.config.maxChunkTimeout));
+      const mergeTimeout = this.getOperationTimeout(Math.min(this.config.llmOperationTimeoutMs ?? 15_000, this.config.maxChunkTimeout));
       const response = await this.withTimeout(
         signal => this.llm.invoke(prompt, { signal }),
         mergeTimeout,
@@ -1826,6 +2077,13 @@ export class EntityExtractor {
       message: '正在生成社区摘要...',
     });
 
+    const batchEmbeddings = this.config.batchCommunityEmbeddings === true;
+    const pendingEmbeddings: Array<{ community: Community; index: number }> = [];
+    const applyFallbackSummary = (community: Community, index: number) => {
+      community.name = `社区 ${index + 1}`;
+      community.summary = `包含 ${community.entities.length} 个实体的社区`;
+      community.keywords = [];
+    };
     let summarized = 0;
     for (const community of communities.values()) {
       this.checkTimeout();
@@ -1836,18 +2094,21 @@ export class EntityExtractor {
         community.summary = summary.summary;
         community.keywords = summary.keywords;
 
-        // 生成社区摘要的嵌入
-        const embeddingTimeout = this.getOperationTimeout(
-          Math.min(30_000, this.config.maxChunkTimeout)
-        );
-        const embedding = await this.withTimeout(
-          () => this.embeddings.embedQuery(summary.summary),
-          embeddingTimeout,
-          `社区嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
-          countProviderInputCharacters([summary.summary]),
-          this.embeddingAdmissionKey
-        );
-        community.embedding = this.validateEmbeddingVector(embedding);
+        if (batchEmbeddings) {
+          pendingEmbeddings.push({ community, index: summarized });
+        } else {
+          const embeddingTimeout = this.getOperationTimeout(
+            Math.min(this.config.embeddingTimeoutMs ?? 30_000, this.config.maxChunkTimeout)
+          );
+          const embedding = await this.withTimeout(
+            () => this.embeddings.embedQuery(summary.summary),
+            embeddingTimeout,
+            `社区嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
+            countProviderInputCharacters([summary.summary]),
+            this.embeddingAdmissionKey
+          );
+          community.embedding = this.validateEmbeddingVector(embedding);
+        }
 
       } catch (error) {
         if (isEntityExtractionFatalError(error)) {
@@ -1857,9 +2118,7 @@ export class EntityExtractor {
           '[EntityExtractor] community summary generation failed',
           createStableErrorLog(error)
         );
-        community.name = `社区 ${summarized + 1}`;
-        community.summary = `包含 ${community.entities.length} 个实体的社区`;
-        community.keywords = [];
+        applyFallbackSummary(community, summarized);
       }
 
       summarized++;
@@ -1869,6 +2128,40 @@ export class EntityExtractor {
         total: communities.size,
         message: `正在生成社区摘要 ${summarized}/${communities.size}...`,
       });
+      this.checkTimeout();
+    }
+
+    // On a shared GPU, alternating these providers for every community can
+    // repeatedly evict the model. Preserve summary order while switching once.
+    const batchSize = this.config.embeddingBatchSize ?? 32;
+    let dimensions: number | undefined;
+    for (let offset = 0; offset < pendingEmbeddings.length; offset += batchSize) {
+      this.checkTimeout();
+      const batch = pendingEmbeddings.slice(offset, offset + batchSize);
+      const texts = batch.map(({ community }) => community.summary);
+      this.reportProgress({ stage: 'summarizing', current: communities.size, total: communities.size,
+        message: `正在生成社区摘要嵌入 ${offset}/${pendingEmbeddings.length}...` });
+      try {
+        const embeddingTimeout = this.getOperationTimeout(
+          Math.min(this.config.embeddingTimeoutMs ?? 30_000, this.config.maxChunkTimeout)
+        );
+        const embeddings = await this.withTimeout(
+          () => this.embeddings.embedDocuments(texts), embeddingTimeout,
+          `社区嵌入超时 (${Math.round(embeddingTimeout / 1000)}秒)`,
+          countProviderInputCharacters(texts), this.embeddingAdmissionKey
+        );
+        if (!Array.isArray(embeddings) || embeddings.length !== batch.length) throw new EntityExtractionOutputBudgetError();
+        const validated = embeddings.map(value => {
+          const vector = this.validateEmbeddingVector(value, dimensions);
+          dimensions ??= vector.length;
+          return vector;
+        });
+        batch.forEach(({ community }, index) => { community.embedding = validated[index]; });
+      } catch (error) {
+        if (isEntityExtractionFatalError(error)) throw error;
+        console.error('[EntityExtractor] community embedding batch failed', createStableErrorLog(error));
+        batch.forEach(({ community, index }) => applyFallbackSummary(community, index));
+      }
       this.checkTimeout();
     }
 
@@ -1909,7 +2202,7 @@ export class EntityExtractor {
       .replace('{relations}', () => relationInfos || '无');
 
     try {
-      const summaryTimeout = this.getOperationTimeout(Math.min(20000, this.config.maxChunkTimeout));
+      const summaryTimeout = this.getOperationTimeout(Math.min(this.config.llmOperationTimeoutMs ?? 20_000, this.config.maxChunkTimeout));
       const response = await this.withTimeout(
         signal => this.llm.invoke(prompt, { signal }),
         summaryTimeout,

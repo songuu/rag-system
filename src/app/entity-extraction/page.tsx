@@ -125,21 +125,19 @@ export default function EntityExtractionPage() {
 
   // 加载可用文件
   const loadFiles = useCallback(async () => {
-    try {
-      const response = await fetch('/rag-api/entity-extraction?action=files');
+    return fetch('/rag-api/entity-extraction?action=files').then(async response => {
       const data = await response.json();
       if (data.success) {
         setFiles(data.files || []);
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('加载文件失败:', error);
-    }
+    });
   }, []);
 
   // 加载模型列表
   const loadModels = useCallback(async () => {
-    try {
-      const response = await fetch('/rag-api/ollama/models');
+    return fetch('/rag-api/ollama/models').then(async response => {
       if (!response.ok) {
         console.error('Ollama API 请求失败:', response.status);
         return;
@@ -155,29 +153,26 @@ export default function EntityExtractionPage() {
         setEmbeddingModels(data.embeddingModels || []);
         
         // 如果当前配置的模型不在列表中，自动选择第一个
-        if (allLlmModels.length > 0 && !allLlmModels.some(m => m.name === config.llmModel)) {
-          setConfig(prev => ({ ...prev, llmModel: allLlmModels[0].name }));
-        }
-        if (data.embeddingModels?.length > 0 && !data.embeddingModels.some((m: EmbeddingModel) => m.name === config.embeddingModel)) {
-          setConfig(prev => ({ ...prev, embeddingModel: data.embeddingModels[0].name }));
-        }
+        if (allLlmModels.length > 0) setConfig(prev => allLlmModels.some(m => m.name === prev.llmModel)
+          ? prev : { ...prev, llmModel: allLlmModels[0].name });
+        if (data.embeddingModels?.length > 0) setConfig(prev => data.embeddingModels.some((m: EmbeddingModel) => m.name === prev.embeddingModel)
+          ? prev : { ...prev, embeddingModel: data.embeddingModels[0].name });
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('加载模型失败:', error);
-    }
-  }, [config.llmModel, config.embeddingModel]);
+    });
+  }, []);
 
   // 加载已有图谱
   const loadExistingGraph = useCallback(async () => {
-    try {
-      const response = await fetch('/rag-api/entity-extraction?action=graph');
+    return fetch('/rag-api/entity-extraction?action=graph').then(async response => {
       const data = await response.json();
       if (data.success && data.hasGraph) {
         setGraph(data.graph);
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('加载图谱失败:', error);
-    }
+    });
   }, []);
 
   // 初始化

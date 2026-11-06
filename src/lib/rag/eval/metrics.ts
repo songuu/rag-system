@@ -11,6 +11,7 @@ import type {
   RagEvalSummary,
   RagEvalTargetResult,
 } from './types';
+import { aggregateEvalUsage } from './usage-metering';
 
 export function evaluateRetrieval(
   goldEvidence: readonly RagEvalGoldEvidence[],
@@ -198,10 +199,13 @@ export function summarizeEvalCaseResults(results: readonly RagEvalCaseResult[]):
     result => result.usage.inputTokens !== undefined && result.usage.outputTokens !== undefined
   );
   const costCases = completed.filter(result => result.usage.costUsd !== undefined);
+  const callCases = completed.filter(result => result.observation?.calls !== 'unavailable');
+  const observedUsage = completed.flatMap(result => result.usageObservation ? [result.usageObservation] : []);
   const latencies = completed.map(result => result.usage.totalLatencyMs);
-  const unanswerableCases = completed.filter(result => result.expectedAbstain);
+  const dispositionCases = completed.filter(result => result.answerMetrics.abstainCorrect !== null);
+  const unanswerableCases = dispositionCases.filter(result => result.expectedAbstain);
   const answerableCases = completed.filter(result => !result.expectedAbstain);
-  const answeredCases = completed.filter(result => !result.abstained);
+  const answeredCases = dispositionCases.filter(result => !result.abstained);
   const citationCases = completed.filter(result => result.citations.coverage !== null);
   const security = completed.reduce(
     (total, result) => addSecurityMetrics(total, result.security),
@@ -228,17 +232,17 @@ export function summarizeEvalCaseResults(results: readonly RagEvalCaseResult[]):
       answerMetricCases.map(result => result.answerMetrics.requiredFactCoverage)
     ),
     abstainAccuracy: meanNullable(
-      completed.map(result => (result.answerMetrics.abstainCorrect ? 1 : 0))
+      dispositionCases.map(result => (result.answerMetrics.abstainCorrect ? 1 : 0))
     ),
     abstain: {
       unanswerableTruePositiveRate: meanNullable(
         unanswerableCases.map(result => result.abstained ? 1 : 0)
       ),
       answerableFalsePositiveRate: meanNullable(
-        answerableCases.map(result => result.abstained ? 1 : 0)
+        dispositionCases.filter(result => !result.expectedAbstain).map(result => result.abstained ? 1 : 0)
       ),
       answerCoverage: meanNullable(
-        completed.map(result => result.abstained ? 0 : 1)
+        dispositionCases.map(result => result.abstained ? 0 : 1)
       ),
       selectiveAccuracy: meanNullable(
         answeredCases.map(result => {
@@ -282,15 +286,17 @@ export function summarizeEvalCaseResults(results: readonly RagEvalCaseResult[]):
       coverageRatio: completed.length === 0 ? 0 : costCases.length / completed.length,
     },
     calls: {
-      embeddingTotal: completed.reduce(
+      embeddingTotal: callCases.length === 0 ? null : callCases.reduce(
         (total, result) => total + result.usage.embeddingCalls,
         0
       ),
-      generationTotal: completed.reduce(
+      generationTotal: callCases.length === 0 ? null : callCases.reduce(
         (total, result) => total + result.usage.generationCalls,
         0
       ),
+      ...(callCases.length === completed.length ? {} : { coverageRatio: completed.length ? callCases.length / completed.length : 0 }),
     },
+    ...(observedUsage.length ? { measurements: aggregateEvalUsage(observedUsage) } : {}),
   };
 }
 

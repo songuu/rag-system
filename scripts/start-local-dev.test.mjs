@@ -11,6 +11,8 @@ import {
   activateElasticsearchMode,
   buildComposeArgs,
   buildPostgresRuntimeEnv,
+  buildOllamaServerEnv,
+  ensureOllamaReady,
   localRuntimeEnv,
   parseEnvFile,
   warmDevelopmentRoutes,
@@ -18,6 +20,83 @@ import {
   startBackgroundWorkers,
   run,
 } from "./start-local-dev.mjs";
+
+test('新启动 Ollama 在服务进程配置单模型单执行槽，不修改父环境', () => {
+  const input = { PATH: 'test-path', OLLAMA_MODELS: 'models' };
+  const actual = buildOllamaServerEnv(input);
+  assert.equal(actual.OLLAMA_NUM_PARALLEL, '1');
+  assert.equal(actual.OLLAMA_MAX_LOADED_MODELS, '1');
+  assert.equal(actual.OLLAMA_MAX_QUEUE, '16');
+  assert.equal(actual.OLLAMA_MODELS, 'models');
+  assert.deepEqual(input, { PATH: 'test-path', OLLAMA_MODELS: 'models' });
+});
+
+test('Ollama 显式容量保留；自动值、无效值和过大值在启动前拒绝', () => {
+  assert.equal(buildOllamaServerEnv({ OLLAMA_NUM_PARALLEL: '2' }).OLLAMA_NUM_PARALLEL, '2');
+  assert.equal(buildOllamaServerEnv({ OLLAMA_MAX_LOADED_MODELS: '2' }).OLLAMA_MAX_LOADED_MODELS, '2');
+  assert.equal(buildOllamaServerEnv({ OLLAMA_MAX_QUEUE: '32' }).OLLAMA_MAX_QUEUE, '32');
+  for (const key of ['OLLAMA_NUM_PARALLEL', 'OLLAMA_MAX_LOADED_MODELS', 'OLLAMA_MAX_QUEUE']) {
+    for (const value of ['0', '-1', '1.5', 'auto', ' ', '999999999999999999999']) {
+      assert.throws(() => buildOllamaServerEnv({ [key]: value }), new RegExp(key));
+    }
+  }
+  assert.throws(() => buildOllamaServerEnv({ OLLAMA_NUM_PARALLEL: '17' }), /OLLAMA_NUM_PARALLEL/);
+  assert.throws(() => buildOllamaServerEnv({ OLLAMA_MAX_LOADED_MODELS: '17' }), /OLLAMA_MAX_LOADED_MODELS/);
+  assert.throws(() => buildOllamaServerEnv({ OLLAMA_MAX_QUEUE: '513' }), /OLLAMA_MAX_QUEUE/);
+});
+
+test('已有 Ollama 只通过版本端点探活，不启动第二个进程或声称容量已生效', async () => {
+  const messages = [];
+  await ensureOllamaReady({
+    env: { OLLAMA_NUM_PARALLEL: '0' },
+    isReady: async url => { assert.equal(url, 'http://127.0.0.1:11434/api/version'); return true; },
+    runQuietCommand: () => assert.fail('existing service must not be launched'),
+    spawnCommand: () => assert.fail('existing service must not be launched'),
+    logMessage: value => messages.push(value),
+  });
+  assert.match(messages.join('\n'), /无法核验.*容量/);
+  assert.match(messages.join('\n'), /docs\/deployment\/ollama-capacity\.md/);
+});
+
+test('新 Ollama 子进程收到容量配置，显式扩大容量时输出准确提示', async () => {
+  const calls = [];
+  const messages = [];
+  let unreferenced = false;
+  let probes = 0;
+  await ensureOllamaReady({
+    env: { PATH: 'test-path', OLLAMA_NUM_PARALLEL: '2' },
+    isReady: async url => {
+      assert.equal(url, 'http://127.0.0.1:11434/api/version');
+      return probes++ > 0;
+    },
+    runQuietCommand: () => ({ status: 0 }),
+    spawnCommand: (command, args, options) => {
+      calls.push({ command, args, options });
+      return { on() {}, unref() { unreferenced = true; } };
+    },
+    waitUntilReady: async probe => assert.equal(await probe(), true),
+    logMessage: value => messages.push(value),
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'ollama');
+  assert.deepEqual(calls[0].args, ['serve']);
+  assert.equal(calls[0].options.env.OLLAMA_NUM_PARALLEL, '2');
+  assert.equal(calls[0].options.env.OLLAMA_MAX_LOADED_MODELS, '1');
+  assert.equal(calls[0].options.env.OLLAMA_MAX_QUEUE, '16');
+  assert.equal(calls[0].options.windowsHide, true);
+  assert.equal(unreferenced, true);
+  assert.match(messages.join('\n'), /不再是单执行槽/);
+});
+
+test('新 Ollama 配置非法时不启动服务', async () => {
+  await assert.rejects(ensureOllamaReady({
+    env: { OLLAMA_MAX_LOADED_MODELS: '0' },
+    isReady: async () => false,
+    runQuietCommand: () => ({ status: 0 }),
+    spawnCommand: () => assert.fail('invalid capacity must fail before spawn'),
+    logMessage: () => {},
+  }), /OLLAMA_MAX_LOADED_MODELS/);
+});
 
 test('本地启动同时拉起搜索索引和图谱构建 worker', async () => {
   const calls = [];
@@ -31,6 +110,7 @@ test('本地启动同时拉起搜索索引和图谱构建 worker', async () => {
     'up', '-d', 'search-index-worker', 'graph-control-worker',
   ]));
   assert.equal(calls[0].env.OLLAMA_BASE_URL, 'http://host.docker.internal:11434');
+  assert.equal(calls[0].env.RAG_EMBEDDING_INDEX_IDENTITY_ADDRESS, localRuntimeEnv().MILVUS_LOCAL_ADDRESS);
 });
 
 test('worker 启动失败时中止启动并保留 Docker 错误上下文', async () => {

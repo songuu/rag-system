@@ -10,6 +10,7 @@ import type {
   Project,
   SimulationConfigDraft,
   SimulationPrepareResult,
+  ProfileGenerationOptions,
 } from './types';
 
 export interface MiroFishPrepareInput {
@@ -20,9 +21,11 @@ export interface MiroFishPrepareInput {
   modelOverride?: ModelOverride;
   providedProfiles?: EntityProfile[];
   forceRegenerate?: boolean;
+  profileOptions?:ProfileGenerationOptions;
 }
 
 export interface PrepareServiceDependencies {
+  onProgress?: (current:number,total:number,id:string,profile:EntityProfile)=>Promise<void> | void;
   generateProfiles?: (entities: PreparedEntity[], simulationContext: string) => Promise<EntityProfile[]>;
   createProfileGenerator?: (
     modelOverride: ModelOverride | undefined
@@ -52,11 +55,14 @@ export async function prepareMiroFishSimulation(
     throw new Error('至少需要选择一个实体来准备模拟环境');
   }
 
-  const profileSource = input.providedProfiles?.length
+  const expectedIds = new Set(selectedEntities.map(entity => entity.id));
+  const matchesSelection = (profiles: EntityProfile[] | undefined) => profiles?.length === expectedIds.size
+    && profiles.every(profile => expectedIds.has(profile.entity_id));
+  let profileSource = matchesSelection(input.providedProfiles)
     ? input.providedProfiles
     : input.forceRegenerate
       ? undefined
-      : input.project.agent_profiles;
+      : matchesSelection(input.project.agent_profiles) ? input.project.agent_profiles : undefined;
   const profileCount = profileSource?.length || selectedEntities.length;
 
   const normalizedConfig = normalizeSimulationConfig(input.config, { profileCount });
@@ -64,6 +70,7 @@ export async function prepareMiroFishSimulation(
     projectId: input.project.id,
     simulationRequirement: input.project.simulation_requirement,
     selectedEntityIds: selectedEntities.map(entity => entity.id),
+    graphNodes: input.graphNodes,
     config: normalizedConfig,
     modelOverride: effectiveModelOverride,
   });
@@ -80,9 +87,11 @@ export async function prepareMiroFishSimulation(
     };
   }
 
+  if (!matchesSelection(input.providedProfiles)) profileSource = undefined;
+
   const profiles = profileSource?.length
     ? profileSource
-    : await generateProfiles(selectedEntities, input.project.simulation_requirement, effectiveModelOverride, dependencies);
+    : await generateProfiles(selectedEntities, input.project.simulation_requirement, effectiveModelOverride, dependencies,input.profileOptions);
 
   if (profiles.length === 0) {
     throw new Error('Agent 人设生成结果为空，无法准备模拟环境');
@@ -93,6 +102,7 @@ export async function prepareMiroFishSimulation(
     projectId: input.project.id,
     simulationRequirement: input.project.simulation_requirement,
     selectedEntityIds: selectedEntities.map(entity => entity.id),
+    graphNodes: input.graphNodes,
     config,
     modelOverride: effectiveModelOverride,
   });
@@ -113,6 +123,7 @@ export function createPrepareFingerprint(input: {
   projectId: string;
   simulationRequirement: string;
   selectedEntityIds: string[];
+  graphNodes?: GraphNode[];
   config: NormalizedSimulationConfig;
   modelOverride?: ModelOverride;
 }): string {
@@ -120,7 +131,10 @@ export function createPrepareFingerprint(input: {
     projectId: input.projectId,
     simulationRequirement: input.simulationRequirement,
     selectedEntityIds: [...input.selectedEntityIds].sort(),
-    config: input.config,
+    graphNodes: input.graphNodes?.filter(node => input.selectedEntityIds.includes(node.uuid))
+      .map(node => ({ id: node.uuid, name: node.name, labels: node.labels, summary: node.summary, attributes: node.attributes }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+    config: normalizeSimulationConfig(input.config, { profileCount: input.selectedEntityIds.length }),
     modelOverride: input.modelOverride
       ? {
           provider: input.modelOverride.provider,
@@ -165,7 +179,8 @@ async function generateProfiles(
   entities: PreparedEntity[],
   simulationContext: string,
   modelOverride: ModelOverride | undefined,
-  dependencies: PrepareServiceDependencies
+  dependencies: PrepareServiceDependencies,
+  options?:ProfileGenerationOptions
 ): Promise<EntityProfile[]> {
   if (dependencies.generateProfiles) {
     return dependencies.generateProfiles(entities, simulationContext);
@@ -176,5 +191,7 @@ async function generateProfiles(
   return generator.generateProfiles({
     entities,
     simulationContext,
+    options,
+    onProgress: dependencies.onProgress,
   });
 }

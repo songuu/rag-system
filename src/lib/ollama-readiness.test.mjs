@@ -5,7 +5,11 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   if (specifier === './rag/core/request-budgets' && context.parentURL === new URL('./ollama-readiness.ts', import.meta.url).href) {
     return nextResolve(new URL('./rag/core/request-budgets.ts', import.meta.url).href, context);
   }
-  return nextResolve(specifier, context);
+  try { return nextResolve(specifier, context); }
+  catch (error) {
+    if (error.code === 'ERR_MODULE_NOT_FOUND' && specifier.startsWith('.') && !specifier.endsWith('.ts')) return nextResolve(specifier + '.ts', context);
+    throw error;
+  }
 } });
 const readiness = await import('./ollama-readiness.ts');
 const { warmOllamaModel, resolveOllamaRuntimeSettings, beginOllamaModelWarmup, getOllamaModelReadiness } = readiness;
@@ -18,6 +22,7 @@ test('background loading returns immediately, deduplicates and exposes completio
   } };
   assert.equal(beginOllamaModelWarmup('background', options).phase, 'loading');
   assert.equal(beginOllamaModelWarmup('background', options).phase, 'loading');
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 1);
   finish();
   await new Promise(resolve => setImmediate(resolve));
@@ -65,7 +70,7 @@ test('deduplicates simultaneous loads, releases failed loads, and never reports 
   const fetch = async () => { count++; await new Promise(resolve => { finish = resolve; }); return Response.json({ done: true }); };
   const first = warmOllamaModel('deduplicated', { fetch });
   const second = warmOllamaModel('deduplicated', { fetch });
-  await Promise.resolve();
+  await new Promise(resolve => setImmediate(resolve));
   finish();
   assert.equal((await first).phase, 'ready');
   assert.equal((await second).phase, 'ready');
@@ -111,6 +116,7 @@ test('embedding warmup deduplicates cold loads while each caller can cancel its 
   } };
   const cancelled = readiness.warmOllamaEmbeddingModel('shared-embedding', { ...options, signal: controller.signal });
   const survivor = readiness.warmOllamaEmbeddingModel('shared-embedding', options);
+  await new Promise(resolve => setImmediate(resolve));
   controller.abort();
   await assert.rejects(cancelled, { name: 'AbortError' });
   assert.equal(providerSignal.aborted, false);
@@ -119,6 +125,7 @@ test('embedding warmup deduplicates cold loads while each caller can cancel its 
   assert.equal(calls, 1);
   // A previous ready state cannot prove the provider still has the model loaded.
   const next = readiness.warmOllamaEmbeddingModel('shared-embedding', options);
+  await new Promise(resolve => setImmediate(resolve));
   finish();
   await next;
   assert.equal(calls, 2);

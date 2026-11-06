@@ -15,6 +15,8 @@ registerHooks({
 
 const { createRetrievalScope } = await import('../security/retrieval-scope.ts');
 const { PostgresKnowledgeGraphBuildJobStore } = await import('./postgres-graph-build-store.ts');
+const { PostgresQueryError } = await import('../postgres/client.ts');
+const { KnowledgeGraphError } = await import('./contracts.ts');
 
 const scope = createRetrievalScope({
   tenantId: 'tenant-a', corpusId: 'corpus-a', allowedTrustLevels: ['reviewed'], enforceIsolation: true,
@@ -100,6 +102,62 @@ test('status lookup is scoped to the authenticated tenant and corpus', async () 
   assert.equal((await store.get(scope, id))?.id, id);
   assert.deepEqual(client.calls[0].values, [id, 'tenant-a', 'corpus-a']);
   assert.match(client.calls[0].text, /tenant_id = \$2 and corpus_id = \$3/i);
+  assert.match(client.calls[0].text, /metadata\s*-\s*'graphExtractionCheckpoint'/);
+});
+
+test('document sources require visible assets in the authorized trust scope', async () => {
+  const source = { asset_id: id, document_id: 'doc-a', document_version: 'v1', source_name: 'a.txt', content_type: 'text/plain', chunk_count: 2, trust_level: 'reviewed', updated_at: '2026-09-07T00:00:00.000Z' };
+  const client = fakeClient([{ rows: [source] }, { rows: [source] }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  assert.equal((await store.listDocumentSources(scope))[0].trustLevel, 'reviewed');
+  assert.equal((await store.findDocumentSource(scope, { documentId: 'doc-a', documentVersion: 'v1' })).trustLevel, 'reviewed');
+  for (const call of client.calls) {
+    assert.match(call.text, /retrieval_enabled/);
+    assert.match(call.text, /lifecycle/);
+    assert.match(call.text, /any\(\$[45]::text\[\]\)/);
+    assert.deepEqual(call.values.at(-1), ['reviewed']);
+  }
+});
+
+test('the latest document build is read only within its authenticated document scope', async () => {
+  const client = fakeClient([{ rows: [row({ status: 'failed' })], rowCount: 1 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  const identity = { documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' };
+  const result = await store.findLatestDocumentBuild(scope, identity);
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(client.calls[0].values, ['tenant-a', 'corpus-a', 'doc-a', 'v1', 'reviewed']);
+  assert.match(client.calls[0].text, /tenant_id = \$1 and corpus_id = \$2/i);
+  assert.match(client.calls[0].text, /documentIdentity,documentId/);
+  assert.match(client.calls[0].text, /metadata\s*-\s*'graphExtractionCheckpoint'/);
+  await assert.rejects(store.findLatestDocumentBuild(scope, { ...identity, trustLevel: 'external' }), /scope/i);
+});
+
+test('a failed document job resumes under the scoped queue lock without replacing checkpoints', async () => {
+  const client = fakeClient([{ rows: [row({ status: 'queued', progress: 0.4 })], rowCount: 1 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  const identity = { documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' };
+  const result = await store.resumeFailedDocumentBuild(scope, identity, id, { maxPendingJobs: 3 });
+  assert.equal(result.progress, 0.4);
+  assert.match(client.calls[0].text, /pg_advisory_xact_lock/i);
+  assert.match(client.calls[1].text, /status = 'failed'/i);
+  assert.match(client.calls[1].text, /documentIdentity,documentVersion/);
+  assert.doesNotMatch(client.calls[1].text, /metadata\s*=/i);
+  assert.deepEqual(client.calls[1].values, [id, 'tenant-a', 'corpus-a', 'doc-a', 'v1', 'reviewed', 3]);
+});
+
+test('queue capacity and resume conflicts remain business errors through the PostgreSQL transaction wrapper', async () => {
+  for (const operation of ['enqueue', 'resume']) {
+    const client = fakeClient([{ rows: [], rowCount: 0 }]);
+    client.withTransaction = async (name, work) => {
+      try { return await work(client); } catch (error) { throw new PostgresQueryError(name, error); }
+    };
+    const store = new PostgresKnowledgeGraphBuildJobStore(client);
+    const result = operation === 'enqueue'
+      ? store.enqueue(scope, 'graph-v1')
+      : store.resumeFailedDocumentBuild(scope, { documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' }, id);
+    await assert.rejects(result, error => error instanceof KnowledgeGraphError
+      && error.code === (operation === 'enqueue' ? 'KNOWLEDGE_GRAPH_CAPACITY' : 'KNOWLEDGE_GRAPH_CONFLICT'));
+  }
 });
 
 test('rejects oversized or reserved build metadata before PostgreSQL', async () => {
@@ -141,6 +199,21 @@ test('derives graph version from the authenticated full document identity on the
   assert.equal(storedMetadata.label, 'nightly');
 });
 
+test('regeneration creates a new server-owned graph generation without changing document version', async () => {
+  const client = fakeClient([{ rows: [row()], rowCount: 1 }, { rows: [row()], rowCount: 1 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  const identity = { tenantId: 'tenant-a', corpusId: 'corpus-a', documentId: 'doc-a', documentVersion: 'v1', trustLevel: 'reviewed' };
+  await store.enqueueDocumentBuild(scope, identity, {}, { regenerate: true });
+  await store.enqueueDocumentBuild(scope, identity, {}, { regenerate: true });
+  const first = client.calls[1].values;
+  const second = client.calls[3].values;
+  const stored = JSON.parse(first[3]).documentIdentity;
+  assert.match(stored.graphGeneration, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(stored.documentVersion, 'v1');
+  assert.ok(first[2].endsWith(`:${stored.graphGeneration}`));
+  assert.notEqual(first[2], second[2]);
+});
+
 test('claim uses skip locked and creates a renewable ownership token', async () => {
   const client = fakeClient([{ rows: [row({
     status: 'running', attempts: 1, lease_token: lease,
@@ -152,6 +225,139 @@ test('claim uses skip locked and creates a renewable ownership token', async () 
   assert.match(client.calls[0].text, /for update skip locked/i);
   assert.match(client.calls[0].text, /candidate_id/i);
 });
+
+test('a targeted claim scopes both queued and expired work and retains the shared lease fence', async () => {
+  const client = fakeClient([{ rows: [row({ status: 'running', attempts: 3, lease_token: lease,
+    lease_expires_at: '2026-09-07T00:01:00.000Z' })], rowCount: 1 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  const job = await store.claimSpecific(scope, id, { leaseMs: 10_000 });
+  assert.equal(job.status, 'running');
+  assert.equal(job.attempts, 3);
+  const { text, values } = client.calls[0];
+  assert.deepEqual(values.slice(1), [10_000, 'tenant-a', 'corpus-a', id]);
+  assert.match(values[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(values[0], lease);
+  assert.match(text, /where \(status = 'queued' or \(status = 'running' and lease_expires_at <= now\(\)\)\)\s+and tenant_id = \$3 and corpus_id = \$4 and id = \$5::uuid/i);
+  assert.match(text, /for update skip locked/i);
+  assert.match(text, /attempts = attempts \+ 1, lease_token = \$1::uuid/i);
+  assert.match(text, /make_interval\(secs => \$2::double precision \/ 1000\)/i);
+});
+
+test('a targeted claim returns null when no scoped eligible row exists and allocates fresh tokens', async () => {
+  const client = fakeClient([{ rows: [], rowCount: 0 }, { rows: [], rowCount: 0 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  assert.equal(await store.claimSpecific(scope, id), null);
+  assert.equal(await store.claimSpecific(scope, id), null);
+  assert.equal(client.calls[0].values[1], 60_000);
+  assert.notEqual(client.calls[0].values[0], client.calls[1].values[0]);
+});
+
+test('targeted claims reject malformed identity and unsafe lease budgets before querying', async () => {
+  const client = fakeClient([]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  for (const badScope of [{ tenantId: '', corpusId: 'corpus-a' }, { tenantId: 'tenant-a', corpusId: ' ' }]) {
+    await assert.rejects(store.claimSpecific(badScope, id), /malformed/);
+  }
+  await assert.rejects(store.claimSpecific(scope, 'not-a-uuid'), /identifier is malformed/);
+  for (const leaseMs of [0, 999, 3_600_001, Infinity, 1000.5]) {
+    await assert.rejects(store.claimSpecific(scope, id, { leaseMs }), /lease must be between/);
+  }
+  assert.equal(client.calls.length, 0);
+});
+
+test('targeted PostgreSQL claims leave foreign and active leases alone and reclaim only expired work', {
+  skip: process.env.RUN_GRAPH_CLAIM_POSTGRES_TESTS !== '1',
+}, async () => {
+  const { default: pg } = await import('pg');
+  const { getPostgresRuntimeConfig } = await import('../postgres/env.ts');
+  const { randomUUID } = await import('node:crypto');
+  const config = getPostgresRuntimeConfig();
+  const target = new URL(config.databaseUrl);
+  assert.ok(['127.0.0.1', 'localhost'].includes(target.hostname), 'integration fixture must use local PostgreSQL');
+  const database = new pg.Client({ connectionString: config.databaseUrl, connectionTimeoutMillis: 5000, query_timeout: 5000 });
+  await database.connect();
+  try {
+    await database.query('begin');
+    // Run the actual claim SQL on an isolated copy of the real schema. No
+    // production queue row can be selected or updated by this fixture.
+    await database.query('create temporary table graph_build_jobs (like public.graph_build_jobs including defaults including constraints) on commit drop');
+    const expiredId = randomUUID();
+    const cancelledId = randomUUID();
+    const otherTenantId = randomUUID();
+    const otherCorpusId = randomUUID();
+    const ids = [id, expiredId, cancelledId, otherTenantId, otherCorpusId];
+    for (const [index, jobId] of ids.entries()) {
+      await database.query(`insert into pg_temp.graph_build_jobs
+        (id, tenant_id, corpus_id, graph_version, status, attempts, lease_token, lease_expires_at)
+        values ($1, $2, $3, $4, $5, $6, $7,
+          case when $5 = 'running' then now() - interval '1 second' else null end)`,
+      [jobId, index === 3 ? 'tenant-b' : 'tenant-a', index === 4 ? 'corpus-b' : 'corpus-a',
+        `claim-fixture-${index}`, index === 1 ? 'running' : index === 2 ? 'cancelled' : 'queued', index === 1 ? 2 : 0, index === 1 ? lease : null]);
+    }
+    const client = { query(text, values) {
+      assert.match(text, /and tenant_id = \$3 and corpus_id = \$4 and id = \$5::uuid/i);
+      return database.query(text.replaceAll('public.graph_build_jobs', 'pg_temp.graph_build_jobs'), values);
+    } };
+    const store = new PostgresKnowledgeGraphBuildJobStore(client);
+    assert.equal(await store.claimSpecific(scope, randomUUID()), null);
+    assert.equal(await store.claimSpecific(scope, otherTenantId), null);
+    assert.equal(await store.claimSpecific(scope, otherCorpusId), null);
+    assert.equal(await store.claimSpecific(scope, cancelledId), null);
+    const queued = await store.claimSpecific(scope, id, { leaseMs: 60_000 });
+    assert.equal(queued.status, 'running');
+    assert.equal(queued.attempts, 1);
+    assert.ok(queued.leaseToken);
+    assert.ok(Date.parse(queued.leaseExpiresAt) > Date.now());
+    assert.equal(await store.claimSpecific(scope, id), null, 'a live lease must not be replaced');
+    const expired = await store.claimSpecific(scope, expiredId, { leaseMs: 10_000 });
+    assert.equal(expired.status, 'running');
+    assert.equal(expired.attempts, 3);
+    assert.notEqual(expired.leaseToken, lease);
+    const untouched = await database.query('select status, attempts, lease_token from pg_temp.graph_build_jobs where id = any($1::uuid[])',
+      [[otherTenantId, otherCorpusId]]);
+    assert.deepEqual(untouched.rows, [
+      { status: 'queued', attempts: 0, lease_token: null },
+      { status: 'queued', attempts: 0, lease_token: null },
+    ]);
+  } finally {
+    await database.query('rollback');
+    await database.end();
+  }
+});
+
+test('extraction checkpoints are scoped, lease fenced, bounded and monotonic', async () => {
+  const client = fakeClient([{ rows: [{ id }], rowCount: 1 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  const record = { sourceDigest: `sha256:${'a'.repeat(64)}`, value: { kind: 'split' } };
+  await store.saveExtractionCheckpoint({
+    jobId: id, tenantId: scope.tenantId, corpusId: scope.corpusId,
+    graphVersion: 'graph-v1', leaseToken: lease, profile: 'profile-v1',
+    segmentKey: '0:0:10', record, progress: 0.2, leaseMs: 60_000,
+  });
+  const { text, values } = client.calls[0];
+  assert.match(text, /tenant_id\s*=\s*\$3/i);
+  assert.match(text, /corpus_id\s*=\s*\$4/i);
+  assert.match(text, /graph_version\s*=\s*\$5/i);
+  assert.match(text, /lease_token\s*=\s*\$2::uuid/i);
+  assert.match(text, /lease_expires_at\s*>\s*clock_timestamp\(\)/i);
+  assert.match(text, /greatest\(.*progress/i);
+  assert.match(text, /octet_length/i);
+  assert.deepEqual(JSON.parse(values[7]), record);
+  assert.equal(values[1], lease);
+});
+
+test('checkpoint writes reject stale leases and reserve their metadata namespace', async () => {
+  const client = fakeClient([{ rows: [], rowCount: 0 }]);
+  const store = new PostgresKnowledgeGraphBuildJobStore(client);
+  await assert.rejects(store.saveExtractionCheckpoint({
+    jobId: id, tenantId: scope.tenantId, corpusId: scope.corpusId,
+    graphVersion: 'graph-v1', leaseToken: lease, profile: 'profile-v1',
+    segmentKey: '0:0:10', record: { sourceDigest: `sha256:${'a'.repeat(64)}`, value: { kind: 'split' } },
+    progress: 0, leaseMs: 60_000,
+  }), error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+  await assert.rejects(store.enqueue(scope, 'graph-v1', { graphExtractionCheckpoint: {} }), /reserved/i);
+});
+
 
 test('enforces the build state machine and lease-aware transition', async () => {
   const client = fakeClient([{ rows: [row({ status: 'staged', progress: 0.7 })], rowCount: 1 }]);
@@ -218,7 +424,9 @@ test('validated completion persists the full publication manifest atomically wit
     artifact_digest: manifest.artifactDigest, metadata: { publicationManifest: manifest } })], rowCount: 1 }]);
   await new PostgresKnowledgeGraphBuildJobStore(client).completeValidated({ jobId: id, progress: 1,
     artifactDigest: manifest.artifactDigest, leaseToken: lease, publicationManifest: manifest });
-  assert.equal(client.calls.length, 1); assert.match(client.calls[0].text, /metadata = metadata \|\| jsonb_build_object\('publicationManifest', \$5::jsonb\)/);
+  assert.equal(client.calls.length, 1);
+  assert.match(client.calls[0].text, /metadata\s*-\s*'graphExtractionCheckpoint'/);
+  assert.match(client.calls[0].text, /jsonb_build_object\('publicationManifest', \$5::jsonb\)/);
   assert.match(client.calls[0].text, /tenant_id = \$6 and corpus_id = \$7 and graph_version = \$8/);
   assert.match(client.calls[0].text, /lease_expires_at > clock_timestamp\(\)/);
   assert.deepEqual(JSON.parse(client.calls[0].values[4]), manifest);

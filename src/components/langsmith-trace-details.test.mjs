@@ -27,11 +27,11 @@ async function renderViewer(workflowSteps, run) {
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true })) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   }
-  const module = { exports: {} };
+  const fixtureModule = { exports: {} };
   const source = ts.transpileModule(readFileSync(new URL('./LangSmithTraceViewer.tsx', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText;
-  vm.runInNewContext(source, { module, exports: module.exports, process: { env: {} }, require(name) {
+  vm.runInNewContext(source, { module: fixtureModule, exports: fixtureModule.exports, process: { env: {} }, require(name) {
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name.includes('workflow-step-metrics')) return metrics;
     if (name === './LangSmithReactFlowGraph') return { __esModule: true, default: props => React.createElement('div', { 'data-graph': true }, JSON.stringify(props.steps)) };
@@ -39,7 +39,7 @@ async function renderViewer(workflowSteps, run) {
   } });
   const { createRoot } = await import('react-dom/client'); const container = dom.window.document.getElementById('root'); const root = createRoot(container);
   try {
-    await act(async () => root.render(React.createElement(module.exports.default, { workflowSteps })));
+    await act(async () => root.render(React.createElement(fixtureModule.exports.default, { workflowSteps })));
     await run({ container, async click(element) { assert.ok(element, 'Missing actionable step'); await act(async () => element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))); } });
   } finally {
     await act(async () => root.unmount()); dom.window.close();

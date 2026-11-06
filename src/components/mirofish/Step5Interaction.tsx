@@ -1,490 +1,183 @@
 'use client';
-
 import React, { useEffect, useRef, useState } from 'react';
-
-interface ChatMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface InterviewResponse {
-  agent_id: string;
-  agent_name: string;
-  question: string;
-  answer: string;
-  sentiment: string;
-  confidence: number;
-}
-
-interface AgentProfile {
-  entity_id: string;
-  entity_name: string;
-  entity_type: string;
-  full_name: string;
-  occupation?: string;
-}
-
-interface Step5Props {
-  simulationId: string;
-  reportId: string;
-  agents: AgentProfile[];
-  modelOverride?: import('@/lib/mirofish/types').ModelOverride | null;
-}
-
-function generateMessageId(): string {
-  return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/** 头像组件：Agent 用紫色渐变，用户用蓝灰色 */
-function Avatar({ variant, name }: { variant: 'user' | 'assistant'; name?: string }) {
-  if (variant === 'user') {
-    return (
-      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-slate-500 to-slate-700 flex items-center justify-center flex-shrink-0">
-        <span className="text-[11px] font-bold text-white">U</span>
-      </div>
-    );
-  }
-  const initial = name ? name.charAt(0).toUpperCase() : 'A';
-  return (
-    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center flex-shrink-0">
-      <span className="text-[11px] font-bold text-white">{initial}</span>
-    </div>
-  );
-}
-
-/** 脉冲打字动画 */
-function TypingIndicator() {
-  return (
-    <div className="flex items-end gap-2">
-      <Avatar variant="assistant" name="R" />
-      <div className="bg-white/[0.04] border border-white/[0.06] rounded-2xl rounded-bl-sm px-4 py-3">
-        <div className="flex gap-1.5 items-center">
-          <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse" />
-          <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse" style={{ animationDelay: '200ms' }} />
-          <span className="w-2 h-2 bg-purple-400 rounded-full animate-pulse" style={{ animationDelay: '400ms' }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** 空状态：居中大 emoji + 旋转装饰环 */
-function EmptyState({ mode }: { mode: 'chat' | 'interview' }) {
-  return (
-    <div className="flex flex-col items-center justify-center h-full py-20">
-      {/* 旋转装饰环 */}
-      <div className="relative w-28 h-28 flex items-center justify-center mb-6">
-        <div className="absolute inset-0 rounded-full border border-dashed border-purple-500/30 animate-spin" style={{ animationDuration: '12s' }} />
-        <div className="absolute inset-2 rounded-full border border-white/[0.06]" />
-        <span className="text-5xl">
-          {mode === 'chat' ? '💬' : '🎙️'}
-        </span>
-      </div>
-      <p className="text-white/40 text-sm">
-        {mode === 'chat'
-          ? '向 ReportAgent 提问，深入了解模拟结果'
-          : '选择 Agent 并提问，或使用批量采访模式'}
-      </p>
-    </div>
-  );
-}
-
-export default function Step5Interaction({ simulationId, reportId, agents, modelOverride }: Step5Props) {
-  const [activeTab, setActiveTab] = useState<'chat' | 'interview'>('chat');
-
-  // Chat state
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [chatLoading, setChatLoading] = useState(false);
-
-  // Interview state
-  const [selectedAgent, setSelectedAgent] = useState<string>('');
-  const [interviewQuestion, setInterviewQuestion] = useState('');
-  const [interviews, setInterviews] = useState<InterviewResponse[]>([]);
-  const [interviewLoading, setInterviewLoading] = useState(false);
-  const [batchMode, setBatchMode] = useState(false);
-
-  const chatEndRef = useRef<HTMLDivElement>(null);
+import ReactMarkdown from 'react-markdown';
+import { useMiroFishLocale } from '@/components/mirofish/MiroFishLocaleProvider';
+import type { ModelOverride } from '@/lib/mirofish/types';
+import type { ReportRuntimeRecord, ReportSource } from '@/lib/mirofish/report-contracts';
+interface AgentProfile { entity_id: string; entity_name: string; entity_type: string; full_name: string; occupation?: string; background?: string; personality_traits?: string[] }
+interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp?: string; sources?: ReportSource[]; tool_calls?: Array<{ name: string }> }
+interface InterviewAnswer { agent_id: string; agent_name: string; question: string; answer: string; sentiment: string; confidence: number; platform_answers?: Record<string, string>; sources?: ReportSource[] }
+interface Props { simulationId: string; reportId: string; agents: AgentProfile[]; modelOverride?: ModelOverride | null }
+function failure(data: { error?: unknown }, fallback: string): Error { return new Error(typeof data.error === 'string' ? data.error : fallback); }
+export default function Step5Interaction({ simulationId, reportId, agents, modelOverride }: Props) {
+  const { locale, t } = useMiroFishLocale();
+  const [profiles, setProfiles] = useState<AgentProfile[]>(agents);
+  const [report, setReport] = useState<ReportRuntimeRecord | null>(null);
+  const [target, setTarget] = useState('report');
+  const [conversations, setConversations] = useState<Record<string, ChatMessage[]>>({});
+  const [input, setInput] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [question, setQuestion] = useState('');
+  const [custom, setCustom] = useState(false);
+  const [questions, setQuestions] = useState<Record<string, string>>({});
+  const [answers, setAnswers] = useState<InterviewAnswer[]>([]);
+  const [mode, setMode] = useState<'chat' | 'questionnaire'>('chat');
+  const [refresh, setRefresh] = useState(0);
+  const [metadataRefresh, setMetadataRefresh] = useState(0);
+  const bound = useRef({ simulationId, reportId });
+  useEffect(() => { bound.current = { simulationId, reportId }; }, [simulationId, reportId]);
+  const action = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let cancelled = false;
+    async function load() {
+      await Promise.resolve();
+      if (cancelled) return;
+      setReport(null); setProfiles(agents); setConversations({}); setAnswers([]); setSelected([]); setError(null);
+      try {
+        const [profileResponse, reportResponse] = await Promise.all([
+          fetch('/rag-api/mirofish/interaction/interview?' + new URLSearchParams({ simulation_id: simulationId }), { signal: controller.signal, headers: { 'Accept-Language': locale } }),
+          fetch('/rag-api/mirofish/report/' + encodeURIComponent(reportId), { signal: controller.signal, headers: { 'Accept-Language': locale } }),
+        ]);
+        const [profileData, reportData] = await Promise.all([profileResponse.json(), reportResponse.json()]);
+        if (!profileResponse.ok || !profileData.success) throw failure(profileData, t('读取参与者失败', 'Unable to load participants'));
+        if (!reportResponse.ok || !reportData.success) throw failure(reportData, t('读取报告失败', 'Unable to load report'));
+        if (!cancelled) { setProfiles(profileData.profiles); setReport(reportData.report); }
+      } catch (reason) { if (!cancelled) setError(reason instanceof Error ? reason.message : t('读取失败', 'Unable to load data')); }
+    }
+    void load();
+    return () => { cancelled = true; controller.abort(); action.current?.abort(); };
+    // The API supplies canonical profiles; prop changes are a fallback only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simulationId, reportId, locale, t, metadataRefresh]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  });
-
-  // 与 ReportAgent 对话
-  const sendChat = async () => {
-    if (!chatInput.trim() || chatLoading) return;
-
-    const question = chatInput.trim();
-    setChatInput('');
-    setChatMessages(prev => [...prev, { id: generateMessageId(), role: 'user', content: question }]);
-    setChatLoading(true);
-
-    try {
-      const response = await fetch('/rag-api/mirofish/interaction/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          report_id: reportId,
-          question,
-          history: chatMessages.map(m => ({ role: m.role, content: m.content })),
-          modelOverride: modelOverride || undefined,
-        }),
-      });
-
-      const data = await response.json();
-      if (data.success) {
-        setChatMessages(prev => [...prev, { id: generateMessageId(), role: 'assistant', content: data.answer }]);
-      } else {
-        setChatMessages(prev => [...prev, { id: generateMessageId(), role: 'assistant', content: `Error: ${data.error}` }]);
-      }
-    } catch {
-      setChatMessages(prev => [...prev, { id: generateMessageId(), role: 'assistant', content: 'Network error' }]);
-    } finally {
-      setChatLoading(false);
+    let cancelled = false;
+    const controller = new AbortController();
+    async function loadHistory() {
+      await Promise.resolve();
+      if (cancelled) return;
+      setHistoryLoading(true); setError(null);
+      try {
+        const url = target === 'report'
+          ? '/rag-api/mirofish/interaction/chat?' + new URLSearchParams({ report_id: reportId })
+          : '/rag-api/mirofish/interaction/interview?' + new URLSearchParams({ action: 'history', simulation_id: simulationId, agent_id: target });
+        const response = await fetch(url, { signal: controller.signal, headers: { 'Accept-Language': locale } });
+        const data = await response.json();
+        if (!response.ok || !data.success) throw failure(data, t('读取对话失败', 'Unable to load conversation'));
+        if (!cancelled) setConversations(previous => ({ ...previous, [target]: data.messages ?? [] }));
+      } catch (reason) { if (!cancelled) setError(reason instanceof Error ? reason.message : t('读取对话失败', 'Unable to load conversation')); }
+      finally { if (!cancelled) setHistoryLoading(false); }
     }
-  };
+    void loadHistory();
+    return () => { cancelled = true; controller.abort(); };
+  }, [target, simulationId, reportId, locale, t, refresh]);
 
-  // 采访 Agent
-  const conductInterview = async () => {
-    if (!interviewQuestion.trim() || interviewLoading) return;
-    if (!batchMode && !selectedAgent) return;
-
-    setInterviewLoading(true);
-
+  async function send() {
+    if (!input.trim() || chatBusy || historyLoading) return;
+    const text = input.trim(); const object = target; const sim = simulationId; const reportKey = reportId;
+    const controller = new AbortController(); action.current?.abort(); action.current = controller;
+    setChatBusy(true); setError(null);
     try {
-      const response = await fetch('/rag-api/mirofish/interaction/interview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          simulation_id: simulationId,
-          agent_id: batchMode ? undefined : selectedAgent,
-          question: interviewQuestion,
-          batch: batchMode,
-          modelOverride: modelOverride || undefined,
-        }),
-      });
-
+      const endpoint = object === 'report' ? 'chat' : 'interview';
+      const response = await fetch('/rag-api/mirofish/interaction/' + endpoint, { method: 'POST', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', 'Accept-Language': locale },
+        body: JSON.stringify({ report_id: reportKey, simulation_id: sim, ...(object !== 'report' ? { agent_id: object } : {}), question: text, modelOverride: modelOverride ?? undefined }) });
       const data = await response.json();
-      if (data.success) {
-        if (batchMode && data.responses) {
-          setInterviews(prev => [...prev, ...data.responses]);
-        } else if (data.response) {
-          setInterviews(prev => [...prev, data.response]);
-        }
+      if (!response.ok || !data.success) throw failure(data, t('对话失败', 'Unable to send message'));
+      if (bound.current.simulationId !== sim || bound.current.reportId !== reportKey || controller.signal.aborted) return;
+      const answer = object === 'report' ? data : data.response;
+      setConversations(previous => ({ ...previous, [object]: [...(previous[object] ?? []),
+        { role: 'user', content: text }, { role: 'assistant', content: answer.answer, sources: answer.sources, tool_calls: answer.tool_calls }] }));
+      setInput('');
+    } catch (reason) { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t('对话失败', 'Unable to send message')); }
+    finally { setChatBusy(false); }
+  }
+  async function interview() {
+    if (batchBusy || !selected.length || (!custom && !question.trim())) return;
+    const sim = simulationId;
+    const controller = new AbortController(); action.current?.abort(); action.current = controller;
+    setBatchBusy(true); setError(null);
+    try {
+      const response = await fetch('/rag-api/mirofish/interaction/interview', { method: 'POST', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', 'Accept-Language': locale },
+        body: JSON.stringify({ simulation_id: sim, modelOverride: modelOverride ?? undefined,
+          ...(custom ? { interviews: selected.map(id => ({ agent_id: id, prompt: questions[id]?.trim() || question })) } : { agent_ids: selected, question }) }) });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw failure(data, t('采访失败', 'Unable to complete interview'));
+      if (bound.current.simulationId === sim && !controller.signal.aborted) {
+        setAnswers(data.responses);
+        // Re-read the selected actor's canonical conversation after batch interviews.
+        setRefresh(value => value + 1);
       }
-    } catch {
-      // 忽略网络错误
-    } finally {
-      setInterviewLoading(false);
-      setInterviewQuestion('');
-    }
-  };
-
-  const selectedAgentProfile = agents.find(a => a.entity_id === selectedAgent);
-
-  const quickQuestions = activeTab === 'chat'
-    ? [
-        { id: 'q-chat-1', text: '总结主要的舆论趋势' },
-        { id: 'q-chat-2', text: '哪些Agent最活跃？' },
-        { id: 'q-chat-3', text: '存在明显的意见对立吗？' },
-        { id: 'q-chat-4', text: '如果加入新的变量会怎样？' },
-      ]
-    : [
-        { id: 'q-int-1', text: '你对这个话题怎么看？' },
-        { id: 'q-int-2', text: '你觉得其他人的观点有道理吗？' },
-        { id: 'q-int-3', text: '如果政策改变，你会改变立场吗？' },
-        { id: 'q-int-4', text: '你最担心什么？' },
-      ];
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-      {/* 左侧控制面板 */}
-      <div className="space-y-4">
-        {/* Tab 切换：带底部指示条 */}
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-          <h3 className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-3">交互模式</h3>
-          <div className="relative flex gap-1 p-1 rounded-lg bg-white/[0.03]">
-            {/* 底部指示条 */}
-            <div
-              className="absolute bottom-1 h-[2px] bg-gradient-to-r from-purple-500 to-violet-500 rounded-full transition-all duration-300"
-              style={{
-                left: activeTab === 'chat' ? 'calc(0% + 4px)' : 'calc(50% + 4px)',
-                width: 'calc(50% - 8px)',
-              }}
-            />
-            <button
-              type="button"
-              onClick={() => setActiveTab('chat')}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
-                activeTab === 'chat'
-                  ? 'text-white bg-white/[0.06]'
-                  : 'text-white/40 hover:text-white/70'
-              }`}
-            >
-              报告对话
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('interview')}
-              className={`flex-1 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
-                activeTab === 'interview'
-                  ? 'text-white bg-white/[0.06]'
-                  : 'text-white/40 hover:text-white/70'
-              }`}
-            >
-              Agent 采访
-            </button>
-          </div>
-        </div>
-
-        {/* 采访模式：Agent 卡片列表 */}
-        {activeTab === 'interview' && (
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-            <h3 className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-3">采访设置</h3>
-
-            {/* 批量模式开关 */}
-            <label className="flex items-center gap-2 mb-3 cursor-pointer group">
-              <input
-                type="checkbox"
-                checked={batchMode}
-                onChange={e => setBatchMode(e.target.checked)}
-                className="w-4 h-4 rounded border-white/20 bg-white/[0.04] text-purple-500 focus:ring-purple-500/50 focus:ring-offset-0"
-              />
-              <span className="text-[12px] text-white/60 group-hover:text-white/80 transition-colors">
-                批量采访所有 Agent
-              </span>
-            </label>
-
-            {/* Agent 卡片选择 */}
-            {!batchMode && (
-              <div className="space-y-1.5 max-h-[280px] overflow-y-auto pr-1">
-                {agents.map(agent => {
-                  const isSelected = selectedAgent === agent.entity_id;
-                  return (
-                    <button
-                      type="button"
-                      key={agent.entity_id}
-                      onClick={() => setSelectedAgent(agent.entity_id)}
-                      className={`w-full flex items-center gap-2.5 p-2.5 rounded-lg text-left transition-all duration-200 ${
-                        isSelected
-                          ? 'bg-purple-500/10 border border-purple-500/40 shadow-[0_0_12px_rgba(168,85,247,0.15)]'
-                          : 'border border-white/[0.04] hover:border-white/[0.1] hover:bg-white/[0.03]'
-                      }`}
-                    >
-                      <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 ${
-                        isSelected
-                          ? 'bg-gradient-to-br from-purple-500 to-violet-600'
-                          : 'bg-white/[0.06]'
-                      }`}>
-                        <span className={`text-[10px] font-bold ${isSelected ? 'text-white' : 'text-white/50'}`}>
-                          {(agent.full_name || agent.entity_name).charAt(0).toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className={`text-[12px] font-medium truncate ${isSelected ? 'text-white' : 'text-white/70'}`}>
-                          {agent.full_name || agent.entity_name}
-                        </p>
-                        <p className="text-[10px] text-white/30 truncate">
-                          {agent.occupation || agent.entity_type}
-                        </p>
-                      </div>
-                      {isSelected && (
-                        <div className="w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 快捷问题 */}
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-          <h3 className="text-[11px] font-medium text-white/40 uppercase tracking-wider mb-3">快捷问题</h3>
-          <div className="space-y-1">
-            {quickQuestions.map(q => (
-              <button
-                type="button"
-                key={q.id}
-                onClick={() => {
-                  if (activeTab === 'chat') {
-                    setChatInput(q.text);
-                  } else {
-                    setInterviewQuestion(q.text);
-                  }
-                }}
-                className="w-full text-left px-3 py-2 rounded-lg text-[11px] text-white/40 hover:text-white hover:bg-white/[0.04] transition-all duration-150"
-              >
-                {q.text}
-              </button>
-            ))}
-          </div>
-        </div>
+    } catch (reason) { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : t('采访失败', 'Unable to complete interview')); }
+    finally { setBatchBusy(false); }
+  }
+  const activeProfile = profiles.find(profile => profile.entity_id === target);
+  const messages = conversations[target] ?? [];
+  const button = 'rounded-lg border border-purple-500/30 bg-purple-600/20 px-4 py-2 text-xs text-purple-200 disabled:opacity-40';
+  return <div className="grid gap-5 lg:grid-cols-[250px_minmax(0,1fr)]">
+    <aside className="space-y-4">
+      <div className="rounded-xl border border-white/10 p-4">
+        <h2 className="mb-3 text-sm font-semibold">{t('会话对象', 'Conversation')}</h2>
+        <button disabled={chatBusy || batchBusy} onClick={() => { setTarget('report'); setMode('chat'); }} className={'mb-3 block w-full rounded-lg p-2 text-left text-sm ' + (target === 'report' ? 'bg-purple-600/20 text-purple-200' : 'text-white/60')}>ReportAgent</button>
+        <label className="text-xs text-white/40" htmlFor="interview-agent">{t('模拟参与者', 'Simulation participant')}</label>
+        <select id="interview-agent" aria-label={t('选择 Agent', 'Select agent')} className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950 p-2 text-sm" value={target === 'report' ? '' : target}
+          disabled={chatBusy || batchBusy} onChange={event => { if (event.target.value) { setTarget(event.target.value); setMode('chat'); } }}>
+          <option value="">{t('选择 Agent', 'Select agent')}</option>{profiles.map(profile => <option key={profile.entity_id} value={profile.entity_id}>{profile.entity_name}</option>)}
+        </select>
+        <button className={button + ' mt-4 w-full'} onClick={() => setMode('questionnaire')}>{t('批量采访问卷', 'Interview questionnaire')}</button>
       </div>
-
-      {/* 右侧交互区域 */}
-      <div className="lg:col-span-3">
-        {activeTab === 'chat' ? (
-          /* 报告对话 */
-          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] h-[600px] flex flex-col overflow-hidden">
-            {/* 头部 */}
-            <div className="px-5 py-4 border-b border-white/[0.06]">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center">
-                  <span className="text-[11px] font-bold text-white">R</span>
-                </div>
-                <div>
-                  <h3 className="text-sm font-medium text-white">ReportAgent</h3>
-                  <p className="text-[10px] text-white/40">基于分析报告回答问题，支持深度追问和假设分析</p>
-                </div>
-              </div>
-            </div>
-
-            {/* 消息区域 */}
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-              {chatMessages.length === 0 && !chatLoading && (
-                <EmptyState mode="chat" />
-              )}
-              {chatMessages.map(msg => (
-                <div
-                  key={msg.id}
-                  className={`flex items-end gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
-                >
-                  <Avatar variant={msg.role} name={msg.role === 'assistant' ? 'R' : undefined} />
-                  <div
-                    className={`max-w-[75%] rounded-2xl px-4 py-2.5 ${
-                      msg.role === 'user'
-                        ? 'bg-gradient-to-r from-purple-600 to-violet-600 text-white rounded-br-sm'
-                        : 'bg-white/[0.04] border border-white/[0.06] text-white/90 rounded-bl-sm'
-                    }`}
-                  >
-                    <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                  </div>
-                </div>
-              ))}
-              {chatLoading && <TypingIndicator />}
-              <div ref={chatEndRef} />
-            </div>
-
-            {/* 输入区域 */}
-            <div className="px-5 py-4 border-t border-white/[0.06]">
-              <div className="flex gap-3">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && sendChat()}
-                  placeholder="输入问题..."
-                  className="flex-1 px-4 py-2.5 bg-white/[0.03] border border-white/[0.08] rounded-xl text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50 focus:shadow-[0_0_0_3px_rgba(168,85,247,0.1)] transition-all duration-200"
-                />
-                <button
-                  type="button"
-                  onClick={sendChat}
-                  disabled={chatLoading || !chatInput.trim()}
-                  className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-violet-600 text-white rounded-xl hover:from-purple-500 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-all duration-200 shadow-lg shadow-purple-500/10"
-                >
-                  发送
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Agent 采访 */
-          <div className="space-y-4">
-            {/* 采访输入 */}
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-              <div className="flex items-center gap-2 mb-3">
-                {selectedAgentProfile && !batchMode && (
-                  <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/30">
-                    <div className="w-4 h-4 rounded-full bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center">
-                      <span className="text-[8px] font-bold text-white">
-                        {(selectedAgentProfile.full_name || selectedAgentProfile.entity_name).charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-                    <span className="text-[11px] text-purple-300">
-                      {selectedAgentProfile.full_name || selectedAgentProfile.entity_name}
-                    </span>
-                  </div>
-                )}
-                {batchMode && (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30">
-                    <span className="text-[11px] text-emerald-300">批量模式 · {agents.length} Agents</span>
-                  </div>
-                )}
-              </div>
-              <div className="flex gap-3">
-                <input
-                  type="text"
-                  value={interviewQuestion}
-                  onChange={e => setInterviewQuestion(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && conductInterview()}
-                  placeholder={batchMode ? '向所有 Agent 提问...' : '向选定 Agent 提问...'}
-                  className="flex-1 px-4 py-2.5 bg-white/[0.03] border border-white/[0.08] rounded-xl text-white text-sm placeholder-white/30 focus:outline-none focus:border-purple-500/50 focus:shadow-[0_0_0_3px_rgba(168,85,247,0.1)] transition-all duration-200"
-                />
-                <button
-                  type="button"
-                  onClick={conductInterview}
-                  disabled={interviewLoading || !interviewQuestion.trim() || (!batchMode && !selectedAgent)}
-                  className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-violet-600 text-white rounded-xl hover:from-purple-500 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-all duration-200 shadow-lg shadow-purple-500/10"
-                >
-                  {interviewLoading ? '采访中...' : batchMode ? '批量采访' : '采访'}
-                </button>
-              </div>
-            </div>
-
-            {/* 采访结果 */}
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] min-h-[500px]">
-              {interviews.length > 0 ? (
-                <div className="p-4 space-y-3">
-                  {interviews.map(interview => {
-                    const interviewKey = `${interview.agent_id}-${interview.question}-${interview.confidence}`;
-                    return (
-                      <div
-                        key={interviewKey}
-                        className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 hover:bg-white/[0.04] transition-colors duration-150"
-                      >
-                        {/* Agent 头部 */}
-                        <div className="flex items-center gap-2.5 mb-3">
-                          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-purple-500 to-violet-600 flex items-center justify-center">
-                            <span className="text-[10px] font-bold text-white">
-                              {interview.agent_name.charAt(0).toUpperCase()}
-                            </span>
-                          </div>
-                          <span className="font-medium text-white text-sm">{interview.agent_name}</span>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                            interview.sentiment === 'positive'
-                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                              : interview.sentiment === 'negative'
-                              ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                              : 'bg-white/[0.06] text-white/50 border border-white/[0.08]'
-                          }`}>
-                            {interview.sentiment}
-                          </span>
-                          <span className="text-[10px] text-white/30 ml-auto">
-                            confidence {Math.round(interview.confidence * 100)}%
-                          </span>
-                        </div>
-                        {/* 问题 */}
-                        <div className="text-[11px] text-purple-400/80 mb-1.5 pl-9">
-                          Q: {interview.question}
-                        </div>
-                        {/* 回答 */}
-                        <p className="text-sm text-white/70 leading-relaxed pl-9">
-                          {interview.answer}
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <EmptyState mode="interview" />
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+      {activeProfile ? <div className="rounded-xl border border-white/10 p-4 text-xs leading-6 text-white/60"><h3 className="font-semibold text-white">{activeProfile.entity_name}</h3>
+        <p>{activeProfile.entity_type} · {activeProfile.occupation}</p><p className="mt-2">{activeProfile.background}</p><p>{activeProfile.personality_traits?.join(' · ')}</p></div> : null}
+      {report ? <details className="rounded-xl border border-white/10 p-4" open><summary className="cursor-pointer text-sm font-semibold">{t('报告侧栏', 'Report reference')}</summary>
+        <h3 className="my-3 text-sm text-purple-200">{report.title}</h3><p className="mb-3 text-xs leading-6 text-white/50">{report.summary}</p>
+        {report.sections.map(section => <details key={section.index} className="mb-3 text-xs"><summary className="cursor-pointer text-white/70">{section.title}</summary>
+          <div className="mt-2 max-h-72 overflow-auto text-white/50"><ReactMarkdown>{section.content}</ReactMarkdown></div></details>)}</details> : null}
+    </aside>
+    <main className="min-w-0 rounded-2xl border border-white/10 bg-white/[0.02] p-5">
+      {error ? <div role="alert" className="mb-4 rounded-lg border border-red-500/30 p-3 text-xs text-red-300">{error}<button className="ml-3 underline" onClick={() => { setRefresh(value => value + 1); setMetadataRefresh(value => value + 1); }}>{t('重新读取', 'Reload')}</button></div> : null}
+      {mode === 'chat' ? <>
+        <h2 className="border-b border-white/10 pb-4 text-sm font-semibold">{activeProfile?.entity_name ?? 'ReportAgent'} · {t('独立会话', 'Conversation history')}</h2>
+        <div aria-live="polite" className="max-h-[600px] min-h-80 space-y-5 overflow-y-auto py-5">
+          {historyLoading ? <p className="text-xs text-white/40">{t('正在恢复会话…', 'Restoring conversation…')}</p> : !messages.length ? <p className="py-20 text-center text-sm text-white/40">{t('基于报告或该参与者的真实模拟记忆提问。', 'Ask about the report or this participant’s recorded simulation experience.')}</p> : null}
+          {messages.map((message, index) => <article key={index} className={'rounded-xl p-4 ' + (message.role === 'user' ? 'ml-10 bg-purple-500/10' : 'mr-5 border border-white/10')}>
+            <p className="mb-2 text-[11px] text-white/40">{message.role === 'user' ? t('我', 'You') : activeProfile?.entity_name ?? 'ReportAgent'}</p>
+            <div className="prose prose-sm prose-invert max-w-none break-words text-sm text-white/80"><ReactMarkdown>{message.content}</ReactMarkdown></div>
+            {message.tool_calls?.length ? <p className="mt-3 text-[11px] text-purple-300">{t('检索工具', 'Tools')}: {message.tool_calls.map(tool => tool.name).join(' · ')}</p> : null}
+            {message.sources?.length ? <details className="mt-3 text-[11px] text-white/50"><summary className="cursor-pointer">{t('查看来源', 'View sources')} ({message.sources.length})</summary>
+              {message.sources.map(source => <p key={source.kind + ':' + source.id} className="mt-1 break-all">{source.kind}: {source.label} · {source.id}</p>)}</details> : null}
+          </article>)}
+          {chatBusy ? <p role="status" className="text-xs text-purple-300">{t('正在查阅证据并回答…', 'Reviewing evidence…')}</p> : null}
+        </div>
+        <form onSubmit={event => { event.preventDefault(); void send(); }} className="flex gap-3 border-t border-white/10 pt-4">
+          <textarea aria-label={t('对话问题', 'Message')} maxLength={2000} rows={2} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/5 p-3 text-sm" value={input} onChange={event => setInput(event.target.value)} />
+          <button className={button} disabled={chatBusy || historyLoading || !input.trim()}>{t('发送', 'Send')}</button>
+        </form>
+      </> : <>
+        <h2 className="mb-4 text-base font-semibold">{t('真实参与者采访问卷', 'Participant interview questionnaire')}</h2>
+        <p className="mb-4 text-xs text-white/50">{t('选择最多 10 位参与者，共用问题或为每人设置问题。回答将保留在对应会话中。', 'Select up to 10 participants and use a shared question or individual prompts. Answers are retained in each conversation.')}</p>
+        <div className="mb-4 flex flex-wrap gap-2">{profiles.map(profile => <label key={profile.entity_id} className="rounded-lg border border-white/10 p-2 text-xs">
+          <input type="checkbox" checked={selected.includes(profile.entity_id)} disabled={batchBusy || !selected.includes(profile.entity_id) && selected.length >= 10}
+            onChange={event => setSelected(previous => event.target.checked ? [...previous, profile.entity_id] : previous.filter(id => id !== profile.entity_id))} /> {profile.entity_name}</label>)}</div>
+        <button className={button + ' mb-4'} disabled={batchBusy} onClick={() => setSelected(profiles.slice(0, 10).map(profile => profile.entity_id))}>{t('选择前 10 位', 'Select first 10')}</button>
+        <label className="mb-3 block text-xs"><input type="checkbox" checked={custom} onChange={event => setCustom(event.target.checked)} /> {t('为每人设置问题', 'Individual questions')}</label>
+        <textarea aria-label={t('共享采访问题', 'Shared interview question')} placeholder={t('采访问题', 'Interview question')} maxLength={2000} rows={3} className="mb-4 w-full rounded-lg border border-white/10 bg-white/5 p-3 text-sm" value={question} onChange={event => setQuestion(event.target.value)} />
+        {custom ? selected.map(id => <label key={id} className="mb-3 block text-xs text-white/60">{profiles.find(profile => profile.entity_id === id)?.entity_name}
+          <textarea aria-label={'Question ' + id} maxLength={2000} rows={2} className="mt-2 w-full rounded-lg border border-white/10 bg-white/5 p-3 text-sm" value={questions[id] ?? ''} placeholder={t('留空使用共享问题', 'Leave blank to use shared question')} onChange={event => setQuestions(previous => ({ ...previous, [id]: event.target.value }))} /></label>) : null}
+        <button className={button} disabled={batchBusy || chatBusy || !selected.length || (custom ? selected.some(id => !(questions[id] || question).trim()) : !question.trim())} onClick={() => void interview()}>
+          {batchBusy ? t('采访中…', 'Interviewing…') : t('开始采访', 'Start interviews')} ({selected.length})</button>
+        <div className="mt-5 space-y-4">{answers.map((answer, index) => <article key={answer.agent_id + ':' + index} className="rounded-xl border border-white/10 p-4">
+          <h3 className="text-sm font-semibold text-purple-200">{answer.agent_name}</h3><p className="my-2 text-xs text-white/40">{answer.question}</p>
+          <div className="prose prose-sm prose-invert max-w-none text-white/75"><ReactMarkdown>{answer.answer}</ReactMarkdown></div>
+          {Object.entries(answer.platform_answers ?? {}).map(([platform, value]) => <details key={platform} className="mt-3 text-xs text-white/60"><summary className="cursor-pointer">{platform}</summary><p className="mt-2 whitespace-pre-wrap">{value}</p></details>)}
+          <p className="mt-3 text-xs text-white/40">{answer.sentiment} · {t('信心', 'Confidence')} {Math.round(answer.confidence * 100)}%</p>
+        </article>)}</div>
+      </>}
+    </main>
+  </div>;
 }

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { getUnifiedPublicationWriteBlock } from './security/unified-publication-write-guard';
 import { getMilvusConnectionConfig } from './milvus-config';
 import { getMilvusInstance } from './milvus-client';
 import { createRetrievalScope, stampDocumentScope } from './security/retrieval-scope';
@@ -13,6 +14,8 @@ import { beginVectorIngest } from './rag/vector-ingest-state';
 import { fingerprintReindexChunks, rebuildEmbeddingIndex } from './rag/embedding-index-rebuild';
 
 export function beginEmbeddingReindex(model: string, context: RagSecurityContext, selection: EmbeddingReindexJob['selection']): EmbeddingReindexJob {
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) throw new RequestValidationError(block.code, block.message, block.status);
   if (resolveRuntimeEmbeddingProvider() !== 'ollama') throw new RequestValidationError('EMBEDDING_SWITCH_UNSUPPORTED', '当前切换入口支持 Ollama 嵌入模型。', 409);
   // Check durable storage before starting an expensive model load.
   embeddingIndexPointerStore();
@@ -51,11 +54,13 @@ export function beginEmbeddingReindex(model: string, context: RagSecurityContext
         return (await response.json()).embeddings;
       },
       async createTarget(dimension) {
+        assertLegacyWriteAvailable();
         targetDimension = dimension;
         await getMilvusInstance({ ...sourceConfig, collectionName: collection, embeddingDimension: dimension }).initializeCollection();
         return collection;
       },
       async insert(_collection, rows) {
+        assertLegacyWriteAvailable();
         const store = getMilvusInstance({ ...sourceConfig, collectionName: collection, embeddingDimension: rows[0].embedding.length });
         const documents = rows.map(row => ({ ...row,
           metadata: stampDocumentScope({ ...row.metadata, embedding_model: model, embeddingModel: model,
@@ -77,6 +82,7 @@ export function beginEmbeddingReindex(model: string, context: RagSecurityContext
         if (createHash('sha256').update(fingerprints.sort().join('\n')).digest('hex') !== expected) throw new Error('重建期间源文档发生变化，已保留旧索引，请重试。');
       },
       async publish(index) {
+        assertLegacyWriteAvailable();
         await publishEmbeddingIndex({ ...index, provider: 'ollama', baseKey: embeddingIndexBaseKey(), version: 1, updatedAt: new Date().toISOString() });
         job.selection.config.embedding = { provider: 'ollama', model, dimension: index.dimension };
       },
@@ -92,4 +98,9 @@ export function beginEmbeddingReindex(model: string, context: RagSecurityContext
     lease.fail(error);
   }).finally(() => lease.release());
   return job;
+}
+
+function assertLegacyWriteAvailable(): void {
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) throw new RequestValidationError(block.code, block.message, block.status);
 }

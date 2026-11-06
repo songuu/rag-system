@@ -157,3 +157,24 @@ test('lexical search rejects cross-scope or conflicting provenance hits', async 
     error => error.code === 'ELASTICSEARCH_INTEGRITY_VIOLATION'
   );
 });
+
+test('lexical search returns verified UTF-16 highlight ranges without exposing markup', async () => {
+  const start = '\uE000RAG_HIGHLIGHT_START\uE001';
+  const end = '\uE000RAG_HIGHLIGHT_END\uE001';
+  let request;
+  const source = { chunk_id: 'chunk-1', tenant_id: 'tenant-a', corpus_id: 'corpus-a', document_id: 'doc-1', document_version: 'v1', trust_level: 'reviewed', content: '😀契丹<script>契丹', source: '契丹.pdf', metadata: {} };
+  const client = { async search(input) { request = input; return { hits: { hits: [{ _id: 'chunk-1', _score: 1, _source: source, highlight: { content: [`😀${start}契丹${end}<script>${start}契丹${end}`], source: [`${start}契丹${end}.pdf`] } }] } }; } };
+  const [item] = await searchElasticsearchLexical({ client, indexName: 'x', query: '契丹', topK: 1, laneId: 'document-search', scope, includeHighlights: true });
+  assert.equal(request.highlight.fields.content.number_of_fragments, 0);
+  assert.deepEqual(item.metadata.lexicalHighlights, { content: [{ start: 2, end: 4 }, { start: 12, end: 14 }], source: [{ start: 0, end: 2 }] });
+});
+
+test('source highlight offsets account for trimmed document titles', async () => {
+  const start = '\uE000RAG_HIGHLIGHT_START\uE001';
+  const end = '\uE000RAG_HIGHLIGHT_END\uE001';
+  const source = { chunk_id: 'chunk-1', tenant_id: 'tenant-a', corpus_id: 'corpus-a', document_id: 'doc-1', document_version: 'v1', trust_level: 'reviewed', content: '内容', source: '  契丹.pdf  ', metadata: {} };
+  const client = { async search() { return { hits: { hits: [{ _id: 'chunk-1', _score: 1, _source: source, highlight: { source: [`  ${start}契丹${end}.pdf  `] } }] } }; } };
+  const [item] = await searchElasticsearchLexical({ client, indexName: 'x', query: '契丹', topK: 1, laneId: 'search', scope, includeHighlights: true });
+  assert.equal(item.source, '契丹.pdf');
+  assert.deepEqual(item.metadata.lexicalHighlights.source, [{ start: 0, end: 2 }]);
+});

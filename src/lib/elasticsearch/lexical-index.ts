@@ -91,6 +91,7 @@ export async function searchElasticsearchLexical(input: {
   documentId?: string;
   documentIds?: string[];
   signal?: AbortSignal;
+  includeHighlights?: boolean;
 }): Promise<RagEvidence[]> {
   const query = requiredScalar(input.query, 'query', 8_000);
   const topK = boundedTopK(input.topK);
@@ -104,6 +105,10 @@ export async function searchElasticsearchLexical(input: {
     index: input.indexName,
     size: topK,
     track_total_hits: false,
+    ...(input.includeHighlights ? { highlight: {
+      pre_tags: [HIGHLIGHT_START], post_tags: [HIGHLIGHT_END],
+      fields: { content: { number_of_fragments: 0 }, source: { number_of_fragments: 0 } },
+    } } : {}),
     _source: [
       'chunk_id', 'tenant_id', 'corpus_id', 'document_id', 'document_version',
       'trust_level', 'content', 'source', 'page', 'start_offset', 'end_offset', 'metadata',
@@ -183,9 +188,51 @@ export async function searchElasticsearchLexical(input: {
         lexicalMatch: true,
         elasticsearchScore: score,
         retriever: 'elasticsearch-bm25-v1',
+        ...(input.includeHighlights ? { lexicalHighlights: {
+          content: readHighlight(hit, 'content', content),
+          source: readSourceHighlight(hit, source.source),
+        } } : {}),
       },
     } satisfies RagEvidence;
   });
+}
+
+const HIGHLIGHT_START = '\uE000RAG_HIGHLIGHT_START\uE001';
+const HIGHLIGHT_END = '\uE000RAG_HIGHLIGHT_END\uE001';
+
+function readSourceHighlight(hit: Record<string, unknown>, source: unknown): Array<{ start: number; end: number }> {
+  if (typeof source !== 'string') return [];
+  const trimmed = source.trim();
+  const offset = source.length - source.trimStart().length;
+  return readHighlight(hit, 'source', source)
+    .filter(range => range.start >= offset && range.end <= offset + trimmed.length)
+    .map(range => ({ start: range.start - offset, end: range.end - offset }));
+}
+
+function readHighlight(hit: Record<string, unknown>, field: string, original: string): Array<{ start: number; end: number }> {
+  if (!original || original.includes(HIGHLIGHT_START) || original.includes(HIGHLIGHT_END) || !isRecord(hit.highlight)) return [];
+  const fragments = hit.highlight[field];
+  if (!Array.isArray(fragments) || fragments.length !== 1 || typeof fragments[0] !== 'string') return [];
+  const value = fragments[0];
+  let text = '';
+  let cursor = 0;
+  let start: number | undefined;
+  const ranges: Array<{ start: number; end: number }> = [];
+  while (cursor < value.length) {
+    if (value.startsWith(HIGHLIGHT_START, cursor)) {
+      if (start !== undefined) return [];
+      start = text.length;
+      cursor += HIGHLIGHT_START.length;
+    } else if (value.startsWith(HIGHLIGHT_END, cursor)) {
+      if (start === undefined || start === text.length) return [];
+      ranges.push({ start, end: text.length });
+      start = undefined;
+      cursor += HIGHLIGHT_END.length;
+    } else {
+      text += value[cursor++];
+    }
+  }
+  return start === undefined && text === original ? ranges : [];
 }
 
 export async function bulkIndexElasticsearchDocuments(input: {

@@ -102,7 +102,7 @@ test('嵌入重建需要权限，立即返回后台任务，完成后才返回�
   const env = { RAG_ACCESS_MODE: 'single-tenant-token', RAG_SINGLE_TENANT_TOKEN: 'fixture-token',
     RAG_SINGLE_TENANT_ACTOR_ID: 'index-owner', RAG_SINGLE_TENANT_ROLE: 'viewer',
     RAG_DEFAULT_TENANT_ID: 'tenant-index', RAG_DEFAULT_CORPUS_ID: 'corpus-index',
-    RAG_ALLOWED_LLM_MODELS: '', RAG_ALLOWED_EMBEDDING_MODELS: '' };
+    RAG_ALLOWED_LLM_MODELS: '', RAG_ALLOWED_EMBEDDING_MODELS: '', RAG_UNIFIED_PUBLICATION_MODE: 'active' };
   const previous = new Map(Object.keys(env).map(key => [key, process.env[key]]));
   Object.assign(process.env, env);
   const request = (body, authorized = true) => new Request('http://localhost/api/model-selection', { method: 'POST',
@@ -112,6 +112,11 @@ test('嵌入重建需要权限，立即返回后台任务，完成后才返回�
     assert.equal((await POST(request(body, false))).status, 401);
     assert.equal((await POST(request(body))).status, 403);
     process.env.RAG_SINGLE_TENANT_ROLE = 'owner';
+    const blocked = await POST(request(body));
+    assert.equal(blocked.status, 503);
+    assert.equal((await blocked.json()).code, 'PUBLICATION_LEGACY_WRITE_UNAVAILABLE');
+    assert.equal(embeddingReindexJobs().size, 0);
+    process.env.RAG_UNIFIED_PUBLICATION_MODE = 'off';
     const response = await POST(request(body));
     assert.equal(response.status, 202);
     const started = await response.json();

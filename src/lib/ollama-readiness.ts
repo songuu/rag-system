@@ -1,3 +1,5 @@
+import { createProviderAdmissionFetch } from './models/provider-admission';
+
 export interface OllamaRuntimeSettings { numCtx: number; keepAlive: string }
 export function resolveOllamaRuntimeSettings(env: Record<string, string | undefined> = process.env): OllamaRuntimeSettings {
   const context = Number(env.OLLAMA_NUM_CTX);
@@ -61,12 +63,13 @@ export async function warmOllamaModel(model: string, options: {
   if (pending) return pending;
   if (pendingLoads.size >= 4) throw new Error('MODEL_PRELOAD_BUSY');
   const load = (async (): Promise<ModelReadiness> => {
-    const response = await (options.fetch || fetch)(`${baseUrl}/api/generate`, {
+    const providerFetch = createProviderAdmissionFetch(options.fetch || fetch, { provider: 'ollama', baseUrl, priority: 'background' });
+    const response = await providerFetch(`${baseUrl}/api/generate`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       signal: AbortSignal.timeout(Math.max(1000, Math.min(600_000, options.timeoutMs || 240_000))),
       body: JSON.stringify({ model, prompt: '', stream: false, keep_alive: settings.keepAlive, options: { num_ctx: settings.numCtx } }),
     });
-    if (!response.ok) throw new Error('MODEL_PRELOAD_FAILED');
+    if (!response.ok) { await response.body?.cancel(); throw new Error('MODEL_PRELOAD_FAILED'); }
     const body = await response.json();
     if (body.error || body.done !== true) throw new Error('MODEL_PRELOAD_FAILED');
     return { model, phase: 'ready', ...(typeof body.load_duration === 'number' && Number.isFinite(body.load_duration)
@@ -107,14 +110,15 @@ export async function warmOllamaEmbeddingModel(model: string, options: {
     if (pendingLoads.size >= 4) throw new Error('MODEL_PRELOAD_BUSY');
     load = (async (): Promise<ModelReadiness> => {
       try {
-        const response = await (options.fetch || fetch)(`${baseUrl}/api/embed`, {
+        const providerFetch = createProviderAdmissionFetch(options.fetch || fetch, { provider: 'ollama', baseUrl });
+        const response = await providerFetch(`${baseUrl}/api/embed`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
           signal: AbortSignal.timeout(Math.max(1000, Math.min(
             OLLAMA_EMBEDDING_WARMUP_TIMEOUT_MS, options.timeoutMs || OLLAMA_EMBEDDING_WARMUP_TIMEOUT_MS
           ))),
           body: JSON.stringify({ model, input: [], keep_alive: keepAlive, options: { num_ctx: OLLAMA_EMBEDDING_NUM_CTX } }),
         });
-        if (!response.ok) throw new OllamaEmbeddingWarmupError('EMBEDDING_PRELOAD_FAILED');
+        if (!response.ok) { await response.body?.cancel(); throw new OllamaEmbeddingWarmupError('EMBEDDING_PRELOAD_FAILED'); }
         const body = await response.json();
         if (body.error || !Array.isArray(body.embeddings) || body.embeddings.length !== 0) {
           throw new OllamaEmbeddingWarmupError('EMBEDDING_PRELOAD_FAILED');

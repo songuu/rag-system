@@ -1,0 +1,996 @@
+{
+  "schemaVersion": "rag-live-refreshed-request/v1",
+  "checkedAt": "2026-11-05T12:15:03.374Z",
+  "referenceStatus": "needs-review",
+  "productionQualityMeasured": false,
+  "note": "Separate request after observing current server embedding; does not belong to the previous model configuration batch.",
+  "modelsBefore": {
+    "llm": {
+      "provider": "ollama",
+      "model": "llama3.1"
+    },
+    "embedding": {
+      "provider": "ollama",
+      "model": "qwen3-embedding:latest",
+      "dimension": 4096
+    }
+  },
+  "modelsAfter": {
+    "llm": {
+      "provider": "ollama",
+      "model": "llama3.1"
+    },
+    "embedding": {
+      "provider": "ollama",
+      "model": "qwen3-embedding:latest",
+      "dimension": 4096
+    }
+  },
+  "modelConfigUnchanged": true,
+  "httpStatus": 200,
+  "elapsedMs": 59279.9077,
+  "answer": "根据用户问题，答案是：\n\n答案：ISBN：9787301347492\n\n引用事实：[1]",
+  "expectedLiteralPresent": true,
+  "goldEvidencePresent": true,
+  "citationStatus": "available",
+  "body": {
+    "success": true,
+    "question": "《重构契丹早期史》版权页给出的 ISBN 是多少？请依据知识库作答。",
+    "answer": "根据用户问题，答案是：\n\n答案：ISBN：9787301347492\n\n引用事实：[1]",
+    "citations": {
+      "version": "rag-citations/v1",
+      "partition": "2b33bb8d69c9a257acf188feb1bca752eb74879d5ff6365f59d0e4cbf78e6a0b",
+      "status": "available",
+      "items": [
+        {
+          "number": 1,
+          "locator": "rcl2.local-20261023.1z9JBni9i_8yftD-.VkKutch_b8OYwaCsuGsDA_IPHxe0iWiVF50rPcQprK2zSGFGu-zvKJ2fa061bhLinZqucQNV2At2CE6FmfmzO5CiVtDk4Gn-Qy6hV6NHC-P0yE8ZuwrvzZ96_4_EgSs1Q6cme0NmYx7CbHvtyjVHPBM1h8zdM_HCTxRyX5peVLWgWEVzPHEaOa5sc-BMgIn-h0qkk8SOI2AfgPadmkIkQ11mtSOJkKp_PlwfdDkNWoWoDYfEJoHv_2cdgq3JTNo1Gf_UwXfEw86qSWPk63GI0_87UgZQ4AmtnH-usDbIcRz2Y2FcFw7tK4DLGyayW1lw5EIf62MNsDIPxXrd9_sLyQvyo-cpkbCDa5EWC245gfYUqQ82NysbGoMVeKnEonupCi-wWbV_a0hD51AVAaBLaGJNLygpdf82VQvobJznE4tlnmLJzO9NQGBTUX3GoDNln1G08DItdWBYjwqWcJduXj0aLRBbgunHMk6OJv1ZUcKwkzLu8EXh6XuZJjHW9mk8qICzaILCDKh5SouB_YrLhHFrCl-bTd54wmaV-mrK554C1A9Ni1rwyMyVTGieMOc9pOR8I29hbGp-q0W6fibE4rxUCWGGa3AvqbWC7cTIvggDzz5_K4LBpGBhHYCICVDpd1aIQll_-mudUOSdWaXygvuv_x5a3NBaU1CK7cr3FYwPdz1_P-BcSCN5tEeRzSpbNCTe0qduuR8ZPhBlSnkE03-vnLQkCw_M32ls8CG9cR9xcL2tLar0GowWsNmW_6bKguIJZN6GxCSWcnzeVsgHwt8ZhbWBEdXyitTBfURxL5wiyh-YhQE0scZVssoKWcy9jTbuy2WvM7v_UcQb5pbu9WmdJuVuRgcu1wcrLOxxRPQcgBpsyOQt4n-GrQ6Bw6rv4uATOsyJdTmepL2SLpQ-EspIL0P2eK68-9mmlkoU6rabyJE-JsFj2uPkCRQFdCnKTHK00z2ZJE4gQ_6qyiQBNJHdlde0zYNjo3Kiv_1r37fg-NHO.x7h0h3qCO2mLjWtXWNoTfg",
+          "expiresAt": 1793967303253
+        }
+      ],
+      "diagnostics": {
+        "reason": "ready",
+        "citationCount": 1,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "qwen3-embedding:latest"
+    },
+    "storageBackend": "milvus",
+    "evidence": [
+      {
+        "id": "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "版权信息\nCOPYRIGHT\n书名：重构契丹早期史\n作者：苗润博\n出版社：北京大学出版社\n出版时间：2024年2月\nISBN：9787301347492\n字数：199千字",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 0,
+        "endOffset": 85,
+        "retrievalScore": 0.03278688524590164,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "source": "重构契丹早期史.epub",
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "chapterCount": 35,
+          "parseMethod": "epub",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "tenantId": "local-dev-tenant",
+          "tenant_id": "local-dev-tenant",
+          "corpusId": "local-dev-corpus",
+          "corpus_id": "local-dev-corpus",
+          "trustLevel": "external",
+          "trust_level": "external",
+          "documentId": "重构契丹早期史.epub",
+          "document_id": "重构契丹早期史.epub",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "chunkIndex": 0,
+          "totalChunks": 645,
+          "startOffset": 0,
+          "endOffset": 85,
+          "sourceTextLength": 253218,
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualIdentity": "contextual:v2:7140a3f41001f09ebef89706b84bb7f29776e4d69c4542488174bb5f143443d4",
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualMode": "shadow",
+          "contextualStatus": "fallback",
+          "contextualModel": "llama3.1",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "denseMatch": true,
+          "fusionScore": 0.03278688524590164,
+          "matchedLanes": [
+            "dense",
+            "lexical"
+          ],
+          "laneRanks": {
+            "dense": 1,
+            "lexical": 1
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.9945372939109802
+      },
+      {
+        "id": "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n\n本章小结\n元修《辽史》所见契丹早期史料一直被视作相关研究的立论基石和基本框架，其中尤以《营卫志》部族门最为学界所重。本章的研究表明，这一部分记载除开首所引旧志序文及太祖二十部、圣宗三十四部出自耶律俨《皇朝实录·部族志》外，其余文字皆为元朝史官新作。在此过程中，元人不仅对契丹的部族加以重新定义和分类，还将中原文献系统和辽朝文献系统做了拼接，勾勒出契丹自北魏至唐末的发展框架。通过对《营卫志·部族》的逐条批判、考源辨误，我们发现元人所编织的契丹早期史叙述几乎每一条都经不起推敲，根本无法反映历史发展的实态，更与辽朝自身的历史叙述相去甚远。以此为突破口，全面检讨《辽史》的叙述，可以发现金陈大任修《辽史》时即已对契丹早期史叙述进行过零星的建构，至元人修史时则更将其推向细化、深化、系统化，最终固化为我们今天所看到的模样。金元史官重构契丹早期史的核心方法是杂糅、拼接不同文献系统的材料。这种重构方法的内在逻辑是站在后来人的立场上进行追溯、归纳，将契丹集团原本多元复杂的衍变轨迹简单化约为一元线性的发展脉络，忽略了不同时代、不同主体所作的历史叙述可能存在的根本性矛盾。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 87737,
+        "endOffset": 88219,
+        "retrievalScore": 0.016129032258064516,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 88219,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 220,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 87737,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:11413b9098860fd2f2691013073f96a38c15b9c67b8d8e73f24214c7b9706d27",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 20.877205,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.016129032258064516,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 2
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.4586147665977478
+      },
+      {
+        "id": "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n\n结语\n谁的历史？——契丹早期史问题的典型意义\n本书聚焦于契丹早期史这一核心命题，立足于史源学视野下的文本批判，从文本缝隙切入，理清不同文献系统之源流，呈现历史叙述的衍变脉络以及族群记忆被不断改造的复杂过程，进而完成对相关史实的反思性重构。\n从北魏著《国史》、北齐修《魏书》，到唐初《隋书》、开元《国史》、五代《实录》，再到两《唐书》、两《五代史》、宋朝《国史》，皆设《契丹传》，形成一套六七百年赓续不断的文献谱系，贯穿契丹从初现到建国的全过程，这在古代中原关于北族的记载中绝无仅有，也是本项研究得以开展的独特史料基础，然而其中存在的建构与误解一直以来并未引起研究者的重视。本书所剖析的三个案例，即《魏书》虚构的契丹初期发展史、《隋书》将契丹由东夷改为北狄的归类变化以及唐代文献所谓契丹君长姓大贺氏的通行说法，都旨在揭示这套历史叙述存在的系统性问题，对以此为核心搭建的契丹早期史框架重加检讨。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 202589,
+        "endOffset": 202986,
+        "retrievalScore": 0.03149801587301587,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "source": "重构契丹早期史.epub",
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "chapterCount": 35,
+          "parseMethod": "epub",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "tenantId": "local-dev-tenant",
+          "tenant_id": "local-dev-tenant",
+          "corpusId": "local-dev-corpus",
+          "corpus_id": "local-dev-corpus",
+          "trustLevel": "external",
+          "trust_level": "external",
+          "documentId": "重构契丹早期史.epub",
+          "document_id": "重构契丹早期史.epub",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "chunkIndex": 515,
+          "totalChunks": 645,
+          "startOffset": 202589,
+          "endOffset": 202986,
+          "sourceTextLength": 253218,
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualIdentity": "contextual:v2:b7ba46d285abd9b3f7e422c19d5dcdad68e450fa69b120742afa9e6517866403",
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualMode": "shadow",
+          "contextualStatus": "fallback",
+          "contextualModel": "llama3.1",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "denseMatch": true,
+          "fusionScore": 0.03149801587301587,
+          "matchedLanes": [
+            "dense",
+            "lexical"
+          ],
+          "laneRanks": {
+            "dense": 3,
+            "lexical": 4
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.34832990169525146
+      },
+      {
+        "id": "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n直至20世纪80年代方才出现讨论契丹早期史的专题论文，澳大利亚学者霍姆格伦（Jennifer Holmgren）以权力继承的谱系为线索，对文献中有关从大贺、遥辇再到耶律发展过程的若干成说质疑，提出与以往学者不同的看法，颇有见地。\n但遗憾的是，该文一直以来并未受到应有的重视，不仅在东亚学界罕见回响，即便是晚出的西文著作也只是在参考文献或学术史回顾中简单提及，而未就相关问题展开对话、取得推进。崔瑞德（Denis Twitchett）主笔的《剑桥中国史》“辽”一章用四小节的篇幅讨论了契丹建国以前直至阿保机称帝时期的历史，这一部分的总体倾向是依据中原记载立论，不得已时方参用《辽史》，其中对辽方文献的审慎态度值得借鉴，但在具体问题方面往往显得深度不足。\n赫尔辛基大学徐谦（Xu Elina-Qian）所撰《契丹建国以前的历史进程》是西方学界迄今唯一一部以契丹早期史为题的博士论文，该文将与此问题相关的常见汉文材料翻译为英文，进而从族源、社会组织、经济基础、生态环境、与中原关系五方面对契丹早期史进行了叙述，基本上是对既有学说的总结、归纳，而鲜有发明。\n二、针对不同具体时段契丹发展史的研究",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 219926,
+        "endOffset": 220420,
+        "retrievalScore": 0.015873015873015872,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 220420,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 563,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 219926,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:8568a4809c2ff79fb255b179458e8be0ac7786764e896c68012c29e40355e36a",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 15.882882,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015873015873015872,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 3
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.13594648241996765
+      },
+      {
+        "id": "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n俄罗斯科学院东方写本研究所藏契丹大字手抄本中三次出现同一个标题，可释读为“大中央辽契丹国诸可汗之记”，序文落款恰为“重熙十四年二月”，该书很可能是重熙十三年六月下诏修撰、次年二月成书的《遥辇可汗至重熙以来事迹》残卷。该抄本应是现存最早的草原政治体以本族文字书写的官方史书，足见重熙修史不仅涉及汉文叙述的整合重塑，其成果更以契丹文为载体固定下来。参见Зайцев В.П.Рукописная книгабольшого киданьского письма из коллекции Института восточных рукописей РАН //Письменные памятники Востока，№ 2（15），осень—зима2011.М.:Наука，Издательскаяфирма Восточная литература，2011.C.130—150，任震寰中译本见《俄罗斯科学院东方文献研究所收藏的契丹大字手稿书》，《隋唐辽宋金元史论丛》第3辑，上海古籍出版社，2013年",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 165219,
+        "endOffset": 165674,
+        "retrievalScore": 0.016129032258064516,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "source": "重构契丹早期史.epub",
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "chapterCount": 35,
+          "parseMethod": "epub",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "tenantId": "local-dev-tenant",
+          "tenant_id": "local-dev-tenant",
+          "corpusId": "local-dev-corpus",
+          "corpus_id": "local-dev-corpus",
+          "trustLevel": "external",
+          "trust_level": "external",
+          "documentId": "重构契丹早期史.epub",
+          "document_id": "重构契丹早期史.epub",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "chunkIndex": 417,
+          "totalChunks": 645,
+          "startOffset": 165219,
+          "endOffset": 165674,
+          "sourceTextLength": 253218,
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualIdentity": "contextual:v2:f607272ceed89cde3e2c4e96b4cd675a040c0bea594b7fc16757f663a0b4318c",
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualMode": "shadow",
+          "contextualStatus": "fallback",
+          "contextualModel": "llama3.1",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": false,
+          "denseMatch": true,
+          "fusionScore": 0.016129032258064516,
+          "matchedLanes": [
+            "dense"
+          ],
+          "laneRanks": {
+            "dense": 2
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.07320143282413483
+      }
+    ],
+    "laneExecutions": [
+      {
+        "laneId": "dense-vector-required",
+        "retriever": "milvus-elasticsearch-rrf-v1",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+          "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+          "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece",
+          "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+          "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2"
+        ],
+        "latencyMs": 434,
+        "stopReason": "sufficient",
+        "metadata": {
+          "searchTime": 434,
+          "vectorizationTime": 182,
+          "elasticsearch": {
+            "version": "milvus-elasticsearch-rrf/v1",
+            "mode": "active",
+            "status": "fused",
+            "denseCandidateCount": 5,
+            "lexicalCandidateCount": 5,
+            "fusedCandidateCount": 5
+          }
+        }
+      },
+      {
+        "laneId": "rerank-optional",
+        "retriever": "rerank:siliconflow:BAAI/bge-reranker-v2-m3",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+          "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+          "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+          "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2",
+          "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece"
+        ],
+        "reranking": {
+          "beforeEvidenceIds": [
+            "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+            "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+            "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece",
+            "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+            "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2"
+          ],
+          "afterEvidenceIds": [
+            "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+            "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+            "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+            "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2",
+            "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece"
+          ]
+        },
+        "latencyMs": 303,
+        "stopReason": "sufficient"
+      }
+    ],
+    "execution": {
+      "budget": {
+        "maxLanes": 2,
+        "maxEvidence": 5,
+        "maxDurationMs": 30000
+      },
+      "stopReason": "sufficient"
+    },
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "summary": "已检索并验证 5 条证据后生成回答。",
+      "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+      "retrievalSkipped": false,
+      "totalDurationMs": 1287,
+      "steps": [
+        {
+          "id": "route",
+          "label": "选择处理路径",
+          "detail": "已选择知识库检索路径。",
+          "status": "completed"
+        },
+        {
+          "id": "retrieve",
+          "label": "检索并验证资料",
+          "detail": "已获得 5 条可用于回答的证据。",
+          "status": "completed",
+          "durationMs": 737
+        },
+        {
+          "id": "rerank",
+          "label": "重排候选文档",
+          "detail": "已按相关性重新排序候选资料。",
+          "status": "completed",
+          "durationMs": 303
+        },
+        {
+          "id": "generate",
+          "label": "组织回答",
+          "detail": "已基于筛选后的资料生成回答。",
+          "status": "completed",
+          "durationMs": 549
+        }
+      ]
+    },
+    "cacheIdentity": {
+      "version": "rag-cache-identity/v1",
+      "context": "rag:context:f7dd309d095f15c587c29ab37b3eec6e607a7d13137c95cb540ed654d5152776",
+      "answer": "rag:answer:436f87178c058cd3025abc8cdb059daff50a7d8061a3d22c548e92bad447e3a5"
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "version": "retrieval-diagnostics/v1",
+        "qualityMeasurement": "unmeasured",
+        "candidateCount": 5,
+        "contextCount": 5,
+        "citedCount": 1,
+        "rows": [
+          {
+            "evidenceId": "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.03278688524590164,
+            "rerankScore": 0.9945372939109802,
+            "beforeRerankRank": 1,
+            "afterRerankRank": 1,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": true
+          },
+          {
+            "evidenceId": "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.016129032258064516,
+            "rerankScore": 0.4586147665977478,
+            "beforeRerankRank": 4,
+            "afterRerankRank": 2,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.03149801587301587,
+            "rerankScore": 0.34832990169525146,
+            "beforeRerankRank": 2,
+            "afterRerankRank": 3,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015873015873015872,
+            "rerankScore": 0.13594648241996765,
+            "beforeRerankRank": 5,
+            "afterRerankRank": 4,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.016129032258064516,
+            "rerankScore": 0.07320143282413483,
+            "beforeRerankRank": 3,
+            "afterRerankRank": 5,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          }
+        ]
+      },
+      "searchResults": [
+        {
+          "document": {
+            "id": "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+            "content": "版权信息\nCOPYRIGHT\n书名：重构契丹早期史\n作者：苗润博\n出版社：北京大学出版社\n出版时间：2024年2月\nISBN：9787301347492\n字数：199千字",
+            "metadata": {
+              "source": "重构契丹早期史.epub",
+              "type": "epub",
+              "title": "重构契丹早期史",
+              "author": "苗润博",
+              "chapterCount": 35,
+              "parseMethod": "epub",
+              "createdAt": "2026-11-04T02:48:05.047Z",
+              "createdBy": "local-dev",
+              "tenantId": "local-dev-tenant",
+              "tenant_id": "local-dev-tenant",
+              "corpusId": "local-dev-corpus",
+              "corpus_id": "local-dev-corpus",
+              "trustLevel": "external",
+              "trust_level": "external",
+              "documentId": "重构契丹早期史.epub",
+              "document_id": "重构契丹早期史.epub",
+              "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "chunkIndex": 0,
+              "totalChunks": 645,
+              "startOffset": 0,
+              "endOffset": 85,
+              "sourceTextLength": 253218,
+              "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "contextualIdentity": "contextual:v2:7140a3f41001f09ebef89706b84bb7f29776e4d69c4542488174bb5f143443d4",
+              "contextualVersion": "contextual-retrieval/v2",
+              "contextualMode": "shadow",
+              "contextualStatus": "fallback",
+              "contextualModel": "llama3.1",
+              "contextualPromptVersion": "contextual-ingest-prompt/v1"
+            }
+          },
+          "similarity": 0.8030604720115662,
+          "distance": 0.8030604720115662,
+          "index": 0
+        },
+        {
+          "document": {
+            "id": "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece",
+            "content": "\n俄罗斯科学院东方写本研究所藏契丹大字手抄本中三次出现同一个标题，可释读为“大中央辽契丹国诸可汗之记”，序文落款恰为“重熙十四年二月”，该书很可能是重熙十三年六月下诏修撰、次年二月成书的《遥辇可汗至重熙以来事迹》残卷。该抄本应是现存最早的草原政治体以本族文字书写的官方史书，足见重熙修史不仅涉及汉文叙述的整合重塑，其成果更以契丹文为载体固定下来。参见Зайцев В.П.Рукописная книгабольшого киданьского письма из коллекции Института восточных рукописей РАН //Письменные памятники Востока，№ 2（15），осень—зима2011.М.:Наука，Издательскаяфирма Восточная литература，2011.C.130—150，任震寰中译本见《俄罗斯科学院东方文献研究所收藏的契丹大字手稿书》，《隋唐辽宋金元史论丛》第3辑，上海古籍出版社，2013年",
+            "metadata": {
+              "source": "重构契丹早期史.epub",
+              "type": "epub",
+              "title": "重构契丹早期史",
+              "author": "苗润博",
+              "chapterCount": 35,
+              "parseMethod": "epub",
+              "createdAt": "2026-11-04T02:48:05.047Z",
+              "createdBy": "local-dev",
+              "tenantId": "local-dev-tenant",
+              "tenant_id": "local-dev-tenant",
+              "corpusId": "local-dev-corpus",
+              "corpus_id": "local-dev-corpus",
+              "trustLevel": "external",
+              "trust_level": "external",
+              "documentId": "重构契丹早期史.epub",
+              "document_id": "重构契丹早期史.epub",
+              "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "chunkIndex": 417,
+              "totalChunks": 645,
+              "startOffset": 165219,
+              "endOffset": 165674,
+              "sourceTextLength": 253218,
+              "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "contextualIdentity": "contextual:v2:f607272ceed89cde3e2c4e96b4cd675a040c0bea594b7fc16757f663a0b4318c",
+              "contextualVersion": "contextual-retrieval/v2",
+              "contextualMode": "shadow",
+              "contextualStatus": "fallback",
+              "contextualModel": "llama3.1",
+              "contextualPromptVersion": "contextual-ingest-prompt/v1"
+            }
+          },
+          "similarity": 0.5727775692939758,
+          "distance": 0.5727775692939758,
+          "index": 1
+        },
+        {
+          "document": {
+            "id": "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+            "content": "\n\n结语\n谁的历史？——契丹早期史问题的典型意义\n本书聚焦于契丹早期史这一核心命题，立足于史源学视野下的文本批判，从文本缝隙切入，理清不同文献系统之源流，呈现历史叙述的衍变脉络以及族群记忆被不断改造的复杂过程，进而完成对相关史实的反思性重构。\n从北魏著《国史》、北齐修《魏书》，到唐初《隋书》、开元《国史》、五代《实录》，再到两《唐书》、两《五代史》、宋朝《国史》，皆设《契丹传》，形成一套六七百年赓续不断的文献谱系，贯穿契丹从初现到建国的全过程，这在古代中原关于北族的记载中绝无仅有，也是本项研究得以开展的独特史料基础，然而其中存在的建构与误解一直以来并未引起研究者的重视。本书所剖析的三个案例，即《魏书》虚构的契丹初期发展史、《隋书》将契丹由东夷改为北狄的归类变化以及唐代文献所谓契丹君长姓大贺氏的通行说法，都旨在揭示这套历史叙述存在的系统性问题，对以此为核心搭建的契丹早期史框架重加检讨。",
+            "metadata": {
+              "source": "重构契丹早期史.epub",
+              "type": "epub",
+              "title": "重构契丹早期史",
+              "author": "苗润博",
+              "chapterCount": 35,
+              "parseMethod": "epub",
+              "createdAt": "2026-11-04T02:48:05.047Z",
+              "createdBy": "local-dev",
+              "tenantId": "local-dev-tenant",
+              "tenant_id": "local-dev-tenant",
+              "corpusId": "local-dev-corpus",
+              "corpus_id": "local-dev-corpus",
+              "trustLevel": "external",
+              "trust_level": "external",
+              "documentId": "重构契丹早期史.epub",
+              "document_id": "重构契丹早期史.epub",
+              "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "chunkIndex": 515,
+              "totalChunks": 645,
+              "startOffset": 202589,
+              "endOffset": 202986,
+              "sourceTextLength": 253218,
+              "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "contextualIdentity": "contextual:v2:b7ba46d285abd9b3f7e422c19d5dcdad68e450fa69b120742afa9e6517866403",
+              "contextualVersion": "contextual-retrieval/v2",
+              "contextualMode": "shadow",
+              "contextualStatus": "fallback",
+              "contextualModel": "llama3.1",
+              "contextualPromptVersion": "contextual-ingest-prompt/v1"
+            }
+          },
+          "similarity": 0.5662612318992615,
+          "distance": 0.5662612318992615,
+          "index": 2
+        },
+        {
+          "document": {
+            "id": "chunk-1bd7307cb56929d579934ef17c4aedd02ca385e2814f6f1889c248a8bdccde4b",
+            "content": "\n具体章节内容安排如下：\n上篇第一章对中原史籍有关契丹早期史的若干经典叙述加以解构。选取三个案例，从文献源流和历史叙述切入，具体讨论以下问题：《魏书》的群类式叙述策略及其影响，《隋书》在列传归类上将契丹由东夷改入北狄的原因和背景，以《旧唐书》为代表的唐宋文献将契丹君长记为大贺氏的史料源流与致误之由。第二章对元修《辽史》所见契丹早期史料展开批判。首先从总体上判定《营卫志·部族》的史源状况，接着逐条考证史源、分析拼接过程中所出现的问题，进而将此方法推广到《辽史》其他部分的契丹早期史料，全面剖析元末史官的契丹早期史观。最终将辽朝当时的历史叙述从后世的线性追溯中剥离出来。",
+            "metadata": {
+              "source": "重构契丹早期史.epub",
+              "type": "epub",
+              "title": "重构契丹早期史",
+              "author": "苗润博",
+              "chapterCount": 35,
+              "parseMethod": "epub",
+              "createdAt": "2026-11-04T02:48:05.047Z",
+              "createdBy": "local-dev",
+              "tenantId": "local-dev-tenant",
+              "tenant_id": "local-dev-tenant",
+              "corpusId": "local-dev-corpus",
+              "corpus_id": "local-dev-corpus",
+              "trustLevel": "external",
+              "trust_level": "external",
+              "documentId": "重构契丹早期史.epub",
+              "document_id": "重构契丹早期史.epub",
+              "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "chunkIndex": 17,
+              "totalChunks": 645,
+              "startOffset": 6209,
+              "endOffset": 6494,
+              "sourceTextLength": 253218,
+              "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "contextualIdentity": "contextual:v2:6d661173ecb89fe1e083d3e28472a8e69fcf5d4af864edce34286799e7d67d9b",
+              "contextualVersion": "contextual-retrieval/v2",
+              "contextualMode": "shadow",
+              "contextualStatus": "fallback",
+              "contextualModel": "llama3.1",
+              "contextualPromptVersion": "contextual-ingest-prompt/v1"
+            }
+          },
+          "similarity": 0.5612468123435974,
+          "distance": 0.5612468123435974,
+          "index": 3
+        },
+        {
+          "document": {
+            "id": "chunk-c5fe329bdd2a839fbafd807646996018c71ab54c57b92847759f9a8f2272c569",
+            "content": "\n\n本书各章节初刊情况\n上篇 第一章\n第一节 《塑造东夷：〈魏书·契丹传〉的文本来源与叙述策略》，《中国中古史研究》第8卷，中西书局，2020年。\n第二节 《从东夷到北狄：中古正史有关契丹的归类变化》，《唐研究》第24卷，北京大学出版社，2019年。\n第三节 《从误解到常识：史源学视野下的唐代大贺氏契丹问题》，《唐研究》第25卷，北京大学出版社，2020年。\n上篇 第二章\n第一节 《再论〈辽史·营卫志〉部族门的文本来源与编纂过程》，《史学史研究》2020年第2期。\n第二节 《契丹建国以前部落发展史再探——〈辽史·营卫志·部族上〉》批判，《中国边疆史地研究》2022年第1期。\n第三节 《元修〈辽史〉契丹早期史观解构》，《中山大学学报（哲学社会科学版）》2022年第4期。\n下篇 第一章",
+            "metadata": {
+              "source": "重构契丹早期史.epub",
+              "type": "epub",
+              "title": "重构契丹早期史",
+              "author": "苗润博",
+              "chapterCount": 35,
+              "parseMethod": "epub",
+              "createdAt": "2026-11-04T02:48:05.047Z",
+              "createdBy": "local-dev",
+              "tenantId": "local-dev-tenant",
+              "tenant_id": "local-dev-tenant",
+              "corpusId": "local-dev-corpus",
+              "corpus_id": "local-dev-corpus",
+              "trustLevel": "external",
+              "trust_level": "external",
+              "documentId": "重构契丹早期史.epub",
+              "document_id": "重构契丹早期史.epub",
+              "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "chunkIndex": 636,
+              "totalChunks": 645,
+              "startOffset": 249874,
+              "endOffset": 250219,
+              "sourceTextLength": 253218,
+              "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+              "contextualIdentity": "contextual:v2:29092785ad4427f23ba52fd4ca2ceece20579686c0ce97b82edac50eafb16f5c",
+              "contextualVersion": "contextual-retrieval/v2",
+              "contextualMode": "shadow",
+              "contextualStatus": "fallback",
+              "contextualModel": "llama3.1",
+              "contextualPromptVersion": "contextual-ingest-prompt/v1"
+            }
+          },
+          "similarity": 0.5416644215583801,
+          "distance": 0.5416644215583801,
+          "index": 4
+        }
+      ],
+      "queryEmbedding": [
+        0.0038300995,
+        -0.009256153,
+        0.014843957,
+        -0.040472846,
+        0.010149925,
+        0.019250017,
+        -0.010531561,
+        0.017327989,
+        -0.030554462,
+        -0.0047693336
+      ],
+      "threshold": 0.1,
+      "topK": 5,
+      "totalDocuments": 687,
+      "searchTime": 434,
+      "vectorizationTime": 182,
+      "llmTime": 540,
+      "retrievalRoute": {
+        "version": "retrieval-router/rules-v1",
+        "route": "dense",
+        "queryKind": "semantic",
+        "reason": "semantic_dense_default",
+        "signals": []
+      },
+      "rerank": {
+        "requested": true,
+        "applied": true,
+        "provider": "rerank:siliconflow:BAAI/bge-reranker-v2-m3"
+      },
+      "hybrid": {
+        "requestedMode": "off",
+        "effectiveMode": "off",
+        "suppressedByElasticsearch": false,
+        "probed": false,
+        "usable": false,
+        "active": false
+      },
+      "elasticsearch": {
+        "requestedMode": "active",
+        "indexName": "rag_chunks_v1",
+        "active": true,
+        "diagnostics": {
+          "version": "milvus-elasticsearch-rrf/v1",
+          "mode": "active",
+          "status": "fused",
+          "denseCandidateCount": 5,
+          "lexicalCandidateCount": 5,
+          "fusedCandidateCount": 5
+        }
+      },
+      "pdfVisual": {
+        "requestedMode": "off",
+        "requestedVisual": false,
+        "usable": false,
+        "active": false,
+        "capabilityReason": "feature_off",
+        "evidenceCount": 0
+      },
+      "graph": {
+        "requestedMode": "active",
+        "intent": "none",
+        "planned": false,
+        "executed": false,
+        "active": false,
+        "servedEvidenceCount": 0,
+        "citedEvidenceCount": 0,
+        "availability": "unavailable-or-unpublished",
+        "evidenceCount": 0,
+        "shadowEvidenceCount": 0
+      },
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "order": "retrieval",
+        "tokenEstimate": 1882,
+        "includedEvidenceIds": [
+          "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+          "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+          "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+          "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2",
+          "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece"
+        ],
+        "excludedEvidenceIds": [],
+        "truncated": false,
+        "requestedRolloutMode": "off",
+        "active": false,
+        "activationReason": "semantic_dense_default",
+        "orderedReadTime": 0
+      },
+      "abstention": {
+        "mode": "shadow",
+        "version": "rag-abstention/per-lane-v1",
+        "calibrationVersion": "milvus-dense-calibration-v1",
+        "abstain": false,
+        "reason": "sufficient_evidence",
+        "qualifiedEvidenceIds": [
+          "chunk-98c7d5684e90b1beb8e010473f74b745e75f4a0ae991494922728d26a06d93d6",
+          "chunk-a5ab4665e264222563f90e4c20109767c40702db9fe99f0160354ec65e886991",
+          "chunk-a8c52fa76c7bd6ce6eb5ce8afd0f1066fcfda7c9c7aebe0b9bdde0ef1dfd1db2",
+          "chunk-be129fce3bdea49ccd09180f2643b5b482f3254ba4659fd52c586ba4c31fead2",
+          "chunk-5955fd77543676f4e139252e0c50ca85453b43e479e5a4f18956dd8aaf22aece"
+        ],
+        "distinctDocumentCount": 1,
+        "laneSummaries": [
+          {
+            "laneId": "dense-vector-required",
+            "kind": "hybrid",
+            "threshold": 0,
+            "total": 5,
+            "qualified": 5,
+            "maximumScore": 0.03278688524590164
+          }
+        ]
+      },
+      "milvusStats": {
+        "name": "ragidx_e90dbd90410f4e19b3ab21407d6ae67a",
+        "rowCount": 687,
+        "embeddingDimension": 4096,
+        "indexType": "IVF_FLAT",
+        "metricType": "COSINE",
+        "loaded": true
+      }
+    },
+    "queryAnalysis": {
+      "tokenization": {
+        "tokenCount": 23,
+        "avgTokenLength": 1.22,
+        "processingTime": 182,
+        "originalText": "《重构契丹早期史》版权页给出的 ISBN 是多少？请依据知识库作答。",
+        "tokenTypes": {
+          "chinese": 24,
+          "english": 1,
+          "numbers": 0,
+          "punctuation": 4
+        }
+      },
+      "embedding": {
+        "embedding": [
+          0.0038300995,
+          -0.009256153,
+          0.014843957,
+          -0.040472846,
+          0.010149925,
+          0.019250017,
+          -0.010531561,
+          0.017327989,
+          -0.030554462,
+          -0.0047693336,
+          -0.0258742,
+          -0.027769275,
+          0.0296699,
+          0.017077014,
+          0.0069080396,
+          -0.007751446,
+          0.018193346,
+          -0.029104838,
+          0.0032897047,
+          0.02758509
+        ],
+        "embeddingDimension": 4096,
+        "semanticAnalysis": {
+          "context": "通用信息查询语境",
+          "semanticCategory": "通用问答",
+          "confidence": 0.4516,
+          "nearestConcepts": [
+            "什么",
+            "如何",
+            "为什么"
+          ],
+          "categoryDistribution": {
+            "AI技术": 0.2171,
+            "技术开发": 0.101,
+            "商业管理": 0.1782,
+            "学术研究": 0.1056,
+            "日常生活": 0.0802,
+            "情感表达": 0.0846,
+            "通用问答": 0.2333
+          },
+          "semanticClusters": [
+            {
+              "name": "通用问答",
+              "similarity": 0.2333,
+              "centroidDistance": 0.7667
+            },
+            {
+              "name": "AI技术",
+              "similarity": 0.2171,
+              "centroidDistance": 0.7829
+            },
+            {
+              "name": "商业管理",
+              "similarity": 0.1782,
+              "centroidDistance": 0.8218
+            }
+          ],
+          "intentAnalysis": {
+            "primaryIntent": "查询信息",
+            "intentConfidence": 0.5,
+            "possibleIntents": [
+              "查询信息"
+            ]
+          },
+          "vectorFeatures": {
+            "techScore": 0.4573,
+            "businessScore": 0.2511,
+            "dailyScore": 0.464,
+            "emotionScore": 0.246,
+            "academicScore": 0.5305,
+            "vectorMagnitude": 1,
+            "vectorEntropy": 11.55,
+            "vectorSparsity": 0.5061,
+            "vectorKurtosis": 1.4409,
+            "informationDensity": 0.4754,
+            "semanticClarity": 0.344
+          }
+        },
+        "modelInfo": {
+          "name": "qwen3-embedding:latest",
+          "vocabularySize": 50000,
+          "embeddingNorm": 1
+        }
+      },
+      "quality": {
+        "queryQualityScore": 0.2045,
+        "specificity": 0.0375,
+        "ambiguity": 0.7518,
+        "retrievability": 0.2969
+      }
+    },
+    "context": "[1] (score: 0.9945) (source: 重构契丹早期史.epub)\n版权信息\nCOPYRIGHT\n书名：重构契丹早期史\n作者：苗润博\n出版社：北京大学出版社\n出版时间：2024年2月\nISBN：9787301347492\n字数：199千字\n\n[2] (score: 0.4586) (source: 重构契丹早期史.epub)\n\n\n本章小结\n元修《辽史》所见契丹早期史料一直被视作相关研究的立论基石和基本框架，其中尤以《营卫志》部族门最为学界所重。本章的研究表明，这一部分记载除开首所引旧志序文及太祖二十部、圣宗三十四部出自耶律俨《皇朝实录·部族志》外，其余文字皆为元朝史官新作。在此过程中，元人不仅对契丹的部族加以重新定义和分类，还将中原文献系统和辽朝文献系统做了拼接，勾勒出契丹自北魏至唐末的发展框架。通过对《营卫志·部族》的逐条批判、考源辨误，我们发现元人所编织的契丹早期史叙述几乎每一条都经不起推敲，根本无法反映历史发展的实态，更与辽朝自身的历史叙述相去甚远。以此为突破口，全面检讨《辽史》的叙述，可以发现金陈大任修《辽史》时即已对契丹早期史叙述进行过零星的建构，至元人修史时则更将其推向细化、深化、系统化，最终固化为我们今天所看到的模样。金元史官重构契丹早期史的核心方法是杂糅、拼接不同文献系统的材料。这种重构方法的内在逻辑是站在后来人的立场上进行追溯、归纳，将契丹集团原本多元复杂的衍变轨迹简单化约为一元线性的发展脉络，忽略了不同时代、不同主体所作的历史叙述可能存在的根本性矛盾。\n\n[3] (score: 0.3483) (source: 重构契丹早期史.epub)\n\n\n结语\n谁的历史？——契丹早期史问题的典型意义\n本书聚焦于契丹早期史这一核心命题，立足于史源学视野下的文本批判，从文本缝隙切入，理清不同文献系统之源流，呈现历史叙述的衍变脉络以及族群记忆被不断改造的复杂过程，进而完成对相关史实的反思性重构。\n从北魏著《国史》、北齐修《魏书》，到唐初《隋书》、开元《国史》、五代《实录》，再到两《唐书》、两《五代史》、宋朝《国史》，皆设《契丹传》，形成一套六七百年赓续不断的文献谱系，贯穿契丹从初现到建国的全过程，这在古代中原关于北族的记载中绝无仅有，也是本项研究得以开展的独特史料基础，然而其中存在的建构与误解一直以来并未引起研究者的重视。本书所剖析的三个案例，即《魏书》虚构的契丹初期发展史、《隋书》将契丹由东夷改为北狄的归类变化以及唐代文献所谓契丹君长姓大贺氏的通行说法，都旨在揭示这套历史叙述存在的系统性问题，对以此为核心搭建的契丹早期史框架重加检讨。\n\n[4] (score: 0.1359) (source: 重构契丹早期史.epub)\n\n直至20世纪80年代方才出现讨论契丹早期史的专题论文，澳大利亚学者霍姆格伦（Jennifer Holmgren）以权力继承的谱系为线索，对文献中有关从大贺、遥辇再到耶律发展过程的若干成说质疑，提出与以往学者不同的看法，颇有见地。\n但遗憾的是，该文一直以来并未受到应有的重视，不仅在东亚学界罕见回响，即便是晚出的西文著作也只是在参考文献或学术史回顾中简单提及，而未就相关问题展开对话、取得推进。崔瑞德（Denis Twitchett）主笔的《剑桥中国史》“辽”一章用四小节的篇幅讨论了契丹建国以前直至阿保机称帝时期的历史，这一部分的总体倾向是依据中原记载立论，不得已时方参用《辽史》，其中对辽方文献的审慎态度值得借鉴，但在具体问题方面往往显得深度不足。\n赫尔辛基大学徐谦（Xu Elina-Qian）所撰《契丹建国以前的历史进程》是西方学界迄今唯一一部以契丹早期史为题的博士论文，该文将与此问题相关的常见汉文材料翻译为英文，进而从族源、社会组织、经济基础、生态环境、与中原关系五方面对契丹早期史进行了叙述，基本上是对既有学说的总结、归纳，而鲜有发明。\n二、针对不同具体时段契丹发展史的研究\n\n[5] (score: 0.0732) (source: 重构契丹早期史.epub)\n\n俄罗斯科学院东方写本研究所藏契丹大字手抄本中三次出现同一个标题，可释读为“大中央辽契丹国诸可汗之记”，序文落款恰为“重熙十四年二月”，该书很可能是重熙十三年六月下诏修撰、次年二月成书的《遥辇可汗至重熙以来事迹》残卷。该抄本应是现存最早的草原政治体以本族文字书写的官方史书，足见重熙修史不仅涉及汉文叙述的整合重塑，其成果更以契丹文为载体固定下来。参见Зайцев В.П.Рукописная книгабольшого киданьского письма из коллекции Института восточных рукописей РАН //Письменные памятники Востока，№ 2（15），осень—зима2011.М.:Наука，Издательскаяфирма Восточная литература，2011.C.130—150，任震寰中译本见《俄罗斯科学院东方文献研究所收藏的契丹大字手稿书》，《隋唐辽宋金元史论丛》第3辑，上海古籍出版社，2013年",
+    "traceId": "ask-1793880901541",
+    "timestamp": "2026-11-05T12:15:03.254Z"
+  }
+}

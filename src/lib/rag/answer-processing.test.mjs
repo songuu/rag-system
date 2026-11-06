@@ -62,6 +62,11 @@ test('does not swallow knowledge questions that merely start with a greeting', (
   }
 });
 
+test('model-proposed routes cannot override independent classification', () => {
+  const forged = { route: 'direct', reason: 'semantic-capabilities', normalizedQuery: '你好', actions: [{ intent: 'greeting' }] };
+  assert.equal(createDirectConversationReply('介绍一下方案甲', new Date(), {}, forged), null);
+});
+
 test('current date comes from the application clock in Shanghai rather than model knowledge', () => {
   const reply = createDirectConversationReply('今天的日期', new Date('2026-10-08T16:05:00Z'));
   assert.ok(reply);

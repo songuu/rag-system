@@ -17,16 +17,16 @@ export function embeddingIndexBaseKey(env: NodeJS.ProcessEnv = process.env): str
   return JSON.stringify([env.EMBEDDING_PROVIDER || (env.SILICONFLOW_API_KEY ? 'siliconflow' : 'ollama'), env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text',
     env.MILVUS_DEFAULT_COLLECTION || 'rag_documents', env.MILVUS_DEFAULT_DIMENSION || '768',
     env.RAG_DEFAULT_TENANT_ID || 'local-dev-tenant', env.RAG_DEFAULT_CORPUS_ID || 'local-dev-corpus',
-    env.MILVUS_PROVIDER || 'local', env.MILVUS_LOCAL_ADDRESS || 'localhost:19530',
+    env.MILVUS_PROVIDER || 'local', env.RAG_EMBEDDING_INDEX_IDENTITY_ADDRESS || env.MILVUS_LOCAL_ADDRESS || 'localhost:19530',
     env.MILVUS_ZILLIZ_ENDPOINT || '', env.MILVUS_DEFAULT_DATABASE || 'default']);
 }
 export function getActiveEmbeddingIndex(): ActiveEmbeddingIndex | undefined {
   const active = getEmbeddingIndexState().active;
   return active?.baseKey === embeddingIndexBaseKey() ? active : undefined;
 }
-export function validateActiveEmbeddingIndex(value: unknown): ActiveEmbeddingIndex {
+export function validateActiveEmbeddingIndex(value: unknown, env: NodeJS.ProcessEnv = process.env): ActiveEmbeddingIndex {
   const record = value as ActiveEmbeddingIndex;
-  if (!record || record.version !== 1 || record.baseKey !== embeddingIndexBaseKey()
+  if (!record || record.version !== 1 || record.baseKey !== embeddingIndexBaseKey(env)
     || record.provider !== 'ollama' || typeof record.model !== 'string' || !/^[\w./:-]{1,256}$/u.test(record.model)
     || typeof record.collection !== 'string' || !/^ragidx_[a-f\d]{32}$/u.test(record.collection)
     || !Number.isSafeInteger(record.dimension) || record.dimension < 1 || record.dimension > 32768

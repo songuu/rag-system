@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { getMilvusInstance, MilvusConfig } from '@/lib/milvus-client';
 import { getRagSystem } from '@/lib/rag-instance';
 import { createEmbedding } from '@/lib/model-config';
@@ -48,6 +49,8 @@ export async function POST(request: NextRequest) {
       { status: legacyBlock.status }
     );
   }
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   try {
     const body = await request.json();
     const { action = 'sync-from-uploads', embeddingModel = EMBEDDING_MODEL } = body;
@@ -321,6 +324,8 @@ export async function GET() {
       { status: legacyBlock.status }
     );
   }
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   try {
     // 检查 uploads 目录
     const uploadsExist = fs.existsSync(UPLOADS_DIR);

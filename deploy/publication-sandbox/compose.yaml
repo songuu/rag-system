@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: publication_sandbox
+      POSTGRES_USER: sandbox_admin
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin
+    secrets:
+      - postgres_admin
+    ports:
+      - "127.0.0.1::5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sandbox_admin -d publication_sandbox"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    command: ["etcd", "-advertise-client-urls=http://etcd:2379", "-listen-client-urls=http://0.0.0.0:2379", "--data-dir=/etcd"]
+    volumes:
+      - etcd_data:/etcd
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: ["minio", "server", "/minio_data"]
+    environment:
+      MINIO_ROOT_USER: ${SANDBOX_MINIO_USER:?required}
+      MINIO_ROOT_PASSWORD: ${SANDBOX_MINIO_PASSWORD:?required}
+    volumes:
+      - minio_data:/minio_data
+  milvus:
+    image: milvusdb/milvus:v2.5.10
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${SANDBOX_MINIO_USER:?required}
+      MINIO_SECRET_ACCESS_KEY: ${SANDBOX_MINIO_PASSWORD:?required}
+    ports:
+      - "127.0.0.1::19530"
+    volumes:
+      - milvus_data:/var/lib/milvus
+      - ./milvus-user.yaml:/milvus/configs/user.yaml:ro
+    depends_on:
+      - etcd
+      - minio
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      # A native-only realm is enumerable by the publisher's security checks.
+      xpack.security.authc.realms.file.file1.enabled: "false"
+      xpack.security.authc.realms.native.native1.order: "0"
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.key: /usr/share/elasticsearch/config/sandbox/tls.key
+      xpack.security.http.ssl.certificate: /usr/share/elasticsearch/config/sandbox/tls.crt
+      xpack.security.http.ssl.certificate_authorities: /usr/share/elasticsearch/config/sandbox/tls.crt
+      # Docker Desktop bind-mounted secret files can be reported as mode 0777,
+      # which Elasticsearch rejects; the random bootstrap secret is passed via
+      # the private Compose env file and remains visible to Docker administrators.
+      ELASTIC_PASSWORD: ${SANDBOX_ELASTIC_ADMIN:?required}
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1::9200"
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+      - ${SANDBOX_RUNTIME_DIR:?required}/tls.key:/usr/share/elasticsearch/config/sandbox/tls.key:ro
+      - ${SANDBOX_RUNTIME_DIR:?required}/tls.crt:/usr/share/elasticsearch/config/sandbox/tls.crt:ro
+  neo4j:
+    image: neo4j:5.26.30-community
+    environment:
+      NEO4J_AUTH: neo4j/${SANDBOX_NEO4J_PASSWORD:?required}
+      NEO4J_server_memory_heap_initial__size: 256m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 128m
+    ports:
+      - "127.0.0.1::7687"
+    volumes:
+      - neo4j_data:/data
+secrets:
+  postgres_admin:
+    file: ${SANDBOX_RUNTIME_DIR:?required}/postgres-admin.txt
+volumes:
+  postgres_data:
+  etcd_data:
+  minio_data:
+  milvus_data:
+  elastic_data:
+  neo4j_data:

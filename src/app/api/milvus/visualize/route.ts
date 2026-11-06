@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import {
   getMilvusInstance,
   type MilvusConfig,
@@ -34,6 +35,8 @@ export async function POST(request: NextRequest) {
       { status: legacyBlock.status }
     );
   }
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   try {
     const body = await request.json();
     const { action, ...params } = body;
@@ -338,6 +341,8 @@ export async function GET(request: NextRequest) {
       { status: legacyBlock.status }
     );
   }
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action') || 'summary';
 

@@ -68,11 +68,49 @@ const {
   GET,
   DELETE,
   PATCH,
-  calculateMiroFishGraphChunkUpperBound,
-  shouldRequireDurableGraphBuildApi,
 } = await import('./route.ts');
+const { calculateMiroFishGraphChunkUpperBound, shouldRequireDurableGraphBuildApi,
+  withAuthorizedMirofishGraphArtifact } = await import('./route-helpers.ts');
 
 after(() => restoreEnvironment(originalEnvironment));
+
+test('project graph task is saved before worker start and a second build cannot replace its claim', async t => {
+  configureSingleTenant('owner');
+  await configureGraphRouteStore(t);
+  setTemporaryEnvironment(t, { RAG_PERSISTENCE_BACKEND: 'local', RAG_MIROFISH_GRAPH_REQUIRE_SHARED_CONTROL_PLANE: undefined });
+  const { getProjectStore } = await import('@/lib/mirofish/project-store');
+  const store = getProjectStore(currentScope());
+  const project = await store.create({ name: 'Claim', simulation_requirement: 'test' });
+  const original = MiroFishGraphBuilder.prototype.buildGraphAsync;
+  let calls = 0; let savedTask;
+  MiroFishGraphBuilder.prototype.buildGraphAsync = async (_body, _progress, _metadata, taskId) => {
+    calls++; savedTask = taskId;
+    assert.equal((await store.get(project.id)).graph_task_id, taskId);
+    return taskId;
+  };
+  t.after(async () => { MiroFishGraphBuilder.prototype.buildGraphAsync = original; if (savedTask) getTaskManager().deleteTask(savedTask); await store.delete(project.id); });
+  const build = () => POST(request('', { method: 'POST', body: JSON.stringify({ projectId: project.id,
+    text: 'A bounded source.', ontology: { entity_types: [], edge_types: [] } }) }));
+  assert.equal((await build()).status, 200);
+  assert.equal((await build()).status, 409);
+  assert.equal(calls, 1);
+});
+
+test('Neo4j legacy graph data checks source before and after retrieval', async () => {
+  const identity = { tenantId: 'tenant-a', corpusId: 'corpus-a', documentId: 'doc', documentVersion: 'v1', trustLevel: 'external' };
+  const scope = { ...currentScope(), allowedTrustLevels: ['external'] };
+  let reads = 0;
+  let loads = 0;
+  const work = () => { loads++; return Promise.resolve({ content: 'graph' }); };
+  assert.equal(await withAuthorizedMirofishGraphArtifact('neo4j', scope, identity, async () => null, work), null);
+  assert.equal(loads, 0);
+  await assert.rejects(withAuthorizedMirofishGraphArtifact('neo4j', scope, identity,
+    async () => (++reads === 1 ? 'rev1' : 'rev2'), work),
+  error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+  assert.equal(loads, 1);
+  assert.deepEqual(await withAuthorizedMirofishGraphArtifact('file', scope, identity,
+    async () => { throw new Error('file backend must not read PG'); }, work), { content: 'graph' });
+});
 
 test('production Neo4j builds require the durable build API while local file builds stay compatible', () => {
   assert.equal(shouldRequireDurableGraphBuildApi({
@@ -191,6 +229,27 @@ test('status allows the current corpus and hides raw worker errors', async t => 
   assert.equal(body.error, '图谱构建失败');
   assert.doesNotMatch(JSON.stringify(body), /sk-do-not-leak/);
 });
+
+for (const [code, message] of [
+  ['ENTITY_EXTRACTION_PROVIDER_TIMEOUT', '模型响应超时，请等待模型加载完成后重试，或选择更轻量的模型。'],
+  ['ENTITY_EXTRACTION_PROVIDER_BUSY', '上一次模型调用仍在结束中，请稍后重试。'],
+  ['ENTITY_EXTRACTION_TRUNCATED', '文本已拆分到最小块，但模型输出仍被截断。请缩小输入或选择输出能力更强的模型。'],
+  ['ENTITY_EXTRACTION_INVALID_OUTPUT', '文本已拆分到最小块，但模型仍未返回完整实体和关系。请缩小输入或更换模型。'],
+  ['MIROFISH_GRAPH_OUTPUT_BUDGET_EXCEEDED', '图谱抽取结果超过计算预算，请缩小文本范围或分批构建。'],
+  ['MIROFISH_GRAPH_ARTIFACT_LIMIT_EXCEEDED', '图谱规模超过存储预算，请减少实体与关系后重新构建。'],
+  ['MIROFISH_GRAPH_ARTIFACT_PUBLISH_FAILED', '图谱抽取完成，但保存失败，请检查图数据库和文档存储后重试。'],
+]) {
+  test(`status explains ${code} using a safe public message`, async t => {
+    configureSingleTenant('owner');
+    const taskId = createTask(t, currentScope());
+    getTaskManager().failTask(taskId, code);
+    const response = await GET(request(`?action=status&taskId=${taskId}`));
+    const body = await response.json();
+    assert.equal(body.status, 'failed');
+    assert.equal(body.code, code);
+    assert.equal(body.error, message);
+  });
+}
 
 test('status returns the same not-found response for foreign and missing tasks', async t => {
   configureSingleTenant('owner');

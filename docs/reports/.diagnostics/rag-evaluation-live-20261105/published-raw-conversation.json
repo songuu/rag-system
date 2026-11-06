@@ -1,0 +1,84 @@
+{
+  "id": "raw-conversation",
+  "question": "我今天很开心",
+  "httpStatus": 200,
+  "answer": "你今天过得怎么样？",
+  "evidenceCount": 0,
+  "citationStatus": "unavailable",
+  "citationDiagnostics": null,
+  "expectedDisposition": "conversation",
+  "usage": {
+    "tokens": {
+      "measurement": "provider",
+      "inputTokens": 152,
+      "outputTokens": 15
+    },
+    "calls": {
+      "generation": 1,
+      "embedding": 0,
+      "rerank": 0
+    },
+    "latencyMs": {
+      "total": 4161.6856999999945,
+      "generation": 4159.095600000001,
+      "rerank": 0
+    }
+  },
+  "body": {
+    "success": true,
+    "question": "我今天很开心",
+    "answer": "你今天过得怎么样？",
+    "conversationMode": "direct",
+    "conversationIntent": "chat",
+    "storageBackend": "milvus",
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest"
+    },
+    "modelUsage": {
+      "llm": true,
+      "embedding": false
+    },
+    "routingModel": "qwen2.5:0.5b",
+    "evidence": [],
+    "laneExecutions": [],
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "direct",
+      "summary": "已处理本次对话。",
+      "disclosure": "对话内容是用户提供的陈述，不代表已核实的身份或知识库事实。",
+      "retrievalSkipped": true,
+      "steps": [
+        {
+          "id": "route",
+          "label": "选择处理路径",
+          "detail": "按对话内容处理。",
+          "status": "completed"
+        },
+        {
+          "id": "retrieve",
+          "label": "知识库检索",
+          "detail": "本次没有查询知识库。",
+          "status": "skipped"
+        },
+        {
+          "id": "respond",
+          "label": "组织回复",
+          "detail": "尝试使用闲聊模型处理。",
+          "status": "completed"
+        }
+      ]
+    },
+    "routing": {
+      "version": "conversation-chat/v1",
+      "route": "direct",
+      "reason": "conversation"
+    },
+    "answerSources": [
+      "conversation"
+    ],
+    "traceId": "conversation-d76b6b43-062f-4c8c-ad92-670e19824997",
+    "requestId": "d76b6b43-062f-4c8c-ad92-670e19824997",
+    "timestamp": "2026-11-05T11:58:13.539Z"
+  }
+}

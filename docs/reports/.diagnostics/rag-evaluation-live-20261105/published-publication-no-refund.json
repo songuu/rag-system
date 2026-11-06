@@ -1,0 +1,182 @@
+{
+  "id": "publication-no-refund",
+  "question": "《统一发布验收说明.txt》规定的退款金额和退款期限分别是多少？只能根据这份资料作答。",
+  "httpStatus": 200,
+  "answer": "无法确认关于退款金额和退款期限的任何信息。",
+  "evidenceCount": 1,
+  "citationStatus": "missing",
+  "citationDiagnostics": {
+    "reason": "no-numbered-citations",
+    "citationCount": 0,
+    "invalidCitationCount": 0,
+    "unavailableCitationCount": 0
+  },
+  "expectedDisposition": "abstain",
+  "usage": {
+    "tokens": {
+      "measurement": "provider",
+      "inputTokens": 584,
+      "outputTokens": 16
+    },
+    "calls": {
+      "generation": 1,
+      "embedding": 1,
+      "rerank": 0
+    },
+    "latencyMs": {
+      "total": 284.0095999999976,
+      "generation": 145.7829000000056,
+      "rerank": 0
+    }
+  },
+  "body": {
+    "success": true,
+    "question": "《统一发布验收说明.txt》规定的退款金额和退款期限分别是多少？只能根据这份资料作答。",
+    "answer": "无法确认关于退款金额和退款期限的任何信息。",
+    "storageBackend": "milvus",
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest"
+    },
+    "modelUsage": {
+      "llm": true,
+      "embedding": true
+    },
+    "evidence": [
+      {
+        "id": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+        "tenantId": "publication-demo-tenant",
+        "corpusId": "publication-demo-corpus",
+        "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+        "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+        "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+        "source": "统一发布验收说明.txt",
+        "trustLevel": "external",
+        "laneId": "document-search",
+        "retrievalScore": 0.03278688524590164,
+        "metadata": {
+          "chunkIndex": 0,
+          "corpusId": "publication-demo-corpus",
+          "corpus_id": "publication-demo-corpus",
+          "createdAt": "2026-11-04T01:34:57.582Z",
+          "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+          "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "document_id": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+          "document_version": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "endOffset": 131,
+          "source": "统一发布验收说明.txt",
+          "sourceTextHash": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "sourceTextLength": 131,
+          "startOffset": 0,
+          "tenantId": "publication-demo-tenant",
+          "tenant_id": "publication-demo-tenant",
+          "title": "统一发布验收说明.txt",
+          "totalChunks": 1,
+          "trustLevel": "external",
+          "trust_level": "external",
+          "type": "text",
+          "publicationGeneration": "1",
+          "denseMatch": true,
+          "lexicalMatch": true
+        }
+      }
+    ],
+    "citations": {
+      "version": "rag-citations/v1",
+      "partition": "314c3e338133370beecab0351b43817d9fe505d6a103361c74bb425a1d64fc2b",
+      "status": "missing",
+      "items": [],
+      "diagnostics": {
+        "reason": "no-numbered-citations",
+        "citationCount": 0,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "laneExecutions": [],
+    "answerSources": [
+      "documents"
+    ],
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "retrievalSkipped": false,
+      "summary": "已检索当前发布版本并根据资料组织回复。",
+      "steps": [
+        {
+          "id": "retrieve",
+          "label": "知识库检索",
+          "detail": "已检索 1 条已发布资料。",
+          "status": "completed"
+        },
+        {
+          "id": "respond",
+          "label": "组织回复",
+          "detail": "根据检索资料生成回复。",
+          "status": "completed"
+        }
+      ]
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "status": "published-view",
+        "mode": "unified",
+        "viewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+        "denseCandidateCount": 1,
+        "lexicalCandidateCount": 1
+      },
+      "topK": 3,
+      "searchTime": 122,
+      "llmTime": 146,
+      "totalDocuments": 1,
+      "searchResults": [
+        {
+          "document": {
+            "id": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+            "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+            "metadata": {
+              "chunkIndex": 0,
+              "corpusId": "publication-demo-corpus",
+              "corpus_id": "publication-demo-corpus",
+              "createdAt": "2026-11-04T01:34:57.582Z",
+              "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+              "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "document_id": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+              "document_version": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "endOffset": 131,
+              "source": "统一发布验收说明.txt",
+              "sourceTextHash": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "sourceTextLength": 131,
+              "startOffset": 0,
+              "tenantId": "publication-demo-tenant",
+              "tenant_id": "publication-demo-tenant",
+              "title": "统一发布验收说明.txt",
+              "totalChunks": 1,
+              "trustLevel": "external",
+              "trust_level": "external",
+              "type": "text",
+              "publicationGeneration": "1",
+              "denseMatch": true,
+              "lexicalMatch": true
+            }
+          },
+          "similarity": 0.03278688524590164,
+          "index": 0
+        }
+      ],
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "includedEvidenceIds": [
+          "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080"
+        ],
+        "excludedEvidenceIds": [],
+        "tokenEstimate": 118,
+        "truncated": false
+      }
+    },
+    "traceId": "publication-86bbc661-ea2d-450d-b07f-51379b058bdc",
+    "requestId": "86bbc661-ea2d-450d-b07f-51379b058bdc",
+    "publicationViewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+    "timestamp": "2026-11-05T11:58:09.310Z"
+  }
+}

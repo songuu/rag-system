@@ -90,6 +90,23 @@ test('migration runner supports a separate migration DSN and a validated app rol
   assert.ok(calls.some((text) => /revoke insert, update, delete[\s\S]*public\.tenants[\s\S]*public\.corpora/i.test(text)));
   assert.ok(calls.some((text) => /alter default privileges[\s\S]*revoke[\s\S]*on tables/i.test(text)));
   assert.equal(calls.some((text) => /alter default privileges[\s\S]*grant/i.test(text)), false);
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+table[\s\S]*public\.document_publication_heads[\s\S]*public\.document_publication_attempts/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+function\s+public\.rag_publication_control\s*\(text,text,text,text,jsonb\)/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+table[\s\S]*public\.elasticsearch_publication_operations/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+function\s+public\.rag_elasticsearch_publication_operation\s*\(text,text,text,text,jsonb\)/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+table[\s\S]*public\.document_publication_assets[\s\S]*public\.document_publication_asset_chunks/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+function\s+public\.rag_stage_publication_asset\s*\(text,text,text,bigint,bigint,uuid,text,text,text,bytea,bytea,jsonb\)/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+function\s+public\.rag_read_staged_publication_asset\s*\(text,text,text,bigint,bigint,uuid,text\)/i.test(text)));
+  assert.equal(calls.some((text) => /grant\s+execute[\s\S]*rag_(?:publication_control|stage_publication_asset|read_staged_publication_asset|elasticsearch_publication_operation)/i.test(text)),false);
+  assert.ok(calls.some((text)=>/grant execute on function public\.rag_enqueue_publication_request/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+table[\s\S]*public\.document_publication_provider_seals/i.test(text)));
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+table[\s\S]*public\.document_publication_prior_assets[\s\S]*public\.document_publication_receipts/i.test(text)));
+  assert.ok(calls.some((text) => /grant\s+execute\s+on\s+function\s+public\.rag_read_publication_view\s*\(text,text,text\[\]\)/i.test(text)));
+  assert.ok(calls.some((text) => /grant\s+execute\s+on\s+function\s+public\.rag_read_publication_source\s*\(text,text,text,bigint,bigint,uuid,text,text\[\],text\)/i.test(text)));
+  assert.equal(calls.some((text) => /grant\s+execute\s+on\s+function\s+public\.rag_record_publication_seal/i.test(text)), false);
+  assert.ok(calls.some((text) => /revoke\s+all\s+privileges\s+on\s+function[\s\S]*public\.rag_publish_document_generation/i.test(text)));
+  assert.equal(calls.some((text) => /grant\s+execute\s+on\s+function\s+public\.rag_publish_document_generation/i.test(text)), false);
+  assert.equal(calls.some((text) => /grant\s+(?:select|insert|update|delete)[\s\S]*on\s+table[\s\S]*public\.document_publication_attempts/i.test(text)), false);
 });
 
 test('migration runner grants an optional direct role read-only access to the explicit business-table allowlist', async () => {
@@ -190,6 +207,9 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
     ),
   ];
   const sql = sqlParts.join('\n');
+  // Migration comments may describe authenticated service callers without
+  // referencing a platform-specific database role.
+  const executableSql = sql.replace(/--[^\r\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
 
   assert.match(migrationFiles[0] ?? '', /^0001_/);
   assert.match(
@@ -205,7 +225,7 @@ test('PostgreSQL schema is vanilla PG 17 SQL and covers the persistence contract
     /\bcreate\s+extension\b/i,
     /\bvector\s*\(/i,
   ]) {
-    assert.doesNotMatch(sql, forbidden);
+    assert.doesNotMatch(executableSql, forbidden);
   }
 
   for (const table of [

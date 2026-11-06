@@ -28,14 +28,14 @@ interface WorkflowStep {
   step: string;
   status: 'pending' | 'running' | 'completed' | 'skipped' | 'error';
   duration?: number;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 interface RetrievedDocument {
   id: string;
   content: string;
   score: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 interface ContextState {
@@ -104,8 +104,7 @@ export default function ContextManagementPage() {
   
   // 加载会话列表
   const loadSessions = useCallback(async () => {
-    try {
-      const res = await fetch('/rag-api/context-management?action=sessions');
+    return fetch('/rag-api/context-management?action=sessions').then(async res => {
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -113,10 +112,10 @@ export default function ContextManagementPage() {
       if (data.success) {
         setSessions(data.sessions || []);
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('加载会话列表失败:', error);
       setSessions([]);
-    }
+    });
   }, []);
   
   // 加载单个会话
@@ -138,9 +137,7 @@ export default function ContextManagementPage() {
   
   // 加载模型列表
   const loadModels = useCallback(async () => {
-    setModelsLoading(true);
-    try {
-      const res = await fetch('/rag-api/ollama/models');
+    return fetch('/rag-api/ollama/models').then(async res => {
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -155,19 +152,15 @@ export default function ContextManagementPage() {
         setEmbeddingModels(data.embeddingModels || []);
         
         // 如果当前配置的模型不在列表中，自动选择第一个
-        if (allLlmModels.length > 0 && !allLlmModels.some((m: LLMModel) => m.name === llmModel)) {
-          setLlmModel(allLlmModels[0].name);
-        }
-        if (data.embeddingModels?.length > 0 && !data.embeddingModels.some((m: EmbeddingModel) => m.name === embeddingModel)) {
-          setEmbeddingModel(data.embeddingModels[0].name);
-        }
+        if (allLlmModels.length > 0) setLlmModel(current => allLlmModels.some((m: LLMModel) => m.name === current) ? current : allLlmModels[0].name);
+        if (data.embeddingModels?.length > 0) setEmbeddingModel(current => data.embeddingModels.some((m: EmbeddingModel) => m.name === current) ? current : data.embeddingModels[0].name);
       }
-    } catch (error) {
+    }).catch(error => {
       console.error('加载模型列表失败:', error);
-    } finally {
+    }).finally(() => {
       setModelsLoading(false);
-    }
-  }, [llmModel, embeddingModel]);
+    });
+  }, []);
   
   // 初始化
   useEffect(() => {
@@ -920,7 +913,7 @@ export default function ContextManagementPage() {
                   <label className="text-xs text-slate-400 block mb-1">窗口策略</label>
                   <select
                     value={windowStrategy}
-                    onChange={(e) => setWindowStrategy(e.target.value as any)}
+                    onChange={(e) => setWindowStrategy(e.target.value as 'sliding_window' | 'token_limit' | 'hybrid')}
                     className="w-full px-3 py-2 bg-slate-900/80 border border-slate-600 rounded-lg text-sm"
                   >
                     <option value="sliding_window">滑动窗口</option>

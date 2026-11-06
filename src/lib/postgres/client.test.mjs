@@ -22,6 +22,7 @@ const {
   createPostgresQueryClient,
   queryPostgres,
   withPostgresTransaction,
+  withPostgresClientContext,
 } = await import('./client.ts');
 
 const BASE_CONFIG = {
@@ -178,6 +179,54 @@ test('transaction rolls back failed work, wraps context, and releases the connec
   assert.equal(released, true);
 });
 
+test('explicit client context joins captured clients and nested transactions on one connection', async () => {
+  const calls = [];
+  let connects = 0;
+  const connection = { async query(sql) { calls.push(sql); return { rows: [], rowCount: 0 }; }, release() {} };
+  const client = createPostgresQueryClient(BASE_CONFIG, () => ({
+    async connect() { connects++; return connection; }, async query() { throw new Error('unexpected pool query'); }, async end() {},
+  }));
+  await client.withTransaction('project mutation', tx => withPostgresClientContext(client, tx, async () => {
+    await client.query('source');
+    await client.withTransaction('enqueue', async nested => { await nested.query('job'); });
+    await client.query('pointer');
+  }));
+  assert.equal(connects, 1);
+  assert.deepEqual(calls, ['begin', 'source', 'job', 'pointer', 'commit']);
+});
+
+test('explicit context rolls back the outer mutation even when a nested failure is caught', async () => {
+  const calls = [];
+  const connection = { async query(sql) { calls.push(sql); return { rows: [], rowCount: 0 }; }, release() {} };
+  const client = createPostgresQueryClient(BASE_CONFIG, () => ({
+    async connect() { return connection; }, async query() { throw new Error('unexpected pool query'); }, async end() {},
+  }));
+  await assert.rejects(client.withTransaction('project mutation', tx => withPostgresClientContext(client, tx, async () => {
+    await client.query('source');
+    try { await client.withTransaction('enqueue', async () => { throw new Error('queue full'); }); } catch {}
+  })));
+  assert.deepEqual(calls, ['begin', 'source', 'rollback']);
+});
+
+test('context isolates unrelated work and stops routing inherited callbacks after it closes', async () => {
+  const calls = [];
+  const client = createPostgresQueryClient(BASE_CONFIG, () => ({
+    async query(sql) { calls.push(`pool:${sql}`); return { rows: [], rowCount: 0 }; }, async end() {},
+  }));
+  const tx = { async query(sql) { calls.push(`tx:${sql}`); return { rows: [], rowCount: 0 }; } };
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let background;
+  await withPostgresClientContext(client, tx, async () => {
+    await client.query('inside');
+    background = gate.then(() => client.query('later'));
+    await new Promise(resolve => setImmediate(resolve));
+  });
+  await client.query('outside');
+  release(); await background;
+  assert.deepEqual(calls, ['tx:inside', 'pool:outside', 'pool:later']);
+});
+
 test('readiness requires the current migration ledger entry and every runtime table', async () => {
   const calls = [];
   const client = {
@@ -191,7 +240,7 @@ test('readiness requires the current migration ledger entry and every runtime ta
     connected: true,
     schemaReady: true,
   });
-  assert.equal(calls[0].values[0], '0007');
+  assert.equal(calls[0].values[0], '0026');
   assert.match(calls[0].values[1], /^[0-9a-f]{64}$/);
   assert.deepEqual(calls[0].values.slice(2), ['tenant-a', 'corpus-a']);
   for (const relation of [
@@ -216,8 +265,17 @@ test('readiness requires the current migration ledger entry and every runtime ta
     'mirofish_projects',
     'elasticsearch_lexical_chunks',
     'elasticsearch_lexical_outbox',
+    'document_publication_collection_reservations',
+    'document_publication_heads', 'document_publication_attempts', 'document_publication_observations',
+    'document_publication_assets', 'document_publication_asset_chunks', 'elasticsearch_publication_operations',
+    'document_publication_provider_seals',
+    'document_publication_prior_assets', 'document_publication_receipts',
   ]) {
     assert.match(calls[0].text, new RegExp(`public\\.${relation}`));
+  }
+  for (const fn of ['rag_publication_control', 'rag_stage_publication_asset',
+    'rag_read_staged_publication_asset', 'rag_elasticsearch_publication_operation', 'rag_read_publication_view', 'rag_read_publication_source', 'rag_record_publication_seal', 'rag_publish_document_generation']) {
+    assert.match(calls[0].text, new RegExp(`public\\.${fn}`));
   }
   assert.match(calls[0].text, /checksum\s*=\s*\$2/i);
   assert.match(calls[0].text, /tenant\.id\s*=\s*\$3\s+and\s+corpus\.id\s*=\s*\$4/i);

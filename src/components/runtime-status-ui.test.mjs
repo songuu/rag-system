@@ -27,7 +27,7 @@ test('Milvus badge probes Milvus even when aggregate health is not ready', () =>
   // ready. Skipping the probe then painted a healthy Milvus as disconnected.
   assert.match(
     refreshRuntimeStatus,
-    /if \(runtimeStatus !== 'disabled'\) await checkMilvusStatus\(\);/
+    /if \(runtimeStatus !== 'disabled' && runtimeStatus !== 'publication'\) await checkMilvusStatus\(\);/
   );
   assert.doesNotMatch(refreshRuntimeStatus, /runtimeStatus === 'enabled'/);
 });

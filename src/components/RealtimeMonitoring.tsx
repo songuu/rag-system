@@ -1,7 +1,8 @@
 'use client';
 
 import React from 'react';
-import type { QueryVectorizationProgress, RetrievalDetails, VectorizationProgress } from '@/lib/rag-system';
+import type { VectorizationProgress } from '@/lib/rag-system';
+import type { ChatQueryAnalysis, ChatRetrievalDetails } from '@/lib/rag/chat-types';
 
 interface RealtimeMonitoringProps {
   showVectorization: boolean;
@@ -11,8 +12,8 @@ interface RealtimeMonitoringProps {
   showQueryProcessing: boolean;
   queryProcessingStatus: string;
   isLoading: boolean;
-  queryAnalysis: Pick<QueryVectorizationProgress, 'tokenization' | 'embedding'> | null;
-  retrievalDetails: Partial<Pick<RetrievalDetails, 'searchResults' | 'searchTime'>> | null;
+  queryAnalysis: Pick<ChatQueryAnalysis, 'tokenization' | 'embedding'> | null;
+  retrievalDetails: Partial<Pick<ChatRetrievalDetails, 'searchResults' | 'searchTime'>> | null;
 }
 
 export default function RealtimeMonitoring({

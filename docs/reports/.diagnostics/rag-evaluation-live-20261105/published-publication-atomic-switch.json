@@ -1,0 +1,196 @@
+{
+  "id": "publication-atomic-switch",
+  "question": "根据《统一发布验收说明.txt》，哪个数据库负责原子切换已发布版本？",
+  "httpStatus": 200,
+  "answer": "根据《统一发布验收说明.txt》，负责原子切换已发布版本的数据库是 PostgreSQL。[1]",
+  "evidenceCount": 1,
+  "citationStatus": "available",
+  "citationDiagnostics": {
+    "reason": "ready",
+    "citationCount": 1,
+    "invalidCitationCount": 0,
+    "unavailableCitationCount": 0
+  },
+  "literalFactChecks": [
+    {
+      "alternatives": [
+        "PostgreSQL"
+      ],
+      "found": true
+    }
+  ],
+  "expectedDisposition": "answer",
+  "usage": {
+    "tokens": {
+      "measurement": "provider",
+      "inputTokens": 576,
+      "outputTokens": 27
+    },
+    "calls": {
+      "generation": 1,
+      "embedding": 1,
+      "rerank": 0
+    },
+    "latencyMs": {
+      "total": 540.5283999999956,
+      "generation": 230.69810000000143,
+      "rerank": 0
+    }
+  },
+  "body": {
+    "success": true,
+    "question": "根据《统一发布验收说明.txt》，哪个数据库负责原子切换已发布版本？",
+    "answer": "根据《统一发布验收说明.txt》，负责原子切换已发布版本的数据库是 PostgreSQL。[1]",
+    "storageBackend": "milvus",
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest"
+    },
+    "modelUsage": {
+      "llm": true,
+      "embedding": true
+    },
+    "evidence": [
+      {
+        "id": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+        "tenantId": "publication-demo-tenant",
+        "corpusId": "publication-demo-corpus",
+        "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+        "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+        "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+        "source": "统一发布验收说明.txt",
+        "trustLevel": "external",
+        "laneId": "document-search",
+        "retrievalScore": 0.03278688524590164,
+        "metadata": {
+          "chunkIndex": 0,
+          "corpusId": "publication-demo-corpus",
+          "corpus_id": "publication-demo-corpus",
+          "createdAt": "2026-11-04T01:34:57.582Z",
+          "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+          "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "document_id": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+          "document_version": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "endOffset": 131,
+          "source": "统一发布验收说明.txt",
+          "sourceTextHash": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+          "sourceTextLength": 131,
+          "startOffset": 0,
+          "tenantId": "publication-demo-tenant",
+          "tenant_id": "publication-demo-tenant",
+          "title": "统一发布验收说明.txt",
+          "totalChunks": 1,
+          "trustLevel": "external",
+          "trust_level": "external",
+          "type": "text",
+          "publicationGeneration": "1",
+          "denseMatch": true,
+          "lexicalMatch": true
+        }
+      }
+    ],
+    "citations": {
+      "version": "rag-citations/v1",
+      "partition": "314c3e338133370beecab0351b43817d9fe505d6a103361c74bb425a1d64fc2b",
+      "status": "available",
+      "items": [
+        {
+          "number": 1,
+          "locator": "rcl2.local.CXlz-kdhmNXWK0c-.qkVtfLl8aJSzN08ZYhPxvpi9q0srHcLCJwI06F-V3Y9_v1JITO_TQ-drQce0sO5eBB8HQWV96q6iQQvqexE51LXKmhzY-TFOnDxDISMf8p6mTD4NRk8q39nsETZHV9z5PgTSnIqt_wIfK4YiP2W7g8YidQ1lkxQ4F7XaXzcegmoLLKr-K4xY7mTrYgb-4t7hrr5fZZpxArGJqREGyCgP0ZdJ7JVA9Z7aFnECVQYnFQ8lt_uAUuzW6SOISe-SEn1YDZkSMhhuyYBlGAPm3lbLd5xRq1hMiyZzore3uwi3pDIdQ0UrlEtf4TGfQEL8uVut-gUxs7rLtSfKpDrKrzB7FNND8XJLSHsz-yJ7lNQ_ghSqZYDn5oPXEem_QcSI5CrlMr3QVtP2OSRlNxjhZWS2EdmROIqBztid0IMM8EFIcltqrxKQlVHH4kxOAVHqlsKU_XgEud_V8tRdx4ztRnYMU3Vi3IBJprozIJa3RbvcCZm7boaTmXb4NX1M0v3IZUatFhr5XXa7iINxjtDLf1VnTn1SZiE2VPj95mZY2oXqkEqRS0kKLBYKMq0vSUQ_uZNjKv4CFidHZrbzddbjMAH-J0K9UAk9n3bXQhZ6SoWjIaLBoqx71GS-ERmMCe9ZQnPRyGpLj9oTQW8LLQdr1dsBETIMQwUOUD73MtRcLYo35E-iML2Rj4-Ok_Hs7WlhU8ccTn5MIOYHJmw4VyG0mllrCRBdghJwZjQTgkzytaP6WDcrl-Y-KaB8s5L7ZnElvr4p2Bsf6RtWqk84GkUSxzjdO57UCZB47-MCmUOsgUDt28f60OZkaoWW10XO4q1EE0MZEJmW9hMp-HI85HUUWkvzz6WMXTpepuS1igG_d7A0K8F1rTN37v6PDtt9VmN2yYE7Cg9trirJ2m_gIALkYv5BCcth80PB-qnkI8-Hjx3n5Dl3ynfkoRrOkNdTW7_yLw61TUncT1LyJcFt3yk0AjuUyt-qG5DhKh7jrm1-zowOOiMnzTDzI6Rq5BtEC4EmxnSFOHhDnlCz0SaU9XxN0YHik7biaGzbuHZM89CJ62OFY_kRV-H2lE3R_oc-.sSFeWsJHuTIsFrdDI1wT4g",
+          "expiresAt": 1793966287493
+        }
+      ],
+      "diagnostics": {
+        "reason": "ready",
+        "citationCount": 1,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "laneExecutions": [],
+    "answerSources": [
+      "documents"
+    ],
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "retrievalSkipped": false,
+      "summary": "已检索当前发布版本并根据资料组织回复。",
+      "steps": [
+        {
+          "id": "retrieve",
+          "label": "知识库检索",
+          "detail": "已检索 1 条已发布资料。",
+          "status": "completed"
+        },
+        {
+          "id": "respond",
+          "label": "组织回复",
+          "detail": "根据检索资料生成回复。",
+          "status": "completed"
+        }
+      ]
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "status": "published-view",
+        "mode": "unified",
+        "viewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+        "denseCandidateCount": 1,
+        "lexicalCandidateCount": 1
+      },
+      "topK": 3,
+      "searchTime": 202,
+      "llmTime": 231,
+      "totalDocuments": 1,
+      "searchResults": [
+        {
+          "document": {
+            "id": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+            "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+            "metadata": {
+              "chunkIndex": 0,
+              "corpusId": "publication-demo-corpus",
+              "corpus_id": "publication-demo-corpus",
+              "createdAt": "2026-11-04T01:34:57.582Z",
+              "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+              "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "document_id": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+              "document_version": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "endOffset": 131,
+              "source": "统一发布验收说明.txt",
+              "sourceTextHash": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+              "sourceTextLength": 131,
+              "startOffset": 0,
+              "tenantId": "publication-demo-tenant",
+              "tenant_id": "publication-demo-tenant",
+              "title": "统一发布验收说明.txt",
+              "totalChunks": 1,
+              "trustLevel": "external",
+              "trust_level": "external",
+              "type": "text",
+              "publicationGeneration": "1",
+              "denseMatch": true,
+              "lexicalMatch": true
+            }
+          },
+          "similarity": 0.03278688524590164,
+          "index": 0
+        }
+      ],
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "includedEvidenceIds": [
+          "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080"
+        ],
+        "excludedEvidenceIds": [],
+        "tokenEstimate": 118,
+        "truncated": false
+      }
+    },
+    "traceId": "publication-e544723d-fe71-4dc8-bda5-b03898b6823d",
+    "requestId": "e544723d-fe71-4dc8-bda5-b03898b6823d",
+    "publicationViewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+    "timestamp": "2026-11-05T11:58:07.545Z"
+  }
+}

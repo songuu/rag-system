@@ -1,5 +1,7 @@
 import { routeConversation } from './conversation-router';
-import type { ConversationAction, ConversationRouteDecision } from './conversation-router';
+import { observeProviderInvocation } from './core/provider-usage-observer';
+import { createProviderAdmissionFetch } from '../models/provider-admission';
+import type { ConversationAction } from './conversation-router';
 
 const ZONES: Record<string, string> = { 'Asia/Shanghai': '北京时间', 'Asia/Tokyo': '东京时间',
   'Europe/London': '伦敦时间', 'America/New_York': '纽约时间', UTC: 'UTC' };
@@ -24,22 +26,37 @@ calculation: expression containing only numbers, parentheses and + - * / %. Pres
 live-data: topic weather,news,market, only a request for current external information, not an explanation.
 If EVERY clause is supported, return {"complete":true,"actions":[...]} with 1-6 actions; otherwise {"complete":false,"actions":[]}.`;
 
-export async function routeConversationSemantically(query: string, options: {
+export interface SemanticConversationCandidate {
+  version: 'semantic-candidate/v1';
+  actions: ConversationAction[];
+}
+
+/** A schema-valid model proposal, not permission to skip retrieval. */
+export async function classifyConversationCandidate(query: string, options: {
   fetch?: typeof fetch; signal?: AbortSignal;
-} = {}): Promise<ConversationRouteDecision | null> {
+} = {}): Promise<SemanticConversationCandidate | null> {
   const initial = routeConversation(query);
   if (initial.reason !== 'uncertain' || process.env.RAG_SEMANTIC_ROUTER === 'off'
     || (process.env.MODEL_PROVIDER && process.env.MODEL_PROVIDER !== 'ollama')) return null;
+  // A model's complete=true is not proof that it retained every request. For
+  // visibly compound inputs, prefer the full RAG path over a partial reply.
+  // Strip only standalone polite wrappers, never an arbitrary clause.
+  const content = initial.normalizedQuery.replace(/^请问\s*,\s*/u, '')
+    .replace(/,\s*(?:谢谢(?:你)?|thanks|thank you)$/iu, '');
+  if (/[\r\n]/u.test(query)
+    || /[,;。！？!?]|(?:以及|然后|并且|同时|顺便|另外|还要|再帮我|和)|\b(?:and|then|also|as well as)\b/iu.test(content)) return null;
   try {
     const timeout = AbortSignal.timeout(2500);
-    const response = await (options.fetch || fetch)(`${(process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/+$/u, '')}/api/chat`, {
+    const baseUrl = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/+$/u, '');
+    const providerFetch = createProviderAdmissionFetch(options.fetch || fetch, { provider: 'ollama', baseUrl });
+    const response = await observeProviderInvocation('generation', () => providerFetch(`${baseUrl}/api/chat`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
       body: JSON.stringify({ model: process.env.FAST_LLM_MODEL || 'qwen2.5:0.5b', stream: false, format: ROUTING_SCHEMA, keep_alive: '15m',
         options: { temperature: 0, num_ctx: 2048, num_predict: 256 },
         messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: query }] }),
-    });
-    if (!response.ok) return null;
+    }));
+    if (!response.ok) { await response.body?.cancel(); return null; }
     const payload = await response.json();
     const content = payload.message?.content ?? payload.response;
     if (typeof content !== 'string' || content.length > 8192) return null;
@@ -58,7 +75,7 @@ export async function routeConversationSemantically(query: string, options: {
       if (!validated) return null;
       actions.push(validated);
     }
-    return { ...initial, route: 'direct', reason: 'semantic-capabilities', actions };
+    return { version: 'semantic-candidate/v1', actions };
   } catch {
     // Failure to classify never bypasses corpus permissions or drops a clause.
     return null;

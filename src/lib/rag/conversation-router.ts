@@ -11,7 +11,7 @@ export type ConversationAction =
 export interface ConversationRouteDecision {
   version: typeof CONVERSATION_ROUTER_VERSION;
   route: 'direct' | 'rag';
-  reason: 'supported-capabilities' | 'semantic-capabilities' | 'document-context' | 'uncertain' | 'complex-query' | 'missing-referent';
+  reason: 'supported-capabilities' | 'document-context' | 'uncertain' | 'complex-query' | 'missing-referent';
   normalizedQuery: string;
   actions: ConversationAction[];
 }
@@ -21,7 +21,7 @@ const SOCIAL_RULES: ReadonlyArray<{ intent: SocialIntent; pattern: RegExp }> = [
   { intent: 'presence', pattern: /^(?:在吗|你在吗|在不在|有人吗|在不在线)$/u },
   { intent: 'thanks', pattern: /^(?:谢谢|谢谢你|感谢|感谢你|多谢|thanks|thank you|thank you so much)(?:啦|了|呀|啊)?$/iu },
   { intent: 'farewell', pattern: /^(?:再见|拜拜|回头见|bye|goodbye|see you)(?:啦|了|呀|啊)?$/iu },
-  { intent: 'identity', pattern: /^(?:你是谁|你叫什么|你叫什么名字|介绍(?:一下)?(?:你)?自己|who are you|introduce yourself)$/iu },
+  { intent: 'identity', pattern: /^(?:你是谁|你叫什么|你叫什么名字|(?:你)?介绍(?:一下|下)?(?:你自己|自己|你)|自我介绍(?:一下|下)?|做个自我介绍|who are you|introduce yourself)$/iu },
   { intent: 'capability', pattern: /^(?:你(?:能|可以|会)(?:帮我)?做什么|你有什么功能|你有哪些功能|怎么使用你|怎么用你|what can you do|what are your capabilities)$/iu },
 ];
 const ZONES: ReadonlyArray<{ aliases: string; timeZone: string; label: string }> = [
@@ -73,7 +73,7 @@ function normalize(query: string): string {
 function unwrap(query: string): string {
   let text = query;
   for (let pass = 0; pass < 3; pass++) {
-    text = text.replace(/^(?:麻烦(?:你)?(?:告诉我)?|请(?:问|告诉我|帮我|给我|提供)?|能否告诉我|能(?:不能)?(?:告诉我|说说)|可以告诉我|我想知道|想问(?:一下)?|告诉我|给我|帮我(?:查询一下|查一下|算一下)?|please\s+|(?:can|could) you (?:please )?(?:tell|show|give) me\s+|i (?:want|need|would like) to know\s+|(?:tell|show|give) me\s+)[,，\s]*/iu, '').trim();
+    text = text.replace(/^(?:麻烦(?:你)?(?:告诉我)?|请(?:问|告诉我|告知|帮我|给我|提供)?|能否告诉我|能(?:不能)?(?:告诉我|说说)|可以告诉我|我想知道|想问(?:一下)?|告诉我|告知|给我|帮我(?:查询一下|查一下|算一下)?|please\s+|(?:can|could) you (?:please )?(?:tell|show|give) me\s+|i (?:want|need|would like) to know\s+|(?:tell|show|give) me\s+)[,，\s]*/iu, '').trim();
   }
   return text.replace(/^(.+?)[,，\s]*(?:谢谢(?:你)?|please)$/iu, '$1')
     .replace(/[呢呀啊嘛吧]+$/u, '').replace(/[。！？!?，,]+$/gu, '').trim();

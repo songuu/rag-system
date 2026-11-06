@@ -5,7 +5,7 @@ import {
   projectClaimSourcesForHttp,
   requireKnowledgeGraphQueryPort,
   requiredString,
-  resolveActiveGraphVersion,
+  withCurrentGraphSource,
   resolveKnowledgeGraphHttpContext,
   withKnowledgeGraphQueryAdmission,
 } from '@/lib/knowledge-graph/http';
@@ -22,8 +22,7 @@ export async function GET(request: Request, { params }: RouteContext) {
     const limit = boundedInteger(url.searchParams.get('limit'), 'limit', 10, 1, 10);
     const context = await resolveKnowledgeGraphHttpContext(request, 'query');
     requestId = context.security.requestId;
-    const result = await withKnowledgeGraphQueryAdmission(context, async () => {
-      const graphVersion = await resolveActiveGraphVersion(context);
+    const result = await withKnowledgeGraphQueryAdmission(context, () => withCurrentGraphSource(context, async graphVersion => {
       const data = await requireKnowledgeGraphQueryPort(context.runtime).getClaimSources({
         scope: context.scope,
         graphVersion,
@@ -32,7 +31,7 @@ export async function GET(request: Request, { params }: RouteContext) {
         signal: request.signal,
       });
       return { data, graphVersion };
-    });
+    }));
     if (!result.data) {
       throw new KnowledgeGraphError(
         'KNOWLEDGE_GRAPH_NOT_FOUND',

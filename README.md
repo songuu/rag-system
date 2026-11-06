@@ -18,6 +18,8 @@ pnpm dev
 - 启动 Elasticsearch 增量索引与图谱构建 Worker；
 - 所有依赖就绪后启动 Next.js。
 
+新启动的 Ollama 默认限制为单模型、单执行槽；已有 Ollama 服务只复用并提示核验宿主配置。多进程共享 GPU 的配置方式与作用边界见 [Ollama 容量部署说明](docs/deployment/ollama-capacity.md)。
+
 默认打开 [http://localhost:3000](http://localhost:3000)，端口被占用时以终端显示的地址为准。启动器先确认端口监听，再等待健康接口和问答接口串行编译；看到“问答入口预编译完成，可以开始提问”表示准备完成。每个接口的冷编译最多等待 180 秒，超时会提示具体接口并保留开发服务，方便查看编译日志和继续修复；此时不能把端口开放当作问答已就绪。后续启动会复用已有镜像和数据卷；首次启动因为需要拉取镜像，耗时会更长。
 
 Windows 下启动器默认使用 Webpack，其他平台默认使用 Turbopack；可通过 `NEXT_DEV_BUNDLER=webpack` 或 `NEXT_DEV_BUNDLER=turbopack` 显式选择。首次等待端口监听的预算为 180 秒，每 15 秒提示一次等待进度，并显示 Next.js 启动进程 PID；进程异常退出会立即取消检测。

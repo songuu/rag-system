@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "rag-live-cli-readiness/v1",
+  "checkedAt": "2026-11-05T12:06:35.049Z",
+  "exitCode": 0,
+  "timedOut": false,
+  "readiness": {
+    "ready": true,
+    "indexRevision": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+    "modelRevision": "sha256:46e0c10c039e019119339687c3c1757cc81b9da49709a3b3924863ba87ca666e"
+  }
+}

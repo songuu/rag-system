@@ -67,6 +67,11 @@ export async function retrieveMilvusElasticsearch(input: {
       );
     }
     if (!existing || evidence.metadata?.lexicalMatch !== true) evidenceById.set(evidence.id, evidence);
+    else if (evidence.metadata?.lexicalHighlights) {
+      evidenceById.set(evidence.id, { ...existing, metadata: {
+        ...existing.metadata, lexicalHighlights: evidence.metadata.lexicalHighlights,
+      } });
+    }
   }
   const fused = reciprocalRankFusion({
     dense: dense.map(toFusionHit),

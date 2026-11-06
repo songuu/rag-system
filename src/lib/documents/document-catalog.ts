@@ -6,8 +6,10 @@ import {
   shouldUsePostgresPersistence,
 } from '../postgres/env';
 import type { RagRetrievalScope, RagTrustLevel } from '../security/retrieval-scope';
+import type { PublishedDocumentView } from './publication-view';
+import { publicationReadWithin } from './publication-read-deadline';
 
-export type DocumentIndexStatus = 'ready' | 'pending' | 'failed' | 'disabled' | 'unknown';
+export type DocumentIndexStatus = 'ready' | 'pending' | 'failed' | 'disabled' | 'unknown' | 'stale';
 
 export interface DocumentCatalogItem {
   id: string;
@@ -38,6 +40,8 @@ export interface DocumentCatalogRow {
   updated_at: string | Date;
   lexical_chunk_count: string | number;
   lexical_event_status: 'published' | 'pending' | 'failed' | null;
+  lexical_event_version: string | null;
+  lexical_event_type: 'upsert' | 'delete' | null;
 }
 
 export interface DocumentCatalogSummary {
@@ -49,7 +53,10 @@ export interface DocumentCatalogSummary {
   searchableChunkCount: number;
   disabledChunkCount: number;
   byteSize: number;
-  syncedCount: number;
+  /** Unknown until both backends have been independently read back. */
+  syncedCount: number | null;
+  /** Acknowledged current-version ES projection; this is not a live index readback. */
+  lexicalProjectedCount: number;
   elasticsearchMode: ElasticsearchRolloutMode;
 }
 
@@ -60,7 +67,7 @@ export function summarizeDocumentCatalog(
   const summary: DocumentCatalogSummary = {
     documentCount: documents.length, enabledDocumentCount: 0, disabledDocumentCount: 0,
     chunkCount: 0, searchableChunkCount: 0, disabledChunkCount: 0,
-    byteSize: 0, syncedCount: 0, elasticsearchMode,
+    byteSize: 0, syncedCount: null, lexicalProjectedCount: 0, elasticsearchMode,
   };
   for (const document of documents) {
     summary.chunkCount += document.chunkCount;
@@ -72,8 +79,8 @@ export function summarizeDocumentCatalog(
       summary.disabledDocumentCount++;
       summary.disabledChunkCount += document.chunkCount;
     }
-    // Projection health describes stored indexes, independently of retrieval visibility.
-    if (document.milvusStatus === 'ready' && document.elasticsearchStatus === 'ready') summary.syncedCount++;
+    // An acknowledged ES projection is not a live readback from both indexes.
+    if (document.elasticsearchStatus === 'ready') summary.lexicalProjectedCount++;
   }
   return summary;
 }
@@ -91,6 +98,7 @@ export class DocumentCatalogUnavailableError extends Error {
 export async function listDocumentCatalog(input: {
   scope: RagRetrievalScope;
   limit?: number;
+  signal?: AbortSignal;
 }): Promise<DocumentCatalogItem[]> {
   const limit = input.limit ?? 500;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
@@ -101,6 +109,17 @@ export async function listDocumentCatalog(input: {
   assertPostgresPersistenceConfigured(config);
   const client = getPostgresClient(config);
   if (!client) throw new DocumentCatalogUnavailableError('PostgreSQL document catalog is not configured.');
+
+  const publicationMode=process.env.RAG_UNIFIED_PUBLICATION_MODE;
+  if(publicationMode!==undefined&&publicationMode.trim().toLowerCase()!=='off') {
+    if(publicationMode.trim().toLowerCase()!=='active')throw new DocumentCatalogUnavailableError('Publication configuration is invalid.');
+    const [{readPublicationView},{assertPublicationReaderPostgresCapability}]=await Promise.all([
+      import('./publication-view'),import('./publication-reader-capability')]);
+    const signal=AbortSignal.any([AbortSignal.timeout(30_000),...(input.signal?[input.signal]:[])]);
+    await publicationReadWithin(()=>assertPublicationReaderPostgresCapability(client),signal);
+    const view=await publicationReadWithin(()=>readPublicationView({...input.scope,enforceIsolation:true},client),signal);
+    return view.documents.slice(0,limit).map(toPublishedDocumentCatalogItem);
+  }
 
   const result = await queryPostgres<DocumentCatalogRow>(
     client,
@@ -113,7 +132,9 @@ export async function listDocumentCatalog(input: {
               when latest_event.published_at is not null then 'published'
               when latest_event.id is not null then 'pending'
               else null
-            end as lexical_event_status
+            end as lexical_event_status,
+            latest_event.document_version as lexical_event_version,
+            latest_event.event_type as lexical_event_type
      from public.document_assets asset
      left join lateral (
        select count(*)::bigint as chunk_count
@@ -121,9 +142,15 @@ export async function listDocumentCatalog(input: {
        where chunk.tenant_id = asset.tenant_id
          and chunk.corpus_id = asset.corpus_id
          and chunk.document_id = asset.external_document_id
+         and chunk.document_version = coalesce(
+           nullif(btrim(asset.metadata #>> '{document,documentVersion}'), ''),
+           nullif(btrim(asset.metadata #>> '{document,document_version}'), ''),
+           nullif(btrim(asset.metadata #>> '{document,sourceHash}'), ''),
+           nullif(btrim(asset.metadata #>> '{document,source_hash}'), '')
+         )
      ) lexical on true
      left join lateral (
-       select event.id, event.published_at, event.dead_lettered_at
+       select event.id, event.published_at, event.dead_lettered_at, event.document_version, event.event_type
        from public.elasticsearch_lexical_outbox event
        where event.tenant_id = asset.tenant_id
          and event.corpus_id = asset.corpus_id
@@ -171,9 +198,8 @@ export function toDocumentCatalogItem(
   const trustLevel = normalizeTrustLevel(
     firstString(document.trustLevel, document.trust_level) || 'external'
   );
-  const milvusStatus = metadata.persistence_status === 'ready' || Number(metadata.chunks) > 0
-    ? 'ready'
-    : 'unknown';
+  // Asset metadata describes the past write, not a live Milvus readback.
+  const milvusStatus = 'unknown';
   const lexicalChunkCount = safeNonNegativeInteger(row.lexical_chunk_count);
 
   return {
@@ -191,23 +217,42 @@ export function toDocumentCatalogItem(
     milvusStatus,
     elasticsearchStatus: elasticsearchStatus(
       elasticsearchMode,
-      row.lexical_event_status,
-      lexicalChunkCount
+      row,
+      documentVersion,
+      lexicalChunkCount,
+      safeNonNegativeInteger(metadata.chunks)
     ),
     enabled: metadata.retrieval_enabled !== false && !['deleting', 'deleted'].includes(String(metadata.lifecycle)),
     lifecycle: metadata.lifecycle === 'deleting' ? 'deleting' : 'active',
   };
 }
 
+/** A published head attests the publisher's readback, not a fresh backend audit. */
+export function toPublishedDocumentCatalogItem(document:PublishedDocumentView):DocumentCatalogItem {
+  if(!Number.isSafeInteger(document.byteSize)||document.byteSize===null||document.byteSize<1||!document.createdAt)
+    throw new DocumentCatalogUnavailableError('Published catalog metadata is unavailable.');
+  return {id:document.assetId,documentId:document.documentId,name:document.originalName,contentType:document.contentType,
+    sourceKind:document.sourceKind,byteSize:document.byteSize,chunkCount:document.milvus.chunks.length,
+    documentVersion:document.contentVersion,trustLevel:document.milvus.chunks[0].trustLevel,createdAt:toIso(document.createdAt),
+    updatedAt:toIso(new Date(Math.max(Date.parse(document.milvusVerifiedAt),Date.parse(document.elasticsearchVerifiedAt)))),
+    milvusStatus:'ready',elasticsearchStatus:'ready',enabled:true,lifecycle:'active'};
+}
+
 function elasticsearchStatus(
   mode: ElasticsearchRolloutMode,
-  eventStatus: DocumentCatalogRow['lexical_event_status'],
-  lexicalChunkCount: number
+  row: DocumentCatalogRow,
+  documentVersion: string,
+  lexicalChunkCount: number,
+  expectedChunkCount: number
 ): DocumentIndexStatus {
   if (mode === 'off') return 'disabled';
-  if (eventStatus === 'failed') return 'failed';
-  if (eventStatus === 'published' && lexicalChunkCount > 0) return 'ready';
-  return 'pending';
+  if (documentVersion === 'unknown') return 'unknown';
+  if (row.lexical_event_status === null) return 'pending';
+  if (row.lexical_event_type !== 'upsert' || row.lexical_event_version !== documentVersion) return 'stale';
+  if (row.lexical_event_status === 'failed') return 'failed';
+  if (row.lexical_event_status === 'pending') return 'pending';
+  if (expectedChunkCount === 0) return 'unknown';
+  return lexicalChunkCount === expectedChunkCount ? 'ready' : 'stale';
 }
 
 function contentTypeKind(contentType: string): string {

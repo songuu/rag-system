@@ -5,7 +5,7 @@ import {
   projectKnowledgeGraphCommunityResultsForHttp,
   requireKnowledgeGraphQueryPort,
   requiredString,
-  resolveActiveGraphVersion,
+  withCurrentGraphSource,
   resolveKnowledgeGraphHttpContext,
   withKnowledgeGraphQueryAdmission,
 } from '@/lib/knowledge-graph/http';
@@ -17,8 +17,7 @@ export async function GET(request: Request) {
     const query = requiredString(url.searchParams.get('q'), 'q', 8_000);
     const context = await resolveKnowledgeGraphHttpContext(request, 'query');
     requestId = context.security.requestId;
-    const result = await withKnowledgeGraphQueryAdmission(context, async () => {
-      const graphVersion = await resolveActiveGraphVersion(context);
+    const result = await withKnowledgeGraphQueryAdmission(context, () => withCurrentGraphSource(context, async graphVersion => {
       const data = projectKnowledgeGraphCommunityResultsForHttp(
         await requireKnowledgeGraphQueryPort(context.runtime).searchCommunities({
         scope: context.scope,
@@ -29,7 +28,7 @@ export async function GET(request: Request) {
         })
       );
       return { data, graphVersion };
-    });
+    }));
     return knowledgeGraphJsonResponse({
       success: true,
       data: result.data.data,

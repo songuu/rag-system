@@ -160,6 +160,17 @@ test('Self-RAG initial controls retain an idle, disabled submit without invoking
   assert.match(renderToStaticMarkup(tree), /Self-RAG/);
 });
 
+test('Self-RAG shows the detailed failure returned by the workflow', async () => {
+  const hooks = createHooks({ 0: 'synthetic question' });
+  const component = loadSource('src/components/SelfRAGVisualization.tsx', { react: hooks.react }, {
+    fetch: async () => ({ ok: true, json: async () => ({ success: false, finalResponse: '处理过程中发生错误: 模型不可用' }) }),
+  }).default;
+  const tree = hooks.render(component);
+  const submit = elements(tree, (element) => element.type === 'button' && element.props.onClick?.name === 'runSelfRAG')[0];
+  await submit.props.onClick();
+  assert.match(renderToStaticMarkup(hooks.render(component)), /处理过程中发生错误: 模型不可用/);
+});
+
 function createPage(fetch) {
   const hooks = createHooks();
   const stub = () => null;
@@ -280,6 +291,39 @@ test('retrieval details preserve nested metadata formatting and numeric chart la
   assert.ok(bar);
   assert.equal(bar.label.formatter({ value: 0.8 }), '80%');
   assert.equal(bar.label.formatter({ value: 0 }), '0%');
+});
+
+test('retrieval totals display unknown separately from a measured zero', () => {
+  const panel = loadSource('src/components/RetrievalDetailsPanel.tsx', {
+    'next/dynamic': () => () => null,
+    '@/components/RetrievalEffectSummary': () => null,
+  }).default;
+  for (const totalDocuments of [null, undefined, 0, 7]) {
+    const expected = totalDocuments == null ? '未统计' : String(totalDocuments);
+    const retrievalDetails = { searchResults: [], threshold: 0.3, topK: 3, totalDocuments, searchTime: 4 };
+    const html = renderToStaticMarkup(React.createElement(panel, { retrievalDetails }));
+    assert.match(html, new RegExp('text-blue-600">' + expected + '</div>'));
+  }
+});
+
+test('expanded chat retrieval totals never substitute the number of returned hits', () => {
+  const hooks = createHooks({ 0: true });
+  const component = loadSource('src/components/ChatMessage.tsx', {
+    react: hooks.react,
+    '@/components/AnswerProcessingPanel': () => null,
+    '@/lib/rag/citations/reference-parser': loadSource('src/lib/rag/citations/reference-parser.ts'),
+  }).default;
+  for (const totalDocuments of [null, undefined, 0, 7]) {
+    const expected = totalDocuments == null ? '未统计' : String(totalDocuments);
+    const html = renderToStaticMarkup(hooks.render(component, {
+      message: { id: 'count-fixture', type: 'assistant', content: 'answer', timestamp: new Date(),
+        retrievalDetails: { totalDocuments, searchResults: [{
+          document: { content: 'evidence', metadata: {} }, similarity: 0.8,
+        }] } },
+      currentQuery: '', highlightMatchingText: text => text,
+    }));
+    assert.match(html, new RegExp('总文档: ' + expected + '</span>'));
+  }
 });
 
 function createObservability(fetch) {
@@ -631,7 +675,10 @@ test('Milvus results only display string source labels from unknown metadata', (
       id: `result-${index}`, content: 'synthetic evidence', score: 0.9, metadata: { source },
     })) },
   });
-  const component = loadSource('src/components/MilvusQueryVisualizer.tsx', { react: hooks.react }).default;
+  const component = loadSource('src/components/MilvusQueryVisualizer.tsx', {
+    react: hooks.react,
+    '@/lib/documents/document-counts': loadSource('src/lib/documents/document-counts.ts'),
+  }).default;
   // Effects remain queued; no status/search network or timers execute in this rendering test.
   const html = renderToStaticMarkup(hooks.render(component));
   assert.match(html, /valid-source/);

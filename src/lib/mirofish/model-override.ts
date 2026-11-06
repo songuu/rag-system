@@ -6,13 +6,20 @@
  */
 
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { createLLM, isOllamaProvider } from '../model-config';
+import { createLLM, isOllamaProvider, type ModelProvider } from '../model-config';
+import { createLangChainTextModelClient } from '../models/langchain-text-model';
+import type { TextModelClient } from '../models/text-model';
 import type { ModelOverride, Project } from './types';
 
 interface LLMOverrideDefaults {
   temperature?: number;
   ollamaOptions?: Record<string, unknown>;
+  requestTimeoutMs?: number;
+  requestSignal?: AbortSignal;
 }
+
+/** Internal selections can freeze every server provider; HTTP selectors stay restricted. */
+export interface ServerModelOverride extends Omit<ModelOverride, 'provider'> { provider: ModelProvider }
 
 const HTTP_MODEL_OVERRIDE_FORBIDDEN_CODE = 'MIROFISH_HTTP_MODEL_OVERRIDE_FORBIDDEN';
 const HTTP_MODEL_OVERRIDE_INVALID_CODE = 'MIROFISH_HTTP_MODEL_OVERRIDE_INVALID';
@@ -38,7 +45,7 @@ export class MiroFishHttpModelOverrideValidationError extends Error {
  * 根据 override 创建 LLM；override 为空时走默认工厂。
  */
 export function createLLMFromOverride(
-  override?: ModelOverride,
+  override?: ServerModelOverride,
   defaults: LLMOverrideDefaults = {}
 ): BaseChatModel {
   const temperature = override?.temperature ?? defaults.temperature ?? 0.7;
@@ -46,6 +53,8 @@ export function createLLMFromOverride(
   if (!override) {
     return createLLM(undefined, {
       temperature,
+      requestTimeoutMs: defaults.requestTimeoutMs,
+      requestSignal: defaults.requestSignal,
       options: isOllamaProvider() ? defaults.ollamaOptions : undefined,
     });
   }
@@ -57,12 +66,22 @@ export function createLLMFromOverride(
   return createLLM(override.modelName, {
     provider: override.provider,
     temperature,
+    requestTimeoutMs: defaults.requestTimeoutMs,
+    requestSignal: defaults.requestSignal,
     apiKey: override.apiKey,
     baseUrl: override.baseUrl,
     options: override.provider === 'ollama'
       ? normalizeOllamaOptions(defaults.ollamaOptions)
       : undefined,
   });
+}
+
+/** Reuse the same override validation and provider policy for text-only callers. */
+export function createTextModelClientFromOverride(
+  override?: ModelOverride,
+  defaults: LLMOverrideDefaults = {}
+): TextModelClient {
+  return createLangChainTextModelClient(createLLMFromOverride(override, defaults));
 }
 
 function normalizeOllamaOptions(options: Record<string, unknown> | undefined): Record<string, unknown> {

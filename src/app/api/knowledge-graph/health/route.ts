@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
+import { KnowledgeGraphError } from '@/lib/knowledge-graph/contracts';
 import { getNeo4jRuntimeConfig, getNeo4jConfigSummary } from '@/lib/neo4j/config';
 import { checkNeo4jHealth } from '@/lib/neo4j/driver';
 import { canRagRole, resolveRagSecurityContext } from '@/lib/security/request-context';
@@ -12,6 +14,8 @@ export async function GET(request: Request) {
   try {
     const security = await resolveRagSecurityContext(request, { capability: 'query' });
     requestId = security.requestId;
+    const block = getUnifiedPublicationWriteBlock();
+    if (block) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', block.message);
     const managementEnabled = process.env.NODE_ENV !== 'production'
       && security.accessMode === 'local-dev'
       && canRagRole(security.role, 'manage-runtime');

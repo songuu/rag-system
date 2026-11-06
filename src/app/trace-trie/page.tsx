@@ -63,15 +63,8 @@ export default function TraceTriePage() {
     return acc;
   }, {} as Record<string, typeof availableModels>);
 
-  // 加载历史问题
-  useEffect(() => {
-    loadUserQuestions();
-  }, []);
-
   const loadUserQuestions = async () => {
-    setIsLoadingQuestions(true);
-    try {
-      const conversations = await dbManager.getAllConversations();
+    return dbManager.getAllConversations().then(async conversations => {
       const questions: UserQuestion[] = [];
       
       conversations.forEach(conv => {
@@ -90,12 +83,17 @@ export default function TraceTriePage() {
       // 按时间倒序排列
       questions.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
       setUserQuestions(questions);
-    } catch (err) {
+    }).catch(err => {
       console.error('加载历史问题失败:', err);
-    } finally {
+    }).finally(() => {
       setIsLoadingQuestions(false);
-    }
+    });
   };
+
+  // 加载历史问题
+  useEffect(() => {
+    loadUserQuestions();
+  }, []);
 
   // 过滤后的问题列表
   const filteredQuestions = userQuestions.filter(q => 
@@ -261,7 +259,7 @@ export default function TraceTriePage() {
                   <h3 className="font-semibold text-slate-700">历史问题</h3>
                 </div>
                 <button
-                  onClick={loadUserQuestions}
+                  onClick={() => { setIsLoadingQuestions(true); void loadUserQuestions(); }}
                   className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
                   title="刷新列表"
                 >

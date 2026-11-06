@@ -63,14 +63,11 @@ export default function ModelManagementPanel({
 
   // 加载模型列表
   const loadModels = async () => {
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const response = await fetch('/rag-api/ollama/models', {
+    return fetch('/rag-api/ollama/models', {
         signal: AbortSignal.timeout(5_000),
-      });
+      }).then(async response => {
       const data = await response.json();
+      setError(null);
       
       if (!data.success) {
         setError(data.error || '加载失败');
@@ -78,13 +75,13 @@ export default function ModelManagementPanel({
       } else {
         setModelData(data);
       }
-    } catch (err) {
+    }).catch(err => {
       setError(err instanceof DOMException && err.name === 'TimeoutError'
         ? '模型列表加载超过 5 秒，请检查模型服务'
         : '无法连接到服务器');
-    } finally {
+    }).finally(() => {
       setIsLoading(false);
-    }
+    });
   };
 
   useEffect(() => {
@@ -132,7 +129,7 @@ export default function ModelManagementPanel({
             
             <div className="flex gap-3">
               <button
-                onClick={loadModels}
+                onClick={() => { setIsLoading(true); setError(null); void loadModels(); }}
                 className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors"
               >
                 重新检测
@@ -218,7 +215,7 @@ export default function ModelManagementPanel({
             </div>
             
             <button
-              onClick={loadModels}
+              onClick={() => { setIsLoading(true); setError(null); void loadModels(); }}
               className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg font-medium transition-colors"
             >
               刷新检测
@@ -262,7 +259,7 @@ export default function ModelManagementPanel({
               </div>
             </div>
             <button
-              onClick={loadModels}
+              onClick={() => { setIsLoading(true); setError(null); void loadModels(); }}
               className="px-3 py-1 bg-white border border-gray-300 rounded text-sm hover:bg-gray-50 transition-colors"
             >
               刷新

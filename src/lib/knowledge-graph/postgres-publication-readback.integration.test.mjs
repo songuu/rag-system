@@ -45,6 +45,32 @@ async function seedRunning({ client, scope, suffix }, expiration = '3 minutes') 
   return { id, lease, graphVersion, manifest };
 }
 
+test('generated activation rejects failed or revoked sources without replacing active graph', async () => isolated(async ({ client, query, scope }) => {
+  const generation = randomUUID();
+  const graphVersion = `mirofish:${'a'.repeat(64)}:${generation}`;
+  const identity = { ...scope, documentId: 'doc-test', documentVersion: 'v1', trustLevel: 'external', graphGeneration: generation };
+  await client.query(`insert into public.document_assets (tenant_id,corpus_id,external_document_id,original_name,content_type,source_hash,metadata)
+    values ($1,$2,'doc-test','doc.txt','text/plain','v1',$3::jsonb)`, [scope.tenantId, scope.corpusId,
+    JSON.stringify({ source_kind: 'text', persistence_status: 'ready', document: { trustLevel: 'external' } })]);
+  await client.query(`insert into public.graph_build_jobs (tenant_id,corpus_id,graph_version,status,metadata)
+    values ($1,$2,$3,'failed',$4::jsonb)`, [scope.tenantId, scope.corpusId, graphVersion, JSON.stringify({ documentIdentity: identity })]);
+  await client.query(`insert into public.graph_active_snapshots (tenant_id,corpus_id,graph_version,revision)
+    values ($1,$2,'old-graph',1)`, [scope.tenantId,scope.corpusId]);
+  const publication = new PostgresKnowledgeGraphPublicationStore(query);
+  await publication.registerStagedSnapshot(scope, graphVersion);
+  const lease = await publication.acquireSnapshotLease(scope, graphVersion, 'activate');
+  const attempt = () => publication.compareAndSetActiveWithLease(scope, graphVersion, 1, lease);
+  await assert.rejects(attempt(), error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+  await client.query(`update public.graph_build_jobs set status = 'validated' where tenant_id=$1 and corpus_id=$2 and graph_version=$3`, [scope.tenantId,scope.corpusId,graphVersion]);
+  await client.query(`update public.document_assets set metadata = jsonb_set(metadata, '{retrieval_enabled}', 'false') where tenant_id=$1 and corpus_id=$2`, [scope.tenantId,scope.corpusId]);
+  await assert.rejects(attempt(), error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+  assert.equal((await publication.getActive(scope)).graphVersion, 'old-graph');
+  assert.equal((await publication.listPendingEvents(scope)).length, 0);
+  await client.query(`update public.document_assets set metadata = jsonb_set(metadata, '{retrieval_enabled}', 'true') where tenant_id=$1 and corpus_id=$2`, [scope.tenantId,scope.corpusId]);
+  assert.equal((await attempt()).graphVersion, graphVersion);
+  assert.equal((await publication.listPendingEvents(scope)).length, 1);
+}));
+
 test('native PG publication joins persisted complete documents and conservatively preserves acknowledgement precision', async () => isolated(async fixture => {
   const { client, query, scope } = fixture; const { id, lease, graphVersion, manifest } = await seedRunning(fixture);
   const build = new PostgresKnowledgeGraphBuildJobStore(query);

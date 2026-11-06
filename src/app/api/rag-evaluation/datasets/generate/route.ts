@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { generateRagEvalDataset, generateRagEvalDatasetFromCorpus, validateDatasetGenerationSettings, withDatasetCancellation } from '@/lib/rag/eval/dataset-generation';
 import { createStableErrorLog } from '@/lib/security/error-redaction';
 import { RagSecurityError, resolveRagSecurityContext } from '@/lib/security/request-context';
@@ -37,6 +38,8 @@ export async function POST(request: Request) {
     )), 270_000);
     const result = await withDatasetCancellation(async () => {
       if (Object.hasOwn(raw, 'documentAssetIds')) {
+        const block = getUnifiedPublicationWriteBlock();
+        if (block) throw new RequestValidationError(block.code, block.message, block.status);
         if (Object.keys(raw).some(key => !['datasetId', 'datasetVersion', 'count', 'documentAssetIds'].includes(key))) {
           throw new RequestValidationError('INVALID_DATASET_GENERATION_REQUEST', '请选择知识库文档或手动资料中的一种生成方式。');
         }

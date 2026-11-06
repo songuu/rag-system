@@ -24,11 +24,18 @@ const {
   convertKnowledgeGraphToGraphData,
   createPublicGraphProjection,
   createMiroFishGraphExtractionConfig,
+  MIROFISH_GRAPH_OLLAMA_OPTIONS,
+  MIROFISH_GRAPH_EXTRACTION_JSON_SCHEMA,
+  assertGraphHasEntities,
   normalizeMiroFishGraphOntology,
 } = await import('./graph-builder.ts');
 const {
   EntityExtractor,
   EntityExtractionOutputBudgetError,
+  EntityExtractionProviderTimeoutError,
+  EntityExtractionProviderBusyError,
+  EntityExtractionTruncatedError,
+  EntityExtractionInvalidOutputError,
 } = await import('../entity-extraction.ts');
 const { MIROFISH_GRAPH_ARTIFACT_LIMITS } = await import('./graph-artifact-store.ts');
 const { getTaskManager } = await import('./task-manager.ts');
@@ -45,12 +52,171 @@ test('MiroFish graph extraction disables gleaning to avoid doubling LLM calls', 
   const config = createMiroFishGraphExtractionConfig({
     chunkSize: 5000,
     chunkOverlap: 300,
+    longDocument: true,
   });
 
   assert.equal(config.chunkSize, 5000);
   assert.equal(config.chunkOverlap, 300);
   assert.equal(config.enableGleaning, false);
-  assert.equal(config.maxChunkTimeout, 45000);
+  assert.equal(config.maxChunkTimeout, 300_000);
+  assert.equal(config.chunkTimeoutMs, 300_000);
+  assert.equal(config.llmOperationTimeoutMs, 300_000);
+  assert.equal(config.embeddingTimeoutMs, 300_000);
+  assert.equal(config.maxTotalTimeout, 50 * 60_000);
+  assert.equal(config.adaptiveChunkSplitting, true);
+  assert.equal(config.embeddingBatchSize, 32);
+  assert.equal(config.batchCommunityEmbeddings, true);
+  assert.equal(config.maxExtractedEntities, 5_000);
+});
+
+test('ordinary graph extraction retains its existing short-task resource limits', () => {
+  const config = createMiroFishGraphExtractionConfig({ chunkSize: 5000, chunkOverlap: 300 });
+  assert.equal(config.maxChunkTimeout, 300_000);
+  assert.equal(config.chunkTimeoutMs, 300_000);
+  assert.equal(config.llmOperationTimeoutMs, 300_000);
+  assert.equal(config.maxExtractedEntities, 1_000);
+  assert.equal(config.adaptiveChunkSplitting, true);
+  assert.equal(config.maxTotalTimeout, 50 * 60_000);
+});
+
+test('graph cold-start allowance also applies to short source text', () => {
+  const config = createMiroFishGraphExtractionConfig({ chunkSize: 5000, chunkOverlap: 300 });
+  const extractor = new EntityExtractor(config, { llmInstance: { invoke() {} } });
+  assert.equal(extractor.calculateChunkTimeout(20), 300_000);
+  assert(extractor.calculateTimeout(20, 1) > 300_000);
+});
+
+for (const longDocument of [false, true]) {
+  test(`graph entity embeddings can finish a 45-second cold start (longDocument=${longDocument})`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const extractor = new EntityExtractor(createMiroFishGraphExtractionConfig({ chunkSize: 4000, chunkOverlap: 300, longDocument }), {
+      llmInstance: { async invoke() { throw new Error('One entity needs no model merge'); } },
+      embeddingInstance: { embedDocuments() { return new Promise(resolve => setTimeout(() => resolve([[1, 0]]), 45_000)); } },
+      embeddingProviderKey: `cold-start-${longDocument}`,
+    });
+    extractor.startTime = Date.now();
+    extractor.estimatedTimeout = 5 * 60_000;
+    const entity = { id: 'alice', name: 'Alice', type: 'PERSON', description: 'Developer', aliases: [], mentions: 1, sourceChunks: [] };
+    const pending = extractor.resolveEntities(new Map([['alice', entity]]), new Map());
+    void pending.catch(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(45_000);
+    await pending;
+    assert.deepEqual(entity.embedding, [1, 0]);
+  });
+}
+
+test('graph community embeddings use the same cold-start allowance after summarization', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const extractor = new EntityExtractor(createMiroFishGraphExtractionConfig({ chunkSize: 4000, chunkOverlap: 300 }), {
+    llmInstance: { async invoke() { throw new Error('Summary is supplied by the fixture'); } },
+    embeddingInstance: { embedDocuments() { return new Promise(resolve => setTimeout(() => resolve([[0, 1]]), 45_000)); } },
+    embeddingProviderKey: 'community-cold-start',
+  });
+  extractor.startTime = Date.now();
+  extractor.estimatedTimeout = 5 * 60_000;
+  extractor.generateCommunitySummary = async () => ({ name: 'Developers', summary: 'Developers build applications.', keywords: ['development'] });
+  const pending = extractor.buildCommunities(new Map([['alice', { id: 'alice', name: 'Alice' }]]), new Map());
+  void pending.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(45_000);
+  const communities = await pending;
+  assert.deepEqual(communities.get('community_0').embedding, [0, 1]);
+});
+
+for (const longDocument of [false, true]) for (const operation of ['merge', 'summary']) {
+  test(`graph ${operation} permits a 45-second LLM cold start (longDocument=${longDocument})`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const result = operation === 'merge'
+      ? { isSameEntity: true, confidence: .95 }
+      : { name: 'Developers', summary: 'Developers build applications.', keywords: ['development'] };
+    const config = createMiroFishGraphExtractionConfig({ chunkSize: 600, chunkOverlap: 50, longDocument });
+    const extractor = new EntityExtractor(config, {
+      llmInstance: { invoke() { return new Promise(resolve => setTimeout(() => resolve({ content: JSON.stringify(result) }), 45_000)); } },
+      embeddingInstance: { async embedDocuments() { return []; }, async embedQuery() { return []; } },
+      providerKey: `llm-cold-start-${operation}-${longDocument}`,
+    });
+    extractor.startTime = Date.now();
+    extractor.estimatedTimeout = 5 * 60_000;
+    const alice = { id: 'alice', name: 'Alice', type: 'PERSON', description: 'Developer' };
+    const bob = { id: 'bob', name: 'Bob', type: 'PERSON', description: 'Developer' };
+    const pending = operation === 'merge' ? extractor.confirmMerge(alice, bob)
+      : extractor.generateCommunitySummary({ entities: ['alice'], relations: [] }, new Map([['alice', alice]]), new Map());
+    void pending.catch(() => {});
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(45_000);
+    assert.deepEqual(await pending, operation === 'merge' ? true : result);
+    assert.equal(extractor.calculateChunkTimeout(10), 300_000);
+    assert.ok(extractor.calculateTimeout(2_000_000, 1000) <= 50 * 60_000);
+  });
+}
+
+test('ordinary extraction keeps its existing merge and summary deadlines without an override', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const [operation, seconds] of [['merge', 15], ['summary', 20]]) {
+    const extractor = new EntityExtractor({ maxChunkTimeout: 60_000 }, {
+      llmInstance: { invoke() { return new Promise(resolve => setTimeout(() => resolve({ content: '{}' }), 45_000)); } },
+      embeddingInstance: { async embedDocuments() { return []; }, async embedQuery() { return []; } },
+      providerKey: `default-deadline-${operation}`,
+    });
+    extractor.startTime = Date.now(); extractor.estimatedTimeout = 5 * 60_000;
+    const alice = { name: 'Alice', type: 'PERSON', description: 'Developer' };
+    const pending = operation === 'merge' ? extractor.confirmMerge(alice, { ...alice, name: 'Bob' })
+      : extractor.generateCommunitySummary({ entities: [], relations: [] }, new Map(), new Map());
+    const failure = assert.rejects(pending, error => error.code === 'ENTITY_EXTRACTION_PROVIDER_TIMEOUT' && error.message.includes(`${seconds}秒`));
+    await new Promise(resolve => setImmediate(resolve));
+    t.mock.timers.tick(45_000);
+    await failure;
+  }
+});
+
+test('LLM operation overrides reject unbounded or malformed deadlines', () => {
+  for (const llmOperationTimeoutMs of [0, 999, 300_001, Infinity, NaN, 1000.5]) {
+    assert.throws(() => new EntityExtractor({ llmOperationTimeoutMs }, { llmInstance: { invoke() {} } }), /LLM operation timeout/);
+  }
+});
+
+test('ordinary multi-chunk graph budgets allow splitting within a finite task deadline', () => {
+  const config = createMiroFishGraphExtractionConfig({ chunkSize: 4000, chunkOverlap: 300 });
+  const extractor = new EntityExtractor(config, { llmInstance: { invoke() {} } });
+  // A parent call and its two child calls must fit even for a one-chunk source.
+  assert(extractor.calculateTimeout(1000, 1) >= 3 * config.maxChunkTimeout);
+  assert(extractor.calculateTimeout(20000, 6) > 10 * 60_000);
+  assert(extractor.calculateTimeout(2000000, 1000) <= 50 * 60_000);
+});
+
+for (const [ErrorType, code] of [
+  [EntityExtractionProviderTimeoutError, 'ENTITY_EXTRACTION_PROVIDER_TIMEOUT'],
+  [EntityExtractionProviderBusyError, 'ENTITY_EXTRACTION_PROVIDER_BUSY'],
+  [EntityExtractionTruncatedError, 'ENTITY_EXTRACTION_TRUNCATED'],
+  [EntityExtractionInvalidOutputError, 'ENTITY_EXTRACTION_INVALID_OUTPUT'],
+]) {
+  test(`background graph preserves ${code} without provider content`, async t => {
+    const originalExtract = EntityExtractor.prototype.extract;
+    EntityExtractor.prototype.extract = async () => { throw new ErrorType('private provider content'); };
+    t.after(() => { EntityExtractor.prototype.extract = originalExtract; });
+    const taskId = await new MiroFishGraphBuilder().buildGraphAsync({
+      text: 'source', ontology: { entity_types: [], edge_types: [] },
+    });
+    t.after(() => getTaskManager().deleteTask(taskId));
+    const task = await waitForTerminalTask(taskId);
+    assert.equal(task.error, code);
+    assert.doesNotMatch(JSON.stringify(task), /private provider content/);
+  });
+}
+
+test('graph model schema does not impose a silent entity or relation count limit', () => {
+  const schema = MIROFISH_GRAPH_EXTRACTION_JSON_SCHEMA;
+  assert.deepEqual(schema.required, ['entities', 'relations']);
+  assert.equal(schema.properties.entities.maxItems, undefined);
+  assert.equal(schema.properties.relations.maxItems, undefined);
+  assert.equal(MIROFISH_GRAPH_OLLAMA_OPTIONS.numPredict, 8192);
+  assert.equal(MIROFISH_GRAPH_OLLAMA_OPTIONS.format, 'json');
+});
+
+test('empty extraction cannot be saved as a successful graph', () => {
+  assert.throws(() => assertGraphHasEntities({ nodes: [], edges: [] }), /未提取到实体/);
+  assert.doesNotThrow(() => assertGraphHasEntities({ nodes: [{ id: 'entity' }], edges: [] }));
 });
 
 test('MiroFish graph builder preserves an explicit zero-overlap budget', () => {
@@ -179,19 +345,7 @@ test('artifact-limit worker failure keeps its stable code and stores no graphDat
   let observedSource;
   EntityExtractor.prototype.extract = async (text, documentId) => {
     observedSource = text;
-    return {
-      entities: new Map(),
-      relations: new Map(),
-      communities: new Map(),
-      chunks: new Map(),
-      metadata: {
-        documentId,
-        createdAt: new Date(),
-        entityCount: 0,
-        relationCount: 0,
-        communityCount: 0,
-      },
-    };
+    return createExtractedGraph(documentId);
   };
   MiroFishGraphBuilder.prototype.applyOntologyFilter = graphData => ({
     ...graphData,
@@ -439,7 +593,10 @@ test('MiroFish graph adapter retains source passages and communities', () => {
 
 function createExtractedGraph(documentId, chunkMetadata = {}) {
   return {
-    entities: new Map(),
+    entities: new Map([['entity-1', {
+      id: 'entity-1', name: 'Alice', type: 'PERSON', description: 'Founder',
+      aliases: [], mentions: 1, sourceChunks: ['chunk-1'], metadata: {},
+    }]]),
     relations: new Map(),
     communities: new Map(),
     chunks: new Map([['chunk-1', {
@@ -454,7 +611,7 @@ function createExtractedGraph(documentId, chunkMetadata = {}) {
     metadata: {
       documentId,
       createdAt: new Date('2026-07-16T00:00:00.000Z'),
-      entityCount: 0,
+      entityCount: 1,
       relationCount: 0,
       communityCount: 0,
     },

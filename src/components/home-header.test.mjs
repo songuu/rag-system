@@ -70,6 +70,16 @@ async function mount(run, overrides = {}) {
   }
 }
 
+test('publication mode identifies the published reader without claiming a legacy connection', async () => {
+  await mount(async ui => {
+    assert.match(ui.trigger.getAttribute('aria-label'), /统一发布/);
+    await ui.click(ui.trigger);
+    assert.match(ui.menu.textContent, /统一发布/);
+    assert.equal(ui.menu.querySelector('[title="生产环境使用受认证的 Milvus 语料库"]'), null);
+    assert.ok(ui.menu.querySelector('[title="查询当前已发布版本；此徽标不代表后端连通性探测"]'));
+  }, { publicationMode: true, milvusConnected: false, showRagModes: false });
+});
+
 test('disclosure opens, Escape closes and restores focus, outside pointer closes', async () => {
   await mount(async ui => {
     assert.equal(ui.trigger.getAttribute('aria-expanded'), 'false');

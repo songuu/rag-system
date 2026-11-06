@@ -1,0 +1,379 @@
+{
+  "schemaVersion": "rag-live-retrieval-diagnosis/v1",
+  "observedAt": "2026-11-05T12:06:05.046Z",
+  "readOnly": true,
+  "scope": {
+    "tenantId": "local-dev-tenant",
+    "corpusId": "local-dev-corpus"
+  },
+  "postgres": {
+    "assets": [
+      {
+        "document_id": "citation-canary-5713d1ba-db39-4310-988f-6258ccd7cecd.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "deleted",
+        "document_version": "sha256:5e19c2dd1cccb16b25e526bef8b79fae3be1db83c40bf1be22d8b7277e8e4c00",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "citation-canary-a2bd8d3e-739b-4ead-99c0-5b4cd90d833d.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "deleted",
+        "document_version": "sha256:7af8c230a2dfe876b5376afbce866d3e5898eeaa2e955c292d9f5468d6a5436f",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "citation-canary-ce594f06-1dd7-4469-b202-6302f26f5b80.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "deleted",
+        "document_version": "sha256:f7d74e95ed553456dfdfb5ab9be36edfa076f5e0a014beb379122884af1ae876",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "codex-local-graph-black-death-e2e-20260908.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "active",
+        "document_version": "sha256:1a5d1fcaf29c76eb5614d815c6367f3ff8a7afd110b14c97f5c4baebaab33d8a",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "codex-local-graph-e2e-20260908.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "active",
+        "document_version": "sha256:8d9cd1f3c20f739c8ca3838d7ff9f98cc80507e1c75711bf26ebacda87c606ae",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "codex-local-graph-integrity-e2e-20260908.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "active",
+        "document_version": "sha256:e4456b59157bff1c74aae980a87fa9e1fab6dcc1bb349f433529fead0d933b9b",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "mirofish_2017fcd2-d000-4cdb-bc51-c20659eba401",
+        "has_source_kind": true,
+        "source_kind": "mirofish-graph",
+        "retrieval_enabled": "true",
+        "lifecycle": "active",
+        "document_version": null,
+        "trust_level": "external"
+      },
+      {
+        "document_id": "mirofish_224e7aa4-aa0d-4cab-a6a9-be881e021da6",
+        "has_source_kind": true,
+        "source_kind": "mirofish-graph",
+        "retrieval_enabled": "true",
+        "lifecycle": "active",
+        "document_version": null,
+        "trust_level": "external"
+      },
+      {
+        "document_id": "mirofish_b66c35ac-0a7a-4ff5-b203-0372643bedaf",
+        "has_source_kind": true,
+        "source_kind": "mirofish-graph",
+        "retrieval_enabled": "true",
+        "lifecycle": "active",
+        "document_version": null,
+        "trust_level": "external"
+      },
+      {
+        "document_id": "sample6.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "active",
+        "document_version": "sha256:d494d059f6d0f21a45d8d3793d3cee2e1b5f5ea8cf6a3d134c05cf9ac23d8e01",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "sample7.txt",
+        "has_source_kind": true,
+        "source_kind": "text",
+        "retrieval_enabled": "false",
+        "lifecycle": "active",
+        "document_version": "sha256:62f697b87208df236bb142e59797a77fad9f30e48ae9a6b7641e0dfe6df4cd2f",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "重构契丹早期史.epub",
+        "has_source_kind": true,
+        "source_kind": "epub",
+        "retrieval_enabled": "true",
+        "lifecycle": "active",
+        "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "trust_level": "external"
+      },
+      {
+        "document_id": "重构契丹早期史.mobi",
+        "has_source_kind": true,
+        "source_kind": "mobi",
+        "retrieval_enabled": "false",
+        "lifecycle": "deleted",
+        "document_version": "sha256:62c323d792f7227437f7324f10289677a3d6de400c11fa1f7c562d17b2fe088e",
+        "trust_level": "external"
+      }
+    ],
+    "retrievableDocumentIds": [
+      "mirofish_2017fcd2-d000-4cdb-bc51-c20659eba401",
+      "mirofish_224e7aa4-aa0d-4cab-a6a9-be881e021da6",
+      "mirofish_b66c35ac-0a7a-4ff5-b203-0372643bedaf",
+      "重构契丹早期史.epub"
+    ]
+  },
+  "oldDenseSnapshot": {
+    "collection": "rag_documents",
+    "rowCount": 42,
+    "documentIds": [
+      "sample7.txt",
+      "codex-local-graph-black-death-e2e-20260908.txt",
+      "sample6.txt",
+      "codex-local-graph-e2e-20260908.txt",
+      "codex-local-graph-integrity-e2e-20260908.txt"
+    ],
+    "retrievableRows": 0,
+    "retrievableDocumentIntersection": []
+  },
+  "elasticsearch": {
+    "index": "rag_chunks_v1",
+    "total": {
+      "value": 697,
+      "relation": "eq"
+    },
+    "aggregations": {
+      "documents": {
+        "doc_count_error_upper_bound": 0,
+        "sum_other_doc_count": 0,
+        "buckets": [
+          {
+            "key": "重构契丹早期史.epub",
+            "doc_count": 645
+          },
+          {
+            "key": "sample7.txt",
+            "doc_count": 26
+          },
+          {
+            "key": "sample6.txt",
+            "doc_count": 12
+          },
+          {
+            "key": "sample.txt",
+            "doc_count": 10
+          },
+          {
+            "key": "codex-local-graph-integrity-e2e-20260908.txt",
+            "doc_count": 2
+          },
+          {
+            "key": "codex-local-graph-black-death-e2e-20260908.txt",
+            "doc_count": 1
+          },
+          {
+            "key": "codex-local-graph-e2e-20260908.txt",
+            "doc_count": 1
+          }
+        ]
+      },
+      "sources": {
+        "doc_count_error_upper_bound": 0,
+        "sum_other_doc_count": 0,
+        "buckets": [
+          {
+            "key": "重构契丹早期史.epub",
+            "doc_count": 645
+          },
+          {
+            "key": "sample7.txt",
+            "doc_count": 26
+          },
+          {
+            "key": "sample6.txt",
+            "doc_count": 12
+          },
+          {
+            "key": "sample.txt",
+            "doc_count": 10
+          },
+          {
+            "key": "codex-local-graph-integrity-e2e-20260908.txt",
+            "doc_count": 2
+          },
+          {
+            "key": "codex-local-graph-black-death-e2e-20260908.txt",
+            "doc_count": 1
+          },
+          {
+            "key": "codex-local-graph-e2e-20260908.txt",
+            "doc_count": 1
+          }
+        ]
+      },
+      "versions": {
+        "doc_count_error_upper_bound": 0,
+        "sum_other_doc_count": 0,
+        "buckets": [
+          {
+            "key": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+            "doc_count": 645
+          },
+          {
+            "key": "sha256:62f697b87208df236bb142e59797a77fad9f30e48ae9a6b7641e0dfe6df4cd2f",
+            "doc_count": 26
+          },
+          {
+            "key": "sha256:d494d059f6d0f21a45d8d3793d3cee2e1b5f5ea8cf6a3d134c05cf9ac23d8e01",
+            "doc_count": 12
+          },
+          {
+            "key": "sha256:fff7f2030c9b98df9dc09c34390d533adb4f0f4b226945554941940b635fd979",
+            "doc_count": 10
+          },
+          {
+            "key": "sha256:e4456b59157bff1c74aae980a87fa9e1fab6dcc1bb349f433529fead0d933b9b",
+            "doc_count": 2
+          },
+          {
+            "key": "sha256:1a5d1fcaf29c76eb5614d815c6367f3ff8a7afd110b14c97f5c4baebaab33d8a",
+            "doc_count": 1
+          },
+          {
+            "key": "sha256:8d9cd1f3c20f739c8ca3838d7ff9f98cc80507e1c75711bf26ebacda87c606ae",
+            "doc_count": 1
+          }
+        ]
+      }
+    }
+  },
+  "milvus": {
+    "configuredCollection": "rag_documents",
+    "collections": [
+      {
+        "name": "rag_documents",
+        "dimension": 768,
+        "fields": [
+          "id",
+          "content",
+          "embedding",
+          "source",
+          "metadata_json",
+          "created_at",
+          "tenant_id",
+          "corpus_id",
+          "document_id",
+          "trust_level",
+          "document_version",
+          "chunk_index",
+          "total_chunks"
+        ]
+      },
+      {
+        "name": "ragidx_5959d927b155469fab6f340568585422",
+        "dimension": 1024,
+        "fields": [
+          "id",
+          "content",
+          "embedding",
+          "source",
+          "metadata_json",
+          "created_at",
+          "tenant_id",
+          "corpus_id",
+          "document_id",
+          "trust_level",
+          "document_version",
+          "chunk_index",
+          "total_chunks"
+        ]
+      },
+      {
+        "name": "ragidx_02d46de1c844483bab88bf55763d9496",
+        "dimension": 1024,
+        "fields": [
+          "id",
+          "content",
+          "embedding",
+          "source",
+          "metadata_json",
+          "created_at",
+          "tenant_id",
+          "corpus_id",
+          "document_id",
+          "trust_level",
+          "document_version",
+          "chunk_index",
+          "total_chunks"
+        ]
+      },
+      {
+        "name": "ragidx_b39dd20782a5468392d20a902b79824c",
+        "dimension": 768,
+        "fields": [
+          "id",
+          "content",
+          "embedding",
+          "source",
+          "metadata_json",
+          "created_at",
+          "tenant_id",
+          "corpus_id",
+          "document_id",
+          "trust_level",
+          "document_version",
+          "chunk_index",
+          "total_chunks"
+        ]
+      },
+      {
+        "name": "ragidx_e90dbd90410f4e19b3ab21407d6ae67a",
+        "dimension": 4096,
+        "fields": [
+          "id",
+          "content",
+          "embedding",
+          "source",
+          "metadata_json",
+          "created_at",
+          "tenant_id",
+          "corpus_id",
+          "document_id",
+          "trust_level",
+          "document_version",
+          "chunk_index",
+          "total_chunks"
+        ]
+      },
+      {
+        "name": "reasoning_rag_documents",
+        "dimension": 768,
+        "fields": [
+          "id",
+          "content",
+          "embedding",
+          "source",
+          "metadata_json",
+          "created_at",
+          "tenant_id",
+          "corpus_id",
+          "document_id",
+          "trust_level",
+          "document_version",
+          "chunk_index",
+          "total_chunks"
+        ]
+      }
+    ]
+  }
+}

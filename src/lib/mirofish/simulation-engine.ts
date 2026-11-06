@@ -8,7 +8,8 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { parseMiroFishJsonObjectResponse } from './json-object-response';
 import { createLLMFromOverride } from './model-override';
-import { buildRoundContext, selectPostingAgents } from './simulation-context';
+import { selectPostingAgents } from './simulation-context';
+import { createPlatformState, normalizeSimulationPolicy, PLATFORM_ACTIONS, rankSimulationFeed, selectScheduledAgents, type AgentMemory, type NativeSimulationConfig, type NativeSimulationPost, type PlatformState } from './simulation-policy';
 import type {
   EntityProfile,
   SimulationPost,
@@ -94,8 +95,12 @@ const REDDIT_DESC = 'Reddit - 论坛式社交平台，支持长文本和层级�
  */
 export class SimulationEngine {
   private llm: BaseChatModel;
+  private modelOverride?: ModelOverride;
+  private temperature: number;
 
   constructor(temperature: number = 0.8, modelOverride?: ModelOverride) {
+    this.modelOverride = modelOverride;
+    this.temperature = temperature;
     this.llm = createLLMFromOverride(modelOverride, { temperature });
   }
 
@@ -108,14 +113,19 @@ export class SimulationEngine {
     topics: string[],
     recentPosts: SimulationPost[],
     round: number,
-    simulationId: string
-  ): Promise<SimulationPost> {
-    const prompt = this.buildPrompt(profile, platform, topics, recentPosts);
+    simulationId: string,
+    runtime?: { signal?: AbortSignal; memory?: AgentMemory }
+  ): Promise<NativeSimulationPost> {
+    runtime?.signal?.throwIfAborted();
+    const prompt = this.buildPrompt(profile, platform, topics, recentPosts)
+      + (runtime ? `\n当前平台可用行为（只选其中一种）：${PLATFORM_ACTIONS[platform].join(', ')}。do_nothing表示本轮不发言；search_posts/search_user用content填写查询；trend/refresh返回空content。follow/mute的target_id必须是Agent UUID，其他互动target_id必须是可见帖子UUID。\n你的运行记忆：\n${runtime.memory?.observations.slice(-10).join('\n') || '暂无'}` : '');
 
     try {
-      const response = await this.llm.invoke([
+      const model = runtime?.signal ? createLLMFromOverride(this.modelOverride, { temperature: this.temperature, requestSignal: runtime.signal }) : this.llm;
+      const response = await model.invoke([
         { role: 'user', content: prompt },
-      ]);
+      ], { signal: runtime?.signal });
+      runtime?.signal?.throwIfAborted();
 
       const decision = this.parseDecision(response.content as string);
 
@@ -144,8 +154,9 @@ export class SimulationEngine {
         timestamp: new Date().toISOString(),
       };
     } catch {
+      runtime?.signal?.throwIfAborted();
       // 失败时生成一个简单帖子
-      return this.generateFallbackPost(profile, platform, topics, round, simulationId);
+      return { ...this.generateFallbackPost(profile, platform, topics, round, simulationId), degraded: true, success: false, errorCode: 'SIMULATION_MODEL_FALLBACK' };
     }
   }
 
@@ -156,16 +167,19 @@ export class SimulationEngine {
     profiles: EntityProfile[],
     config: SimulationConfig,
     round: number,
-    existingPosts: SimulationPost[]
-  ): Promise<SimulationPost[]> {
+    existingPosts: SimulationPost[],
+    runtime?: { signal?: AbortSignal; memory: Record<string, AgentMemory>; platformState: Record<PlatformType, PlatformState> }
+  ): Promise<NativeSimulationPost[]> {
     const roundPosts: SimulationPost[] = [];
 
     // 选择本轮活跃的 Agent（随机选择）
-    const activeAgents = this.selectActiveAgents(profiles, config.agents_per_round, new Date());
+    const policy = normalizeSimulationPolicy((config as NativeSimulationConfig).policy);
+    const simulatedHour = (policy.start_hour + Math.floor((round - 1) * policy.minutes_per_round / 60)) % 24;
+    const activeAgents = selectScheduledAgents(profiles, policy, simulatedHour, config.agents_per_round);
 
     // 对每个平台、每个活跃 Agent 生成行为
     for (const platform of config.platforms) {
-      const roundContext = buildRoundContext(existingPosts, roundPosts);
+      runtime?.signal?.throwIfAborted();
       const postingAgents = selectPostingAgents(activeAgents, config);
 
       // 并行处理多个 Agent
@@ -174,9 +188,10 @@ export class SimulationEngine {
           agent,
           platform,
           config.seed_topics,
-          roundContext.recentPosts,
+          rankSimulationFeed(existingPosts, platform, agent, policy, runtime?.platformState[platform] ?? createPlatformState()),
           round,
-          config.simulation_id
+          config.simulation_id,
+          runtime ? { signal: runtime.signal, memory: runtime.memory[agent.entity_id] } : undefined
         )
       );
 
@@ -185,7 +200,7 @@ export class SimulationEngine {
     }
 
     // 模拟互动（点赞/回复计数）
-    this.simulateInteractions(roundPosts);
+    if (!runtime) this.simulateInteractions(roundPosts);
 
     return roundPosts;
   }
@@ -198,8 +213,8 @@ export class SimulationEngine {
     recentPosts: SimulationPost[]
   ): string {
     const recentPostsText = recentPosts.length > 0
-      ? recentPosts.slice(-10).map(p =>
-          `[${p.id}] ${p.author_name}(${p.author_type}): ${p.content}`
+      ? recentPosts.slice(0,10).map(p =>
+          `[${p.id}] ${p.author_name}(${p.author_type}, UUID=${p.author_id}): ${p.content}`
         ).join('\n')
       : '(还没有消息)';
 
@@ -262,7 +277,7 @@ export class SimulationEngine {
 
   /** 验证动作类型 */
   private validateAction(action: unknown): AgentActionType {
-    const valid: AgentActionType[] = ['post', 'comment', 'like', 'repost', 'quote', 'follow', 'debate', 'upvote', 'downvote'];
+    const valid: AgentActionType[] = ['post', 'comment', 'like', 'repost', 'quote', 'follow', 'debate', 'upvote', 'downvote', 'do_nothing', 'search_posts', 'search_user', 'trend', 'refresh', 'mute', 'like_comment', 'dislike_comment'];
     if (typeof action !== 'string' || !valid.includes(action as AgentActionType)) {
       throw new Error('Invalid simulation decision: unsupported action.');
     }

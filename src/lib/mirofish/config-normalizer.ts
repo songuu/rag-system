@@ -4,6 +4,7 @@ import type {
   SimulationConfig,
   SimulationConfigDraft,
 } from './types';
+import { normalizeSimulationPolicy, type NativeNormalizedSimulationConfig, type NativeSimulationConfig, type NativeSimulationConfigDraft } from './simulation-policy';
 
 const VALID_PLATFORMS = new Set<PlatformType>(['twitter', 'reddit']);
 
@@ -32,9 +33,9 @@ export interface BuildSimulationConfigOptions extends NormalizeSimulationConfigO
 }
 
 export function normalizeSimulationConfig(
-  draft: SimulationConfigDraft | NormalizedSimulationConfig | undefined,
+  draft: SimulationConfigDraft | NormalizedSimulationConfig | NativeSimulationConfigDraft | undefined,
   options: NormalizeSimulationConfigOptions
-): NormalizedSimulationConfig {
+): NativeNormalizedSimulationConfig {
   const defaults = options.defaults ?? {};
   const safeProfileCount = Math.max(0, Math.floor(options.profileCount));
 
@@ -42,6 +43,7 @@ export function normalizeSimulationConfig(
   const seedTopics = normalizeSeedTopics(draft?.seed_topics, defaults.seed_topics);
 
   return {
+    policy: normalizeSimulationPolicy((draft as NativeSimulationConfigDraft | undefined)?.policy),
     platforms,
     round_count: clampInteger(
       draft?.round_count ?? defaults.round_count ?? 10,
@@ -73,9 +75,9 @@ export function normalizeSimulationConfig(
 }
 
 export function buildSimulationConfig(
-  draft: SimulationConfigDraft | NormalizedSimulationConfig | undefined,
+  draft: SimulationConfigDraft | NormalizedSimulationConfig | NativeSimulationConfigDraft | undefined,
   options: BuildSimulationConfigOptions
-): SimulationConfig {
+): NativeSimulationConfig {
   return {
     ...normalizeSimulationConfig(draft, options),
     project_id: options.projectId,

@@ -71,6 +71,68 @@ function artifact() {
   });
 }
 
+test('separate generations remain independently readable and keep their document identity', async () => {
+  const command = new FakeKnowledgeGraphCommandStore();
+  const store = new Neo4jMiroFishGraphArtifactStore(command);
+  const generation = '19b0d243-b625-4eba-85aa-f42fda97355a';
+  const first = artifact();
+  const newer = createMiroFishGraphArtifact({
+    identity: { ...identity, graphGeneration: generation },
+    graph: { ...first.graph, nodes: first.graph.nodes.map(node => ({ ...node, name: '新实体' })) },
+  });
+  await store.put(first);
+  await store.put(newer);
+  const listed = await store.list(scope());
+  assert.equal(listed.length, 2);
+  assert.ok(listed.some(item => item.identity.graphGeneration === generation));
+  assert.equal((await store.get(identity, scope())).graph.nodes[0].name, '实体 A');
+  assert.equal((await store.get({ ...identity, graphGeneration: generation }, scope())).graph.nodes[0].name, '新实体');
+  await store.compareAndSetActive(scope(), { ...identity, graphGeneration: generation }, 0);
+  assert.equal((await store.getActive(scope())).identity.graphGeneration, generation);
+});
+
+test('source authority must register successfully before snapshot publication', async () => {
+  const command = new FakeKnowledgeGraphCommandStore();
+  let observed;
+  const store = new Neo4jMiroFishGraphArtifactStore(command, {
+    async registerSource(source, options) {
+      assert.equal(command.snapshots.size, 0);
+      observed = { source, options };
+    },
+  });
+  await store.put(artifact(), { graphName: 'console graph' });
+  assert.equal(observed.source.documentId, identity.documentId);
+  assert.equal(observed.options.graphName, 'console graph');
+  assert.equal((await store.get(identity, scope())).graph.node_count, 1);
+  const denied = new FakeKnowledgeGraphCommandStore();
+  const blocked = new Neo4jMiroFishGraphArtifactStore(denied, {
+    async registerSource() { throw new Error('source revoked'); },
+  });
+  await assert.rejects(blocked.put(artifact()), /source revoked/);
+  assert.equal(denied.snapshots.size, 0);
+});
+
+test('cursor continues to the remaining document snapshots when an earlier entry is deleted', async () => {
+  const command = new FakeKnowledgeGraphCommandStore();
+  const store = new Neo4jMiroFishGraphArtifactStore(command);
+  await store.put(artifact());
+  const template = [...command.snapshots.values()][0];
+  command.snapshots.clear();
+  for (let n = 0; n < 1001; n++) {
+    const generation = `19b0d243-b625-4eba-85aa-${n.toString(16).padStart(12, '0')}`;
+    const graphVersion = createMiroFishGraphVersion({ ...identity, graphGeneration: generation });
+    command.snapshots.set(graphVersion, { ...template, graphVersion });
+  }
+  const first = await store.list(scope(), { limit: 1000, documentId: identity.documentId });
+  assert.equal(first.length, 1000);
+  command.snapshots.delete(createMiroFishGraphVersion(first[0].identity));
+  const last = first.at(-1);
+  const next = await store.list(scope(), { limit: 1000, documentId: identity.documentId,
+    after: { createdAt: last.createdAt, graphVersion: createMiroFishGraphVersion(last.identity) } });
+  assert.equal(next.length, 1);
+  assert.notEqual(createMiroFishGraphVersion(next[0].identity), createMiroFishGraphVersion(last.identity));
+});
+
 class FakeKnowledgeGraphCommandStore {
   coordination = 'shared';
   snapshots = new Map();
@@ -112,7 +174,13 @@ class FakeKnowledgeGraphCommandStore {
 
   async listCompatibilityDescriptors(_scope, options = {}) {
     this.listCompatibilityDescriptorCalls += 1;
-    return [...this.snapshots.values()].slice(0, options.limit ?? 100).flatMap(snapshot =>
+    return [...this.snapshots.values()].filter(snapshot => snapshot.documents.length === 1
+      && (!options.documentId || snapshot.documents[0].documentId === options.documentId)
+      && (!options.documentVersion || snapshot.documents[0].documentVersion === options.documentVersion)
+      && (!options.trustLevel || snapshot.documents[0].trustLevel === options.trustLevel))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.graphVersion.localeCompare(b.graphVersion))
+      .filter(snapshot => !options.after || snapshot.createdAt < options.after.createdAt || (snapshot.createdAt === options.after.createdAt && snapshot.graphVersion > options.after.graphVersion))
+      .slice(0, options.limit ?? 100).flatMap(snapshot =>
       snapshot.documents.length === 1
         ? [{ ...descriptor(snapshot), document: structuredClone(snapshot.documents[0]) }]
         : []

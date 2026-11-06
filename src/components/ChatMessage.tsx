@@ -2,28 +2,18 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import AnswerProcessingPanel from '@/components/AnswerProcessingPanel';
-import type { AnswerProcessingDetails } from '@/lib/rag/answer-processing';
 import { parseCitationReferences } from '@/lib/rag/citations/reference-parser';
-import type { RagCitationItem, RagCitationPreview, RagCitations } from '@/lib/rag/citations/types';
+import type { RagCitationItem, RagCitationPreview } from '@/lib/rag/citations/types';
+import type { ConversationMessage } from '@/lib/indexeddb';
+import type { ChatSearchResult } from '@/lib/rag/chat-types';
 
-interface Message {
-  id: string;
-  type: 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
-  traceId?: string;
-  storageBackend?: 'memory' | 'milvus';
-  retrievalDetails?: any;
-  queryAnalysis?: any;
-  processingDetails?: AnswerProcessingDetails;
-  citations?: RagCitations;
-}
+type Message = ConversationMessage;
 
 /**
  * 安全提取消息内容为字符串
  * 防止 LangChain 对象被直接渲染导致 React 错误
  */
-function safeContentString(content: any): string {
+function safeContentString(content: unknown): string {
   // 如果已经是字符串，直接返回
   if (typeof content === 'string') {
     return content;
@@ -59,6 +49,9 @@ interface ChatMessageProps {
   citationPartition?: string | null;
   citationAccessStatus?: 'loading' | 'ready' | 'unavailable';
   citationClockOffsetMs?: number | null;
+  onRetry?: () => void;
+  retryDisabled?: boolean;
+  isRetrying?: boolean;
 }
 
 function CitationSourceModal({ item, partition, onClose }: {
@@ -168,7 +161,7 @@ function getSimilarityLevel(similarity: number): {
 }
 
 // 格式化元数据值
-function formatMetaValue(value: any): string {
+function formatMetaValue(value: unknown): string {
   if (value === null || value === undefined) return 'N/A';
   if (typeof value === 'object') {
     if (Array.isArray(value)) return value.join(', ');
@@ -344,7 +337,7 @@ function DetailModal({
   query, 
   onClose 
 }: { 
-  result: any; 
+  result: ChatSearchResult;
   index: number; 
   query: string; 
   onClose: () => void;
@@ -510,7 +503,7 @@ function DetailModal({
   );
 }
 
-export default function ChatMessage({ message, currentQuery, highlightMatchingText, citationPartition, citationAccessStatus, citationClockOffsetMs = null }: ChatMessageProps) {
+export default function ChatMessage({ message, currentQuery, highlightMatchingText, citationPartition, citationAccessStatus, citationClockOffsetMs = null, onRetry, retryDisabled = false, isRetrying = false }: ChatMessageProps) {
   const [showDetails, setShowDetails] = useState(false);
   const [selectedDocIndex, setSelectedDocIndex] = useState<number | null>(null);
   const [selectedCitation, setSelectedCitation] = useState<RagCitationItem | null>(null);
@@ -576,7 +569,23 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
   
   return (
     <>
-      <div className={`flex chat-message ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+      <div className={`flex chat-message ${message.type === 'user' ? 'items-end justify-end gap-2' : 'justify-start'}`}>
+        {message.type === 'user' && onRetry && (
+          <button
+            type="button"
+            aria-label="重试此问题"
+            aria-busy={isRetrying}
+            title={isRetrying ? '正在重试' : '重试'}
+            disabled={retryDisabled || isRetrying}
+            onClick={onRetry}
+            className="mb-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-blue-50 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={isRetrying ? 'animate-spin motion-reduce:animate-none' : undefined}>
+              <path d="M3 11a9 9 0 1 1 2.64 6.36" />
+              <path d="M3 3v8h8" />
+            </svg>
+          </button>
+        )}
         <div className={`max-w-[85%] rounded-xl shadow-sm ${
           message.type === 'user'
             ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white'
@@ -585,6 +594,8 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
           {/* 消息内容 */}
           <div className="px-4 py-3">
             <p className="text-sm whitespace-pre-wrap leading-relaxed">{contentParts}</p>
+            {message.type === 'assistant' && message.citations?.status === 'missing' &&
+              <p role="status" className="mt-2 text-xs text-amber-800">这条回答没有可核验的引用。</p>}
             {message.type === 'assistant' && message.citations?.status === 'unavailable' &&
               <p role="status" className="mt-2 text-xs text-amber-800">引用服务暂不可用，当前回答没有可核验的原文入口。</p>}
             {message.type === 'assistant' && message.citations?.status === 'available' && (citationAccessStatus !== 'ready' || citationClockOffsetMs === null) &&
@@ -634,10 +645,10 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                   <span>检索到 {searchResults.length} 个相关文档</span>
-                  {message.retrievalDetails.searchTime > 0 && (
+                  {(message.retrievalDetails?.searchTime ?? 0) > 0 && (
                     <>
                       <span className="text-gray-400">·</span>
-                      <span className="text-gray-400">{message.retrievalDetails.searchTime}ms</span>
+                      <span className="text-gray-400">{message.retrievalDetails?.searchTime}ms</span>
                     </>
                   )}
                 </div>
@@ -656,16 +667,16 @@ export default function ChatMessage({ message, currentQuery, highlightMatchingTe
                 <div className="px-4 pb-3 space-y-2">
                   {/* 检索统计 */}
                   <div className="flex gap-3 text-xs text-gray-500 pb-2 border-b border-gray-100">
-                    <span>总文档: {message.retrievalDetails.totalDocuments || searchResults.length}</span>
+                    <span>总文档: {message.retrievalDetails?.totalDocuments ?? '未统计'}</span>
                     <span>·</span>
-                    <span>阈值: {message.retrievalDetails.threshold != null ? (message.retrievalDetails.threshold * 100).toFixed(0) + '%' : '-'}</span>
+                    <span>阈值: {message.retrievalDetails?.threshold != null ? (message.retrievalDetails.threshold * 100).toFixed(0) + '%' : '-'}</span>
                     <span>·</span>
-                    <span>Top-{message.retrievalDetails.topK || searchResults.length}</span>
+                    <span>Top-{message.retrievalDetails?.topK || searchResults.length}</span>
                   </div>
                   
                   {/* 检索结果列表 */}
                   <div className="space-y-2">
-                    {searchResults.map((result: any, index: number) => {
+                    {searchResults.map((result, index) => {
                       const similarity = result.similarity || 0;
                       const simLevel = getSimilarityLevel(similarity);
                       const source = result.document?.metadata?.source || `文档 ${index + 1}`;

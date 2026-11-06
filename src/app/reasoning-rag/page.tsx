@@ -609,24 +609,20 @@ export default function ReasoningRAGPage() {
   
   // 加载历史记录
   const loadHistory = useCallback(async () => {
-    try {
-      const convs = await reasoningDB.getAllConversations();
+    return reasoningDB.getAllConversations().then(async convs => {
       setConversations(convs);
       console.log('[History] 加载了', convs.length, '个历史对话');
-    } catch (error) {
+    }).catch(error => {
       console.error('[History] 加载历史记录失败:', error);
-    }
+    });
   }, []);
   
   // 加载可用模型（使用统一的 API，自动处理远程/本地提供商）
   const loadModels = useCallback(async () => {
-    try {
+    return fetch('/rag-api/ollama/models').then(async ollamaRes => {
+      const ollamaData = await ollamaRes.json();
       setModelLoadError(null);
       setModelSuggestion(null);
-      
-      // 使用统一的模型 API，自动处理所有提供商
-      const ollamaRes = await fetch('/rag-api/ollama/models');
-      const ollamaData = await ollamaRes.json();
       
       // 从 providerConfig 获取提供商配置
       if (ollamaData.providerConfig) {
@@ -658,10 +654,8 @@ export default function ReasoningRAGPage() {
         })));
         
         // 如果当前配置的模型不在列表中，选择第一个
-        const currentExists = reasoningModels.find((m: { name: string }) => m.name === config.reasoningModel);
-        if (!currentExists) {
-          setConfig(prev => ({ ...prev, reasoningModel: reasoningModels[0].name }));
-        }
+        setConfig(prev => reasoningModels.some((m: { name: string }) => m.name === prev.reasoningModel)
+          ? prev : { ...prev, reasoningModel: reasoningModels[0].name });
       } else {
         setModelLoadError(ollamaData.message || '未检测到推理模型');
         setModelSuggestion(ollamaData.suggestion || '请安装推理模型或配置远程提供商');
@@ -681,10 +675,8 @@ export default function ReasoningRAGPage() {
         })));
         
         // 如果当前配置的模型不在列表中，选择第一个
-        const currentExists = embedModels.find((m: { name: string }) => m.name === config.embeddingModel);
-        if (!currentExists) {
-          setConfig(prev => ({ ...prev, embeddingModel: embedModels[0].name }));
-        }
+        setConfig(prev => embedModels.some((m: { name: string }) => m.name === prev.embeddingModel)
+          ? prev : { ...prev, embeddingModel: embedModels[0].name });
       }
       
       // 处理 LLM 模型 (快速模型)
@@ -704,18 +696,16 @@ export default function ReasoningRAGPage() {
         setLlmModels(fastModels);
         
         // 如果当前选中的快速模型不在列表中，选择第一个
-        const currentExists = fastModels.find((m: ModelInfo) => m.id === config.fastModel);
-        if (!currentExists && fastModels.length > 0) {
-          setConfig(prev => ({ ...prev, fastModel: fastModels[0].id }));
-        }
+        setConfig(prev => fastModels.some((m: ModelInfo) => m.id === prev.fastModel)
+          ? prev : { ...prev, fastModel: fastModels[0].id });
       }
       
-    } catch (error) {
+    }).catch(error => {
       console.error('Failed to load models:', error);
       setModelLoadError('无法连接到服务');
       setModelSuggestion('请检查网络连接或服务配置');
-    }
-  }, [config.reasoningModel, config.embeddingModel, config.fastModel]);
+    });
+  }, []);
   
   // 初始化加载
   useEffect(() => {

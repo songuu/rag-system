@@ -23,6 +23,7 @@ import {
 } from './contracts';
 import {
   createMiroFishGraphVersion,
+  identityForMiroFishGraphVersion,
   mapKnowledgeGraphSnapshotToMiroFishArtifact,
   mapMiroFishArtifactToKnowledgeGraphSnapshot,
 } from './mirofish-adapter';
@@ -64,6 +65,7 @@ export interface Neo4jMiroFishGraphStoreOptions {
   now?: () => Date;
   ensureReady?: () => Promise<void>;
   publicationStore?: CoordinatedPublicationStore;
+  registerSource?: (artifact: MiroFishGraphArtifact, options: MiroFishGraphArtifactLifecycleOptions) => Promise<void>;
 }
 
 /**
@@ -76,6 +78,7 @@ export class Neo4jMiroFishGraphArtifactStore implements MiroFishGraphArtifactSto
   private readonly now: () => Date;
   private readonly ensureReady: () => Promise<void>;
   private readonly publicationStore: CoordinatedPublicationStore;
+  private readonly registerSource?: Neo4jMiroFishGraphStoreOptions['registerSource'];
 
   constructor(
     commandStore: KnowledgeGraphCommandStore,
@@ -85,6 +88,7 @@ export class Neo4jMiroFishGraphArtifactStore implements MiroFishGraphArtifactSto
     this.now = options.now ?? (() => new Date());
     this.ensureReady = options.ensureReady ?? (async () => undefined);
     this.publicationStore = options.publicationStore ?? commandStore;
+    this.registerSource = options.registerSource;
   }
 
   async put(
@@ -101,6 +105,7 @@ export class Neo4jMiroFishGraphArtifactStore implements MiroFishGraphArtifactSto
       createdAt: createdAt.toISOString(),
       ...(expiresAt ? { expiresAt } : {}),
     });
+    await this.registerSource?.(artifact, options);
     if (supportsSnapshotStageCoordination(this.publicationStore)) {
       const graphVersion = createMiroFishGraphVersion(artifact);
       const managementScope = createRetrievalScope({
@@ -163,24 +168,32 @@ export class Neo4jMiroFishGraphArtifactStore implements MiroFishGraphArtifactSto
   ): Promise<MiroFishGraphArtifactDescriptor[]> {
     await this.ensureReady();
     const limit = resolveListLimit(options.limit);
-    const candidates = await this.commandStore.listCompatibilityDescriptors(
-      scope,
-      { limit: 1_000 }
-    );
     const results: MiroFishGraphArtifactDescriptor[] = [];
-    for (const descriptor of candidates) {
-      if (results.length >= limit) break;
+    let after = options.after;
+    let scanned = 0;
+    for (;;) {
+      const candidates = await this.commandStore.listCompatibilityDescriptors(scope, {
+        limit: 1_000, after, documentId: options.documentId,
+        documentVersion: options.documentVersion, trustLevel: options.trustLevel,
+      });
+      for (const descriptor of candidates) {
       if (isExpired(descriptor, this.now())) continue;
       if (!scope.allowedTrustLevels.includes(descriptor.document.trustLevel)) continue;
-      const identity: MiroFishGraphArtifactIdentity = {
+      const identity = identityForMiroFishGraphVersion({
         tenantId: descriptor.tenantId,
         corpusId: descriptor.corpusId,
         ...descriptor.document,
-      };
-      if (createMiroFishGraphVersion(identity) !== descriptor.graphVersion) continue;
+      }, descriptor.graphVersion);
+      if (!identity) continue;
       results.push(toArtifactDescriptor(descriptor, identity));
+      }
+      if (results.length >= limit || candidates.length < 1_000) break;
+      const last = candidates[candidates.length - 1];
+      after = { createdAt: last.createdAt, graphVersion: last.graphVersion };
+      scanned += candidates.length;
+      if (scanned >= 100_000) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CAPACITY', 'Graph snapshot scan limit reached. Remove obsolete snapshots and retry.');
     }
-    return results;
+    return results.slice(0, limit);
   }
 
   async delete(
@@ -286,12 +299,12 @@ export class Neo4jMiroFishGraphArtifactStore implements MiroFishGraphArtifactSto
         updatedAt: pointer.updatedAt,
       };
     }
-    const identity: MiroFishGraphArtifactIdentity = {
+    const identity = identityForMiroFishGraphVersion({
       tenantId: scope.tenantId,
       corpusId: scope.corpusId,
       ...descriptor.document,
-    };
-    if (createMiroFishGraphVersion(identity) !== pointer.graphVersion) {
+    }, pointer.graphVersion);
+    if (!identity) {
       throw new KnowledgeGraphError(
         'KNOWLEDGE_GRAPH_NOT_FOUND',
         'The active graph pointer identity is inconsistent.'
@@ -395,12 +408,12 @@ export class Neo4jMiroFishGraphArtifactStore implements MiroFishGraphArtifactSto
     let deleted = 0;
     for (const snapshot of snapshots) {
       if (deleted >= limit || !isExpired(snapshot, this.now())) continue;
-      const identity: MiroFishGraphArtifactIdentity = {
+      const identity = identityForMiroFishGraphVersion({
         tenantId: snapshot.tenantId,
         corpusId: snapshot.corpusId,
         ...snapshot.document,
-      };
-      if (createMiroFishGraphVersion(identity) !== snapshot.graphVersion) continue;
+      }, snapshot.graphVersion);
+      if (!identity) continue;
       try {
         if (await this.delete(identity, scope)) deleted += 1;
       } catch (error) {
@@ -556,7 +569,8 @@ function sameIdentity(
     && left.corpusId === right.corpusId
     && left.documentId === right.documentId
     && left.documentVersion === right.documentVersion
-    && left.trustLevel === right.trustLevel;
+    && left.trustLevel === right.trustLevel
+    && left.graphGeneration === right.graphGeneration;
 }
 
 function normalizeGraphName(value: string | undefined): string | undefined {

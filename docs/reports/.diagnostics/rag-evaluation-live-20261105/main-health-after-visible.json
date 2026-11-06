@@ -1,0 +1,51 @@
+{
+  "checkedAt": "2026-11-05T12:13:25.247Z",
+  "httpStatus": 200,
+  "modelConfig": {
+    "llm": {
+      "provider": "ollama",
+      "model": "llama3.1"
+    },
+    "embedding": {
+      "provider": "ollama",
+      "model": "qwen3-embedding:latest",
+      "dimension": 4096
+    }
+  },
+  "body": {
+    "success": true,
+    "status": "control_plane_ready",
+    "ragSystem": {
+      "initialized": true,
+      "documentCount": 42,
+      "embeddingDimension": 768
+    },
+    "vectorBackend": {
+      "backend": "milvus",
+      "disabled": false
+    },
+    "persistence": {
+      "backend": "postgres",
+      "connected": true,
+      "schemaReady": true
+    },
+    "elasticsearch": {
+      "mode": "active",
+      "connected": true,
+      "indexReady": true,
+      "indexName": "rag_chunks_v1"
+    },
+    "modelConfig": {
+      "llm": {
+        "provider": "ollama",
+        "model": "llama3.1"
+      },
+      "embedding": {
+        "provider": "ollama",
+        "model": "qwen3-embedding:latest",
+        "dimension": 4096
+      }
+    },
+    "timestamp": "2026-11-05T12:13:25.243Z"
+  }
+}

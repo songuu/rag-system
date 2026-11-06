@@ -9,21 +9,20 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
 
+  const loadConversations = async () => {
+    return dbManager.init().then(async () => {
+      const convs = await dbManager.getAllConversations();
+      setConversations(convs);
+    }).catch(error => {
+      console.error('加载对话历史失败:', error);
+    }).finally(() => {
+      setLoading(false);
+    });
+  };
+
   useEffect(() => {
     loadConversations();
   }, []);
-
-  const loadConversations = async () => {
-    try {
-      await dbManager.init();
-      const convs = await dbManager.getAllConversations();
-      setConversations(convs);
-    } catch (error) {
-      console.error('加载对话历史失败:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleDeleteConversation = async (id: string) => {
     if (!confirm('确定要删除这条对话记录吗？')) return;
@@ -206,7 +205,7 @@ export default function HistoryPage() {
                                 <p>总文档数: {message.retrievalDetails.totalDocuments}</p>
                                 <p>相似度阈值: {message.retrievalDetails.threshold}</p>
                               </div>
-                              {message.retrievalDetails.searchResults?.map((result: any, index: number) => (
+                              {message.retrievalDetails.searchResults?.map((result, index) => (
                                 <div key={index} className="bg-gray-200 rounded p-2 mt-2">
                                   <div className="flex justify-between items-center mb-1">
                                     <span className="font-medium">文档 {index + 1}</span>

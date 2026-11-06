@@ -241,6 +241,45 @@ test('fails closed outside the Neo4j backend and coordinates build timeout with 
   });
 });
 
+test('long graph builds renew their lease while the model is running', async () => {
+  const job = buildJob();
+  let renewals = 0;
+  const result = await processNextGraphBuildJob({
+    store: { async claimNext() { return job; }, async transition(input) { return { ...job, status: input.status }; } },
+    leaseMs: 1_000,
+    async renewLease(claimed, leaseMs) { assert.equal(claimed.id, job.id); assert.equal(leaseMs, 1_000); renewals++; },
+    async handle(_job, signal) {
+      await new Promise(resolve => setTimeout(resolve, 750));
+      assert.equal(signal.aborted, false);
+      return { status: 'failed', progress: 0, errorCode: 'TEST', errorMessage: 'test failure' };
+    },
+  });
+  assert.equal(result.failed, 1);
+  assert.ok(renewals >= 1);
+});
+
+test('losing the graph build lease aborts model work before any staged completion', async () => {
+  const job = buildJob();
+  let aborted = false;
+  let staged = false;
+  const result = await processNextGraphBuildJob({
+    store: { async claimNext() { return job; }, async transition(input) { return { ...job, status: input.status }; } },
+    leaseMs: 1_000,
+    async renewLease() { throw new Error('lease lost'); },
+    async handle(_job, signal) {
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('lease signal did not abort')), 2_000);
+        signal.addEventListener('abort', () => { clearTimeout(timeout); aborted = true; reject(signal.reason); }, { once: true });
+      });
+      staged = true;
+      return { status: 'staged', progress: 1, artifactDigest: `sha256:${'a'.repeat(64)}` };
+    },
+  });
+  assert.equal(aborted, true);
+  assert.equal(staged, false);
+  assert.equal(result.retried, 1);
+});
+
 test('selects local, webhook, and disabled graph build executors explicitly', () => {
   assert.equal(resolveGraphBuildExecutorMode({}), 'disabled');
   assert.equal(resolveGraphBuildExecutorMode({

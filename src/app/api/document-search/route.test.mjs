@@ -28,6 +28,7 @@ const mocks = {
   '@/lib/rag/vector-backend': `export function isVectorBackendDisabled() { return false; } export const VECTOR_BACKEND_DISABLED_CODE='disabled', VECTOR_BACKEND_DISABLED_MESSAGE='disabled';`,
   '@/lib/rag/vector-ingest-state': `export function assertVectorSearchReady() {} export class VectorIndexBuildingError extends Error {}`,
   '@/lib/security/request-context': `export class RagSecurityError extends Error {} export async function resolveRagSecurityContext() { return { tenantId:'tenant-a', corpusId:'corpus-a', enforceIsolation:true }; }`,
+  '@/lib/documents/publication-search-runtime': `export async function searchPublishedDocuments(input) { globalThis.documentSearchCalls.push(['published',input]); if(globalThis.publicationSearchFails)throw Object.assign(new Error('private backend detail'),{code:'PUBLICATION_READ_UNAVAILABLE'});return {evidence:globalThis.documentSearchRows.filter(row=>row.documentId==='target'),diagnostics:{status:'published-view',mode:'unified',viewDigest:'issued'}}; }`,
 };
 registerHooks({ resolve(specifier, context, next) {
   if (mocks[specifier]) return asModule(mocks[specifier]);
@@ -57,3 +58,46 @@ for (const strategy of ['semantic', 'keyword', 'hybrid']) {
     if (strategy !== 'semantic') assert.deepEqual(calls.find(call => call[0] === 'lexical')[1].documentIds, ['target']);
   });
 }
+
+for (const mode of ['invalid', '']) {
+  test(`unified publication ${JSON.stringify(mode)} fails before any legacy search`, async () => {
+    const previous = process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    process.env.RAG_UNIFIED_PUBLICATION_MODE = mode;
+    globalThis.documentSearchCalls = [];
+    try {
+      const response = await POST(new Request('http://localhost/api/document-search', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: 'test', strategy: 'hybrid' }),
+      }));
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).error.code, 'PUBLICATION_READ_UNAVAILABLE');
+      assert.deepEqual(globalThis.documentSearchCalls, []);
+    } finally {
+      if (previous === undefined) delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+      else process.env.RAG_UNIFIED_PUBLICATION_MODE = previous;
+    }
+  });
+}
+
+test('active publication uses private published-view retrieval and never calls legacy providers',async()=>{
+  const previous=process.env.RAG_UNIFIED_PUBLICATION_MODE;process.env.RAG_UNIFIED_PUBLICATION_MODE='active';
+  globalThis.documentSearchCalls=[];
+  try{
+    const response=await POST(new Request('http://localhost/api/document-search',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:'test',topK:100,fileType:'pdf',strategy:'hybrid'})}));
+    assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+    const value=await response.json();assert.equal(value.results[0].documentId,'target');
+    assert.deepEqual(globalThis.documentSearchCalls.map(call=>call[0]),['published']);
+    const input=globalThis.documentSearchCalls[0][1];assert.equal(input.topK,100);assert.equal(input.fileType,'pdf');
+    assert.equal(input.scope.tenantId,'tenant-a');assert.equal(input.scope.corpusId,'corpus-a');assert.equal(input.scope.enforceIsolation,true);
+  }finally{if(previous===undefined)delete process.env.RAG_UNIFIED_PUBLICATION_MODE;else process.env.RAG_UNIFIED_PUBLICATION_MODE=previous;}
+});
+
+test('active backend failure returns unavailable without a legacy fallback',async()=>{
+  const previous=process.env.RAG_UNIFIED_PUBLICATION_MODE;process.env.RAG_UNIFIED_PUBLICATION_MODE='active';
+  globalThis.publicationSearchFails=true;globalThis.documentSearchCalls=[];
+  try{
+    const response=await POST(new Request('http://localhost/api/document-search',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({query:'test'})}));
+    assert.equal(response.status,503);assert.equal((await response.json()).error.code,'PUBLICATION_READ_UNAVAILABLE');
+    assert.deepEqual(globalThis.documentSearchCalls.map(call=>call[0]),['published']);
+  }finally{globalThis.publicationSearchFails=false;if(previous===undefined)delete process.env.RAG_UNIFIED_PUBLICATION_MODE;else process.env.RAG_UNIFIED_PUBLICATION_MODE=previous;}
+});

@@ -27,6 +27,7 @@ if (ragBasePath && (!ragBasePath.startsWith('/') || ragBasePath === '/')) {
 }
 
 const nextConfig: NextConfig = {
+  ...(process.env.RAG_PUBLICATION_ISOLATED_APP === 'true' ? { distDir: '.next-publication' } : {}),
   /* config options here */
   ...(isStaticExport ? {
     output: 'export',      // GitHub Pages 静态导出
@@ -88,6 +89,12 @@ const nextConfig: NextConfig = {
     ),
     '/api/document-search': excludeRawStandaloneSources(
       'src/lib/rag/core',
+      'src/lib/rag/multimodal'
+    ),
+    '/api/documents': excludeRawStandaloneSources(
+      'src/lib/rag/multimodal'
+    ),
+    '/api/documents/publications': excludeRawStandaloneSources(
       'src/lib/rag/multimodal'
     ),
     '/api/mirofish/graph': excludeRawStandaloneSources(

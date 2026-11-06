@@ -54,6 +54,7 @@ import { EmbeddingOutputValidationError } from '@/lib/embedding-batch';
 import { ElasticsearchProjectionOutboxError } from '@/lib/elasticsearch/postgres-outbox-store';
 import { EbookParseError } from '@/lib/ebook-parser-error';
 import { isSameModel } from '@/lib/model-selection';
+import { PublicationIngestUnavailableError, resolvePublicationIngestMode } from '@/lib/documents/publication-ingest';
 
 export const runtime = 'nodejs';
 
@@ -146,6 +147,9 @@ export async function POST(request: NextRequest) {
       'external'
     );
     if (PIPELINE_INGEST_ACTIONS.has(action)) {
+      // Do not let an enabled unified mode silently write through the legacy
+      // pipeline while its trusted production publisher is not installed.
+      if (resolvePublicationIngestMode() === 'active') throw new PublicationIngestUnavailableError();
       ingestLease = beginVectorIngest({
         operationId: requestId,
         collectionName: getMilvusConfig().collectionName,
@@ -465,6 +469,9 @@ function mapPipelineError(
   fallbackMessage: string,
   requestId: string
 ) {
+  if (error instanceof PublicationIngestUnavailableError) {
+    return { status: error.status, body: { error: { code: error.code, message: error.message }, requestId } };
+  }
   if (error instanceof EbookParseError) {
     return {
       status: error.status,
@@ -549,6 +556,7 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
       requestedCorpusId: request.headers.get('x-rag-corpus-id') || undefined,
       requestIdFactory: () => requestId,
     });
+    if (resolvePublicationIngestMode() === 'active') throw new PublicationIngestUnavailableError();
     if (isVectorBackendDisabled()) {
       throw new RequestValidationError(
         VECTOR_BACKEND_DISABLED_CODE,
@@ -644,6 +652,7 @@ async function handleFileUpload(request: NextRequest, requestId: string) {
           type,
           filename,
           metadata: scopeMetadata,
+          sourceContentType: file.type || 'application/octet-stream',
           signal: request.signal,
         }, (progress) => {
           processingStage = progress.stage;

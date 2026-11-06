@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "rag-live-corpus-snapshot/v1",
+  "sandboxId": "372b94728dedfdab252e037f",
+  "viewDigest": "sha256:896a4a7eeb738ec895edb374535c3b2d6686f1c0b965836c47048dcef8241184",
+  "scope": {
+    "tenantId": "publication-demo-tenant",
+    "corpusId": "publication-demo-corpus",
+    "allowedTrustLevels": [
+      "trusted",
+      "reviewed",
+      "external"
+    ],
+    "enforceIsolation": true
+  },
+  "documents": [
+    {
+      "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+      "name": "统一发布验收说明.txt",
+      "contentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+      "embedding": {
+        "model": "rag-publication-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f:latest",
+        "revision": "sha256:80f35a7586f4a4b83f90d317d4f93fa2dba8a8af257f1d0b3b7eacd6f7caa9a4",
+        "dimension": 768,
+        "indexSchema": "milvus-publication/v1"
+      }
+    }
+  ],
+  "corpus": [
+    {
+      "evidenceId": "pub:0777ceb734536e93bad6069d74465c4f6e3e0452d934507e03e4a9f2aca02080",
+      "documentId": "upload:55d84dd4-a265-4396-b5e5-9e5ec928e6b6",
+      "documentVersion": "sha256:4678aa8e62c118493d78b6746a4bba9046907f1968c2f0be3d1ab44d3e584953",
+      "tenantId": "publication-demo-tenant",
+      "corpusId": "publication-demo-corpus",
+      "trustLevel": "external",
+      "source": "统一发布验收说明.txt",
+      "content": "统一发布流程：第一步解析并固定文档快照；第二步分块并使用固定版本的向量模型进行向量化；第三步写入 Elasticsearch、Milvus 和 Neo4j 并完整读取核对；第四步在 PostgreSQL 中原子切换已发布版本。三库只有全部验证通过后才对用户可见。",
+      "metadata": {
+        "startOffset": 0,
+        "endOffset": 131
+      }
+    }
+  ]
+}

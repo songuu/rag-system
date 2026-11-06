@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import type { ContextSessionError, ContextManager, ContextManagerConfig, StreamEvent } from '@/lib/context-management';
 
 type ContextRuntime = typeof import('@/lib/context-management');
@@ -49,6 +50,8 @@ export async function GET(request: Request) {
     const action = searchParams.get('action');
     const sessionId = searchParams.get('sessionId');
     if (action === 'session') {
+      const publicationBlock = getUnifiedPublicationWriteBlock();
+      if (publicationBlock) return Response.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
       const assertContextSessionId: ContextRuntime['assertContextSessionId'] = (await getContextRuntime()).assertContextSessionId;
       assertContextSessionId(sessionId);
     }
@@ -119,6 +122,10 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
     const { action, ...params } = body;
+    if (action === 'query' || action === 'stream-query' || action === 'compress') {
+      const publicationBlock = getUnifiedPublicationWriteBlock();
+      if (publicationBlock) return Response.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
+    }
     if (action === 'query' || action === 'stream-query' || action === 'delete-session' || action === 'compress') {
       const assertContextSessionId: ContextRuntime['assertContextSessionId'] = (await getContextRuntime()).assertContextSessionId;
       assertContextSessionId(params.sessionId);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import {
   DocumentCatalogUnavailableError,
   listDocumentCatalog,
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
       corpusId: securityContext.corpusId,
       enforceIsolation: securityContext.enforceIsolation,
     });
-    const documents = await listDocumentCatalog({ scope });
+    const documents = await listDocumentCatalog({ scope, signal: request.signal });
     const elasticsearchMode = getElasticsearchRuntimeConfig().mode;
 
     return NextResponse.json({
@@ -70,6 +71,8 @@ async function mutateDocument(request: NextRequest, method: 'PATCH' | 'DELETE') 
       requestedCorpusId: new URL(request.url).searchParams.get('corpusId') || undefined,
       requestIdFactory: () => requestId,
     });
+    const block = getUnifiedPublicationWriteBlock();
+    if (block) return NextResponse.json({ success: false, error: { code: block.code, message: block.message }, requestId }, { status: block.status });
     let body: unknown;
     try { body = await request.json(); } catch {
       throw new DocumentLifecycleError('INVALID_DOCUMENT_MUTATION', '请求内容必须为 JSON。', 400);

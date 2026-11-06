@@ -183,7 +183,8 @@ export class PostgresMiroFishProjectStore implements MiroFishProjectStore {
       `update public.mirofish_projects
        set project_data = (
          project_data - array[
-           'ontology', 'graph_data', 'graph_id', 'agent_profiles',
+           'ontology', 'graph_data', 'graph_id', 'graph_task_id', 'graph_identity', 'agent_profiles',
+           'prepare_task_id', 'selected_entity_ids',
            'simulation_config', 'prepare_id', 'prepare_fingerprint',
            'prepared_at', 'simulation_id', 'report_id'
          ]
@@ -198,21 +199,21 @@ export class PostgresMiroFishProjectStore implements MiroFishProjectStore {
   }
 }
 
-let memoryStore: MemoryProjectStore | null = null;
+const memoryStores = new Map<string, MemoryProjectStore>();
 
-export function getProjectStore(): MiroFishProjectStore {
+export function getProjectStore(scope?: { tenantId: string; corpusId: string }): MiroFishProjectStore {
   const config = getPostgresRuntimeConfig();
+  const resolvedScope = scope ?? { tenantId: config.defaultTenantId || 'local-dev-tenant', corpusId: config.defaultCorpusId || 'local-dev-corpus' };
   if (shouldUsePostgresPersistence(config)) {
     assertPostgresPersistenceConfigured(config);
     const client = getPostgresClient(config);
     if (!client) throw new Error('PostgreSQL MiroFish project persistence is unavailable.');
-    return new PostgresMiroFishProjectStore(client, {
-      tenantId: config.defaultTenantId,
-      corpusId: config.defaultCorpusId,
-    });
+    return new PostgresMiroFishProjectStore(client, resolvedScope);
   }
-  memoryStore ??= new MemoryProjectStore();
-  return memoryStore;
+  const key = JSON.stringify([resolvedScope.tenantId, resolvedScope.corpusId]);
+  let store = memoryStores.get(key);
+  if (!store) { store = new MemoryProjectStore(); memoryStores.set(key, store); }
+  return store;
 }
 
 function createProject(request: CreateProjectRequest): Project {
@@ -236,6 +237,10 @@ function stripGeneratedState(project: Project): Project {
     'ontology',
     'graph_data',
     'graph_id',
+    'graph_task_id',
+    'graph_identity',
+    'prepare_task_id',
+    'selected_entity_ids',
     'agent_profiles',
     'simulation_config',
     'prepare_id',

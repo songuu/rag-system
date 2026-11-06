@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import KnowledgeGraphView, { type GraphViewData } from './KnowledgeGraphView';
 
 type Health = {
   status: 'ready' | 'not_ready' | 'disabled';
@@ -16,6 +17,7 @@ type ArtifactIdentity = {
   corpusId: string;
   documentId: string;
   documentVersion: string;
+  graphGeneration?: string;
   trustLevel: 'trusted' | 'reviewed' | 'external' | 'quarantined';
 };
 
@@ -99,6 +101,7 @@ type SnapshotPayload = {
 type BuildSource = {
   documentId: string;
   documentVersion: string;
+  trustLevel?: ArtifactIdentity['trustLevel'];
   sourceName: string;
   contentType: string;
   chunkCount: number;
@@ -108,6 +111,8 @@ type BuildSource = {
 type BuildSourcePayload = {
   sources: BuildSource[];
 };
+
+type LatestBuildPayload = { job: BuildJob | null };
 
 type BuildJob = {
   id: string;
@@ -153,6 +158,16 @@ export default function KnowledgeGraphConsole() {
   const [buildSources, setBuildSources] = useState<BuildSource[]>([]);
   const [selectedBuildSourceKey, setSelectedBuildSourceKey] = useState('');
   const [buildJob, setBuildJob] = useState<BuildJob | null>(null);
+  const [buildLookupKey, setBuildLookupKey] = useState('');
+  const [buildLookupError, setBuildLookupError] = useState('');
+  const [buildLookupAttempt, setBuildLookupAttempt] = useState(0);
+  const [documentGraph, setDocumentGraph] = useState<GraphViewData | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState('');
+  const [selectedSnapshot, setSelectedSnapshot] = useState<Snapshot | null>(null);
+  const [snapshotLookupLoading, setSnapshotLookupLoading] = useState(false);
+  const [snapshotLookupError, setSnapshotLookupError] = useState('');
+  const [snapshotLookupKey, setSnapshotLookupKey] = useState('');
   const [query, setQuery] = useState('');
   const [entities, setEntities] = useState<EntityResult[]>([]);
   const [entitySearchAttempted, setEntitySearchAttempted] = useState(false);
@@ -208,6 +223,67 @@ export default function KnowledgeGraphConsole() {
       controller.abort();
     };
   }, [loadOverview]);
+
+  const selectedSource = buildSources.find(source => buildSourceKey(source) === selectedBuildSourceKey);
+  const sourceDocumentId = selectedSource?.documentId;
+  const sourceDocumentVersion = selectedSource?.documentVersion;
+  const sourceTrustLevel = selectedSource?.trustLevel ?? 'external';
+  const expectedSnapshotKey = selectedSource ? corpusId + '\u001f' + buildSourceKey(selectedSource) : '';
+  const snapshotLookupPending = !!selectedSource && (snapshotLookupLoading || snapshotLookupKey !== expectedSnapshotKey);
+  const buildLookupPending = !!selectedSource && buildLookupKey !== expectedSnapshotKey;
+  useEffect(() => {
+    const controller = new AbortController();
+    const task = window.setTimeout(() => {
+      setBuildJob(null);
+      setBuildLookupError('');
+      if (!sourceDocumentId || !sourceDocumentVersion) { setBuildLookupKey(''); return; }
+      const params = new URLSearchParams({ documentId: sourceDocumentId, documentVersion: sourceDocumentVersion, trustLevel: sourceTrustLevel });
+      void fetch(API_ROOT + '/builds?' + params, { headers: scopeHeaders(corpusId), signal: controller.signal })
+        .then(response => readEnvelope<LatestBuildPayload>(response))
+        .then(body => { if (!controller.signal.aborted) { setBuildJob(body.job); setBuildLookupKey(expectedSnapshotKey); } })
+        .catch(cause => { if (!isAbortError(cause) && !controller.signal.aborted) { setBuildLookupError(errorMessage(cause)); setBuildLookupKey(expectedSnapshotKey); } });
+    }, 0);
+    return () => { window.clearTimeout(task); controller.abort(); };
+  }, [corpusId, sourceDocumentId, sourceDocumentVersion, sourceTrustLevel, expectedSnapshotKey, buildLookupAttempt]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const task = window.setTimeout(() => {
+      setSelectedSnapshot(null);
+      setSnapshotLookupError('');
+      if (!sourceDocumentId || !sourceDocumentVersion) { setSnapshotLookupLoading(false); return; }
+      setSnapshotLookupLoading(true);
+      const params = new URLSearchParams({ documentId: sourceDocumentId, documentVersion: sourceDocumentVersion, trustLevel: sourceTrustLevel });
+      void fetch(API_ROOT + '/snapshots?' + params, { headers: scopeHeaders(corpusId), signal: controller.signal })
+        .then(response => readEnvelope<SnapshotPayload>(response))
+        .then(body => { if (!controller.signal.aborted) { setSelectedSnapshot(body.snapshots[0] ?? null); setSnapshotLookupKey(expectedSnapshotKey); } })
+        .catch(cause => { if (!isAbortError(cause) && !controller.signal.aborted) { setSnapshotLookupError(errorMessage(cause)); setSnapshotLookupKey(expectedSnapshotKey); } })
+        .finally(() => { if (!controller.signal.aborted) setSnapshotLookupLoading(false); });
+    }, 0);
+    return () => { window.clearTimeout(task); controller.abort(); };
+  }, [corpusId, sourceDocumentId, sourceDocumentVersion, sourceTrustLevel, expectedSnapshotKey, snapshots]);
+  const graphDocumentId = selectedSnapshot?.identity.documentId;
+  const graphVersion = selectedSnapshot?.identity.documentVersion;
+  const graphTrustLevel = selectedSnapshot?.identity.trustLevel;
+  const graphGeneration = selectedSnapshot?.identity.graphGeneration;
+  useEffect(() => {
+    const controller = new AbortController();
+    const task = window.setTimeout(() => {
+    setDocumentGraph(null);
+    setGraphError('');
+    if (!graphDocumentId || !graphVersion || !graphTrustLevel) { setGraphLoading(false); return; }
+    setGraphLoading(true);
+    const params = new URLSearchParams({ action: 'data', graphId: graphDocumentId, documentVersion: graphVersion, trustLevel: graphTrustLevel });
+    if (graphGeneration) params.set('graphGeneration', graphGeneration);
+    void fetch('/rag-api/mirofish/graph?' + params, { headers: scopeHeaders(corpusId), signal: controller.signal })
+      .then(async response => {
+        const body = await response.json() as { success: boolean; graph?: GraphViewData; error?: string };
+        if (!response.ok || !body.success || !body.graph) throw new Error(body.error || '图谱读取失败。');
+        if (!controller.signal.aborted) setDocumentGraph(body.graph);
+      }).catch(cause => { if (!isAbortError(cause) && !controller.signal.aborted) setGraphError(errorMessage(cause)); })
+      .finally(() => { if (!controller.signal.aborted) setGraphLoading(false); });
+    }, 0);
+    return () => { window.clearTimeout(task); controller.abort(); };
+  }, [corpusId, graphDocumentId, graphVersion, graphTrustLevel, graphGeneration]);
 
   const buildJobId = buildJob?.id;
   const buildJobStatus = buildJob?.status;
@@ -365,6 +441,7 @@ export default function KnowledgeGraphConsole() {
         documentVersion: snapshot.identity.documentVersion,
         trustLevel: snapshot.identity.trustLevel,
       });
+      if (snapshot.identity.graphGeneration) params.set('graphGeneration', snapshot.identity.graphGeneration);
       await request<{ deleted: boolean }>(API_ROOT + '/snapshots?' + params, {
         method: 'DELETE',
       });
@@ -374,6 +451,10 @@ export default function KnowledgeGraphConsole() {
 
   async function createSnapshot(event: FormEvent) {
     event.preventDefault();
+    await submitSnapshot();
+  }
+
+  async function submitSnapshot(resumeJobId?: string) {
     const source = buildSources.find(item => buildSourceKey(item) === selectedBuildSourceKey);
     if (!source) return;
     await run('build', async () => {
@@ -383,7 +464,9 @@ export default function KnowledgeGraphConsole() {
         body: JSON.stringify({
           documentId: source.documentId,
           documentVersion: source.documentVersion,
-          trustLevel: 'external',
+          trustLevel: source.trustLevel ?? 'external',
+          regenerate: !!selectedSnapshot,
+          ...(resumeJobId ? { resumeJobId } : {}),
         }),
       });
       setBuildJob(body.data);
@@ -447,7 +530,7 @@ export default function KnowledgeGraphConsole() {
           <div className="flex items-end gap-2">
             <button
               type="button"
-              onClick={() => setCorpusId(scopeInput.trim())}
+              onClick={() => { setDocumentGraph(null); setCorpusId(scopeInput.trim()); }}
               className="rounded-lg bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-950 hover:bg-cyan-400"
             >应用范围</button>
             <button
@@ -490,6 +573,9 @@ export default function KnowledgeGraphConsole() {
 
         <section className="grid gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(320px,1fr)]">
           <div className="space-y-6">
+            <Panel title="文档知识图谱" subtitle="选择右侧文档后自动读取其最近保存的图谱，无需激活快照。">
+              {snapshotLookupPending || graphLoading ? <Empty>正在读取已保存图谱…</Empty> : snapshotLookupError || graphError ? <div role="alert" className="text-sm text-red-300">{snapshotLookupError || graphError}</div> : documentGraph ? <KnowledgeGraphView key={graphVersion + ':' + graphGeneration} graph={documentGraph} /> : <Empty>{selectedSource ? '此文档暂无已保存的图谱，请创建图谱快照。' : '请选择已向量化文档。'}</Empty>}
+            </Panel>
             <Panel title="实体搜索与局部展开" subtitle="只查询活动图版本；点击实体后读取最多 2 跳路径。">
               <form onSubmit={searchEntities} className="flex flex-col gap-3 sm:flex-row">
                 <input
@@ -592,7 +678,7 @@ export default function KnowledgeGraphConsole() {
                     <span className="mb-1.5 block text-xs font-medium text-slate-400">已向量化文档</span>
                     <select
                       value={selectedBuildSourceKey}
-                      onChange={event => setSelectedBuildSourceKey(event.target.value)}
+                      onChange={event => { setDocumentGraph(null); setSelectedSnapshot(null); setSnapshotLookupLoading(true); setSelectedBuildSourceKey(event.target.value); setBuildJob(null); }}
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 outline-none focus:border-cyan-500"
                     >
                       {buildSources.map(source => (
@@ -604,14 +690,21 @@ export default function KnowledgeGraphConsole() {
                   </label>
                   <button
                     type="submit"
-                    disabled={!managementEnabled || !selectedBuildSourceKey || busy === 'build'}
+                    disabled={!managementEnabled || !selectedBuildSourceKey || snapshotLookupPending || !!snapshotLookupError || buildLookupPending || !!buildLookupError || busy === 'build' || (!!buildJob && !isTerminalBuildStatus(buildJob.status))}
                     className="w-full rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {busy === 'build' ? '正在提交…' : '创建图谱快照'}
+                    {busy === 'build' ? '正在提交…' : selectedSnapshot ? '重新生成知识图谱' : '创建图谱快照'}
                   </button>
                 </form>
               ) : (
                 <Empty>PostgreSQL 中还没有已完成向量化的文档。请先在首页上传并完成向量化。</Empty>
+              )}
+
+              {buildLookupError && (
+                <div role="alert" className="mt-3 text-xs text-red-200">
+                  最近构建查询失败：{buildLookupError}{' '}
+                  <button type="button" className="underline" onClick={() => { setBuildLookupKey(''); setBuildLookupAttempt(value => value + 1); }}>重试查询</button>
+                </div>
               )}
 
               {buildJob && (
@@ -633,6 +726,13 @@ export default function KnowledgeGraphConsole() {
                     <p className="mt-2 text-xs leading-5 text-red-200">
                       {buildJob.errorCode ? buildJob.errorCode + '：' : ''}{buildJob.errorMessage}
                     </p>
+                  )}
+                  {buildJob.status === 'failed' && (
+                    <button type="button" disabled={!managementEnabled || busy === 'build' || buildLookupPending}
+                      onClick={() => void submitSnapshot(buildJob.id)}
+                      className="mt-3 rounded-lg border border-red-400/40 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-400/10 disabled:opacity-50">
+                      继续上次构建
+                    </button>
                   )}
                 </div>
               )}
@@ -666,7 +766,7 @@ export default function KnowledgeGraphConsole() {
                   const snapshotName = snapshot.graphName || snapshot.identity.documentId;
                   return (
                     <article
-                      key={snapshot.identity.documentId + ':' + snapshot.identity.documentVersion + ':' + snapshot.identity.trustLevel}
+                      key={snapshot.identity.documentId + ':' + snapshot.identity.documentVersion + ':' + snapshot.identity.trustLevel + ':' + (snapshot.identity.graphGeneration ?? '')}
                       className={'relative overflow-hidden rounded-xl border p-4 transition-colors ' + (isActive
                         ? 'border-emerald-400/30 bg-emerald-500/[0.045] shadow-[inset_3px_0_0_rgba(52,211,153,0.85)]'
                         : 'border-slate-800 bg-slate-950/80 hover:border-slate-700')}
@@ -862,11 +962,12 @@ function sameIdentity(left: ArtifactIdentity, right: ArtifactIdentity | null | u
     && left.corpusId === right.corpusId
     && left.documentId === right.documentId
     && left.documentVersion === right.documentVersion
+    && left.graphGeneration === right.graphGeneration
     && left.trustLevel === right.trustLevel;
 }
 
 function buildSourceKey(source: BuildSource | undefined): string {
-  return source ? source.documentId + '\u001f' + source.documentVersion : '';
+  return source ? source.documentId + '\u001f' + source.documentVersion + '\u001f' + (source.trustLevel ?? 'external') : '';
 }
 
 function isTerminalBuildStatus(status: BuildJob['status']): boolean {

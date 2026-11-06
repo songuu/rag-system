@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -47,10 +48,34 @@ interface CachedPool {
   client: PostgresQueryClient;
 }
 
+interface ExplicitTransactionContext {
+  root: PostgresQueryClient;
+  transaction: PostgresQueryClient;
+  active: boolean;
+  failure?: unknown;
+}
+const explicitTransactions = new AsyncLocalStorage<ExplicitTransactionContext>();
+
+/** Opt in only when multiple captured stores must commit as one mutation. */
+export async function withPostgresClientContext<T>(root: PostgresQueryClient,
+  transaction: PostgresQueryClient, work: () => Promise<T>): Promise<T> {
+  const context: ExplicitTransactionContext = { root, transaction, active: true };
+  return explicitTransactions.run(context, async () => {
+    try {
+      const result = await work();
+      if (context.failure !== undefined) throw context.failure;
+      return result;
+    } finally {
+      // Detached callbacks must never reuse a released transaction connection.
+      context.active = false;
+    }
+  });
+}
+
 let cachedPool: CachedPool | null = null;
 let expectedSchemaChecksumPromise: Promise<string> | null = null;
-const EXPECTED_SCHEMA_VERSION = '0007';
-const EXPECTED_SCHEMA_FILENAME = '0007_elasticsearch_lexical_outbox.sql';
+const EXPECTED_SCHEMA_VERSION = '0026';
+const EXPECTED_SCHEMA_FILENAME = '0026_publication_source_metadata.sql';
 
 export class PostgresQueryError extends Error {
   readonly operation: string;
@@ -198,6 +223,24 @@ export async function checkPostgresReadiness(
          and to_regclass('public.mirofish_projects') is not null
          and to_regclass('public.elasticsearch_lexical_chunks') is not null
          and to_regclass('public.elasticsearch_lexical_outbox') is not null
+         and to_regclass('public.document_publication_collection_reservations') is not null
+         and to_regclass('public.document_publication_heads') is not null
+         and to_regclass('public.document_publication_attempts') is not null
+         and to_regclass('public.document_publication_observations') is not null
+         and to_regclass('public.document_publication_assets') is not null
+         and to_regclass('public.document_publication_asset_chunks') is not null
+         and to_regclass('public.elasticsearch_publication_operations') is not null
+         and to_regclass('public.document_publication_provider_seals') is not null
+         and to_regclass('public.document_publication_prior_assets') is not null
+         and to_regclass('public.document_publication_receipts') is not null
+         and to_regprocedure('public.rag_publication_control(text,text,text,text,jsonb)') is not null
+         and to_regprocedure('public.rag_stage_publication_asset(text,text,text,bigint,bigint,uuid,text,text,text,bytea,bytea,jsonb)') is not null
+         and to_regprocedure('public.rag_read_staged_publication_asset(text,text,text,bigint,bigint,uuid,text)') is not null
+         and to_regprocedure('public.rag_elasticsearch_publication_operation(text,text,text,text,jsonb)') is not null
+         and to_regprocedure('public.rag_read_publication_view(text,text,text[])') is not null
+         and to_regprocedure('public.rag_read_publication_source(text,text,text,bigint,bigint,uuid,text,text[],text)') is not null
+         and to_regprocedure('public.rag_record_publication_seal(text,text,text,bigint,bigint,uuid,text,text,text,text,text,text,text,text)') is not null
+         and to_regprocedure('public.rag_publish_document_generation(text,text,text,bigint,bigint,uuid,text,text)') is not null
          and exists (
            select 1
            from public.rag_schema_migrations
@@ -248,6 +291,8 @@ async function getExpectedSchemaChecksum(): Promise<string> {
 function wrapPool(pool: PostgresPoolLike): PostgresQueryClient {
   const client: PostgresQueryClient = {
     async query<T>(text: string, values: unknown[] = []): Promise<PostgresQueryResult<T>> {
+      const context = explicitTransactions.getStore();
+      if (context?.active && context.root === client) return context.transaction.query<T>(text, values);
       const result = await pool.query(text, values);
       return {
         rows: result.rows as T[],
@@ -256,8 +301,14 @@ function wrapPool(pool: PostgresPoolLike): PostgresQueryClient {
     },
   };
   if (isPostgresTransactionPoolLike(pool)) {
-    client.withTransaction = (operation, work) =>
-      withPostgresTransaction(pool, operation, work);
+    client.withTransaction = async (operation, work) => {
+      const context = explicitTransactions.getStore();
+      if (context?.active && context.root === client) {
+        try { return await work(context.transaction); }
+        catch (error) { context.failure = error; throw error; }
+      }
+      return withPostgresTransaction(pool, operation, work);
+    };
   }
   return client;
 }

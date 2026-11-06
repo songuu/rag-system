@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { getMilvusRAGSystem, resetMilvusRAGSystem } from '@/lib/rag-milvus';
 import { getMilvusConnectionConfig } from '@/lib/milvus-config';
 import { getLegacyRagRouteBlock } from '@/lib/security/legacy-route-policy';
@@ -29,9 +30,12 @@ export async function POST(request: NextRequest) {
       { status: legacyBlock.status }
     );
   }
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   try {
     const body = await request.json();
     const { action, ...params } = body;
+
 
     switch (action) {
       // 初始化系统
@@ -195,6 +199,8 @@ export async function GET(request: NextRequest) {
       { status: legacyBlock.status }
     );
   }
+  const publicationBlock = getUnifiedPublicationWriteBlock();
+  if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message }, { status: publicationBlock.status });
   const { searchParams } = new URL(request.url);
   const action = searchParams.get('action') || 'status';
 

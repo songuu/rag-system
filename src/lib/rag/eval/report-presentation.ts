@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { summarizeEvalCaseResults } from './metrics';
 import type { RagEvalCaseResult, RagEvalCompletedCaseResult, RagEvalRunReport } from './types';
+import { contractSchema, experimentComparisonIssues } from './experiment-schema';
+import { validateEvalUsageObservation } from './usage-metering';
 
 const identity = z.string().min(1).max(1024);
 const count = z.number().int().nonnegative();
@@ -11,6 +13,19 @@ const evidenceSchema = z.object({
   tenantId: z.string().optional(), corpusId: z.string().optional(), documentId: z.string().optional(),
   documentVersion: z.string().optional(), laneId: z.string().optional(),
   trustLevel: z.enum(['trusted', 'reviewed', 'external', 'quarantined']).optional(),
+  servedSpan: z.object({ startOffset: count, endOffset: count }).optional(),
+});
+const stageMetricSchema = z.object({ recallAtK: score, reciprocalRankAtK: score, ndcgAtK: score,
+  requiredEvidenceComplete: z.boolean().nullable() }).nullable();
+const semanticScores = z.object({ factualCorrectness: score, relevance: score, keyPointCoverage: score,
+  citationEntailment: score, faithfulness: score, businessCorrectness: score });
+const qualitySchema = z.object({
+  structuredFacts: z.array(z.object({ id: identity, status: z.enum(['correct','incorrect','unknown']), reason: z.string() })).max(1000),
+  applicability: z.object({ status: z.enum(['applicable','inapplicable','unknown']), reasons: z.array(z.string()) }),
+  semantic: z.object({ status: z.enum(['measured','unavailable']), scores: semanticScores,
+    observedDisposition: z.enum(['answer','abstain','clarify']).nullable().optional(),
+    claims: z.array(z.object({ claim: z.string(), evidenceIds: z.array(identity), supported: z.boolean().nullable() })).max(1000) }),
+  disposition: z.object({ expected: z.enum(['answer','abstain','clarify']).nullable(), observed: z.enum(['answer','abstain','clarify','unknown']), correct: z.boolean().nullable(), source: z.literal('judge').optional() }),
 });
 const caseSchema = z.discriminatedUnion('status', [
   z.object({ caseId: identity, status: z.literal('failed'), error: z.string() }),
@@ -19,7 +34,7 @@ const caseSchema = z.discriminatedUnion('status', [
     abstained: z.boolean(), expectedAbstain: z.boolean(),
     evidence: z.array(evidenceSchema).max(2000),
     retrieval: z.object({ recallAtK: score, reciprocalRankAtK: score, ndcgAtK: score }),
-    answerMetrics: z.object({ requiredFactCoverage: score, abstainCorrect: z.boolean() }),
+    answerMetrics: z.object({ requiredFactCoverage: score, abstainCorrect: z.boolean().nullable() }),
     citations: z.object({ validity: score, precision: score, coverage: score, meanSpanIou: score }),
     citationDetails: z.array(z.object({ evidenceId: identity, startOffset: count, endOffset: count })).max(2000),
     security: z.object({
@@ -34,6 +49,12 @@ const caseSchema = z.discriminatedUnion('status', [
       costMeasurement: z.enum(['provider', 'configured-estimate', 'unavailable']),
     }),
     policyId: z.string().optional(), laneIds: z.array(z.string()).optional(), traceId: z.string().optional(),
+    retrievalStages: z.object({ candidates: stageMetricSchema, reranked: stageMetricSchema, context: stageMetricSchema }).optional(),
+    stageEvidenceIds: z.object({ candidates: z.array(identity).optional(), reranked: z.array(identity).optional(), context: z.array(identity).optional() }).optional(),
+    quality: qualitySchema.optional(), dispositionCorrect: z.boolean().nullable().optional(),
+    observation: z.object({ disposition: z.enum(['structured','empty-context','text-rule','unavailable']),
+      citations: z.enum(['span','reference-only','unavailable']), calls: z.enum(['provider','unavailable']) }).optional(),
+    usageObservation: z.unknown().transform(value => validateEvalUsageObservation(value)).optional(),
   }),
 ]);
 const reportSchema = z.object({
@@ -43,7 +64,11 @@ const reportSchema = z.object({
     schemaVersion: z.enum(['rag-eval-dataset/v1', 'rag-eval-dataset/v2']),
     id: identity, version: identity, sha256: z.string().regex(/^[a-f0-9]{64}$/i),
   }),
-  target: z.object({ id: identity }), configuration: z.object({ topK: z.number().int().positive() }),
+  target: z.object({ id: identity }), configuration: z.object({ topK: z.number().int().positive(), experiment: contractSchema.optional(),
+    evaluatorImplementationSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    usagePricing: z.object({ inputUsdPerMillion: measurement, outputUsdPerMillion: measurement, version: identity }).optional(),
+    assessment: z.object({ annotationsSha256: z.string().regex(/^[a-f0-9]{64}$/), contextSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      judge: z.object({ id: identity, revision: identity, rubricVersion: identity }).nullable() }).optional() }),
   metadata: z.record(z.string(), z.unknown()).optional(),
   cases: z.array(caseSchema).max(10000),
 });
@@ -59,6 +84,7 @@ function readReport(value: unknown): RagEvalRunReport {
     if (caseIds.has(item.caseId)) throw new Error('评测报告包含重复的问题 ID');
     caseIds.add(item.caseId);
     if (item.status === 'completed') {
+      if (item.usageObservation !== undefined) item.usageObservation = validateEvalUsageObservation(item.usageObservation);
       const usage = item.usage;
       const completeTokens = usage.inputTokens !== undefined && usage.outputTokens !== undefined;
       const anyTokens = usage.inputTokens !== undefined || usage.outputTokens !== undefined;
@@ -153,7 +179,7 @@ const METRICS: MetricSpec[] = [
   { id: 'citations', label: '引用覆盖', description: '标注原文区间的覆盖率，非语义支持度', unit: 'score', higherIsBetter: true,
     read: r => r.summary.citation.meanCoverage, caseValue: c => c.citations.coverage },
   { id: 'abstain', label: '拒答准确率', description: '是否正确区分可回答与应拒答问题', unit: 'score', higherIsBetter: true,
-    read: r => r.summary.abstainAccuracy, caseValue: c => c.answerMetrics.abstainCorrect ? 1 : 0 },
+    read: r => r.summary.abstainAccuracy, caseValue: c => c.answerMetrics.abstainCorrect === null ? null : c.answerMetrics.abstainCorrect ? 1 : 0 },
   { id: 'latency', label: 'P95 延迟', description: '95% 请求的总耗时不超过此值', unit: 'ms', higherIsBetter: false,
     read: r => r.summary.latencyMs.p95, caseValue: c => c.usage.totalLatencyMs },
   { id: 'tokens', label: '总 Token', description: '输入和输出合计；只比较完整计量', unit: 'count', higherIsBetter: false,
@@ -163,6 +189,49 @@ const METRICS: MetricSpec[] = [
       : c.usage.inputTokens + c.usage.outputTokens },
   { id: 'cost', label: '总费用', description: 'USD；可能来自提供方或配置估算', unit: 'usd', higherIsBetter: false,
     read: r => r.summary.costUsd.total, caseValue: c => c.usage.costUsd ?? null },
+];
+
+function measuredMetric(id: string, label: string, description: string,
+  caseValue: (item: RagEvalCompletedCaseResult) => number | null): MetricSpec {
+  return { id, label, description, unit: 'score', higherIsBetter: true, caseValue,
+    read: report => {
+      const values = report.cases.flatMap(item => item.status === 'completed' && caseValue(item) !== null ? [caseValue(item)!] : []);
+      return values.length ? values.reduce((sum,value) => sum + value,0) / values.length : null;
+    } };
+}
+const ADVANCED_METRICS: MetricSpec[] = [
+  ...(['candidates','reranked','context'] as const).flatMap(stage => {
+    const label = { candidates: '初召回', reranked: '重排', context: '上下文' }[stage];
+    return [
+      measuredMetric(stage+'-recall', label+' Recall@K', '独立阶段的标注证据召回比例', c => c.retrievalStages?.[stage]?.recallAtK ?? null),
+      measuredMetric(stage+'-mrr', label+' MRR@K', '独立阶段首条相关证据排名', c => c.retrievalStages?.[stage]?.reciprocalRankAtK ?? null),
+      measuredMetric(stage+'-ndcg', label+' nDCG@K', '独立阶段分级相关性排序', c => c.retrievalStages?.[stage]?.ndcgAtK ?? null),
+      measuredMetric(stage+'-complete', label+'关键证据齐全率', '必要证据组全部进入；上下文同时校验送模区间', c => {
+        const complete = c.retrievalStages?.[stage]?.requiredEvidenceComplete;
+        return complete === undefined || complete === null ? null : complete ? 1 : 0;
+      }),
+    ];
+  }),
+  ...Object.entries({ factualCorrectness:'语义事实正确性', relevance:'问题相关性', keyPointCoverage:'语义要点覆盖',
+    citationEntailment:'引用语义支持度', faithfulness:'资料忠实度', businessCorrectness:'业务正确性' }).map(([dimension,label]) =>
+    measuredMetric('semantic-'+dimension,label,'评审模型辅助分数；需人工校准，未知不计为0',
+      c => c.quality?.semantic.scores[dimension as keyof NonNullable<typeof c.quality>['semantic']['scores']] ?? null)),
+  measuredMetric('structured-facts','结构化事实正确率','只在所有已标注事实均可确定时比较', c => {
+    const facts = c.quality?.structuredFacts;
+    return !facts?.length || facts.some(fact => fact.status === 'unknown') ? null : facts.filter(fact => fact.status === 'correct').length / facts.length;
+  }),
+  measuredMetric('disposition','回答/拒答/澄清准确率','保留澄清与拒答的独立标注', c => {
+    const value = c.dispositionCorrect ?? c.quality?.disposition.correct;
+    return value === undefined || value === null ? null : value ? 1 : 0;
+  }),
+  { ...measuredMetric('wrong-refusal','错误拒答率','应回答样本中的拒答；评审推断带来源标记', c => {
+    const decision = c.quality?.disposition;
+    return !decision || decision.expected !== 'answer' || decision.observed === 'unknown' ? null : decision.observed === 'abstain' ? 1 : 0;
+  }), higherIsBetter: false },
+  { ...measuredMetric('answer-on-unanswerable','应拒答/澄清时作答率','应拒答或澄清样本中仍直接给出答案的比例', c => {
+    const decision = c.quality?.disposition;
+    return !decision?.expected || decision.expected === 'answer' || decision.observed === 'unknown' ? null : decision.observed === 'answer' ? 1 : 0;
+  }), higherIsBetter: false },
 ];
 
 export interface EvalCaseComparison {
@@ -181,6 +250,14 @@ export function compareRagEvalReports(baseline: RagEvalRunReport, candidate: Rag
     issues.push('数据集或文档快照不同，无法计算优化差值。');
   }
   if (baseline.configuration.topK !== candidate.configuration.topK) issues.push('Top K 不同，请固定相同的检索窗口再比较。');
+  const beforeExperiment = baseline.configuration.experiment, afterExperiment = candidate.configuration.experiment;
+  if (Boolean(beforeExperiment) !== Boolean(afterExperiment)) issues.push('实验配置绑定不完整，无法比较。');
+  if (beforeExperiment && afterExperiment) issues.push(...experimentComparisonIssues(beforeExperiment, afterExperiment));
+  if (baseline.configuration.evaluatorImplementationSha256 !== candidate.configuration.evaluatorImplementationSha256) issues.push('评测器实现版本不同，无法比较。');
+  if (JSON.stringify(baseline.configuration.usagePricing) !== JSON.stringify(candidate.configuration.usagePricing)) issues.push('费用估算价格口径不同，无法比较。');
+  const beforeAssessment = baseline.configuration.assessment, afterAssessment = candidate.configuration.assessment;
+  if (JSON.stringify(beforeAssessment) !== JSON.stringify(afterAssessment)) issues.push('评分标注、业务条件或评审模型发生变化，无法比较。');
+  if (beforeAssessment?.judge?.revision === 'unknown' || afterAssessment?.judge?.revision === 'unknown') issues.push('评审模型版本未核实，无法比较。');
   const baseCases = new Map(baseline.cases.map(item => [item.caseId, item]));
   const candidateCases = new Map(candidate.cases.map(item => [item.caseId, item]));
   if (baseCases.size !== candidateCases.size || [...baseCases.keys()].some(id => !candidateCases.has(id))) {
@@ -197,7 +274,11 @@ export function compareRagEvalReports(baseline: RagEvalRunReport, candidate: Rag
       issues.push('同一问题的拒答标注不同。'); break;
     }
   }
-  const metrics = METRICS.map(spec => {
+  const specs = [...METRICS,...ADVANCED_METRICS.filter(spec => spec.read(baseline) !== null || spec.read(candidate) !== null)];
+  if (specs.length > METRICS.length && (!baseline.configuration.evaluatorImplementationSha256 || !candidate.configuration.evaluatorImplementationSha256)) {
+    issues.push('新增评分未绑定评测器实现版本，无法比较。');
+  }
+  const metrics = specs.map(spec => {
     const eligible = (report: RagEvalRunReport) => report.cases.filter((item): item is RagEvalCompletedCaseResult =>
       item.status === 'completed' && spec.caseValue(item) !== null).map(item => item.caseId).sort();
     const baseEligible = eligible(baseline);
@@ -229,9 +310,9 @@ export function compareRagEvalReports(baseline: RagEvalRunReport, candidate: Rag
     let status: EvalCaseComparison['status'] = 'unmeasured';
     if (before?.status === 'failed' || after?.status === 'failed') status = 'failed';
     else if (!issues.length && before?.status === 'completed' && after?.status === 'completed') {
-      const deltas = METRICS.filter(spec => spec.unit === 'score').flatMap(spec => {
+      const deltas = specs.filter(spec => spec.unit === 'score').flatMap(spec => {
         const a = spec.caseValue(before), b = spec.caseValue(after);
-        return a === null || b === null ? [] : [b - a];
+        return a === null || b === null ? [] : [(b - a) * (spec.higherIsBetter ? 1 : -1)];
       });
       status = deltas.some(value => value < -1e-9) ? 'regressed'
         : deltas.some(value => value > 1e-9) ? 'improved' : deltas.length ? 'unchanged' : 'unmeasured';

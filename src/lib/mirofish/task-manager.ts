@@ -191,15 +191,15 @@ export class TaskManager {
   }
 }
 
-// 单例实例
-let taskManagerInstance: TaskManager | null = null;
+const taskManagerGlobal = globalThis as typeof globalThis & {
+  __ragMiroFishTaskManagerV1?: TaskManager;
+};
 
 /**
  * 获取任务管理器单例
  */
 export function getTaskManager(): TaskManager {
-  if (!taskManagerInstance) {
-    taskManagerInstance = new TaskManager();
-  }
-  return taskManagerInstance;
+  // Hot reloads and route bundles must observe the same workers and admission
+  // reservations. This remains process-local; restarts recover durable graphs.
+  return taskManagerGlobal.__ragMiroFishTaskManagerV1 ??= new TaskManager();
 }

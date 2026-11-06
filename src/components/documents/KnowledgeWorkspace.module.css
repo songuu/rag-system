@@ -947,7 +947,8 @@
   line-height: 1.8;
 }
 
-.resultSnippet mark {
+.resultSnippet mark,
+.resultTitle mark {
   padding: 0 2px;
   color: inherit;
   background: #ffe59a;

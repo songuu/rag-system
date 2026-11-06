@@ -164,6 +164,11 @@ test('process environment mode applies the same runtime allowlist for containers
         "  hasMigrationUrl: Object.hasOwn(process.env, 'POSTGRES_MIGRATION_URL'),",
         "  hasUnlistedSecret: Object.hasOwn(process.env, 'UNLISTED_CONTAINER_SECRET'),",
         "  hasBootstrapControl: Object.hasOwn(process.env, 'RAG_RUNTIME_ENV_SOURCE'),",
+        '  ollamaConcurrency: process.env.PROVIDER_ADMISSION_OLLAMA_CONCURRENCY,',
+        '  providerQueueLimit: process.env.PROVIDER_ADMISSION_MAX_QUEUE,',
+        '  providerQueueWaitMs: process.env.PROVIDER_ADMISSION_WAIT_MS,',
+        '  embeddingTimeoutMs: process.env.OLLAMA_EMBEDDING_REQUEST_TIMEOUT_MS,',
+        "  hasUnusedRemoteConcurrency: Object.hasOwn(process.env, 'PROVIDER_ADMISSION_CONCURRENCY'),",
         '}));',
       ].join('\n') + '\n'
     );
@@ -181,6 +186,11 @@ test('process environment mode applies the same runtime allowlist for containers
         POSTGRES_PASSWORD: 'infrastructure-secret',
         POSTGRES_MIGRATION_URL: 'postgresql://owner:migration-secret@postgres:5432/rag_system',
         UNLISTED_CONTAINER_SECRET: 'unlisted-container-secret',
+        PROVIDER_ADMISSION_OLLAMA_CONCURRENCY: '2',
+        PROVIDER_ADMISSION_MAX_QUEUE: '8',
+        PROVIDER_ADMISSION_WAIT_MS: '10000',
+        OLLAMA_EMBEDDING_REQUEST_TIMEOUT_MS: '45000',
+        PROVIDER_ADMISSION_CONCURRENCY: '5',
       },
     });
 
@@ -192,6 +202,11 @@ test('process environment mode applies the same runtime allowlist for containers
       hasMigrationUrl: false,
       hasUnlistedSecret: false,
       hasBootstrapControl: false,
+      ollamaConcurrency: '2',
+      providerQueueLimit: '8',
+      providerQueueWaitMs: '10000',
+      embeddingTimeoutMs: '45000',
+      hasUnusedRemoteConcurrency: false,
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

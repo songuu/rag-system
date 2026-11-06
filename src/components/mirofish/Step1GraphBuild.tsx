@@ -2,136 +2,137 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import KnowledgeGraphViewer from '@/components/KnowledgeGraphViewer';
-import type { ModelOverride } from '@/lib/mirofish/types';
-
-interface Ontology {
-  entity_types: Array<{
-    name: string;
-    description: string;
-    attributes: Array<{ name: string; type: string; description: string }>;
-    examples: string[];
-  }>;
-  edge_types: Array<{
-    name: string;
-    description: string;
-    source_targets: Array<{ source: string; target: string }>;
-    attributes: unknown[];
-  }>;
-  analysis_summary: string;
-}
-
-interface GraphData {
-  graph_id: string;
-  nodes: Array<{
-    uuid: string;
-    name: string;
-    labels: string[];
-    summary: string;
-    attributes: Record<string, unknown>;
-  }>;
-  edges: Array<{
-    uuid: string;
-    name: string;
-    fact: string;
-    source_node_name: string;
-    target_node_name: string;
-  }>;
-  node_count: number;
-  edge_count: number;
-}
+import type { ModelOverride, ProjectGraphIdentity, Ontology, GraphData } from '@/lib/mirofish/types';
+import { useMiroFishLocale } from './MiroFishLocaleProvider';
+import { toMiroFishViewerGraph } from '@/lib/mirofish/graph-view';
+import { MIROFISH_SEED_MAX_TOTAL_BYTES, MIROFISH_SEED_MAX_FILES, MIROFISH_SEED_EXTENSIONS, type MiroFishSeedFileInfo } from '@/lib/mirofish/seed-file-contract';
 
 interface Step1Props {
   projectId: string;
   simulationRequirement: string;
   initialTexts?: string[];
+  initialSeedFiles?: MiroFishSeedFileInfo[];
+  onSeedFilesPersist?: (files: MiroFishSeedFileInfo[]) => void | Promise<void>;
   ontology: Ontology | null;
   graphData: GraphData | null;
   modelOverride?: ModelOverride | null;
-  onTextsPersist: (texts: string[]) => void;
-  onOntologyGenerated: (ontology: Ontology) => void;
-  onGraphBuilt: (graphData: GraphData) => void;
-  onComplete: () => void;
-}
-
-interface UploadedPdf {
-  filename: string;
-  pages: number;
-  size: number;
+  initialTaskId?: string | null;
+  onTaskStarted?: (taskId: string | null) => void | Promise<void>;
+  onTextsPersist: (texts: string[]) => void | Promise<void>;
+  onOntologyGenerated: (ontology: Ontology) => void | Promise<void>;
+  onGraphBuilt: (graphData: GraphData, identity?: ProjectGraphIdentity) => void | Promise<void>;
+  onComplete: () => void | Promise<void>;
 }
 
 export default function Step1GraphBuild({
   projectId,
   simulationRequirement,
   initialTexts,
+  initialSeedFiles,
+  onSeedFilesPersist,
   ontology,
   graphData,
   modelOverride,
+  initialTaskId,
+  onTaskStarted,
   onTextsPersist,
   onOntologyGenerated,
   onGraphBuilt,
   onComplete,
 }: Step1Props) {
+  const { locale, t } = useMiroFishLocale();
   const [texts, setTexts] = useState(() => initialTexts?.join('\n\n') ?? '');
+  const textsRef = useRef(texts);
+  useEffect(() => { textsRef.current = texts; }, [texts]);
   const [graphText, setGraphText] = useState('');
   const [ontologyLoading, setOntologyLoading] = useState(false);
-  const [graphLoading, setGraphLoading] = useState(false);
-  const [graphTaskId, setGraphTaskId] = useState<string | null>(null);
+  const [graphLoading, setGraphLoading] = useState(Boolean(initialTaskId) && !graphData);
+  const [recoveringGraph, setRecoveringGraph] = useState(!initialTaskId && Boolean(ontology) && !graphData);
+  const [graphTaskId, setGraphTaskId] = useState<string | null>(initialTaskId ?? null);
+  const [recoveredGraph, setRecoveredGraph] = useState<{ graphId: string; documentVersion?: string; trustLevel?: string; graphGeneration?: string } | null>(null);
+  const recoveryAttempted = useRef(false);
+  const interruptedTask = useRef(false);
+  const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ status: string; progress: number; message: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadedPdf, setUploadedPdf] = useState<UploadedPdf | null>(null);
+  const [uploadedFiles, setUploadedFiles] = useState<MiroFishSeedFileInfo[]>(initialSeedFiles ?? []);
+  const [seedSavePending, setSeedSavePending] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handlePdfUpload = async (file: File) => {
-    if (file.type !== 'application/pdf') {
-      setError('仅支持 PDF 文件');
-      return;
+  const handleSeedUpload = async (files: File[]) => {
+    if (uploading || files.length === 0) return;
+    if (files.some(file => !MIROFISH_SEED_EXTENSIONS.includes(file.name.split('.').at(-1)?.toLowerCase() as typeof MIROFISH_SEED_EXTENSIONS[number]))) {
+      setError(t('支持 PDF、Markdown 和 TXT 文件', 'Choose PDF, Markdown or TXT files')); return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setError('文件大小不能超过 10MB');
-      return;
+    if (files.length + uploadedFiles.length > MIROFISH_SEED_MAX_FILES) {
+      setError(t('每个项目最多上传 10 个文件', 'Upload up to 10 files per project')); return;
+    }
+    if ([...files, ...uploadedFiles].reduce((sum, file) => sum + file.size, 0) > MIROFISH_SEED_MAX_TOTAL_BYTES) {
+      setError(t('上传文件总量不能超过 50MB', 'Combined uploads must be 50 MB or smaller')); return;
     }
     setUploading(true);
     setError(null);
     try {
       const formData = new FormData();
-      formData.append('file', file);
-      const response = await fetch('/rag-api/mirofish/upload', { method: 'POST', body: formData });
+      files.forEach(file => formData.append('files', file));
+      const response = await fetch('/rag-api/mirofish/upload', { method: 'POST', headers: { 'Accept-Language': locale }, body: formData });
       const data = await response.json();
-      if (!data.success) throw new Error(data.error || '上传失败');
-      setTexts(data.text);
-      onTextsPersist([data.text]);
-      setUploadedPdf({ filename: data.filename, pages: data.pages, size: data.size });
+      if (!data.success) throw new Error(data.error || t("上传失败"));
+      const extracted = Array.isArray(data.texts) ? data.texts.join('\n\n') : data.text;
+      if (typeof extracted !== 'string' || !extracted.trim()) throw new Error(t('文件中没有可读取的文本', 'No readable text was found in these files'));
+      const nextTexts = [textsRef.current, extracted].filter(value => value.trim()).join('\n\n');
+      const nextFiles = [...uploadedFiles, ...(Array.isArray(data.files) ? data.files : [{ filename: data.filename, pages: data.pages, size: data.size }])];
+      textsRef.current = nextTexts;
+      setTexts(nextTexts);
+      setUploadedFiles(nextFiles);
+      setSeedSavePending(true);
+      await onTextsPersist([nextTexts]);
+      await onSeedFilesPersist?.(nextFiles);
+      setSeedSavePending(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'PDF 上传失败');
+      setError(err instanceof Error ? err.message : t('文件上传失败', 'File upload failed'));
     } finally {
       setUploading(false);
     }
   };
 
+  const retrySeedSave = async () => {
+    if (uploading) return;
+    setUploading(true); setError(null);
+    try {
+      await onTextsPersist([textsRef.current]);
+      await onSeedFilesPersist?.(uploadedFiles);
+      setSeedSavePending(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('保存种子文件失败', 'Unable to save seed files'));
+    } finally { setUploading(false); }
+  };
+
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handlePdfUpload(file);
+    const files = Array.from(e.target.files ?? []);
+    void handleSeedUpload(files);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleDrop = (e: React.DragEvent<HTMLElement>) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handlePdfUpload(file);
+    void handleSeedUpload(Array.from(e.dataTransfer.files));
   };
 
   const generateOntology = async () => {
-    if (!texts.trim()) { setError('请输入分析文本'); return; }
+    if (!texts.trim()) { setError(t("请输入分析文本")); return; }
     setOntologyLoading(true);
     setError(null);
-    onTextsPersist([texts]);
     try {
+      await onTextsPersist([texts]);
+      if (seedSavePending) { await onSeedFilesPersist?.(uploadedFiles); setSeedSavePending(false); }
       const response = await fetch('/rag-api/mirofish/ontology', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept-Language': locale },
         body: JSON.stringify({
           texts: [texts],
           simulationRequirement,
@@ -139,10 +140,10 @@ export default function Step1GraphBuild({
         }),
       });
       const data = await response.json();
-      if (!data.success) throw new Error(data.error || '本体生成失败');
-      onOntologyGenerated(data.ontology);
+      if (!data.success) throw new Error(data.error || t("本体生成失败"));
+      await onOntologyGenerated(data.ontology);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '本体生成失败');
+      setError(err instanceof Error ? err.message : t("本体生成失败"));
     } finally {
       setOntologyLoading(false);
     }
@@ -150,54 +151,142 @@ export default function Step1GraphBuild({
 
   const buildGraph = async () => {
     const textToUse = graphText.trim() || texts.trim();
-    if (!textToUse) { setError('请输入文本内容'); return; }
-    if (!ontology) { setError('请先生成本体'); return; }
+    if (!textToUse) { setError(t("请输入文本内容")); return; }
+    if (!ontology) { setError(t("请先生成本体")); return; }
     setGraphLoading(true);
     setError(null);
-    setProgress({ status: 'pending', progress: 0, message: '正在创建任务...' });
+    setRecoveryNotice(null);
+    setProgress({ status: 'pending', progress: 0, message: t("正在创建任务...") });
     try {
       const response = await fetch('/rag-api/mirofish/graph', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept-Language': locale },
         body: JSON.stringify({
           text: textToUse,
+            projectId,
           ontology,
           graphName: `Project ${projectId} Graph`,
           modelOverride: modelOverride || undefined,
         }),
       });
       const data = await response.json();
-      if (!data.success) throw new Error(data.error || '图谱构建失败');
+      if (!data.success) throw new Error(data.error || t("图谱构建失败"));
       setGraphTaskId(data.taskId);
+      await onTaskStarted?.(data.taskId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '图谱构建失败');
+      setError(err instanceof Error ? err.message : t("图谱构建失败"));
       setGraphLoading(false);
     }
   };
 
   useEffect(() => {
-    if (!graphTaskId || !graphLoading) return;
-    const pollStatus = async () => {
+    if (!ontology || graphData || graphTaskId || recoveryAttempted.current) return;
+    recoveryAttempted.current = true;
+    setRecoveringGraph(true);
+    const controller = new AbortController();
+    let cancelled = false;
+    let timedOut = false;
+    const deadline = setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
+    // Older projects did not persist task IDs. Recover only artifacts carrying
+    // this exact project name, from the server's already-authorized catalog.
+    void (async () => {
       try {
-        const response = await fetch(`/rag-api/mirofish/graph?action=status&taskId=${graphTaskId}`);
-        const data = await response.json();
-        if (data.success) {
-          setProgress({ status: data.status, progress: data.progress || 0, message: data.message || '' });
-          if (data.status === 'completed' && data.graphId) {
-            const graphResponse = await fetch(`/rag-api/mirofish/graph?action=data&graphId=${data.graphId}`);
-            const graphResult = await graphResponse.json();
-            if (graphResult.success) onGraphBuilt(graphResult.graph);
-            setGraphLoading(false);
-          } else if (data.status === 'failed') {
-            setError(data.error || '图谱构建失败');
-            setGraphLoading(false);
-          }
+        const response = await fetch('/rag-api/mirofish/graph?action=list', { signal: controller.signal });
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || t("读取已有图谱失败"));
+        const artifact = result.graphs?.filter((item: { graphName?: string }) => item.graphName === `Project ${projectId} Graph`)
+          .sort((a: { createdAt: string }, b: { createdAt: string }) => b.createdAt.localeCompare(a.createdAt))[0];
+        if (!cancelled && artifact) {
+          setRecoveredGraph(artifact);
+          setRecoveryNotice(null);
+          setError(null);
+          setGraphLoading(true);
+        } else if (!cancelled && interruptedTask.current) {
+          setRecoveryNotice(t('上次图谱构建任务已中断，未找到已保存图谱。文本和本体已保留，请重新构建。',
+            'The previous graph build was interrupted and no saved graph was found. Your text and ontology are preserved. Please build again.'));
         }
-      } catch { /* ignore */ }
+      } catch (cause) {
+        if (!cancelled) setError(timedOut
+          ? t('检查已有图谱超时，请重试。', 'Checking saved graphs timed out. Please try again.')
+          : cause instanceof Error ? cause.message : t("读取已有图谱失败"));
+      } finally {
+        clearTimeout(deadline);
+        if (!cancelled) setRecoveringGraph(false);
+      }
+    })();
+    return () => { cancelled = true; clearTimeout(deadline); controller.abort(); recoveryAttempted.current = false; };
+  }, [ontology, graphData, graphTaskId, projectId, t]);
+
+  useEffect(() => {
+    if ((!graphTaskId && !recoveredGraph) || !graphLoading) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const pollStatus = async () => {
+      let timedOut = false;
+      const deadline = setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
+      try {
+        let data;
+        if (recoveredGraph) data = { ...recoveredGraph, status: 'completed', progress: 100, message: t("正在读取已完成图谱...") };
+        else {
+          const response = await fetch(`/rag-api/mirofish/graph?action=status&taskId=${encodeURIComponent(graphTaskId!)}`, { signal: controller.signal });
+          data = await response.json();
+          if (!cancelled && response.status === 404 && data.code === 'MIROFISH_GRAPH_NOT_FOUND') {
+            // TaskManager is process-local; its absence after a restart does
+            // not imply that the durable graph was lost. Clear the stale
+            // reference before trying the authorized artifact catalog.
+            await onTaskStarted?.(null);
+            if (cancelled) return;
+            interruptedTask.current = true;
+            recoveryAttempted.current = false;
+            setError(null);
+            setProgress(null);
+            setGraphLoading(false);
+            setRecoveringGraph(true);
+            setGraphTaskId(null);
+            return;
+          }
+          if (!response.ok || !data.success) throw new Error(data.error || t("读取图谱任务失败"));
+        }
+        if (cancelled) return;
+        setProgress({ status: data.status, progress: data.progress || 0, message: data.message || '' });
+        if (data.status === 'failed') throw new Error(data.error || t("图谱构建失败"));
+        if (data.status === 'completed') {
+          if (!data.graphId) throw new Error(t("图谱任务缺少构建结果，请重新构建"));
+          const params = new URLSearchParams({ action: 'data', graphId: data.graphId });
+          for (const field of ['documentVersion', 'trustLevel', 'graphGeneration'] as const) {
+            if (data[field]) params.set(field, data[field]);
+          }
+          const response = await fetch(`/rag-api/mirofish/graph?${params}`, { signal: controller.signal });
+          const result = await response.json();
+          if (!response.ok || !result.success || !result.graph) throw new Error(result.error || t("图谱已构建，但读取结果失败，请重试"));
+          if (result.graph.graph_id !== data.graphId) throw new Error(t("图谱结果与构建任务不一致，请重试"));
+          if (cancelled) return;
+          await onGraphBuilt(result.graph, {
+            documentId: data.graphId, documentVersion: result.documentVersion || data.documentVersion,
+            trustLevel: result.trustLevel || data.trustLevel,
+            ...(result.graphGeneration || data.graphGeneration ? { graphGeneration: result.graphGeneration || data.graphGeneration } : {}),
+          });
+          if (!cancelled) { setGraphLoading(false); setError(null); }
+          return;
+        }
+        // Schedule only after the previous poll settles; slow readback cannot
+        // create overlapping requests or save the same project repeatedly.
+        timer = setTimeout(pollStatus, 2000);
+      } catch (cause) {
+        if (!cancelled) {
+          setError(timedOut
+            ? t('读取图谱任务或结果超时，请重新读取。', 'Reading the graph task or result timed out. Please retry.')
+            : cause instanceof Error ? cause.message : t("读取图谱结果失败"));
+          setGraphLoading(false);
+        }
+      } finally {
+        clearTimeout(deadline);
+      }
     };
-    const interval = setInterval(pollStatus, 2000);
-    return () => clearInterval(interval);
-  }, [graphTaskId, graphLoading, onGraphBuilt]);
+    void pollStatus();
+    return () => { cancelled = true; controller.abort(); if (timer) clearTimeout(timer); };
+  }, [graphTaskId, recoveredGraph, graphLoading, onGraphBuilt, onTaskStarted, t]);
 
   const phase: 'ontology' | 'graph' | 'done' = !ontology ? 'ontology' : !graphData ? 'graph' : 'done';
 
@@ -210,7 +299,7 @@ export default function Step1GraphBuild({
           {(['ontology', 'graph', 'done'] as const).map((p, i) => {
             const isDone = phase === 'done' || (phase === 'graph' && p === 'ontology');
             const isCur = phase === p;
-            const labels = ['本体生成', '图谱构建', '完成'];
+            const labels = [t("本体生成"), t("图谱构建"), t("完成")];
             return (
               <React.Fragment key={p}>
                 {i > 0 && <div className={`h-px flex-1 ${isDone ? 'bg-purple-500/50' : 'bg-white/10'}`} />}
@@ -231,8 +320,8 @@ export default function Step1GraphBuild({
 
         {/* 需求概览 */}
         <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-purple-400/70">模拟需求</div>
-          <div className="text-sm leading-relaxed text-white/70">{simulationRequirement || '未设置'}</div>
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-purple-400/70">{t("模拟需求")}</div>
+          <div className="text-sm leading-relaxed text-white/70">{simulationRequirement || t("未设置")}</div>
         </div>
 
         {/* 步骤 1: 本体生成 */}
@@ -250,15 +339,15 @@ export default function Step1GraphBuild({
               {ontology ? '✓' : '1'}
             </div>
             <div>
-              <div className="text-sm font-semibold text-white">本体生成</div>
-              <div className="text-[11px] text-white/40">上传 PDF 或输入文本,提取实体 & 关系模式</div>
+              <div className="text-sm font-semibold text-white">{t("本体生成")}</div>
+              <div className="text-[11px] text-white/40">{t("上传 PDF 或输入文本,提取实体 & 关系模式")}</div>
             </div>
           </div>
 
           {/* PDF 上传区 */}
           {!ontology && (
             <div className="mb-3">
-              <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleFileSelect} className="hidden" />
+              <input ref={fileInputRef} type="file" multiple accept=".pdf,.md,.markdown,.txt" onChange={handleFileSelect} className="hidden" />
               <button
                 type="button"
                 onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
@@ -268,7 +357,7 @@ export default function Step1GraphBuild({
                 className={`w-full rounded-xl border-2 border-dashed p-5 text-center transition-all ${
                   isDragging
                     ? 'border-purple-500 bg-purple-500/10 scale-[1.01]'
-                    : uploadedPdf
+                    : uploadedFiles.length > 0
                       ? 'border-emerald-500/40 bg-emerald-500/5'
                       : 'border-white/10 bg-white/[0.02] hover:border-purple-500/40 hover:bg-purple-500/[0.03]'
                 }`}
@@ -276,22 +365,27 @@ export default function Step1GraphBuild({
                 {uploading ? (
                   <div className="flex items-center justify-center gap-2 text-sm text-white/50">
                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-purple-500/30 border-t-purple-500" />
-                    解析 PDF 中...
+                    {t('正在解析文件...', 'Parsing files...')}
                   </div>
-                ) : uploadedPdf ? (
+                ) : uploadedFiles.length > 0 ? (
                   <div className="flex items-center justify-center gap-2 text-sm text-emerald-400">
                     <span>📄</span>
-                    <span>{uploadedPdf.filename}</span>
-                    <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px]">{uploadedPdf.pages} 页</span>
+                    <span>{t('继续添加文件', 'Add more files')} ({uploadedFiles.length}/{MIROFISH_SEED_MAX_FILES})</span>
                   </div>
                 ) : (
                   <div>
                     <div className="mb-1 text-2xl">📁</div>
-                    <div className="text-sm text-white/60">点击或拖放 PDF 文件</div>
-                    <div className="mt-1 text-[10px] text-white/25">仅支持 PDF, ≤10MB</div>
+                    <div className="text-sm text-white/60">{t('点击或拖放 PDF / Markdown / TXT 文件', 'Choose or drop PDF / Markdown / TXT files')}</div>
+                    <div className="mt-1 text-[10px] text-white/25">{t('最多 10 个文件，合计 50MB', 'Up to 10 files, 50 MB combined')}</div>
                   </div>
                 )}
               </button>
+              {uploadedFiles.length > 0 && <ul className="mt-2 space-y-1 text-xs text-white/60" aria-label={t('种子文件', 'Seed files')}>
+                {uploadedFiles.map((file, index) => <li key={`${file.filename}-${index}`} className="flex justify-between gap-2 rounded bg-white/5 px-3 py-2">
+                  <span className="truncate">{file.filename}</span><span>{file.pages ? `${file.pages} ${t('页', 'pages')}` : `${Math.ceil(file.size / 1024)} KB`}</span>
+                </li>)}
+              </ul>}
+              {seedSavePending && <button type="button" disabled={uploading} onClick={() => { void retrySeedSave(); }} className="mt-3 text-xs text-amber-300 disabled:opacity-40">{t('重试保存种子文件', 'Retry saving seed files')}</button>}
             </div>
           )}
 
@@ -299,7 +393,7 @@ export default function Step1GraphBuild({
           <textarea
             value={texts}
             onChange={e => setTexts(e.target.value)}
-            placeholder="直接输入或通过上方 PDF 上传填充..."
+            placeholder={t("直接输入或通过上方 PDF 上传填充...")}
             disabled={!!ontology}
             rows={4}
             className="mb-3 w-full resize-none rounded-xl border border-white/[0.08] bg-black/30 px-4 py-3 text-sm text-white placeholder:text-white/20 focus:border-purple-500/40 focus:outline-none focus:ring-1 focus:ring-purple-500/20 disabled:opacity-40"
@@ -315,13 +409,12 @@ export default function Step1GraphBuild({
               {ontologyLoading && (
                 <div className="absolute inset-0 bg-gradient-to-r from-purple-600/0 via-white/10 to-purple-600/0 animate-pulse" />
               )}
-              <span className="relative">{ontologyLoading ? '正在分析实体与关系...' : '🧬 生成本体'}</span>
+              <span className="relative">{ontologyLoading ? t("正在分析实体与关系...") : t("🧬 生成本体")}</span>
             </button>
           ) : (
             <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
               <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                <span>✅</span> 本体已生成
-              </div>
+                <span>✅</span>{t("本体已生成")}</div>
               <div className="flex flex-wrap gap-1.5">
                 {ontology.entity_types.map(t => (
                   <span key={t.name} className="rounded-lg bg-blue-500/15 px-2.5 py-1 text-[11px] font-medium text-blue-300">
@@ -358,41 +451,48 @@ export default function Step1GraphBuild({
                 {graphData ? '✓' : '2'}
               </div>
               <div>
-                <div className="text-sm font-semibold text-white">图谱构建</div>
-                <div className="text-[11px] text-white/40">基于本体抽取实体与关系,构建知识图谱</div>
+                <div className="text-sm font-semibold text-white">{t("图谱构建")}</div>
+                <div className="text-[11px] text-white/40">{t("基于本体抽取实体与关系,构建知识图谱")}</div>
               </div>
             </div>
 
             <textarea
               value={graphText}
               onChange={e => setGraphText(e.target.value)}
-              placeholder="输入要构建图谱的文本(可选,留空则使用本体文本)..."
+              placeholder={t("输入要构建图谱的文本(可选,留空则使用本体文本)...")}
               disabled={!!graphData}
               rows={3}
               className="mb-3 w-full resize-none rounded-xl border border-white/[0.08] bg-black/30 px-4 py-3 text-sm text-white placeholder:text-white/20 focus:border-purple-500/40 focus:outline-none focus:ring-1 focus:ring-purple-500/20 disabled:opacity-40"
             />
 
+            {recoveryNotice && !graphData && <p role="status" className="mb-3 text-xs leading-relaxed text-amber-200/80">{recoveryNotice}</p>}
+
             {!graphData ? (
               <button
                 type="button"
-                onClick={buildGraph}
-                disabled={graphLoading}
+                onClick={() => {
+                  if ((graphTaskId || recoveredGraph) && progress?.status !== 'failed') {
+                    setError(null);
+                    setGraphLoading(true);
+                  } else { void buildGraph(); }
+                }}
+                disabled={graphLoading || recoveringGraph}
                 className="group relative w-full overflow-hidden rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 py-3 text-sm font-semibold text-white shadow-lg shadow-purple-500/20 transition-all hover:shadow-purple-500/30 disabled:opacity-40 disabled:shadow-none"
               >
                 {graphLoading && (
                   <div className="absolute inset-0 bg-gradient-to-r from-purple-600/0 via-white/10 to-purple-600/0 animate-pulse" />
                 )}
-                <span className="relative">{graphLoading ? '构建中...' : '🔗 构建图谱'}</span>
+                <span className="relative">{recoveringGraph ? t("正在检查已有图谱...") : graphLoading ? t("构建中...") : (graphTaskId || recoveredGraph) && progress?.status !== 'failed' ? t("重新读取图谱") : t("🔗 构建图谱")}</span>
               </button>
             ) : (
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-xl bg-blue-500/10 p-4 text-center">
                   <div className="text-2xl font-bold text-blue-400">{graphData.node_count}</div>
-                  <div className="text-[11px] text-blue-300/60">实体节点</div>
+                  <div className="text-[11px] text-blue-300/60">{t("实体节点")}</div>
                 </div>
                 <div className="rounded-xl bg-purple-500/10 p-4 text-center">
                   <div className="text-2xl font-bold text-purple-400">{graphData.edge_count}</div>
-                  <div className="text-[11px] text-purple-300/60">关系边</div>
+                  <div className="text-[11px] text-purple-300/60">{t("关系边")}</div>
                 </div>
               </div>
             )}
@@ -418,11 +518,17 @@ export default function Step1GraphBuild({
         {graphData && (
           <button
             type="button"
-            onClick={onComplete}
+            disabled={advancing}
+            onClick={async () => {
+              setAdvancing(true);
+              try { await onComplete(); }
+              catch (cause) { setError(cause instanceof Error ? cause.message : t("进入下一步失败")); }
+              finally { setAdvancing(false); }
+            }}
             className="group w-full rounded-2xl bg-gradient-to-r from-purple-600 via-violet-600 to-fuchsia-600 p-px shadow-lg shadow-purple-500/20 transition-all hover:shadow-purple-500/30"
           >
             <div className="flex items-center justify-center gap-2 rounded-[15px] bg-[#060612] px-6 py-3.5 transition-colors group-hover:bg-[#0a0a1a]">
-              <span className="text-sm font-semibold text-white">下一步: 环境设置</span>
+              <span className="text-sm font-semibold text-white">{t("下一步: 环境设置")}</span>
               <span className="text-purple-400 transition-transform group-hover:translate-x-1">→</span>
             </div>
           </button>
@@ -438,9 +544,7 @@ export default function Step1GraphBuild({
                 type="button"
                 onClick={() => setError(null)}
                 className="mt-1 text-[11px] text-rose-400/60 hover:text-rose-300"
-              >
-                关闭
-              </button>
+              >{t("关闭")}</button>
             </div>
           </div>
         )}
@@ -452,42 +556,15 @@ export default function Step1GraphBuild({
           <div className="overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.02]">
             <div className="border-b border-white/[0.06] px-5 py-3">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-white">知识图谱</div>
+                <div className="text-sm font-semibold text-white">{t("知识图谱")}</div>
                 <div className="flex gap-3 text-[11px] text-white/30">
-                  <span>{graphData.node_count} 节点</span>
-                  <span>{graphData.edge_count} 关系</span>
+                  <span>{graphData.node_count}{t("节点")}</span>
+                  <span>{graphData.edge_count}{t("关系")}</span>
                 </div>
               </div>
             </div>
             <KnowledgeGraphViewer
-              graph={{
-                entities: graphData.nodes.map(n => ({
-                  id: n.uuid,
-                  name: n.name,
-                  type: (n.labels[0]?.toUpperCase() || 'OTHER') as 'PERSON' | 'ORGANIZATION' | 'LOCATION' | 'EVENT' | 'CONCEPT' | 'PRODUCT' | 'DATE' | 'OTHER',
-                  description: n.summary,
-                  aliases: [],
-                  mentions: 1,
-                  sourceChunks: [],
-                })),
-                relations: graphData.edges.map(e => ({
-                  id: e.uuid,
-                  source: e.source_node_name,
-                  target: e.target_node_name,
-                  type: e.name,
-                  description: e.fact,
-                  weight: 1,
-                  sourceChunks: [],
-                })),
-                communities: [],
-                metadata: {
-                  documentId: graphData.graph_id,
-                  createdAt: new Date().toISOString(),
-                  entityCount: graphData.node_count,
-                  relationCount: graphData.edge_count,
-                  communityCount: 0,
-                },
-              }}
+              graph={toMiroFishViewerGraph(graphData)}
             />
           </div>
         ) : ontology ? (
@@ -495,13 +572,12 @@ export default function Step1GraphBuild({
             <div className="mb-6 flex items-center gap-3">
               <span className="text-2xl">🧬</span>
               <div>
-                <div className="text-lg font-semibold text-white">本体定义</div>
-                <div className="text-xs text-white/40">{ontology.analysis_summary?.slice(0, 100) || '基于输入文本生成的本体结构'}</div>
+                <div className="text-lg font-semibold text-white">{t("本体定义")}</div>
+                <div className="text-xs text-white/40">{ontology.analysis_summary?.slice(0, 100) || t("基于输入文本生成的本体结构")}</div>
               </div>
             </div>
             <div className="mb-5">
-              <div className="mb-3 text-xs font-semibold uppercase tracking-widest text-blue-400/60">
-                实体类型 ({ontology.entity_types.length})
+              <div className="mb-3 text-xs font-semibold uppercase tracking-widest text-blue-400/60">{t("实体类型 (")}{ontology.entity_types.length})
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 {ontology.entity_types.map(type => (
@@ -520,8 +596,7 @@ export default function Step1GraphBuild({
               </div>
             </div>
             <div>
-              <div className="mb-3 text-xs font-semibold uppercase tracking-widest text-purple-400/60">
-                关系类型 ({ontology.edge_types.length})
+              <div className="mb-3 text-xs font-semibold uppercase tracking-widest text-purple-400/60">{t("关系类型 (")}{ontology.edge_types.length})
               </div>
               <div className="flex flex-wrap gap-2">
                 {ontology.edge_types.map((edge, i) => (
@@ -543,14 +618,12 @@ export default function Step1GraphBuild({
                 <div className="absolute inset-2 animate-spin rounded-full border border-dotted border-violet-500/15" style={{ animationDuration: '15s', animationDirection: 'reverse' }} />
                 <span className="text-4xl">🧬</span>
               </div>
-              <h3 className="mb-2 text-xl font-bold text-white">图谱构建</h3>
-              <p className="text-sm leading-relaxed text-white/40">
-                上传文档或输入文本,系统将自动提取实体和关系,构建知识图谱。这是整个模拟流程的基础。
-              </p>
+              <h3 className="mb-2 text-xl font-bold text-white">{t("图谱构建")}</h3>
+              <p className="text-sm leading-relaxed text-white/40">{t("上传文档或输入文本,系统将自动提取实体和关系,构建知识图谱。这是整个模拟流程的基础。")}</p>
               <div className="mt-6 flex items-center justify-center gap-4 text-[11px] text-white/20">
-                <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-purple-500/40" />支持 PDF</span>
-                <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-blue-500/40" />自动抽取</span>
-                <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500/40" />可视化图谱</span>
+                <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-purple-500/40" />{t("支持 PDF")}</span>
+                <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-blue-500/40" />{t("自动抽取")}</span>
+                <span className="flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500/40" />{t("可视化图谱")}</span>
               </div>
             </div>
           </div>

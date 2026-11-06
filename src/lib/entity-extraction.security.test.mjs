@@ -695,6 +695,21 @@ test('entity extraction keeps timed-out provider work reserved until real settle
   assert.match(serializedLogs, /ENTITY_EXTRACTION_PROVIDER_BUSY/);
 });
 
+test('extraction progress counts completed chunks while the provider is pending', async () => {
+  const events = [];
+  let release;
+  const extractor = createExtractor({
+    invoke() { return new Promise(resolve => { release = () => resolve(emptyExtractionResponse()); }); },
+  }, `progress:${Date.now()}`, 1000, { baseChunkTime: 1000 });
+  extractor.onProgress(event => events.push(event));
+  const work = extractor.extract('short source', 'progress-document');
+  await new Promise(resolve => setImmediate(resolve));
+  try {
+    assert.equal(events.filter(event => event.stage === 'extracting').at(-1).current, 0);
+  } finally { release(); await work; }
+  assert.equal(events.filter(event => event.stage === 'extracting').at(-1).current, 1);
+});
+
 test('entity extraction normalizes provider-native TimeoutError and fails closed', async () => {
   const extractor = createExtractor({
     async invoke() {
@@ -763,6 +778,35 @@ test('entity extraction releases a provider only after every concurrent orphan s
   await new Promise(resolve => setImmediate(resolve));
   const graph = await contender.extract('released after all settle', 'released-document');
   assert.equal(contenderCalls, 1);
+  assert.equal(graph.metadata.entityCount, 0);
+});
+
+test('strict extraction rejects a later failed or malformed chunk after an earlier success', async () => {
+  for (const failure of ['provider', 'malformed', 'missing-arrays', 'wrong-arrays', 'missing-fields', 'invalid-relation']) {
+    let calls = 0;
+    const extractor = createExtractor({ async invoke() {
+      calls += 1;
+      if (calls === 1) return oneEntityExtractionResponse();
+      if (failure === 'provider') throw new Error('private provider detail');
+      if (failure === 'missing-arrays') return { content: '{}' };
+      if (failure === 'wrong-arrays') return { content: '{"entities":{},"relations":[]}' };
+      if (failure === 'missing-fields') return { content: '{"entities":[{"name":"Alice"}],"relations":[]}' };
+      if (failure === 'invalid-relation') return { content: '{"entities":[],"relations":[{"source":"Alice","target":null,"type":"link","description":""}]}' };
+      return { content: 'invalid json' };
+    } }, `strict-${failure}`, 10_000, { chunkSize: 4, requireCompleteExtraction: true });
+    await assert.rejects(extractor.extract('abcdefghij', `strict-document-${failure}`), /文本块抽取失败/);
+    assert.equal(calls, 2);
+  }
+});
+
+test('strict extraction accepts complete arrays from every chunk, including JSON fences', async () => {
+  let calls = 0;
+  const extractor = createExtractor({ async invoke() {
+    calls += 1;
+    return { content: '```json\n' + emptyExtractionResponse().content + '\n```' };
+  } }, 'strict-complete', 10_000, { chunkSize: 4, requireCompleteExtraction: true });
+  const graph = await extractor.extract('abcdefghij', 'strict-complete-document');
+  assert.ok(calls >= 2);
   assert.equal(graph.metadata.entityCount, 0);
 });
 

@@ -1,118 +1,44 @@
-/**
- * 报告管理 API
- *
- * POST /api/mirofish/report - 生成报告
- * GET /api/mirofish/report - 获取报告列表
- */
-
 import { NextRequest, NextResponse } from 'next/server';
-import { getReportAgent } from '@/lib/mirofish/report-agent';
-import { getSimulationRunner } from '@/lib/mirofish/simulation-runner';
-import {
-  getHttpModelOverrideErrorResponse,
-  validateHttpModelOverride,
-} from '@/lib/mirofish/model-override';
-import type { ReportInfo } from '@/lib/mirofish/types';
-
-// 内存存储报告
-const reports = new Map<string, ReportInfo>();
-
-export { reports as reportStore };
-
+import { readJsonObjectWithLimit } from '@/lib/security/request-validation';
+import { getMiroFishReportRuntime } from '@/lib/mirofish/report-runtime';
+import { resolveMiroFishRequestScope } from '@/lib/mirofish/request-scope';
+import { publicReportId } from '@/lib/mirofish/report-contracts';
+import { reportBoolean, reportHttpError, reportInteger } from '@/lib/mirofish/report-http';
+import { getHttpModelOverrideErrorResponse, validateHttpModelOverride } from '@/lib/mirofish/model-override';
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { simulation_id, project_id } = body as {
-      simulation_id: string;
-      project_id: string;
-    };
+    const { scope } = await resolveMiroFishRequestScope(request, 'ingest');
+    const body = await readJsonObjectWithLimit(request, 32 * 1024);
     const modelOverride = validateHttpModelOverride(body.modelOverride) || undefined;
-
-    if (!simulation_id) {
-      return NextResponse.json(
-        { success: false, error: '缺少 simulation_id' },
-        { status: 400 }
-      );
-    }
-
-    const runner = getSimulationRunner();
-    const snapshot = runner.getSnapshot(simulation_id);
-    if (!snapshot) {
-      return NextResponse.json(
-        { success: false, error: '模拟不存在' },
-        { status: 404 }
-      );
-    }
-
-    const reportId = `rpt_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    const now = new Date().toISOString();
-
-    // 创建初始报告
-    const initialReport: ReportInfo = {
-      report_id: reportId,
-      simulation_id,
-      project_id: project_id || snapshot.info.project_id,
-      status: 'generating',
-      title: '生成中...',
-      summary: '',
-      sections: [],
-      key_findings: [],
-      sentiment_trend: [],
-      created_at: now,
-      updated_at: now,
-    };
-    reports.set(reportId, initialReport);
-
-    // 异步生成报告
-    const agent = getReportAgent(modelOverride);
-
-    agent.generateReport(snapshot.info, snapshot.posts, snapshot.timeline)
-      .then(reportData => {
-        const report: ReportInfo = {
-          ...reportData,
-          report_id: reportId,
-          created_at: now,
-          updated_at: new Date().toISOString(),
-        };
-        reports.set(reportId, report);
-      })
-      .catch(error => {
-        const failedReport = reports.get(reportId);
-        if (failedReport) {
-          // 不可变更新：创建新对象替换旧对象
-          reports.set(reportId, {
-            ...failedReport,
-            status: 'failed',
-            summary: error instanceof Error ? error.message : '生成失败',
-            updated_at: new Date().toISOString(),
-          });
-        }
-      });
-
-    return NextResponse.json({ success: true, report_id: reportId });
+    const runtime = await getMiroFishReportRuntime(scope, modelOverride);
+    const report = await runtime.start({ simulationId: publicReportId(body.simulation_id), locale: request.headers.get('accept-language')?.startsWith('en') ? 'en' : 'zh',
+      ...(body.project_id !== undefined ? { projectId: publicReportId(body.project_id) } : {}),
+      forceRegenerate: reportBoolean(body.force_regenerate, 'force_regenerate'),
+      ...(body.resume_report_id !== undefined ? { resumeReportId: publicReportId(body.resume_report_id) } : {}),
+    });
+    return NextResponse.json({ success: true, report_id: report.report_id, status: report.status, progress: report.progress });
   } catch (error) {
-    const modelOverrideError = getHttpModelOverrideErrorResponse(error);
-    if (modelOverrideError) {
-      return NextResponse.json(modelOverrideError.body, { status: modelOverrideError.status });
-    }
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '生成报告失败' },
-      { status: 500 }
-    );
+    const modelError = getHttpModelOverrideErrorResponse(error);
+    return modelError ? NextResponse.json(modelError.body, { status: modelError.status }) : reportHttpError(error);
   }
 }
-
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const reportList = Array.from(reports.values()).sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-
-    return NextResponse.json({ success: true, reports: reportList });
-  } catch (error) {
-    return NextResponse.json(
-      { success: false, error: error instanceof Error ? error.message : '获取报告列表失败' },
-      { status: 500 }
-    );
-  }
+    const { scope } = await resolveMiroFishRequestScope(request);
+    const search = request.nextUrl.searchParams;
+    const simulationId = search.get('simulation_id');
+    const projectId = search.get('project_id');
+    if (simulationId) publicReportId(simulationId);
+    if (projectId) publicReportId(projectId);
+    const runtime = await getMiroFishReportRuntime(scope);
+    if (['by-simulation', 'check'].includes(search.get('action') ?? '')) {
+      const found = simulationId ? await runtime.findForSimulation(simulationId, projectId ?? undefined) : null;
+      const report = found ? await runtime.getAuthorized(found.report_id) : null;
+      return NextResponse.json({ success: true, exists: Boolean(report), report, report_id: report?.report_id ?? null });
+    }
+    const reports = await runtime.listAuthorized({ simulationId: simulationId ?? undefined, projectId: projectId ?? undefined,
+      limit: Math.max(1, reportInteger(search.get('limit'), 50, 100)) });
+    return NextResponse.json({ success: true, reports: reports.map(({ report_id, simulation_id, project_id, title, summary, status, progress, stage, created_at, updated_at }) =>
+      ({ report_id, simulation_id, project_id, title, summary, status, progress, stage, created_at, updated_at })) });
+  } catch (error) { return reportHttpError(error); }
 }

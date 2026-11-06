@@ -24,6 +24,7 @@ import {
 import { createRetrievalScope } from '../src/lib/security/retrieval-scope';
 import { canonicalJson } from '../src/lib/rag/eval/canonical-json';
 import { createBuildPublicationManifest, validateBuildPublicationManifest, type BuildPublicationManifest } from '../src/lib/knowledge-graph/build-publication-manifest';
+import { STANDALONE_GRAPH_TRIGGER } from '../src/lib/mirofish/standalone-graph-runtime';
 
 export interface GraphControlWorkerOptions {
   once: boolean;
@@ -106,6 +107,21 @@ interface BuildJobWorkerStore {
   }): Promise<KnowledgeGraphBuildJob>;
 }
 
+/** Console snapshots publish to their own project without activating the corpus graph. */
+export function wrapLocalGraphBuildStore(store: Pick<PostgresKnowledgeGraphBuildJobStore,
+  'claimNext' | 'completeValidated' | 'transition'>): BuildJobWorkerStore {
+  return {
+    claimNext: options => store.claimNext({ leaseMs: Math.min(options?.leaseMs ?? 90_000, 90_000) }),
+    transition: store.transition.bind(store),
+    async completeValidated(input) {
+      const validated = await store.completeValidated(input);
+      return validated.metadata.trigger === STANDALONE_GRAPH_TRIGGER
+        ? store.transition({ jobId: input.jobId, expectedStatus: 'validated', status: 'published', progress: 1 })
+        : validated;
+    },
+  };
+}
+
 export async function runGraphControlIteration(input: {
   publicationStore: PostgresKnowledgeGraphPublicationStore;
   commandStore: Pick<
@@ -114,7 +130,8 @@ export async function runGraphControlIteration(input: {
   > & Partial<Pick<Neo4jKnowledgeGraphCommandStore, 'getActive' | 'compareAndSetActive'>>;
   publish?: (event: ClaimedKnowledgeGraphPublicationEvent) => Promise<void>;
   buildStore?: BuildJobWorkerStore;
-  handleBuild?: (job: KnowledgeGraphBuildJob) => Promise<GraphBuildWebhookResult>;
+  handleBuild?: (job: KnowledgeGraphBuildJob, signal?: AbortSignal) => Promise<GraphBuildWebhookResult>;
+  renewBuildLease?: (job: KnowledgeGraphBuildJob, leaseMs: number) => Promise<void>;
   buildMaxAttempts?: number;
   buildLeaseMs?: number;
   batchSize: number;
@@ -166,43 +183,43 @@ export async function runGraphControlIteration(input: {
         handle: input.handleBuild,
         maxAttempts: input.buildMaxAttempts,
         leaseMs: input.buildLeaseMs,
-        finalizeStaged: async (job, result) => {
-          const scope = createRetrievalScope({
-            tenantId: job.tenantId,
-            corpusId: job.corpusId,
-            allowedTrustLevels: ['trusted', 'reviewed', 'external', 'quarantined'],
-            enforceIsolation: true,
-          });
-          const descriptor = await input.commandStore.getCompatibilityDescriptor({
-            tenantId: job.tenantId,
-            corpusId: job.corpusId,
-            graphVersion: job.graphVersion,
-          }, scope);
-          assertCompletedBuildDescriptor(job, result.artifactDigest, descriptor);
-          const snapshot = await input.commandStore.getSnapshot({
-            tenantId: job.tenantId, corpusId: job.corpusId, graphVersion: job.graphVersion,
-          }, scope);
-          if (!snapshot || snapshot.status === 'failed') throw new Error('Neo4j lacks a valid full graph build Snapshot.');
-          const manifest = createBuildPublicationManifest({
-            tenantId: snapshot.tenantId, corpusId: snapshot.corpusId, graphVersion: snapshot.graphVersion,
-            artifactDigest: snapshot.artifactDigest, documents: snapshot.documents,
-          });
-          const expected = requiredBuildDocumentIdentity(job.metadata.documentIdentity);
-          if (manifest.tenantId !== job.tenantId || manifest.corpusId !== job.corpusId || manifest.graphVersion !== job.graphVersion
-            || manifest.artifactDigest !== result.artifactDigest || canonicalJson(manifest.documents) !== canonicalJson([{
-              documentId: expected.documentId, documentVersion: expected.documentVersion, trustLevel: expected.trustLevel,
-            }])) throw new Error('Full Neo4j Snapshot does not match the durable graph build identity.');
-          await input.publicationStore.registerStagedSnapshot(scope, job.graphVersion);
-          return manifest;
-        },
+        renewLease: input.renewBuildLease,
+        finalizeStaged: (job, result) => finalizeGraphBuildSnapshot({ ...input, job, result }),
       })
     : { claimed: 0, validated: 0, failed: 0, retried: 0 };
   return { recovery, outbox, build };
 }
 
+/** Snapshot validation is identical for queue workers and a console recovery poke. */
+export async function finalizeGraphBuildSnapshot(input: {
+  job: KnowledgeGraphBuildJob;
+  result: Extract<GraphBuildWebhookResult, { status: 'staged' }>;
+  commandStore: Pick<Neo4jKnowledgeGraphCommandStore, 'getCompatibilityDescriptor' | 'getSnapshot'>;
+  publicationStore: Pick<PostgresKnowledgeGraphPublicationStore, 'registerStagedSnapshot'>;
+}): Promise<BuildPublicationManifest> {
+  const { job, result } = input;
+  const scope = createRetrievalScope({ tenantId: job.tenantId, corpusId: job.corpusId,
+    allowedTrustLevels: ['trusted', 'reviewed', 'external', 'quarantined'], enforceIsolation: true });
+  const identity = { tenantId: job.tenantId, corpusId: job.corpusId, graphVersion: job.graphVersion };
+  const descriptor = await input.commandStore.getCompatibilityDescriptor(identity, scope);
+  assertCompletedBuildDescriptor(job, result.artifactDigest, descriptor);
+  const snapshot = await input.commandStore.getSnapshot(identity, scope);
+  if (!snapshot || snapshot.status === 'failed') throw new Error('Neo4j lacks a valid full graph build Snapshot.');
+  const manifest = createBuildPublicationManifest({ tenantId: snapshot.tenantId, corpusId: snapshot.corpusId,
+    graphVersion: snapshot.graphVersion, artifactDigest: snapshot.artifactDigest, documents: snapshot.documents });
+  const expected = requiredBuildDocumentIdentity(job.metadata.documentIdentity);
+  if (manifest.tenantId !== job.tenantId || manifest.corpusId !== job.corpusId || manifest.graphVersion !== job.graphVersion
+    || manifest.artifactDigest !== result.artifactDigest || canonicalJson(manifest.documents) !== canonicalJson([{
+      documentId: expected.documentId, documentVersion: expected.documentVersion, trustLevel: expected.trustLevel,
+    }])) throw new Error('Full Neo4j Snapshot does not match the durable graph build identity.');
+  await input.publicationStore.registerStagedSnapshot(scope, job.graphVersion);
+  return manifest;
+}
+
 export async function processNextGraphBuildJob(input: {
   store: BuildJobWorkerStore;
-  handle: (job: KnowledgeGraphBuildJob) => Promise<GraphBuildWebhookResult>;
+  handle: (job: KnowledgeGraphBuildJob, signal?: AbortSignal) => Promise<GraphBuildWebhookResult>;
+  renewLease?: (job: KnowledgeGraphBuildJob, leaseMs: number) => Promise<void>;
   finalizeStaged?: (
     job: KnowledgeGraphBuildJob,
     result: Extract<GraphBuildWebhookResult, { status: 'staged' }>
@@ -221,8 +238,11 @@ export async function processNextGraphBuildJob(input: {
   const job = await input.store.claimNext({ leaseMs });
   if (!job) return { claimed: 0, validated: 0, failed: 0, retried: 0 };
   if (!job.leaseToken) throw new Error('Claimed graph build job is missing its lease token.');
+  const heartbeat = input.renewLease
+    ? startGraphBuildLeaseHeartbeat(() => input.renewLease!(job, leaseMs), leaseMs)
+    : undefined;
   try {
-    const result = await input.handle(job);
+    const result = await input.handle(job, heartbeat?.signal);
     if (result.status === 'staged') {
       if (!input.finalizeStaged) {
         throw new Error('Graph build staged completion requires durable snapshot validation.');
@@ -233,6 +253,7 @@ export async function processNextGraphBuildJob(input: {
       const manifest = validateBuildPublicationManifest(await input.finalizeStaged(job, result));
       if (manifest.tenantId !== job.tenantId || manifest.corpusId !== job.corpusId || manifest.graphVersion !== job.graphVersion
         || manifest.artifactDigest !== result.artifactDigest) throw new Error('Finalized publication manifest does not match the claimed graph build.');
+      await heartbeat?.stop();
       await input.store.completeValidated({
         jobId: job.id,
         progress: result.progress,
@@ -242,6 +263,7 @@ export async function processNextGraphBuildJob(input: {
       });
       return { claimed: 1, validated: 1, failed: 0, retried: 0 };
     }
+    await heartbeat?.stop();
     await input.store.transition({
       jobId: job.id,
       expectedStatus: 'running',
@@ -253,7 +275,9 @@ export async function processNextGraphBuildJob(input: {
     });
     return { claimed: 1, validated: 0, failed: 1, retried: 0 };
   } catch (error) {
-    const message = boundedErrorMessage(error);
+    let failure = error;
+    try { await heartbeat?.stop(); } catch (leaseError) { failure = leaseError; }
+    const message = boundedErrorMessage(failure);
     if (job.attempts >= maxAttempts) {
       await input.store.transition({
         jobId: job.id,
@@ -276,6 +300,39 @@ export async function processNextGraphBuildJob(input: {
     });
     return { claimed: 1, validated: 0, failed: 0, retried: 1 };
   }
+}
+
+function startGraphBuildLeaseHeartbeat(renew: () => Promise<void>, leaseMs: number): {
+  signal: AbortSignal; stop(): Promise<void>;
+} {
+  const controller = new AbortController();
+  const intervalMs = Math.max(250, Math.min(30_000, Math.floor(leaseMs / 3)));
+  let stopped = false;
+  let failure: unknown;
+  let failed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let pending: Promise<void> = Promise.resolve();
+  const tick = () => {
+    if (stopped) return;
+    pending = Promise.resolve().then(renew).then(() => {
+      if (!stopped) timer = setTimeout(tick, intervalMs);
+    }, error => {
+      failure = error;
+      failed = true;
+      stopped = true;
+      controller.abort(error);
+    });
+  };
+  timer = setTimeout(tick, intervalMs);
+  return {
+    signal: controller.signal,
+    async stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      await pending;
+      if (failed) throw failure;
+    },
+  };
 }
 
 function assertCompletedBuildDescriptor(
@@ -435,8 +492,8 @@ export async function main(): Promise<void> {
   const publish = publicationWebhook && webhookSecret
     ? createPublicationWebhookPublisher({ url: publicationWebhook, secret: webhookSecret })
     : undefined;
-  let handleBuild: ((job: KnowledgeGraphBuildJob) => Promise<GraphBuildWebhookResult>) | undefined;
-  let closeBuildResources = async (): Promise<void> => {};
+  let handleBuild: ((job: KnowledgeGraphBuildJob, signal?: AbortSignal) => Promise<GraphBuildWebhookResult>) | undefined;
+  const closeBuildResources = async (): Promise<void> => {};
   if (buildExecutorMode === 'webhook') {
     if (!buildWebhook || !webhookSecret) {
       throw new Error('Webhook graph build executor configuration is incomplete.');
@@ -448,19 +505,36 @@ export async function main(): Promise<void> {
       });
   } else if (buildExecutorMode === 'local') {
     // Load model and Milvus dependencies only when the local executor is enabled.
-    const [localExecutorModule, milvusModule, neo4jStoreModule] = await Promise.all([
+    const [localExecutorModule, milvusModule, neo4jStoreModule, indexPersistence, milvusConfig] = await Promise.all([
       import('../src/lib/knowledge-graph/local-graph-build-executor'),
       import('../src/lib/milvus-client'),
       import('../src/lib/knowledge-graph/neo4j-mirofish-store'),
+      import('../src/lib/embedding-index-persistence'),
+      import('../src/lib/milvus-config'),
     ]);
-    const milvus = milvusModule.getMilvusInstance();
     const artifactStore = new neo4jStoreModule.Neo4jMiroFishGraphArtifactStore(commandStore);
-    handleBuild = localExecutorModule.createLocalGraphBuildHandler({
-      milvus,
-      commandStore,
-      artifactStore,
-    });
-    closeBuildResources = () => milvus.disconnect();
+    handleBuild = async (job, signal) => {
+      if (job.metadata.trigger === STANDALONE_GRAPH_TRIGGER) {
+        const { createStandaloneGraphBuildHandler } = await import('../src/lib/mirofish/standalone-graph-worker');
+        return createStandaloneGraphBuildHandler({ commandStore, checkpointStore: buildStore, leaseMs: 90_000 })(job, signal);
+      }
+      // Index publication happens in another process, so refresh the pointer
+      // for every job before selecting its authoritative Milvus collection.
+      const active = await indexPersistence.readEmbeddingIndexForScope({ tenantId: job.tenantId, corpusId: job.corpusId });
+      const config = milvusConfig.getMilvusConfigManager().getConnectionConfig();
+      const milvus = milvusModule.getMilvusInstance({
+        collectionName: active?.collection ?? config.defaultCollection,
+        embeddingDimension: active?.dimension ?? config.defaultDimension,
+      });
+      try {
+        return await localExecutorModule.createLocalGraphBuildHandler({
+          milvus, commandStore, artifactStore, checkpointStore: buildStore,
+          leaseMs: resolveLocalGraphBuildLeaseMs(process.env),
+        })(job, signal);
+      } finally {
+        await milvus.disconnect();
+      }
+    };
   }
   if (!publish) {
     console.warn('Publication webhook URL or RAG_GRAPH_WEBHOOK_SECRET is unset; publication events will be projected to Neo4j without external forwarding.');
@@ -482,7 +556,17 @@ export async function main(): Promise<void> {
         commandStore,
         batchSize: options.batchSize,
         ...(publish ? { publish } : {}),
-        ...(handleBuild ? { buildStore, handleBuild } : {}),
+        ...(handleBuild ? { buildStore: buildExecutorMode === 'local' ? wrapLocalGraphBuildStore(buildStore) : buildStore, handleBuild } : {}),
+        ...(buildExecutorMode === 'local' ? {
+          renewBuildLease: async (job: KnowledgeGraphBuildJob, leaseMs: number) => {
+            if (!job.leaseToken) throw new Error('Graph build lease token is missing.');
+            await buildStore.renewExtractionLease({
+              jobId: job.id, tenantId: job.tenantId, corpusId: job.corpusId,
+              graphVersion: job.graphVersion, leaseToken: job.leaseToken,
+              leaseMs: job.metadata.trigger === STANDALONE_GRAPH_TRIGGER ? 90_000 : leaseMs,
+            });
+          },
+        } : {}),
         buildMaxAttempts: options.buildMaxAttempts,
         buildLeaseMs: buildExecutorMode === 'local'
           ? resolveLocalGraphBuildLeaseMs(process.env)

@@ -24,9 +24,11 @@ import {
   type RagTrustLevel,
 } from '../security/retrieval-scope';
 import { RequestValidationError } from '../security/request-validation';
+import { getUnifiedPublicationWriteBlock } from '../security/unified-publication-write-guard';
 import { redactErrorForLog } from '../security/error-redaction';
 import type { KnowledgeGraphBuildJob } from './postgres-graph-build-store';
 import { MiroFishGraphStoreError } from '../mirofish/graph-artifact-store';
+import { getGraphQueryAuthorityClient, readGraphQueryAuthority, withAuthorizedGraphQuery } from './query-authority';
 
 export interface KnowledgeGraphHttpContext {
   security: RagSecurityContext;
@@ -45,11 +47,13 @@ export type KnowledgeGraphBuildJobHttpProjection = Pick<
   | 'createdAt'
   | 'updatedAt'
 >;
+ 
+type BuildJobProjection = KnowledgeGraphBuildJobHttpProjection & { errorMessage: string | null };
 
 /** Keeps worker ownership tokens, internal metadata, and raw errors server-side. */
 export function projectKnowledgeGraphBuildJobForHttp(
   job: KnowledgeGraphBuildJob
-): KnowledgeGraphBuildJobHttpProjection {
+): BuildJobProjection {
   return {
     id: job.id,
     graphVersion: job.graphVersion,
@@ -57,9 +61,46 @@ export function projectKnowledgeGraphBuildJobForHttp(
     progress: job.progress,
     artifactDigest: job.artifactDigest,
     errorCode: job.errorCode,
+    errorMessage: buildFailureMessage(job),
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
   };
+}
+
+function buildFailureMessage(job: KnowledgeGraphBuildJob): string | null {
+  if (job.status !== 'failed') return null;
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && /^Local graph build expected \d+ chunks, received \d+\.$/u.test(job.errorMessage ?? '')) {
+    return '未找到完整的文档向量分块。请检查当前向量索引和图谱服务是否一致；如文档数据已缺失，请重新向量化后重试。';
+  }
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && job.errorMessage === 'Local graph build version does not match its document identity.') {
+    return '图谱任务版本不一致。请更新并重启图谱构建服务后重试；若仍失败，请联系管理员检查任务数据。';
+  }
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && job.errorMessage === '活动嵌入索引身份不匹配，请检查图谱服务的索引身份配置。') {
+    return '活动向量索引与图谱构建服务的索引身份不一致，请检查图谱服务的索引身份配置。';
+  }
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && (/^单块提取超时 \(\d+秒\)$/u.test(job.errorMessage ?? '')
+      || job.errorMessage === 'Entity extraction provider request timed out.')) {
+    return '模型抽取超时。请检查模型服务性能和负载，或选择适合当前设备的模型后重试。';
+  }
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && (job.errorMessage === 'Entity extraction output budget exceeded.'
+      || job.errorMessage === 'Entity extraction provider budget exceeded.')) {
+    return '图谱构建达到资源安全上限，已完成的抽取片段会保留。请联系管理员检查构建规模和资源配置。';
+  }
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && (job.errorMessage === '模型输出已截断，无法完整提取当前文本块。'
+      || job.errorMessage === '模型输出无法解析为完整的实体和关系。')) {
+    return job.errorMessage;
+  }
+  if (job.errorCode === 'GRAPH_BUILD_DELIVERY_FAILED'
+    && job.errorMessage === '图谱未提取到实体，请检查模型输出后重试。') {
+    return '图谱未提取到实体，请检查模型输出后重试。';
+  }
+  return '图谱生成失败。请检查图谱服务和模型状态后重试，或联系管理员查看服务日志。';
 }
 
 type KnowledgeGraphQueryAdmissionCode =
@@ -239,6 +280,8 @@ export async function resolveKnowledgeGraphHttpContext(
     capability,
     requestedCorpusId,
   });
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', block.message);
   const scope = createRetrievalScope({
     tenantId: security.tenantId,
     corpusId: security.corpusId,
@@ -277,6 +320,20 @@ export async function resolveActiveGraphVersion(
     );
   }
   return createMiroFishGraphVersion(pointer.identity);
+}
+
+export async function withCurrentGraphSource<T>(
+  context: KnowledgeGraphHttpContext,
+  work: (graphVersion: string) => Promise<T>
+): Promise<T> {
+  // The local file backend has no PostgreSQL graph lifecycle; keep its existing
+  // query contract while the Neo4j backend requires shared source authority.
+  if (context.runtime.backend === 'file') return work(await resolveActiveGraphVersion(context));
+  const client = getGraphQueryAuthorityClient();
+  return withAuthorizedGraphQuery(context.scope, {
+    getActive: () => context.runtime.store.getActive(context.scope),
+    readAuthority: (identity, version) => readGraphQueryAuthority(client, context.scope, identity, version),
+  }, work);
 }
 
 const CLAIM_SOURCE_MAX_PASSAGES = 10;

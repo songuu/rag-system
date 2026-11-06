@@ -6,9 +6,13 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { executeSCRAG, SCRAGInput, SCRAGOutput } from '@/lib/self-corrective-rag';
 import { MilvusConfig } from '@/lib/milvus-client';
-import { getMilvusConnectionConfig } from '@/lib/milvus-config';
+import { getMilvusConfigManager, getMilvusConnectionConfig } from '@/lib/milvus-config';
+import { hydrateEmbeddingIndex } from '@/lib/embedding-index-persistence';
+import { getActiveEmbeddingIndex } from '@/lib/embedding-index-state';
+import { getEmbeddingFactory } from '@/lib/embedding-config';
 
 export const maxDuration = 60; // 最大执行时间 60 秒
 
@@ -28,6 +32,8 @@ interface RequestBody {
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   const startTime = Date.now();
   
   try {
@@ -50,15 +56,28 @@ export async function POST(request: NextRequest) {
       gradePassThreshold: body.gradePassThreshold || 0.6,
     });
     
-    // 构建 Milvus 配置（使用统一配置系统）
+    // Resolve the collection and its model from the same persisted index snapshot.
+    await hydrateEmbeddingIndex(undefined, { refresh: true });
     const connConfig = getMilvusConnectionConfig();
+    const baselineConfig = getMilvusConfigManager().getConnectionConfig();
+    const activeIndex = getActiveEmbeddingIndex();
+    const address = body.milvusConfig?.address || connConfig.address;
+    const collectionName = body.milvusConfig?.collectionName
+      || (address === connConfig.address ? connConfig.defaultCollection : baselineConfig.defaultCollection);
+    const matchesActiveIndex = activeIndex
+      && collectionName === activeIndex.collection
+      && address === connConfig.address;
     const milvusConfig: MilvusConfig = {
-      address: body.milvusConfig?.address || connConfig.address,
-      collectionName: body.milvusConfig?.collectionName || connConfig.defaultCollection,
-      embeddingDimension: body.milvusConfig?.embeddingDimension || connConfig.defaultDimension,
+      address,
+      collectionName,
+      embeddingDimension: body.milvusConfig?.embeddingDimension
+        || (activeIndex && !matchesActiveIndex ? baselineConfig.defaultDimension : connConfig.defaultDimension),
       token: connConfig.token,
       ssl: connConfig.ssl,
     };
+    const embeddingModel = matchesActiveIndex
+      ? activeIndex.model
+      : getEmbeddingFactory().getConfigSummary().model;
     
     // 构建输入
     const input: SCRAGInput = {
@@ -68,6 +87,7 @@ export async function POST(request: NextRequest) {
       maxRewriteAttempts: body.maxRewriteAttempts,
       gradePassThreshold: body.gradePassThreshold,
       milvusConfig,
+      embeddingModel,
     };
     
     // 执行 Self-Corrective RAG

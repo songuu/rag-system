@@ -1,9 +1,10 @@
 import type { NextRequest } from 'next/server';
-import { REQUEST_LIMITS, readJsonObjectWithLimit, validateAskInput } from '@/lib/security/request-validation';
+import { REQUEST_LIMITS, RequestValidationError, readJsonObjectWithLimit, validateAskInput } from '@/lib/security/request-validation';
 import type { ValidatedAskInput } from '@/lib/security/request-validation';
 import { resolveRagSecurityContext } from '@/lib/security/request-context';
 import type { RagSecurityContext } from '@/lib/security/request-context';
 import { throwIfRagRequestAborted } from '@/lib/rag/core/cancellation';
+import { citationPartition } from '@/lib/rag/citations/locator-codec';
 
 export interface PreparedAskRequest {
   requestId: string;
@@ -29,5 +30,12 @@ export async function prepareAskRequest(request: NextRequest, requestId: string)
     requestIdFactory: () => requestId,
   });
   throwIfRagRequestAborted(request.signal);
+  const suppliedPartition = request.headers.get('x-rag-conversation-partition');
+  if (input.conversationHistory.length > 0 || suppliedPartition !== null) {
+    if (!suppliedPartition || !/^[a-f0-9]{64}$/.test(suppliedPartition)
+      || suppliedPartition !== citationPartition(securityContext)) {
+      throw new RequestValidationError('CONVERSATION_PARTITION_MISMATCH', '会话身份已变化，请刷新后重试。', 409);
+    }
+  }
   return { requestId, body, input, securityContext };
 }

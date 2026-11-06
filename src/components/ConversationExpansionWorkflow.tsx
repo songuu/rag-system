@@ -17,16 +17,6 @@ interface IntentAnchor {
   stage: string;
 }
 
-interface StrategyResult {
-  strategy: 'drill-down' | 'lateral-move' | 'logical-flow';
-  label: string;
-  icon: string;
-  color: string;
-  bgColor: string;
-  data: any;
-  questions: string[];
-}
-
 interface CandidateQuestion {
   question: string;
   strategy: string;
@@ -125,24 +115,27 @@ export default function ConversationExpansionWorkflow({
   aiResponse,
 }: ConversationExpansionWorkflowProps) {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['anchor', 'strategy', 'validation']));
-  const [activeStep, setActiveStep] = useState<number>(0);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const [wasLoading, setWasLoading] = useState(isLoading);
+  if (wasLoading !== isLoading) {
+    setWasLoading(isLoading);
+    setLoadingStep(0);
+  }
+  const activeStep = isLoading ? loadingStep : suggestions.length > 0 ? 5 : 0;
 
   // 动画效果：加载时逐步展示
   useEffect(() => {
     if (isLoading) {
-      setActiveStep(0);
-      const timer1 = setTimeout(() => setActiveStep(1), 300);
-      const timer2 = setTimeout(() => setActiveStep(2), 800);
-      const timer3 = setTimeout(() => setActiveStep(3), 1300);
-      const timer4 = setTimeout(() => setActiveStep(4), 1800);
+      const timer1 = setTimeout(() => setLoadingStep(1), 300);
+      const timer2 = setTimeout(() => setLoadingStep(2), 800);
+      const timer3 = setTimeout(() => setLoadingStep(3), 1300);
+      const timer4 = setTimeout(() => setLoadingStep(4), 1800);
       return () => {
         clearTimeout(timer1);
         clearTimeout(timer2);
         clearTimeout(timer3);
         clearTimeout(timer4);
       };
-    } else if (suggestions.length > 0) {
-      setActiveStep(5);
     }
   }, [isLoading, suggestions.length]);
 

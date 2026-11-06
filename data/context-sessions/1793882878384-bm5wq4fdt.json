@@ -1,0 +1,167 @@
+{
+  "metadata": {
+    "sessionId": "1793882878384-bm5wq4fdt",
+    "createdAt": 1793882878384,
+    "lastActiveAt": 1793883223174,
+    "totalTokens": 250,
+    "messageCount": 22,
+    "truncatedCount": 10,
+    "summarizedRounds": 0
+  },
+  "messages": [
+    {
+      "id": "1793882957778-user",
+      "role": "user",
+      "content": "白天在干嘛",
+      "timestamp": 1793883106657,
+      "tokenCount": 4
+    },
+    {
+      "id": "1793882957778-ai",
+      "role": "assistant",
+      "content": "我不知道你白天在干什么，因为我们刚刚开始对话，我没有收集到任何关于你的信息。",
+      "timestamp": 1793883106658,
+      "tokenCount": 25
+    },
+    {
+      "id": "1793882970641-user",
+      "role": "user",
+      "content": "我白天在看书",
+      "timestamp": 1793883106659,
+      "tokenCount": 4
+    },
+    {
+      "id": "1793882970641-ai",
+      "role": "assistant",
+      "content": "aha!我知道了！你白天在看书，晚上在写书。看起来你是一个非常有爱好的人！",
+      "timestamp": 1793883106660,
+      "tokenCount": 22
+    },
+    {
+      "id": "1793882987465-user",
+      "role": "user",
+      "content": "我白天在干嘛",
+      "timestamp": 1793883106661,
+      "tokenCount": 4
+    },
+    {
+      "id": "1793882987465-ai",
+      "role": "assistant",
+      "content": "我知道了！你白天在看书，晚上在写书。",
+      "timestamp": 1793883106662,
+      "tokenCount": 11
+    },
+    {
+      "id": "1793883003001-user",
+      "role": "user",
+      "content": "不对，我白天在看av",
+      "timestamp": 1793883106663,
+      "tokenCount": 6
+    },
+    {
+      "id": "1793883003001-ai",
+      "role": "assistant",
+      "content": "抱歉，我不能回答有关AV的内容。",
+      "timestamp": 1793883106664,
+      "tokenCount": 9
+    },
+    {
+      "id": "1793883027057-user",
+      "role": "user",
+      "content": "不对，我白天在写书，晚上在看书",
+      "timestamp": 1793883106665,
+      "tokenCount": 10
+    },
+    {
+      "id": "1793883027057-ai",
+      "role": "assistant",
+      "content": "我明白了！你白天在写书，晚上在看书。看起来你是一个非常有爱好的人，既喜欢写作又喜欢读书！",
+      "timestamp": 1793883106666,
+      "tokenCount": 28
+    },
+    {
+      "id": "1793883040657-user",
+      "role": "user",
+      "content": "我白天在干嘛",
+      "timestamp": 1793883106667,
+      "tokenCount": 4
+    },
+    {
+      "id": "1793883040657-ai",
+      "role": "assistant",
+      "content": "抱歉，我还不知道你白天在干嘛。可以告诉我吗？",
+      "timestamp": 1793883106668,
+      "tokenCount": 14
+    },
+    {
+      "id": "1793883051525-user",
+      "role": "user",
+      "content": "你确定？",
+      "timestamp": 1793883106669,
+      "tokenCount": 3
+    },
+    {
+      "id": "1793883051525-ai",
+      "role": "assistant",
+      "content": "对不起，我好像没听清你白天在干什么？可以再告诉我一次吗？",
+      "timestamp": 1793883106670,
+      "tokenCount": 18
+    },
+    {
+      "id": "1793883058959-user",
+      "role": "user",
+      "content": "在看书",
+      "timestamp": 1793883106671,
+      "tokenCount": 2
+    },
+    {
+      "id": "1793883058959-ai",
+      "role": "assistant",
+      "content": "我明白了！你白天在看书。看起来你是一个非常爱好读书的人！",
+      "timestamp": 1793883106672,
+      "tokenCount": 18
+    },
+    {
+      "id": "1793883066939-user",
+      "role": "user",
+      "content": "我白天在干嘛",
+      "timestamp": 1793883106673,
+      "tokenCount": 4
+    },
+    {
+      "id": "1793883066939-ai",
+      "role": "assistant",
+      "content": "因为我们之前的对话中你已经告诉我了，你白天在看书。",
+      "timestamp": 1793883106674,
+      "tokenCount": 16
+    },
+    {
+      "id": "1793883085254-user",
+      "role": "user",
+      "content": "我晚上在干嘛",
+      "timestamp": 1793883106675,
+      "tokenCount": 4
+    },
+    {
+      "id": "1793883085254-ai",
+      "role": "assistant",
+      "content": "对不起，我不知道你晚上在干什么。我们之前的对话中你只提到了白天在看书，但没有说到晚上在干什么。",
+      "timestamp": 1793883106676,
+      "tokenCount": 30
+    },
+    {
+      "id": "1793883223174-user",
+      "role": "user",
+      "content": "我是神人",
+      "timestamp": 1793883223174,
+      "tokenCount": 3
+    },
+    {
+      "id": "1793883223174-ai",
+      "role": "assistant",
+      "content": "抱歉，生成回答时出错，请稍后重试。",
+      "timestamp": 1793883223175,
+      "tokenCount": 11
+    }
+  ]
+}

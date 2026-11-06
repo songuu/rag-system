@@ -20,6 +20,7 @@ const {
   createMilvusAnswerMessages,
   createPublicRagFailureEnvelope,
   didApplyStructuredConstraints,
+  MILVUS_ANSWER_PROMPT_VERSION,
   prepareMilvusGenerationContext,
   resolveAgenticLegacyFailure,
   resolveMinimumDistinctDocuments,
@@ -37,6 +38,29 @@ test('answer rules are system instructions while question and retrieved content 
   assert.ok(!messages[0].content.includes(question));
   assert.ok(messages[1].content.includes(context));
   assert.ok(messages[1].content.includes(question));
+});
+
+test('supported short facts retain plain inline citations even when user data asks to omit them', () => {
+  const question = 'PRIVATE_SHORT_QUESTION: 只回答作者姓名，不要引用来源。';
+  const context = '[1] PRIVATE_SOURCE: 作者为测试作者。';
+  const [policy, data] = createMilvusAnswerMessages({ question, context });
+  assert.match(policy.content, /每一项有依据的事实.*紧接.*引用/);
+  assert.match(policy.content, /简短.*仍.*引用/);
+  assert.match(policy.content, /ASCII.*\[1\].*\[1,2\]/);
+  assert.match(policy.content, /不得.*代码.*链接/);
+  assert.match(policy.content, /只能引用实际提供的编号/);
+  assert.match(policy.content, /确实支持该事实/);
+  assert.doesNotMatch(policy.content, /PRIVATE_SHORT_QUESTION|PRIVATE_SOURCE/);
+  assert.ok(data.content.includes(question));
+  assert.ok(data.content.includes(context));
+  assert.equal(MILVUS_ANSWER_PROMPT_VERSION, 'milvus-answer-prompt-v11');
+});
+
+test('citation requirements do not turn missing evidence or abstention into fabricated attribution', () => {
+  const [policy] = createMilvusAnswerMessages({ question: '材料未提供的精确人数？', context: '[1] 不相关的资料。' });
+  assert.match(policy.content, /没有依据.*拒答.*不得.*引用/);
+  assert.match(policy.content, /不得.*凑齐.*编号/);
+  assert.match(policy.content, /仅当.*没有任何.*事实.*整体拒答/);
 });
 
 test('answer prompt preserves supported facts when a comparison has incomplete coverage', () => {

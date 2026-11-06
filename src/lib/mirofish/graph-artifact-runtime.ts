@@ -6,6 +6,7 @@ import {
   type MiroFishGraphArtifactStore,
 } from './graph-artifact-store';
 import type { RagTrustLevel } from '../security/retrieval-scope';
+import { registerStandaloneMiroFishGraphSource } from './standalone-source';
 import {
   KnowledgeGraphError,
   type GraphRetrievalPort,
@@ -62,7 +63,8 @@ export function getMiroFishGraphArtifactRuntime(
       parts = createNeo4jRuntimeParts(
         client,
         initializeNeo4jSchema,
-        resolvePublicationStore(env)
+        resolvePublicationStore(env),
+        env
       );
       neo4jRuntimeParts.set(client, parts);
     }
@@ -112,7 +114,8 @@ export function createNeo4jMiroFishGraphArtifactRuntime(
 function createNeo4jRuntimeParts(
   client: Neo4jClient,
   schemaInitializer: typeof initializeNeo4jSchema,
-  publicationStore?: KnowledgeGraphPublicationStore
+  publicationStore?: KnowledgeGraphPublicationStore,
+  env: NodeJS.ProcessEnv = process.env
 ): {
   store: Neo4jMiroFishGraphArtifactStore;
   retrievalPort: Neo4jGraphRetrievalPort;
@@ -131,6 +134,12 @@ function createNeo4jRuntimeParts(
     store: new Neo4jMiroFishGraphArtifactStore(commandStore, {
       ensureReady,
       ...(publicationStore ? { publicationStore } : {}),
+      ...(publicationStore ? { registerSource: async (artifact, options) => {
+        const config = getPostgresRuntimeConfig(env);
+        const sourceClient = getPostgresClient(config);
+        if (!sourceClient) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', 'Graph source registration is unavailable.');
+        await registerStandaloneMiroFishGraphSource(sourceClient, artifact, options);
+      } } : {}),
     }),
     retrievalPort: new Neo4jGraphRetrievalPort(client),
     queryPort: new Neo4jKnowledgeGraphQueryPort(client),

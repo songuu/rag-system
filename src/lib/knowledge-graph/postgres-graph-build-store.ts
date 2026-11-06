@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { PostgresQueryClient } from '../postgres/client';
 import { queryPostgres } from '../postgres/client';
-import type { RagRetrievalScope } from '../security/retrieval-scope';
+import type { RagRetrievalScope, RagTrustLevel } from '../security/retrieval-scope';
 import type { MiroFishGraphArtifactIdentity } from '../mirofish/graph-artifact-store';
 import { createKnowledgeGraphSnapshotIdentity, KnowledgeGraphError } from './contracts';
 import { createMiroFishGraphVersion } from './mirofish-adapter';
 import { validateBuildPublicationManifest, type BuildPublicationManifest } from './build-publication-manifest';
 import { canonicalJson } from '../rag/eval/canonical-json';
+import type { EntityExtractionCheckpointValue } from '../entity-extraction';
 
 export type KnowledgeGraphBuildStatus =
   | 'queued'
@@ -42,6 +43,7 @@ export interface KnowledgeGraphBuildSource {
   sourceName: string;
   contentType: string;
   chunkCount: number;
+  trustLevel: RagTrustLevel;
   updatedAt: string;
 }
 
@@ -50,6 +52,12 @@ const JOB_FIELDS = [
   'error_code, error_message, metadata, attempts, lease_token::text, lease_expires_at,',
   'created_at, updated_at',
 ].join(' ');
+
+// Polling must not repeatedly transfer the potentially large private checkpoint.
+const STATUS_JOB_FIELDS = JOB_FIELDS.replace(
+  'error_code, error_message, metadata, attempts',
+  "error_code, error_message, metadata - 'graphExtractionCheckpoint' as metadata, attempts"
+);
 
 const LOCK_SCOPE_SQL =
   "select pg_advisory_xact_lock(hashtextextended($1 || chr(31) || $2, 0))";
@@ -85,7 +93,7 @@ const ENQUEUE_SQL = [
 const COMPLETE_VALIDATED_SQL = [
   'update public.graph_build_jobs',
   "set status = 'validated', progress = 1, artifact_digest = $3,",
-  "    metadata = metadata || jsonb_build_object('publicationManifest', $5::jsonb),",
+  "    metadata = (metadata - 'graphExtractionCheckpoint') || jsonb_build_object('publicationManifest', $5::jsonb),",
   '    lease_token = null, lease_expires_at = null, updated_at = now()',
   "where id = $1::uuid and status = 'running' and lease_token = $4::uuid",
   // now() is fixed at transaction start and could accept an expired lease.
@@ -96,15 +104,44 @@ const COMPLETE_VALIDATED_SQL = [
 ].join('\n');
 
 const GET_SQL = [
-  `select ${JOB_FIELDS}`,
+  `select ${STATUS_JOB_FIELDS}`,
   'from public.graph_build_jobs',
   'where id = $1::uuid and tenant_id = $2 and corpus_id = $3',
+].join('\n');
+
+const FIND_LATEST_DOCUMENT_BUILD_SQL = [
+  `select ${STATUS_JOB_FIELDS} from public.graph_build_jobs`,
+  'where tenant_id = $1 and corpus_id = $2',
+  "  and metadata #>> '{documentIdentity,tenantId}' = $1",
+  "  and metadata #>> '{documentIdentity,corpusId}' = $2",
+  "  and metadata #>> '{documentIdentity,documentId}' = $3",
+  "  and metadata #>> '{documentIdentity,documentVersion}' = $4",
+  "  and metadata #>> '{documentIdentity,trustLevel}' = $5",
+  'order by created_at desc, id desc limit 1',
+].join('\n');
+
+const RESUME_FAILED_DOCUMENT_BUILD_SQL = [
+  'with capacity as materialized (',
+  '  select count(*)::integer as pending from public.graph_build_jobs',
+  "  where tenant_id = $2 and corpus_id = $3 and status in ('queued', 'running', 'staged', 'validated')",
+  ')',
+  'update public.graph_build_jobs job',
+  "set status = 'queued', attempts = 0, error_code = null, error_message = null,",
+  '    lease_token = null, lease_expires_at = null, updated_at = now()',
+  "where job.id = $1::uuid and job.tenant_id = $2 and job.corpus_id = $3 and job.status = 'failed'",
+  "  and job.metadata #>> '{documentIdentity,tenantId}' = $2",
+  "  and job.metadata #>> '{documentIdentity,corpusId}' = $3",
+  "  and job.metadata #>> '{documentIdentity,documentId}' = $4",
+  "  and job.metadata #>> '{documentIdentity,documentVersion}' = $5",
+  "  and job.metadata #>> '{documentIdentity,trustLevel}' = $6",
+  '  and (select pending from capacity) < $7',
+  `returning ${JOB_FIELDS}`,
 ].join('\n');
 
 const DOCUMENT_SOURCE_FIELDS = [
   'id::text as asset_id, external_document_id as document_id,',
   'source_hash as document_version, original_name as source_name, content_type,',
-  "(metadata->>'chunks')::integer as chunk_count, updated_at",
+  "(metadata->>'chunks')::integer as chunk_count, coalesce(nullif(metadata #>> '{document,trustLevel}', ''), nullif(metadata #>> '{document,trust_level}', ''), 'external') as trust_level, updated_at",
 ].join(' ');
 
 const LIST_DOCUMENT_SOURCES_SQL = [
@@ -115,6 +152,9 @@ const LIST_DOCUMENT_SOURCES_SQL = [
   "  and btrim(external_document_id) <> ''",
   "  and btrim(source_hash) <> ''",
   "  and metadata->>'persistence_status' = 'ready'",
+  "  and metadata ? 'source_kind' and metadata->>'retrieval_enabled' is distinct from 'false'",
+  "  and coalesce(metadata->>'lifecycle', 'active') = 'active'",
+  "  and coalesce(nullif(metadata #>> '{document,trustLevel}', ''), nullif(metadata #>> '{document,trust_level}', ''), 'external') = any($4::text[])",
   "  and metadata->>'chunks' ~ '^[1-9][0-9]{0,5}$'",
   'order by updated_at desc',
   'limit $3',
@@ -126,28 +166,38 @@ const FIND_DOCUMENT_SOURCE_SQL = [
   'where tenant_id = $1 and corpus_id = $2',
   '  and external_document_id = $3 and source_hash = $4',
   "  and metadata->>'persistence_status' = 'ready'",
+  "  and metadata ? 'source_kind' and metadata->>'retrieval_enabled' is distinct from 'false'",
+  "  and coalesce(metadata->>'lifecycle', 'active') = 'active'",
+  "  and coalesce(nullif(metadata #>> '{document,trustLevel}', ''), nullif(metadata #>> '{document,trust_level}', ''), 'external') = any($5::text[])",
   "  and metadata->>'chunks' ~ '^[1-9][0-9]{0,5}$'",
   'limit 1',
 ].join('\n');
 
-const CLAIM_SQL = [
-  'with candidate as (',
-  '  select id as candidate_id from public.graph_build_jobs',
-  "  where status = 'queued' or (status = 'running' and lease_expires_at <= now())",
-  '  order by created_at asc',
-  '  limit 1 for update skip locked',
-  ')',
-  'update public.graph_build_jobs job',
-  "set status = 'running', attempts = attempts + 1, lease_token = $1::uuid,",
-  '    lease_expires_at = now() + make_interval(secs => $2::double precision / 1000),',
-  '    error_code = null, error_message = null, updated_at = now()',
-  'from candidate where job.id = candidate.candidate_id',
-  `returning ${JOB_FIELDS}`,
-].join('\n');
+const CLAIM_SQL = createClaimSql(false);
+const CLAIM_SPECIFIC_SQL = createClaimSql(true);
+
+function createClaimSql(specific: boolean): string {
+  return [
+    'with candidate as (',
+    '  select id as candidate_id from public.graph_build_jobs',
+    "  where (status = 'queued' or (status = 'running' and lease_expires_at <= now()))",
+    // Both eligibility branches must stay inside the scope/id restriction.
+    ...(specific ? ['  and tenant_id = $3 and corpus_id = $4 and id = $5::uuid'] : []),
+    '  order by created_at asc',
+    '  limit 1 for update skip locked',
+    ')',
+    'update public.graph_build_jobs job',
+    "set status = 'running', attempts = attempts + 1, lease_token = $1::uuid,",
+    '    lease_expires_at = now() + make_interval(secs => $2::double precision / 1000),',
+    '    error_code = null, error_message = null, updated_at = now()',
+    'from candidate where job.id = candidate.candidate_id',
+    `returning ${JOB_FIELDS}`,
+  ].join('\n');
+}
 
 const TRANSITION_SQL = [
   'update public.graph_build_jobs',
-  'set status = $3, progress = $4, artifact_digest = coalesce($5, artifact_digest),',
+  'set status = $3, progress = greatest(progress, $4), artifact_digest = coalesce($5, artifact_digest),',
   "    error_code = case when $3 = 'failed' then $6 else null end,",
   "    error_message = case when $3 = 'failed' then $7 else null end,",
   '    metadata = metadata || $8::jsonb,',
@@ -156,8 +206,44 @@ const TRANSITION_SQL = [
   '    updated_at = now()',
   'where id = $1::uuid and status = $2',
   "  and ($2 <> 'running' or lease_token = $9::uuid)",
-  "  and ($3 = 'queued' or $4 >= progress)",
+  "  and ($2 <> 'running' or lease_expires_at > clock_timestamp())",
+  "  and ($3 in ('queued', 'failed', 'cancelled') or $4 >= progress)",
   `returning ${JOB_FIELDS}`,
+].join('\n');
+
+const SAVE_EXTRACTION_CHECKPOINT_SQL = [
+  'with candidate as materialized (',
+  "  select id, coalesce(metadata #> '{graphExtractionCheckpoint,segments}', '{}'::jsonb) as segments",
+  '  from public.graph_build_jobs',
+  "  where id = $1::uuid and status = 'running' and lease_token = $2::uuid",
+  '    and tenant_id = $3 and corpus_id = $4 and graph_version = $5',
+  '    and lease_expires_at > clock_timestamp()',
+  "    and (not (metadata ? 'graphExtractionCheckpoint') or",
+  "      (jsonb_typeof(metadata->'graphExtractionCheckpoint') = 'object'",
+  "       and metadata #>> '{graphExtractionCheckpoint,profile}' = $6",
+  "       and jsonb_typeof(metadata #> '{graphExtractionCheckpoint,segments}') = 'object'))",
+  '  for update',
+  '), proposed as (',
+  "  select id, jsonb_build_object('profile', $6::text, 'segments',",
+  '    segments || jsonb_build_object($7::text, $8::jsonb)) as checkpoint',
+  '  from candidate where not (segments ? $7) or segments -> $7 = $8::jsonb',
+  ')',
+  'update public.graph_build_jobs job',
+  "set metadata = jsonb_set(job.metadata, '{graphExtractionCheckpoint}', proposed.checkpoint, true),",
+  '    progress = greatest(job.progress, $9),',
+  '    lease_expires_at = clock_timestamp() + make_interval(secs => $10::double precision / 1000),',
+  '    updated_at = now()',
+  'from proposed where job.id = proposed.id and octet_length(proposed.checkpoint::text) <= $11',
+  'returning job.id::text as id',
+].join('\n');
+
+const RENEW_EXTRACTION_LEASE_SQL = [
+  'update public.graph_build_jobs',
+  'set lease_expires_at = clock_timestamp() + make_interval(secs => $6::double precision / 1000), updated_at = now()',
+  "where id = $1::uuid and status = 'running' and lease_token = $2::uuid",
+  '  and tenant_id = $3 and corpus_id = $4 and graph_version = $5',
+  '  and lease_expires_at > clock_timestamp()',
+  'returning id::text as id',
 ].join('\n');
 
 const TRANSITIONS: Readonly<Record<KnowledgeGraphBuildStatus, readonly KnowledgeGraphBuildStatus[]>> = {
@@ -198,6 +284,7 @@ interface BuildSourceRow {
   source_name: string;
   content_type: string;
   chunk_count: string | number;
+  trust_level?: string;
   updated_at: string | Date;
 }
 
@@ -237,7 +324,7 @@ export class PostgresKnowledgeGraphBuildJobStore {
         'Knowledge graph build enqueue requires a transactional PostgreSQL client.'
       );
     }
-    return runTransaction('enqueue knowledge graph build job', async transaction => {
+    const job = await runTransaction('enqueue knowledge graph build job', async transaction => {
       // The lock must be acquired in an earlier statement so a waiter receives a
       // fresh READ COMMITTED snapshot before checking this scope's queue capacity.
       await queryPostgres(
@@ -252,21 +339,17 @@ export class PostgresKnowledgeGraphBuildJobStore {
         [scope.tenantId, scope.corpusId, graphVersion, JSON.stringify(metadata), maxPendingJobs],
         'enqueue knowledge graph build job'
       );
-      if (!result.rows[0]) {
-        throw new KnowledgeGraphError(
-          'KNOWLEDGE_GRAPH_CAPACITY',
-          'The knowledge graph build queue is full for this corpus.'
-        );
-      }
-      return toJob(result.rows[0]);
+      return result.rows[0] ? toJob(result.rows[0]) : null;
     });
+    if (!job) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CAPACITY', 'The knowledge graph build queue is full for this corpus.');
+    return job;
   }
 
   async enqueueDocumentBuild(
     scope: RagRetrievalScope,
     identity: MiroFishGraphArtifactIdentity,
     metadata: Record<string, unknown> = {},
-    options: { maxPendingJobs?: number } = {}
+    options: { maxPendingJobs?: number; regenerate?: boolean } = {}
   ): Promise<KnowledgeGraphBuildJob> {
     if (identity.tenantId !== scope.tenantId || identity.corpusId !== scope.corpusId) {
       throw new KnowledgeGraphError(
@@ -281,10 +364,14 @@ export class PostgresKnowledgeGraphBuildJobStore {
       );
     }
     const normalizedMetadata = normalizeMetadata(metadata);
+    // Each explicit rebuild is immutable; retries reuse the persisted identity.
+    const graphIdentity = options.regenerate
+      ? { ...identity, graphGeneration: randomUUID() }
+      : identity;
     return this.enqueueNormalized(
       scope,
-      createMiroFishGraphVersion(identity),
-      { ...normalizedMetadata, documentIdentity: { ...identity } },
+      createMiroFishGraphVersion(graphIdentity),
+      { ...normalizedMetadata, documentIdentity: { ...graphIdentity } },
       boundedPendingJobs(options.maxPendingJobs)
     );
   }
@@ -302,42 +389,154 @@ export class PostgresKnowledgeGraphBuildJobStore {
     return result.rows[0] ? toJob(result.rows[0]) : null;
   }
 
+  async findLatestDocumentBuild(
+    scope: RagRetrievalScope,
+    identity: Pick<MiroFishGraphArtifactIdentity, 'documentId' | 'documentVersion' | 'trustLevel'>,
+  ): Promise<KnowledgeGraphBuildJob | null> {
+    if (!scope.allowedTrustLevels.includes(identity.trustLevel)) {
+      throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_SCOPE_VIOLATION', 'The graph build trust level is outside the authenticated scope.');
+    }
+    const result = await queryPostgres<BuildJobRow>(this.client, FIND_LATEST_DOCUMENT_BUILD_SQL, [
+      requiredText(scope.tenantId, 'tenant'), requiredText(scope.corpusId, 'corpus'),
+      requiredText(identity.documentId, 'document'), requiredText(identity.documentVersion, 'document version'), identity.trustLevel,
+    ], 'find latest document graph build');
+    return result.rows[0] ? toJob(result.rows[0]) : null;
+  }
+
+  async resumeFailedDocumentBuild(
+    scope: RagRetrievalScope,
+    identity: Pick<MiroFishGraphArtifactIdentity, 'documentId' | 'documentVersion' | 'trustLevel'>,
+    jobId: string,
+    options: { maxPendingJobs?: number } = {},
+  ): Promise<KnowledgeGraphBuildJob> {
+    if (!scope.allowedTrustLevels.includes(identity.trustLevel)) {
+      throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_SCOPE_VIOLATION', 'The graph build trust level is outside the authenticated scope.');
+    }
+    const runTransaction = this.client.withTransaction?.bind(this.client);
+    if (!runTransaction) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_UNAVAILABLE', 'Graph build recovery requires a transactional PostgreSQL client.');
+    const job = await runTransaction('resume document graph build', async transaction => {
+      await queryPostgres(transaction, LOCK_SCOPE_SQL, [scope.tenantId, scope.corpusId], 'lock graph build recovery scope');
+      const result = await queryPostgres<BuildJobRow>(transaction, RESUME_FAILED_DOCUMENT_BUILD_SQL, [
+        requiredUuid(jobId), requiredText(scope.tenantId, 'tenant'), requiredText(scope.corpusId, 'corpus'),
+        requiredText(identity.documentId, 'document'), requiredText(identity.documentVersion, 'document version'),
+        identity.trustLevel, boundedPendingJobs(options.maxPendingJobs),
+      ], 'resume failed document graph build');
+      return result.rows[0] ? toJob(result.rows[0]) : null;
+    });
+    if (!job) throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CONFLICT', 'The graph build cannot be resumed or the queue is full.');
+    return job;
+  }
+
   async listDocumentSources(
-    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>,
+    scope: RagRetrievalScope,
     limit = 50
   ): Promise<KnowledgeGraphBuildSource[]> {
     const boundedLimit = Number.isSafeInteger(limit) && limit >= 1 && limit <= 100 ? limit : 50;
     const result = await queryPostgres<BuildSourceRow>(
       this.client,
       LIST_DOCUMENT_SOURCES_SQL,
-      [scope.tenantId, scope.corpusId, boundedLimit],
+      [scope.tenantId, scope.corpusId, boundedLimit, [...scope.allowedTrustLevels]],
       'list knowledge graph document sources'
     );
     return result.rows.map(toBuildSource);
   }
 
   async findDocumentSource(
-    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>,
+    scope: RagRetrievalScope,
     identity: Pick<MiroFishGraphArtifactIdentity, 'documentId' | 'documentVersion'>
   ): Promise<KnowledgeGraphBuildSource | null> {
     const result = await queryPostgres<BuildSourceRow>(
       this.client,
       FIND_DOCUMENT_SOURCE_SQL,
-      [scope.tenantId, scope.corpusId, identity.documentId, identity.documentVersion],
+      [scope.tenantId, scope.corpusId, identity.documentId, identity.documentVersion, [...scope.allowedTrustLevels]],
       'find knowledge graph document source'
     );
     return result.rows[0] ? toBuildSource(result.rows[0]) : null;
   }
 
   async claimNext(options: { leaseMs?: number } = {}): Promise<KnowledgeGraphBuildJob | null> {
-    const leaseMs = boundedLeaseMs(options.leaseMs);
+    return this.claimJob(options);
+  }
+
+  async claimSpecific(
+    scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>,
+    jobId: string,
+    options: { leaseMs?: number } = {}
+  ): Promise<KnowledgeGraphBuildJob | null> {
+    return this.claimJob(options, { scope, jobId });
+  }
+
+  private async claimJob(
+    options: { leaseMs?: number },
+    selector?: { scope: Pick<RagRetrievalScope, 'tenantId' | 'corpusId'>; jobId: string }
+  ): Promise<KnowledgeGraphBuildJob | null> {
+    const values: unknown[] = [randomUUID(), boundedLeaseMs(options.leaseMs)];
+    if (selector) values.push(requiredText(selector.scope.tenantId, 'tenant'),
+      requiredText(selector.scope.corpusId, 'corpus'), requiredUuid(selector.jobId));
     const result = await queryPostgres<BuildJobRow>(
       this.client,
-      CLAIM_SQL,
-      [randomUUID(), leaseMs],
-      'claim knowledge graph build job'
+      selector ? CLAIM_SPECIFIC_SQL : CLAIM_SQL,
+      values,
+      selector ? 'claim selected knowledge graph build job' : 'claim knowledge graph build job'
     );
     return result.rows[0] ? toJob(result.rows[0]) : null;
+  }
+
+  async saveExtractionCheckpoint(input: {
+    jobId: string;
+    tenantId: string;
+    corpusId: string;
+    graphVersion: string;
+    leaseToken: string;
+    profile: string;
+    segmentKey: string;
+    record: { sourceDigest: string; value: EntityExtractionCheckpointValue };
+    progress: number;
+    leaseMs: number;
+  }): Promise<void> {
+    if (!/^[0-9]{1,6}:[0-9]{1,8}:[0-9]{1,8}$/u.test(input.segmentKey)) {
+      throw new Error('Graph extraction checkpoint segment key is invalid.');
+    }
+    if (!Number.isFinite(input.progress) || input.progress < 0 || input.progress > 0.75) {
+      throw new Error('Graph extraction checkpoint progress is invalid.');
+    }
+    if (!/^[A-Za-z0-9:._-]{1,128}$/u.test(input.profile)) {
+      throw new Error('Graph extraction checkpoint profile is invalid.');
+    }
+    let encoded: string;
+    try { encoded = canonicalJson(input.record); } catch {
+      throw new Error('Graph extraction checkpoint must contain only JSON data.');
+    }
+    const record = requiredRecord(JSON.parse(encoded));
+    if (typeof record.sourceDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(record.sourceDigest)
+      || !record.value || typeof record.value !== 'object'
+      || !['split', 'complete'].includes(String((record.value as Record<string, unknown>).kind))) {
+      throw new Error('Graph extraction checkpoint record is invalid.');
+    }
+    if (Buffer.byteLength(encoded, 'utf8') > 256 * 1024) {
+      throw new Error('Graph extraction checkpoint segment is too large.');
+    }
+    const result = await queryPostgres<{ id: string }>(this.client, SAVE_EXTRACTION_CHECKPOINT_SQL, [
+      requiredUuid(input.jobId), requiredUuid(input.leaseToken), requiredText(input.tenantId, 'tenant'),
+      requiredText(input.corpusId, 'corpus'), normalizeVersion(input, input.graphVersion), input.profile,
+      input.segmentKey, encoded, input.progress, boundedLeaseMs(input.leaseMs), 8 * 1024 * 1024,
+    ], 'save graph extraction checkpoint');
+    if (!result.rows[0]) {
+      throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CONFLICT',
+        'The graph build lease, checkpoint identity, or checkpoint capacity changed.');
+    }
+  }
+
+  async renewExtractionLease(input: {
+    jobId: string; tenantId: string; corpusId: string; graphVersion: string; leaseToken: string; leaseMs: number;
+  }): Promise<void> {
+    const result = await queryPostgres<{ id: string }>(this.client, RENEW_EXTRACTION_LEASE_SQL, [
+      requiredUuid(input.jobId), requiredUuid(input.leaseToken), requiredText(input.tenantId, 'tenant'),
+      requiredText(input.corpusId, 'corpus'), normalizeVersion(input, input.graphVersion), boundedLeaseMs(input.leaseMs),
+    ], 'renew graph extraction lease');
+    if (!result.rows[0]) {
+      throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CONFLICT', 'The graph build lease changed before staging.');
+    }
   }
 
   async transition(input: {
@@ -432,7 +631,7 @@ export class PostgresKnowledgeGraphBuildJobStore {
 }
 
 const RESERVED_METADATA_KEYS = new Set([
-  'tenantId', 'corpusId', 'graphVersion', 'documentIdentity', 'publicationManifest',
+  'tenantId', 'corpusId', 'graphVersion', 'documentIdentity', 'publicationManifest', 'graphExtractionCheckpoint',
 ]);
 const MAX_METADATA_BYTES = 16 * 1024;
 
@@ -486,6 +685,10 @@ function toBuildSource(row: BuildSourceRow): KnowledgeGraphBuildSource {
   if (!Number.isSafeInteger(chunkCount) || chunkCount < 1 || chunkCount > 999_999) {
     throw new Error('Knowledge graph build source chunk count is malformed.');
   }
+  const trustLevel = row.trust_level ?? 'external';
+  if (trustLevel !== 'trusted' && trustLevel !== 'reviewed' && trustLevel !== 'external' && trustLevel !== 'quarantined') {
+    throw new Error('Knowledge graph build source trust level is malformed.');
+  }
   return {
     assetId: requiredText(row.asset_id, 'source asset'),
     documentId: requiredText(row.document_id, 'source document'),
@@ -493,6 +696,7 @@ function toBuildSource(row: BuildSourceRow): KnowledgeGraphBuildSource {
     sourceName: requiredText(row.source_name, 'source name'),
     contentType: requiredText(row.content_type, 'source content type'),
     chunkCount,
+    trustLevel,
     updatedAt: toIso(row.updated_at),
   };
 }

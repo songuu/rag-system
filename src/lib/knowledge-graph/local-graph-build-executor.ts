@@ -14,6 +14,10 @@ import { createRetrievalScope, type RagTrustLevel } from '../security/retrieval-
 import type { KnowledgeGraphCommandStore } from './contracts';
 import { createMiroFishGraphVersion } from './mirofish-adapter';
 import type { KnowledgeGraphBuildJob } from './postgres-graph-build-store';
+import type { PostgresKnowledgeGraphBuildJobStore } from './postgres-graph-build-store';
+import type { EntityExtractionCheckpoint } from '../entity-extraction';
+import { createGraphExtractionCheckpoint } from './graph-extraction-checkpoint';
+import { STANDALONE_GRAPH_TRIGGER } from '../mirofish/standalone-graph-runtime';
 
 const MAX_DOCUMENT_CHUNKS = 1_000;
 const MAX_METADATA_BYTES = 65_000;
@@ -32,7 +36,9 @@ interface LocalGraphBuildDependencies {
   milvus: Pick<MilvusVectorStore, 'queryDocumentRows'>;
   commandStore: Pick<KnowledgeGraphCommandStore, 'getCompatibilityDescriptor'>;
   artifactStore: Pick<MiroFishGraphArtifactStore, 'put'>;
-  extractGraph?: (text: string, documentId: string) => Promise<GraphData>;
+  extractGraph?: (text: string, documentId: string, options?: { checkpoint?: EntityExtractionCheckpoint; signal?: AbortSignal }) => Promise<GraphData>;
+  checkpointStore?: Pick<PostgresKnowledgeGraphBuildJobStore, 'saveExtractionCheckpoint' | 'renewExtractionLease'>;
+  leaseMs?: number;
 }
 
 /**
@@ -44,12 +50,18 @@ interface LocalGraphBuildDependencies {
  */
 export function createLocalGraphBuildHandler(
   dependencies: LocalGraphBuildDependencies
-): (job: KnowledgeGraphBuildJob) => Promise<LocalGraphBuildResult> {
+): (job: KnowledgeGraphBuildJob, signal?: AbortSignal) => Promise<LocalGraphBuildResult> {
   const extractGraph = dependencies.extractGraph
-    ?? (async (text: string, documentId: string) => (
-      (await import('../mirofish/graph-builder')).extractMiroFishGraphData({ text, documentId })
+    ?? (async (text: string, documentId: string, options?: { checkpoint?: EntityExtractionCheckpoint; signal?: AbortSignal }) => (
+      (await import('../mirofish/graph-builder')).extractMiroFishGraphData({ text, documentId, ...options })
     ));
-  return async job => {
+  return async (job, signal) => {
+    signal?.throwIfAborted();
+    if (job.metadata.trigger === STANDALONE_GRAPH_TRIGGER) {
+      const { createStandaloneGraphBuildHandler } = await import('../mirofish/standalone-graph-worker');
+      return createStandaloneGraphBuildHandler({ commandStore: dependencies.commandStore,
+        checkpointStore: dependencies.checkpointStore, leaseMs: 90_000 })(job, signal);
+    }
     const identity = requiredJobIdentity(job);
     const expectedChunks = requiredChunkCount(job.metadata.chunkCount);
     const expectedGraphVersion = createMiroFishGraphVersion(identity);
@@ -69,6 +81,7 @@ export function createLocalGraphBuildHandler(
       { tenantId: identity.tenantId, corpusId: identity.corpusId, graphVersion: job.graphVersion },
       scope
     );
+    signal?.throwIfAborted();
     if (existing) {
       if (
         existing.tenantId !== identity.tenantId
@@ -86,8 +99,30 @@ export function createLocalGraphBuildHandler(
       identity satisfies MilvusDocumentQueryIdentity,
       expectedChunks
     );
+    signal?.throwIfAborted();
     const sourceText = reconstructDocument(rows, identity, expectedChunks);
-    const graph = await extractGraph(sourceText, identity.documentId);
+    let checkpoint: EntityExtractionCheckpoint | undefined;
+    if (dependencies.checkpointStore) {
+      const { getConfigSummary } = await import('../model-config');
+      const model = getConfigSummary();
+      // Increment the profile whenever the prompt, schema, or segmentation semantics change.
+      const profile = `v1:${createHash('sha256').update(JSON.stringify({
+        provider: model.provider, model: model.llmModel, endpoint: model.baseUrl,
+        chunkSize: 5000, chunkOverlap: 300, extraction: 'complete-structured-v1',
+      })).digest('hex')}`;
+      checkpoint = createGraphExtractionCheckpoint(job, dependencies.checkpointStore, profile, dependencies.leaseMs ?? 3_600_000);
+    }
+    const graph = await extractGraph(sourceText, identity.documentId, { checkpoint, signal });
+    signal?.throwIfAborted();
+    if (dependencies.checkpointStore) {
+      if (!job.leaseToken) throw new Error('Graph build is missing its lease before staging.');
+      await dependencies.checkpointStore.renewExtractionLease({
+        jobId: job.id, tenantId: job.tenantId, corpusId: job.corpusId,
+        graphVersion: job.graphVersion, leaseToken: job.leaseToken,
+        leaseMs: dependencies.leaseMs ?? 3_600_000,
+      });
+    }
+    signal?.throwIfAborted();
     const descriptor = await dependencies.artifactStore.put(
       createMiroFishGraphArtifact({ identity, graph }),
       graphNameOptions(job.metadata.sourceName)
@@ -109,6 +144,9 @@ function requiredJobIdentity(job: KnowledgeGraphBuildJob): MiroFishGraphArtifact
     documentId: requiredText(value.documentId, 'documentId'),
     documentVersion: requiredText(value.documentVersion, 'documentVersion'),
     trustLevel,
+    ...(value.graphGeneration === undefined ? {} : {
+      graphGeneration: requiredText(value.graphGeneration, 'graphGeneration'),
+    }),
   };
   if (identity.tenantId !== job.tenantId || identity.corpusId !== job.corpusId) {
     throw new Error('Local graph build document identity is outside the durable job scope.');

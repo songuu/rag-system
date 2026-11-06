@@ -1,0 +1,780 @@
+{
+  "id": "great-expectations-benefactor",
+  "question": "根据知识库中《远大前程》的摘要，皮普最终发现自己的资助者是谁？",
+  "httpStatus": 200,
+  "elapsedMs": 1410.0066000000006,
+  "answer": "根据《远大前程》的摘要，没有提供有关皮普最终发现自己的资助者是谁的信息。",
+  "observedSources": [
+    "重构契丹早期史.epub"
+  ],
+  "evidenceCount": 5,
+  "expectedSourcePresent": false,
+  "literalFactChecks": [
+    {
+      "alternatives": [
+        "马格韦契",
+        "马格维奇",
+        "Magwitch"
+      ],
+      "found": false
+    }
+  ],
+  "expectedDisposition": "answer",
+  "citationStatus": "missing",
+  "inlineCitationCount": 0,
+  "providerUsage": "unavailable-over-public-http",
+  "body": {
+    "success": true,
+    "question": "根据知识库中《远大前程》的摘要，皮普最终发现自己的资助者是谁？",
+    "answer": "根据《远大前程》的摘要，没有提供有关皮普最终发现自己的资助者是谁的信息。",
+    "citations": {
+      "version": "rag-citations/v1",
+      "status": "missing",
+      "partition": "2b33bb8d69c9a257acf188feb1bca752eb74879d5ff6365f59d0e4cbf78e6a0b",
+      "items": [],
+      "diagnostics": {
+        "reason": "no-numbered-citations",
+        "citationCount": 0,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "nomic-embed-text"
+    },
+    "storageBackend": "milvus",
+    "evidence": [
+      {
+        "id": "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n北大人文学科的老师们蕴藏着巨大的潜力和创造性。我相信，只要使老师们的潜力充分发挥出来，北大人文学科便能克服种种障碍，在国内外开辟出一片新天地。\n人文学科的研究主要是著书立说，以个体撰写著作为一大特点。除了需要协同研究的集体大项目外，我们还希望为教师独立探索，撰写、出版专著搭建平台，形成既具个体思想，又汇聚集体智慧的系列研究成果。为此，北京大学人文学部决定编辑出版“北京大学人文学科文库”，旨在汇集新时代北大人文学科的优秀成果，弘扬北大人文学科的学术传统，展示北大人文学科的整体实力和研究特色，为推动北大世界一流大学建设、促进人文学术发展做出贡献。\n我们需要努力营造宽松的学术环境、浓厚的研究气氛。既要提倡教师根据国家的需要选择研究课题，集中人力物力进行研究，也鼓励教师按照自己的兴趣自由地选择课题。鼓励自由选题是“北京大学人文学科文库”的一个特点。\n我们不可满足于泛泛的议论，也不可追求热闹，而应沉潜下来，认真钻研，将切实的成果贡献给社会。学术质量是“北京大学人文学科文库”的一大追求。文库的撰稿者会力求通过自己潜心研究、多年积累而成的优秀成果，来展示自己的学术水平。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 1209,
+        "endOffset": 1695,
+        "retrievalScore": 0.015873015873015872,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 1695,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 4,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 1209,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:c5063af12a12aa6ffc730fb7abba103a40ae89f351115972e82c16ec26ca71d9",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 11.573557,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015873015873015872,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 3
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00013451707491185516
+      },
+      {
+        "id": "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "“北大外国哲学研究丛书”（韩水法 主编）\n“北大东方文学研究丛书”（王邦维 主编）\n“北大欧美文学研究丛书”（申丹 主编）\n“北大外国语言学研究丛书”（宁琦 高一虹 主编）\n“北大艺术学研究丛书”（彭锋 主编）\n“北大对外汉语研究丛书”（赵杨 主编）\n“北大古典学研究丛书”（李四龙 彭小瑜 廖可斌 主编）\n“北大人文学古今融通研究丛书”（陈晓明 彭锋 主编）\n本文库中获得国家社科基金后期资助或入选国家哲学社会科学成果文库的专著，因出版设计另有要求，我们会在丛书其他专著后勒口列出的该书书名上加星号注标，在文库中存目。\n“北大人文跨学科研究丛书”（申丹李四龙王奇生廖可斌主编）\n这17套丛书仅收入学术新作，涵盖了北大人文学科的多个领域，它们的推出有利于读者整体了解当下北大人文学者的科研动态、学术实力和研究特色。这一文库将持续编辑出版，我们相信通过老中青学者的不断努力，其影响会越来越大，并将对北大人文学科的建设和北大创建世界一流大学起到积极作用，进而引起国际学术界的瞩目。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 2140,
+        "endOffset": 2578,
+        "retrievalScore": 0.01639344262295082,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 2578,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 6,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 2140,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:3828df8bb183f1568e95ea5c62395cc181580a482897b6f7f362424c6dd28de2",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 12.863318,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.01639344262295082,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 1
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.0000919611775316298
+      },
+      {
+        "id": "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n但是，由于在20世纪经历了多次国难、内战、政治运动，特别是“文革”的迫害，在处于政治旋涡中的北大，史学研究者也不免受到冲击甚至没顶之灾。而且，最近几十年来社会观念巨变，大学里政经法等社会科学越来越受到重视，文史哲则日渐萎缩，历史学科的规模更是受到较大的限制。\n然而，历史学作为一个综合性大学的基础人文学科，是不可或缺的。而中国历史，更是居于中国大学首位的北京大学所不可或缺的。北大的中国史研究者，也有着比其他人更加厚重的义务，需要更加努力地做好自己的研究。中国近代学术起步要晚于西方和日本，所以在相当长的一段时间里，即便是中国历史研究领域，也有不少优秀的学者是西方或日本培养起来的，陈寅恪先生因而有“群趋东邻受国史，神州士夫羞欲死”的感叹。历次政治运动，也使国人的许多研究领域拉开了与国外优秀学者的距离。但改革开放以来，包括北大学人在内的中国学者奋起直追，在中国史的许多方面，我们已经走在了学科发展前列，产生出一批优秀的学术著作，为东西洋学者同行刮目相看。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 3051,
+        "endOffset": 3480,
+        "retrievalScore": 0.015625,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 3480,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 8,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 3051,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:888ffc7e1af59480b0084e624d347a5fb55b82355c7c7e039a8e35c8f3f36173",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 11.11636,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015625,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 4
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.000027654639779939316
+      },
+      {
+        "id": "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n我曾经说过：与自然科学或社会科学相比，人文学科的成果，难以直接转化为生产力，给社会带来财富，人们或以为无用。其实，人文学科力求揭示人生的意义和价值，塑造理想的人格，指点人生趋向完美的境地。它能丰富人的精神，美化人的心灵，提升人的品德，协调人和自然的关系以及人和人的关系，促使人把自己掌握的知识和技术用到造福于人类的正道上来，这是人文无用之大用！试想，如果我们的心灵中没有诗意，我们的记忆中没有历史，我们的思考中没有哲理，我们的生活将成为什么样子？国家的强盛与否，将来不仅要看经济实力、国防实力，也要看国民的精神世界是否丰富，活得充实不充实，愉快不愉快，自在不自在，美不美。\n一个民族，如果从根本上丧失了对人文学科的热情，丧失了对人文精神的追求和坚守，这个民族就丧失了进步的精神源泉。文化是一个民族的标志，是一个民族的根，在经济全球化的大趋势中，拥有几千年文化传统的中华民族，必须自觉维护自己的根，并以开放的态度吸取世界上其他民族的优秀文化，以跟上世界的潮流。站在这样的高度看待人文学科，我们深感责任之重大与紧迫。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 752,
+        "endOffset": 1209,
+        "retrievalScore": 0.015384615384615385,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 1209,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 3,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 752,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:0fd7c3b95c24cb688bcd7377667383ce1abe16b349c0c5f082f265cda82f36d7",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 10.803961,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015384615384615385,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 5
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.000021406800442491658
+      },
+      {
+        "id": "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n《资治通鉴》卷二六六《后梁纪一》开平元年五月《考异》引《后汉高祖实录》《唐余录》（第8677页）云：“其王耶律阿保机怙强恃勇，距诸族不受代，自号天皇王，后诸族邀之，请用旧制，保机不得已传旗鼓，且曰：‘我为长九年，所得汉人颇众，欲以古汉城领本族率汉人守之，自为一部。’诸族诺之。俄设策复并诸族，僭称皇帝，土地日广。”\n罗新：《阿保机之死》，收入氏著《黑毡上的北魏皇帝》，海豚出版社，2014年，第116页。\n如前人所知，《后汉高祖实录》《新五代史》等书皆有阿保机建国前“为长九年”之说。\n罗新根据内亚社会普遍存在的举毡立汗、预言在位年限的传统，认为阿保机在接替遥辇痕德堇为可汗之时，很可能遵照传统预言了自己的任期为九年（即907—916）；任期届满本该退位之时，他采用了中原政治架构，又以称帝建号的方式更新了自己的居位年限。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 160644,
+        "endOffset": 161006,
+        "retrievalScore": 0.016129032258064516,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 161006,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 405,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 160644,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:1beb955aa0bdde7bac38a16d7aa513b43ab45531d009dfadb2c58137c62e7bb6",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 12.733881,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.016129032258064516,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 2
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.000020029239749419503
+      }
+    ],
+    "laneExecutions": [
+      {
+        "laneId": "dense-vector-required",
+        "retriever": "milvus-elasticsearch-rrf-v1",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+          "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870",
+          "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+          "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681"
+        ],
+        "latencyMs": 36,
+        "stopReason": "sufficient",
+        "metadata": {
+          "searchTime": 36,
+          "vectorizationTime": 11,
+          "elasticsearch": {
+            "version": "milvus-elasticsearch-rrf/v1",
+            "mode": "active",
+            "status": "fused",
+            "denseCandidateCount": 0,
+            "lexicalCandidateCount": 5,
+            "fusedCandidateCount": 5
+          }
+        }
+      },
+      {
+        "laneId": "graph-entity-optional",
+        "retriever": "neo4j-knowledge-graph-v1",
+        "status": "completed",
+        "retrievedEvidenceIds": [],
+        "latencyMs": 3,
+        "stopReason": "no_gain",
+        "metadata": {
+          "reason": "document_unavailable"
+        }
+      },
+      {
+        "laneId": "rerank-optional",
+        "retriever": "rerank:siliconflow:BAAI/bge-reranker-v2-m3",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+          "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+          "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870"
+        ],
+        "reranking": {
+          "beforeEvidenceIds": [
+            "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+            "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870",
+            "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+            "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+            "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681"
+          ],
+          "afterEvidenceIds": [
+            "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+            "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+            "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+            "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+            "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870"
+          ]
+        },
+        "latencyMs": 188,
+        "stopReason": "sufficient"
+      }
+    ],
+    "execution": {
+      "budget": {
+        "maxLanes": 3,
+        "maxEvidence": 10,
+        "maxDurationMs": 30000
+      },
+      "stopReason": "sufficient"
+    },
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "summary": "已检索并验证 5 条证据后生成回答。",
+      "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+      "retrievalSkipped": false,
+      "totalDurationMs": 779,
+      "steps": [
+        {
+          "id": "route",
+          "label": "选择处理路径",
+          "detail": "已选择知识库检索路径。",
+          "status": "completed"
+        },
+        {
+          "id": "retrieve",
+          "label": "检索并验证资料",
+          "detail": "已获得 5 条可用于回答的证据。",
+          "status": "completed",
+          "durationMs": 227
+        },
+        {
+          "id": "rerank",
+          "label": "重排候选文档",
+          "detail": "已按相关性重新排序候选资料。",
+          "status": "completed",
+          "durationMs": 188
+        },
+        {
+          "id": "generate",
+          "label": "组织回答",
+          "detail": "已基于筛选后的资料生成回答。",
+          "status": "completed",
+          "durationMs": 551
+        }
+      ]
+    },
+    "cacheIdentity": {
+      "version": "rag-cache-identity/v1",
+      "context": "rag:context:dfa7e5005140a8453fc9272d393ca8a0c14f40cef0ceb81994571387d806259e",
+      "answer": "rag:answer:3f314a22131d78d4855a97457904bbd1fe09148eed5d94f9199f6d4028be3eaf"
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "version": "retrieval-diagnostics/v1",
+        "qualityMeasurement": "unmeasured",
+        "candidateCount": 5,
+        "contextCount": 5,
+        "citedCount": 0,
+        "rows": [
+          {
+            "evidenceId": "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015873015873015872,
+            "rerankScore": 0.00013451707491185516,
+            "beforeRerankRank": 3,
+            "afterRerankRank": 1,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.01639344262295082,
+            "rerankScore": 0.0000919611775316298,
+            "beforeRerankRank": 1,
+            "afterRerankRank": 2,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015625,
+            "rerankScore": 0.000027654639779939316,
+            "beforeRerankRank": 4,
+            "afterRerankRank": 3,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015384615384615385,
+            "rerankScore": 0.000021406800442491658,
+            "beforeRerankRank": 5,
+            "afterRerankRank": 4,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.016129032258064516,
+            "rerankScore": 0.000020029239749419503,
+            "beforeRerankRank": 2,
+            "afterRerankRank": 5,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          }
+        ]
+      },
+      "searchResults": [],
+      "queryEmbedding": [
+        0.017690489,
+        0.009542342,
+        -0.14983442,
+        -0.053760763,
+        -0.015515649,
+        0.03566815,
+        0.0132315075,
+        -0.0069736703,
+        -0.046104964,
+        0.002435529
+      ],
+      "threshold": 0.1,
+      "topK": 5,
+      "totalDocuments": 42,
+      "searchTime": 36,
+      "vectorizationTime": 11,
+      "llmTime": 549,
+      "retrievalRoute": {
+        "version": "retrieval-router/rules-v1",
+        "route": "dense",
+        "queryKind": "semantic",
+        "reason": "semantic_dense_default",
+        "signals": []
+      },
+      "rerank": {
+        "requested": true,
+        "applied": true,
+        "provider": "rerank:siliconflow:BAAI/bge-reranker-v2-m3"
+      },
+      "hybrid": {
+        "requestedMode": "off",
+        "effectiveMode": "off",
+        "suppressedByElasticsearch": false,
+        "probed": false,
+        "usable": false,
+        "active": false
+      },
+      "elasticsearch": {
+        "requestedMode": "active",
+        "indexName": "rag_chunks_v1",
+        "active": true,
+        "diagnostics": {
+          "version": "milvus-elasticsearch-rrf/v1",
+          "mode": "active",
+          "status": "fused",
+          "denseCandidateCount": 0,
+          "lexicalCandidateCount": 5,
+          "fusedCandidateCount": 5
+        }
+      },
+      "pdfVisual": {
+        "requestedMode": "off",
+        "requestedVisual": false,
+        "usable": false,
+        "active": false,
+        "capabilityReason": "feature_off",
+        "evidenceCount": 0
+      },
+      "graph": {
+        "requestedMode": "active",
+        "intent": "entity",
+        "planned": true,
+        "executed": true,
+        "active": true,
+        "servedEvidenceCount": 0,
+        "citedEvidenceCount": 0,
+        "availability": "ready",
+        "evidenceCount": 0,
+        "shadowEvidenceCount": 0,
+        "diagnostics": {
+          "reason": "document_unavailable"
+        }
+      },
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "order": "retrieval",
+        "tokenEstimate": 2213,
+        "includedEvidenceIds": [
+          "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+          "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+          "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870"
+        ],
+        "excludedEvidenceIds": [],
+        "truncated": false,
+        "requestedRolloutMode": "off",
+        "active": false,
+        "activationReason": "semantic_dense_default",
+        "orderedReadTime": 0
+      },
+      "abstention": {
+        "mode": "shadow",
+        "version": "rag-abstention/per-lane-v1",
+        "calibrationVersion": "milvus-dense-graph-calibration-v1",
+        "abstain": false,
+        "reason": "sufficient_evidence",
+        "qualifiedEvidenceIds": [
+          "chunk-814db8722331f1a5d60341c6936276bcd7e299d9dbd0301b5ec8424bdcee7c8b",
+          "chunk-0c87f1acb915a0bf5878c834491fcafc1b515faa8ec9b622ba21f3a0b0647c2d",
+          "chunk-71b222a88413e0ed639c140f1495dd76de420615b380f7e3c20ee950ce786b44",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-ee2f029f01d104ae603ec2503ca4f758822892ca0e8def17ea173694953cd870"
+        ],
+        "distinctDocumentCount": 1,
+        "laneSummaries": [
+          {
+            "laneId": "dense-vector-required",
+            "kind": "hybrid",
+            "threshold": 0,
+            "total": 5,
+            "qualified": 5,
+            "maximumScore": 0.01639344262295082
+          }
+        ]
+      },
+      "milvusStats": {
+        "name": "rag_documents",
+        "rowCount": 42,
+        "embeddingDimension": 768,
+        "indexType": "IVF_FLAT",
+        "metricType": "COSINE",
+        "loaded": true
+      }
+    },
+    "queryAnalysis": {
+      "tokenization": {
+        "tokenCount": 23,
+        "avgTokenLength": 1.17,
+        "processingTime": 11,
+        "originalText": "根据知识库中《远大前程》的摘要，皮普最终发现自己的资助者是谁？",
+        "tokenTypes": {
+          "chinese": 27,
+          "english": 0,
+          "numbers": 0,
+          "punctuation": 4
+        }
+      },
+      "embedding": {
+        "embedding": [
+          0.017690489,
+          0.009542342,
+          -0.14983442,
+          -0.053760763,
+          -0.015515649,
+          0.03566815,
+          0.0132315075,
+          -0.0069736703,
+          -0.046104964,
+          0.002435529,
+          -0.045327015,
+          0.037696913,
+          0.02315052,
+          0.008831682,
+          0.04112377,
+          -0.09442321,
+          -0.016272366,
+          -0.03594455,
+          -0.04173011,
+          -0.024002274
+        ],
+        "embeddingDimension": 768,
+        "semanticAnalysis": {
+          "context": "通用信息查询语境",
+          "semanticCategory": "通用问答",
+          "confidence": 0.4516,
+          "nearestConcepts": [
+            "什么",
+            "如何",
+            "为什么"
+          ],
+          "categoryDistribution": {
+            "AI技术": 0.2171,
+            "技术开发": 0.101,
+            "商业管理": 0.1782,
+            "学术研究": 0.1056,
+            "日常生活": 0.0802,
+            "情感表达": 0.0846,
+            "通用问答": 0.2333
+          },
+          "semanticClusters": [
+            {
+              "name": "通用问答",
+              "similarity": 0.2333,
+              "centroidDistance": 0.7667
+            },
+            {
+              "name": "AI技术",
+              "similarity": 0.2171,
+              "centroidDistance": 0.7829
+            },
+            {
+              "name": "商业管理",
+              "similarity": 0.1782,
+              "centroidDistance": 0.8218
+            }
+          ],
+          "intentAnalysis": {
+            "primaryIntent": "查询信息",
+            "intentConfidence": 0.5,
+            "possibleIntents": [
+              "查询信息"
+            ]
+          },
+          "vectorFeatures": {
+            "techScore": 0.46,
+            "businessScore": 0.2454,
+            "dailyScore": 0.4972,
+            "emotionScore": 0.2688,
+            "academicScore": 0.4723,
+            "vectorMagnitude": 1,
+            "vectorEntropy": 9.1622,
+            "vectorSparsity": 0.2383,
+            "vectorKurtosis": 0.1064,
+            "informationDensity": 0.7281,
+            "semanticClarity": 0.3645
+          }
+        },
+        "modelInfo": {
+          "name": "nomic-embed-text",
+          "vocabularySize": 50000,
+          "embeddingNorm": 1
+        }
+      },
+      "quality": {
+        "queryQualityScore": 0.3018,
+        "specificity": 0.0441,
+        "ambiguity": 0.6126,
+        "retrievability": 0.4309
+      }
+    },
+    "context": "[1] (score: 0.0001) (source: 重构契丹早期史.epub)\n\n北大人文学科的老师们蕴藏着巨大的潜力和创造性。我相信，只要使老师们的潜力充分发挥出来，北大人文学科便能克服种种障碍，在国内外开辟出一片新天地。\n人文学科的研究主要是著书立说，以个体撰写著作为一大特点。除了需要协同研究的集体大项目外，我们还希望为教师独立探索，撰写、出版专著搭建平台，形成既具个体思想，又汇聚集体智慧的系列研究成果。为此，北京大学人文学部决定编辑出版“北京大学人文学科文库”，旨在汇集新时代北大人文学科的优秀成果，弘扬北大人文学科的学术传统，展示北大人文学科的整体实力和研究特色，为推动北大世界一流大学建设、促进人文学术发展做出贡献。\n我们需要努力营造宽松的学术环境、浓厚的研究气氛。既要提倡教师根据国家的需要选择研究课题，集中人力物力进行研究，也鼓励教师按照自己的兴趣自由地选择课题。鼓励自由选题是“北京大学人文学科文库”的一个特点。\n我们不可满足于泛泛的议论，也不可追求热闹，而应沉潜下来，认真钻研，将切实的成果贡献给社会。学术质量是“北京大学人文学科文库”的一大追求。文库的撰稿者会力求通过自己潜心研究、多年积累而成的优秀成果，来展示自己的学术水平。\n\n[2] (score: 0.0001) (source: 重构契丹早期史.epub)\n“北大外国哲学研究丛书”（韩水法 主编）\n“北大东方文学研究丛书”（王邦维 主编）\n“北大欧美文学研究丛书”（申丹 主编）\n“北大外国语言学研究丛书”（宁琦 高一虹 主编）\n“北大艺术学研究丛书”（彭锋 主编）\n“北大对外汉语研究丛书”（赵杨 主编）\n“北大古典学研究丛书”（李四龙 彭小瑜 廖可斌 主编）\n“北大人文学古今融通研究丛书”（陈晓明 彭锋 主编）\n本文库中获得国家社科基金后期资助或入选国家哲学社会科学成果文库的专著，因出版设计另有要求，我们会在丛书其他专著后勒口列出的该书书名上加星号注标，在文库中存目。\n“北大人文跨学科研究丛书”（申丹李四龙王奇生廖可斌主编）\n这17套丛书仅收入学术新作，涵盖了北大人文学科的多个领域，它们的推出有利于读者整体了解当下北大人文学者的科研动态、学术实力和研究特色。这一文库将持续编辑出版，我们相信通过老中青学者的不断努力，其影响会越来越大，并将对北大人文学科的建设和北大创建世界一流大学起到积极作用，进而引起国际学术界的瞩目。\n\n[3] (score: 0.0000) (source: 重构契丹早期史.epub)\n\n但是，由于在20世纪经历了多次国难、内战、政治运动，特别是“文革”的迫害，在处于政治旋涡中的北大，史学研究者也不免受到冲击甚至没顶之灾。而且，最近几十年来社会观念巨变，大学里政经法等社会科学越来越受到重视，文史哲则日渐萎缩，历史学科的规模更是受到较大的限制。\n然而，历史学作为一个综合性大学的基础人文学科，是不可或缺的。而中国历史，更是居于中国大学首位的北京大学所不可或缺的。北大的中国史研究者，也有着比其他人更加厚重的义务，需要更加努力地做好自己的研究。中国近代学术起步要晚于西方和日本，所以在相当长的一段时间里，即便是中国历史研究领域，也有不少优秀的学者是西方或日本培养起来的，陈寅恪先生因而有“群趋东邻受国史，神州士夫羞欲死”的感叹。历次政治运动，也使国人的许多研究领域拉开了与国外优秀学者的距离。但改革开放以来，包括北大学人在内的中国学者奋起直追，在中国史的许多方面，我们已经走在了学科发展前列，产生出一批优秀的学术著作，为东西洋学者同行刮目相看。\n\n[4] (score: 0.0000) (source: 重构契丹早期史.epub)\n\n我曾经说过：与自然科学或社会科学相比，人文学科的成果，难以直接转化为生产力，给社会带来财富，人们或以为无用。其实，人文学科力求揭示人生的意义和价值，塑造理想的人格，指点人生趋向完美的境地。它能丰富人的精神，美化人的心灵，提升人的品德，协调人和自然的关系以及人和人的关系，促使人把自己掌握的知识和技术用到造福于人类的正道上来，这是人文无用之大用！试想，如果我们的心灵中没有诗意，我们的记忆中没有历史，我们的思考中没有哲理，我们的生活将成为什么样子？国家的强盛与否，将来不仅要看经济实力、国防实力，也要看国民的精神世界是否丰富，活得充实不充实，愉快不愉快，自在不自在，美不美。\n一个民族，如果从根本上丧失了对人文学科的热情，丧失了对人文精神的追求和坚守，这个民族就丧失了进步的精神源泉。文化是一个民族的标志，是一个民族的根，在经济全球化的大趋势中，拥有几千年文化传统的中华民族，必须自觉维护自己的根，并以开放的态度吸取世界上其他民族的优秀文化，以跟上世界的潮流。站在这样的高度看待人文学科，我们深感责任之重大与紧迫。\n\n[5] (score: 0.0000) (source: 重构契丹早期史.epub)\n\n《资治通鉴》卷二六六《后梁纪一》开平元年五月《考异》引《后汉高祖实录》《唐余录》（第8677页）云：“其王耶律阿保机怙强恃勇，距诸族不受代，自号天皇王，后诸族邀之，请用旧制，保机不得已传旗鼓，且曰：‘我为长九年，所得汉人颇众，欲以古汉城领本族率汉人守之，自为一部。’诸族诺之。俄设策复并诸族，僭称皇帝，土地日广。”\n罗新：《阿保机之死》，收入氏著《黑毡上的北魏皇帝》，海豚出版社，2014年，第116页。\n如前人所知，《后汉高祖实录》《新五代史》等书皆有阿保机建国前“为长九年”之说。\n罗新根据内亚社会普遍存在的举毡立汗、预言在位年限的传统，认为阿保机在接替遥辇痕德堇为可汗之时，很可能遵照传统预言了自己的任期为九年（即907—916）；任期届满本该退位之时，他采用了中原政治架构，又以称帝建号的方式更新了自己的居位年限。",
+    "traceId": "ask-1793879508302",
+    "timestamp": "2026-11-05T11:51:49.085Z"
+  }
+}

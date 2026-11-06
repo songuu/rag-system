@@ -28,7 +28,7 @@ function unavailableDocumentReason(document: DocumentCatalogItem): string | null
   if (document.lifecycle !== 'active') return '删除中';
   if (!document.enabled) return '已停用';
   if (document.trustLevel === 'quarantined') return '已隔离';
-  if (document.milvusStatus !== 'ready') return '正文尚未就绪';
+  if (!['ready', 'unknown'].includes(document.milvusStatus)) return '正文尚未就绪';
   if (!Number.isSafeInteger(document.chunkCount) || document.chunkCount <= 0) return '没有可用分块';
   if (document.chunkCount > 100_000) return '文档分块过多';
   if (!document.documentVersion || ['unknown', 'unversioned'].includes(document.documentVersion)) return '缺少文档版本';
@@ -319,7 +319,7 @@ export default function RagDatasetBuilder() {
           }} className={secondaryButton}>{catalogLoading ? '读取文档中…' : '刷新文档'}</button>
         </div>
         <div className="flex flex-wrap justify-between gap-2 text-xs leading-6">
-          <p className="text-slate-500">长文档将选取部分分块出题，生成后可查看实际覆盖范围。</p>
+          <p className="text-slate-500">长文档将选取部分分块出题，生成时读取并核验所选分块，生成后可查看实际覆盖范围。</p>
           <p className="font-mono text-sky-800">已选 {selectedDocumentIds.length} / 8 份文档</p>
         </div>
         {catalogError ? <p role="alert" className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-800">{catalogError}</p> : null}
@@ -338,7 +338,7 @@ export default function RagDatasetBuilder() {
                 <span className="min-w-0 flex-1"><span className="block break-all text-sm font-medium text-slate-700">{document.name}</span>
                   <span className="mt-1 block break-all text-xs leading-5 text-slate-400">{document.chunkCount} 个分块 · <span title={document.documentVersion}>版本 {document.documentVersion?.slice(0, 16) ?? '未知'}</span></span>
                 </span>
-                <span className={'shrink-0 rounded px-2 py-1 text-[11px] ' + (reason ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-800')}>{reason || '可用'}</span>
+                <span className={'shrink-0 rounded px-2 py-1 text-[11px] ' + (reason ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-800')}>{reason || (document.milvusStatus === 'unknown' ? '待核验' : '可用')}</span>
               </label>;
             })}
             {!visibleDocuments.length ? <p className="p-6 text-center text-sm text-slate-400">没有匹配的文档，请调整搜索词。</p> : null}

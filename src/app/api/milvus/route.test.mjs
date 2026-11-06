@@ -77,6 +77,7 @@ const environmentKeys = [
   'RAG_DEFAULT_CORPUS_ID',
   'RAG_TENANT_ISOLATION_REQUIRED',
   'RAG_VECTOR_BACKEND',
+  'RAG_UNIFIED_PUBLICATION_MODE',
 ];
 const originalEnvironment = Object.fromEntries(
   environmentKeys.map(key => [key, process.env[key]])
@@ -174,4 +175,29 @@ test('Milvus API reports maintenance without connecting and blocks mutations', a
   assert.equal(mutation.success, false);
   assert.equal(mutation.code, 'VECTOR_BACKEND_DISABLED');
   assert.equal(mutation.requestId, 'milvus-route-maintenance-test');
+});
+
+test('unified publication prevents direct insertion before any provider access', async () => {
+  const priorMode = process.env.RAG_UNIFIED_PUBLICATION_MODE;
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  process.env.RAG_VECTOR_BACKEND = 'milvus';
+  try {
+    const request = (token) => new NextRequest('http://localhost/api/milvus', {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'insert', corpusId: 'corpus-a', documents: [] }),
+    });
+    assert.equal((await POST(request('wrong'))).status, 401);
+    const response = await POST(request('milvus-route-token'));
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, 'PUBLICATION_LEGACY_WRITE_UNAVAILABLE');
+    const search = await POST(new NextRequest('http://localhost/api/milvus', { method: 'POST',
+      headers: { authorization: 'Bearer milvus-route-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'search', corpusId: 'corpus-a', query: 'secret' }) }));
+    assert.equal(search.status, 503);
+    assert.equal((await search.json()).code, 'PUBLICATION_LEGACY_WRITE_UNAVAILABLE');
+  } finally {
+    if (priorMode === undefined) delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    else process.env.RAG_UNIFIED_PUBLICATION_MODE = priorMode;
+    process.env.RAG_VECTOR_BACKEND = 'disabled';
+  }
 });

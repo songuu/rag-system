@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import {
   type MilvusConfig,
   type MilvusIndexType,
@@ -211,6 +212,9 @@ export async function POST(request: NextRequest) {
       corpusId: securityContext.corpusId,
       enforceIsolation: securityContext.enforceIsolation,
     });
+
+    const publicationBlock = getUnifiedPublicationWriteBlock();
+    if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message, requestId }, { status: publicationBlock.status });
 
     if (isVectorBackendDisabled()) {
       return vectorBackendDisabledResponse(requestId);
@@ -738,6 +742,8 @@ export async function GET(request: NextRequest) {
       requestedCorpusId: searchParams.get('corpusId') || undefined,
       requestIdFactory: () => requestId,
     });
+    const publicationBlock = getUnifiedPublicationWriteBlock();
+    if (publicationBlock) return NextResponse.json({ success: false, code: publicationBlock.code, error: publicationBlock.message, requestId }, { status: publicationBlock.status });
     if (isVectorBackendDisabled()) {
       return action === 'status'
         ? vectorBackendDisabledStatusResponse()

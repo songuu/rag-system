@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { useMiroFishLocale } from './MiroFishLocaleProvider';
 
 interface Step {
   key: number;
@@ -20,10 +21,12 @@ const STEPS: Step[] = [
 interface StepNavProps {
   currentStep: number;
   maxStep: number;
+  minStep?: number;
   onStepChange: (step: number) => void;
 }
 
-export default function StepNav({ currentStep, maxStep, onStepChange }: StepNavProps) {
+export default function StepNav({ currentStep, maxStep, minStep = 0, onStepChange }: StepNavProps) {
+  const { t } = useMiroFishLocale();
   return (
     <div className="relative border-b border-white/[0.06] bg-black/40 backdrop-blur-xl">
       {/* 顶部发光线 */}
@@ -33,7 +36,7 @@ export default function StepNav({ currentStep, maxStep, onStepChange }: StepNavP
         {STEPS.map((step, index) => {
           const isActive = currentStep === step.key;
           const isCompleted = step.key < maxStep;
-          const isClickable = step.key <= maxStep;
+          const isClickable = step.key >= minStep && step.key <= maxStep;
 
           return (
             <React.Fragment key={step.key}>
@@ -99,7 +102,7 @@ export default function StepNav({ currentStep, maxStep, onStepChange }: StepNavP
                           : 'text-white/40'
                     }`}
                   >
-                    {step.label}
+                    {t(step.label)}
                   </div>
                   <div
                     className={`text-[10px] transition-colors ${
@@ -108,7 +111,7 @@ export default function StepNav({ currentStep, maxStep, onStepChange }: StepNavP
                         : 'text-white/20'
                     }`}
                   >
-                    {step.description}
+                    {t(step.description)}
                   </div>
                 </div>
               </button>

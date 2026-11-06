@@ -42,10 +42,13 @@ const eslintConfig = defineConfig([
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
+    ".next-publication/**",
     "out/**",
     "build/**",
     // Agent-generated scratch bundles are not maintained project source.
     ".codex-tmp/**",
+    // Temporary Docker build contexts contain the bundled worker and its dependencies.
+    ".tmp-codex-graph-worker-*/**",
     "next-env.d.ts",
     // Runtime documents and private sessions are not source files; prune before traversal.
     "data/**",

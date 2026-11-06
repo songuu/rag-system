@@ -48,6 +48,12 @@ test('retrieves two-hop claim directions and source passages from real Neo4j', {
     snapshot.entities.push({id:'entity-project',name:'Project X',normalizedName:'project x',labels:['Project'],summary:'',aliases:[],passageIds:['passage-project'],attributes:{}});
     snapshot.claims.push({...snapshot.claims[0],id:'claim-owns',predicate:'owns',fact:'Acme owns Project X',sourceEntityId:'entity-acme',sourceEntityName:'Acme',targetEntityId:'entity-project',targetEntityName:'Project X',passageIds:['passage-project']});
     await commands.stageSnapshot(snapshot);
+    const compatible = await commands.listCompatibilityDescriptors(scope, { limit: 10 });
+    assert.equal(compatible.length, 1);
+    const doc = compatible[0].document;
+    assert.equal((await commands.listCompatibilityDescriptors(scope, { documentId: doc.documentId, documentVersion: doc.documentVersion, trustLevel: doc.trustLevel })).length, 1);
+    assert.equal((await commands.listCompatibilityDescriptors(scope, { documentId: 'other-document' })).length, 0);
+    assert.equal((await commands.listCompatibilityDescriptors(scope, { after: { createdAt: compatible[0].createdAt, graphVersion: compatible[0].graphVersion } })).length, 0);
     await commands.compareAndSetActive(scope,graphVersion,0);
     const port=new Neo4jGraphRetrievalPort(client);
     const query={scope,snapshot:{graphVersion},query:'Alice',laneId:'graph-chat',topK:5,maxHops:1,seedPassageIds:[]};

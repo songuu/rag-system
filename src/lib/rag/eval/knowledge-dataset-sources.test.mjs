@@ -107,11 +107,22 @@ test('rejects invalid selections and unisolated/quarantined scopes before any pr
   assert.equal(injected.calls.catalogs, 0);
 });
 
+test('unknown Milvus status is checked by scoped strong read and provenance validation', async () => {
+  const doc = { ...document(), milvusStatus: 'unknown' };
+  const injected = ports([doc]);
+  const result = await load([doc.id], injected);
+  assert.equal(result.corpus.length, 2);
+  assert.equal(injected.calls.reads.length, 1);
+  const stale = ports([doc], (selected, indices) => indices.map(index => ({ ...row(selected, index), document_version: 'stale' })));
+  await assert.rejects(load([doc.id], stale), error => error.status === 503);
+  assert.equal(stale.calls.reads.length, 1);
+});
+
 test('missing selections fail uniformly; disabled, deleting, stale and unready documents are rejected before reads', async () => {
   const injected = ports([document()]);
   await assert.rejects(load(['foreign-asset'], injected), error => error.status === 404);
   assert.equal(injected.calls.reads.length, 0);
-  for (const patch of [{ enabled: false }, { lifecycle: 'deleting' }, { milvusStatus: 'unknown' }, { chunkCount: 0 }, { documentVersion: 'unknown' }, { documentVersion: 'unversioned' }, { trustLevel: 'quarantined' }]) {
+  for (const patch of [{ enabled: false }, { lifecycle: 'deleting' }, { milvusStatus: 'pending' }, { milvusStatus: 'failed' }, { milvusStatus: 'disabled' }, { milvusStatus: 'stale' }, { chunkCount: 0 }, { documentVersion: 'unknown' }, { documentVersion: 'unversioned' }, { trustLevel: 'quarantined' }]) {
     const doc = { ...document(), ...patch }; const p = ports([doc]);
     await assert.rejects(load([doc.id], p), error => error.status === 409);
     assert.equal(p.calls.reads.length, 0);

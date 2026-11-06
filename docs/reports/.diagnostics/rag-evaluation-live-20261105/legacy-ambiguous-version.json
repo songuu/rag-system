@@ -1,0 +1,758 @@
+{
+  "id": "ambiguous-version",
+  "question": "知识库里“这个版本”的生效日期是哪天？",
+  "httpStatus": 200,
+  "elapsedMs": 816.7892999999967,
+  "answer": "无法回答用户的问题，因为“这个版本”的生效日期没有在检索内容中被提及。",
+  "observedSources": [
+    "重构契丹早期史.epub"
+  ],
+  "evidenceCount": 5,
+  "expectedSourcePresent": null,
+  "expectedDisposition": "clarify-or-abstain",
+  "citationStatus": "missing",
+  "inlineCitationCount": 0,
+  "providerUsage": "unavailable-over-public-http",
+  "body": {
+    "success": true,
+    "question": "知识库里“这个版本”的生效日期是哪天？",
+    "answer": "无法回答用户的问题，因为“这个版本”的生效日期没有在检索内容中被提及。",
+    "citations": {
+      "version": "rag-citations/v1",
+      "status": "missing",
+      "partition": "2b33bb8d69c9a257acf188feb1bca752eb74879d5ff6365f59d0e4cbf78e6a0b",
+      "items": [],
+      "diagnostics": {
+        "reason": "no-numbered-citations",
+        "citationCount": 0,
+        "invalidCitationCount": 0,
+        "unavailableCitationCount": 0
+      }
+    },
+    "models": {
+      "llm": "llama3.1",
+      "embedding": "nomic-embed-text"
+    },
+    "storageBackend": "milvus",
+    "evidence": [
+      {
+        "id": "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n仅凭个别字句当然不足以说明问题，我们需要考察奇首可汗的活动范围来证实上述判断。《太祖纪赞》称“奇首生都庵山”，都庵山的所在是须首先敲定的问题。早先的研究者受元朝史官误导，试图在中原文献所记契丹早期的活动区域内寻找，以致众说纷纭；\n晚近论者则遵循《辽史》本身的线索，逐渐接近鹄的。太祖七年（913）阿保机平定诸弟之乱的行军路线中涉及都庵山：\n《辽史》卷一《太祖纪上》，第7—8页。\n（三月）其（引者按：指剌葛）党神速姑复劫西楼，焚明王楼。上至土河，秣马休兵……夏四月戊寅，北追剌葛。己卯，次弥里，问诸弟面木叶山射鬼箭压禳……（五月）甲寅，奏擒剌葛、涅里衮阿钵于榆河，前北宰相萧实鲁、寅底石自刭不殊……壬戌，剌葛、涅里衮阿钵诣行在，以稿索自缚，牵羊望拜。上还至大岭……丙寅，至库里，以青牛白马祭天地……六月辛巳，至榆岭，以辖赖县人扫古非法残民，磔之。甲申，上登都庵山，抚其先奇首可汗遗迹，徘徊顾瞻而兴叹焉……壬辰，次狼河，获逆党雅里、弥里，生埋之铜河南轨下……庚子，次阿敦泺……秋八月己卯，幸龙眉宫，逆党二十九人。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 91952,
+        "endOffset": 92408,
+        "retrievalScore": 0.015625,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 92408,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 231,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 91952,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:02568d7849e7e10a3ed12982a7cbba03cf8f4b8a56f4c1f04f0ef7cf9d21d799",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 6.1319876,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015625,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 4
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.0002592719392850995
+      },
+      {
+        "id": "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "《旧唐书》卷一九九《契丹传》，中华书局，1975年，第5350页。\n接着来看所谓“持节十州”的原义及当时契丹分部的实际情况。现存关于窟哥归附的最原始记载见《唐会要》：“贞观二十二年十一月二十三日，契丹酋长窟哥、奚帅可度者并率其部内属。以契丹部为松漠都督，拜窟哥为持节十州诸军事、松漠都督。又以其别帅达稽部置峭落州，纥便部置弹汗州，独活部置无逢州，芬问部置羽陵州，突便部置日莲州，芮奚部置徒河州，坠斤部置万丹州，出伏部置匹黎、赤山二州，各以其酋长辱纥主为刺史，俱隶松漠焉。”\n这段文字亦见于《册府元龟》，\n惟略去具体日期，首句“契丹酋长”作“契丹帅”。从日期的确切记录看，这段文字最初的源头当为《唐太宗实录》。对于同一史事，《旧唐书·契丹传》仅称：“二十二年，窟哥等部咸请内属，乃置松漠都督府，以窟哥为左领军将军兼松漠都督府、无极县男，赐姓李氏。”",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 66678,
+        "endOffset": 67051,
+        "retrievalScore": 0.016129032258064516,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 67051,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 167,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 66678,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:8b28cc20a997049f09c927b42ce706cdd89c0d3b88b705585118b2f8c0b5ed43",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 7.514764,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.016129032258064516,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 2
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00017684594786260277
+      },
+      {
+        "id": "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "以往研究者多据此认为地祇即青牛妪，象征契丹女性始祖，\n而述律后编造这一传说就是要将自己等同于契丹的女性始祖，为回鹘与契丹的结合提供依据。\n与此不同的是，康鹏指出在早期的传说版本中，契丹女性始祖都是比较含糊的女性形象，没有任何迹象表明青牛妪与地祇有什么瓜葛，青牛妪即地祇应当是比较晚出的说法。淳钦皇后正是通过青牛妪避路宣示自己就是新的地祇，取代了原先的旧地祇青牛妪。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 116113,
+        "endOffset": 116295,
+        "retrievalScore": 0.015873015873015872,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 116295,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 291,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 116113,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:cb4c51e71dd26845063a24f143fa212fff9dd0531ab8abf8f03c05a1735319f8",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 6.505953,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015873015873015872,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 3
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00003288020161562599
+      },
+      {
+        "id": "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n我曾经说过：与自然科学或社会科学相比，人文学科的成果，难以直接转化为生产力，给社会带来财富，人们或以为无用。其实，人文学科力求揭示人生的意义和价值，塑造理想的人格，指点人生趋向完美的境地。它能丰富人的精神，美化人的心灵，提升人的品德，协调人和自然的关系以及人和人的关系，促使人把自己掌握的知识和技术用到造福于人类的正道上来，这是人文无用之大用！试想，如果我们的心灵中没有诗意，我们的记忆中没有历史，我们的思考中没有哲理，我们的生活将成为什么样子？国家的强盛与否，将来不仅要看经济实力、国防实力，也要看国民的精神世界是否丰富，活得充实不充实，愉快不愉快，自在不自在，美不美。\n一个民族，如果从根本上丧失了对人文学科的热情，丧失了对人文精神的追求和坚守，这个民族就丧失了进步的精神源泉。文化是一个民族的标志，是一个民族的根，在经济全球化的大趋势中，拥有几千年文化传统的中华民族，必须自觉维护自己的根，并以开放的态度吸取世界上其他民族的优秀文化，以跟上世界的潮流。站在这样的高度看待人文学科，我们深感责任之重大与紧迫。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 752,
+        "endOffset": 1209,
+        "retrievalScore": 0.01639344262295082,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 1209,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 3,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 752,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:0fd7c3b95c24cb688bcd7377667383ce1abe16b349c0c5f082f265cda82f36d7",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 9.772787,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.01639344262295082,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 1
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.000017587437469046563
+      },
+      {
+        "id": "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12",
+        "tenantId": "local-dev-tenant",
+        "corpusId": "local-dev-corpus",
+        "documentId": "重构契丹早期史.epub",
+        "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+        "content": "\n从这个角度讲，建国以前集团来源的二元性从根本上影响乃至形塑了契丹王朝性格的二重性。",
+        "source": "重构契丹早期史.epub",
+        "startOffset": 149174,
+        "endOffset": 149216,
+        "retrievalScore": 0.015384615384615385,
+        "trustLevel": "external",
+        "laneId": "dense-vector-required",
+        "metadata": {
+          "type": "epub",
+          "title": "重构契丹早期史",
+          "author": "苗润博",
+          "source": "重构契丹早期史.epub",
+          "corpusId": "local-dev-corpus",
+          "tenantId": "local-dev-tenant",
+          "corpus_id": "local-dev-corpus",
+          "createdAt": "2026-11-04T02:48:05.047Z",
+          "createdBy": "local-dev",
+          "endOffset": 149216,
+          "tenant_id": "local-dev-tenant",
+          "chunkIndex": 376,
+          "documentId": "重构契丹早期史.epub",
+          "sourceHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "trustLevel": "external",
+          "document_id": "重构契丹早期史.epub",
+          "parseMethod": "epub",
+          "source_hash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "startOffset": 149174,
+          "totalChunks": 645,
+          "trust_level": "external",
+          "chapterCount": 35,
+          "contextualMode": "shadow",
+          "sourceTextHash": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualModel": "llama3.1",
+          "documentVersion": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "contextualStatus": "fallback",
+          "document_version": "sha256:be1fd85afe4b4911429dda3bca6b5a6d6a51d2b8e151b27967b39ed1528a8147",
+          "sourceTextLength": 253218,
+          "contextualVersion": "contextual-retrieval/v2",
+          "contextualIdentity": "contextual:v2:c6a53afec7aaad5b28702fd65c434e7db5e03ddd9b71fa6ab7dde7e9d9921ea2",
+          "contextualPromptVersion": "contextual-ingest-prompt/v1",
+          "lexicalMatch": true,
+          "elasticsearchScore": 5.71299,
+          "retriever": "elasticsearch-bm25-v1",
+          "denseMatch": false,
+          "fusionScore": 0.015384615384615385,
+          "matchedLanes": [
+            "lexical"
+          ],
+          "laneRanks": {
+            "lexical": 5
+          },
+          "fusionVersion": "milvus-elasticsearch-rrf/v1"
+        },
+        "rerankScore": 0.00001603342025191523
+      }
+    ],
+    "laneExecutions": [
+      {
+        "laneId": "dense-vector-required",
+        "retriever": "milvus-elasticsearch-rrf-v1",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+          "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12"
+        ],
+        "latencyMs": 183,
+        "stopReason": "sufficient",
+        "metadata": {
+          "searchTime": 183,
+          "vectorizationTime": 15,
+          "elasticsearch": {
+            "version": "milvus-elasticsearch-rrf/v1",
+            "mode": "active",
+            "status": "fused",
+            "denseCandidateCount": 0,
+            "lexicalCandidateCount": 5,
+            "fusedCandidateCount": 5
+          }
+        }
+      },
+      {
+        "laneId": "rerank-optional",
+        "retriever": "rerank:siliconflow:BAAI/bge-reranker-v2-m3",
+        "status": "completed",
+        "retrievedEvidenceIds": [
+          "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+          "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12"
+        ],
+        "reranking": {
+          "beforeEvidenceIds": [
+            "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+            "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+            "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+            "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+            "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12"
+          ],
+          "afterEvidenceIds": [
+            "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+            "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+            "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+            "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+            "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12"
+          ]
+        },
+        "latencyMs": 133,
+        "stopReason": "sufficient"
+      }
+    ],
+    "execution": {
+      "budget": {
+        "maxLanes": 2,
+        "maxEvidence": 5,
+        "maxDurationMs": 30000
+      },
+      "stopReason": "sufficient"
+    },
+    "processing": {
+      "version": "answer-processing/v1",
+      "mode": "rag",
+      "summary": "已检索并验证 5 条证据后生成回答。",
+      "disclosure": "这里展示可验证的处理阶段、是否检索及耗时，不展示模型内部的隐藏推理文本。",
+      "retrievalSkipped": false,
+      "totalDurationMs": 797,
+      "steps": [
+        {
+          "id": "route",
+          "label": "选择处理路径",
+          "detail": "已选择知识库检索路径。",
+          "status": "completed"
+        },
+        {
+          "id": "retrieve",
+          "label": "检索并验证资料",
+          "detail": "已获得 5 条可用于回答的证据。",
+          "status": "completed",
+          "durationMs": 316
+        },
+        {
+          "id": "rerank",
+          "label": "重排候选文档",
+          "detail": "已按相关性重新排序候选资料。",
+          "status": "completed",
+          "durationMs": 133
+        },
+        {
+          "id": "generate",
+          "label": "组织回答",
+          "detail": "已基于筛选后的资料生成回答。",
+          "status": "completed",
+          "durationMs": 481
+        }
+      ]
+    },
+    "cacheIdentity": {
+      "version": "rag-cache-identity/v1",
+      "context": "rag:context:6d73bc695c6153d381fb659a7cc5855f1d2a7af6bdcc99f6d6bf17e8a6a05217",
+      "answer": "rag:answer:6d6b6e827cba38867bf5264c456f653947f49e023aa319e36998e03a25b419fd"
+    },
+    "retrievalDetails": {
+      "diagnostics": {
+        "version": "retrieval-diagnostics/v1",
+        "qualityMeasurement": "unmeasured",
+        "candidateCount": 5,
+        "contextCount": 5,
+        "citedCount": 0,
+        "rows": [
+          {
+            "evidenceId": "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015625,
+            "rerankScore": 0.0002592719392850995,
+            "beforeRerankRank": 4,
+            "afterRerankRank": 1,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.016129032258064516,
+            "rerankScore": 0.00017684594786260277,
+            "beforeRerankRank": 2,
+            "afterRerankRank": 2,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015873015873015872,
+            "rerankScore": 0.00003288020161562599,
+            "beforeRerankRank": 3,
+            "afterRerankRank": 3,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.01639344262295082,
+            "rerankScore": 0.000017587437469046563,
+            "beforeRerankRank": 1,
+            "afterRerankRank": 4,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          },
+          {
+            "evidenceId": "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12",
+            "source": "重构契丹早期史.epub",
+            "laneId": "dense-vector-required",
+            "retrievalScore": 0.015384615384615385,
+            "rerankScore": 0.00001603342025191523,
+            "beforeRerankRank": 5,
+            "afterRerankRank": 5,
+            "rerankLaneId": "rerank-optional",
+            "inContext": true,
+            "cited": false
+          }
+        ]
+      },
+      "searchResults": [],
+      "queryEmbedding": [
+        0.06904908,
+        0.016865337,
+        -0.16704611,
+        -0.023379393,
+        -0.046183668,
+        0.029746879,
+        -0.016951751,
+        -0.03989699,
+        -0.07064567,
+        0.022656374
+      ],
+      "threshold": 0.1,
+      "topK": 5,
+      "totalDocuments": 42,
+      "searchTime": 183,
+      "vectorizationTime": 15,
+      "llmTime": 481,
+      "retrievalRoute": {
+        "version": "retrieval-router/rules-v1",
+        "route": "dense",
+        "queryKind": "identifier",
+        "reason": "identifier_hybrid_unavailable",
+        "signals": [
+          "quoted_literal"
+        ]
+      },
+      "rerank": {
+        "requested": true,
+        "applied": true,
+        "provider": "rerank:siliconflow:BAAI/bge-reranker-v2-m3"
+      },
+      "hybrid": {
+        "requestedMode": "off",
+        "effectiveMode": "off",
+        "suppressedByElasticsearch": false,
+        "probed": false,
+        "usable": false,
+        "active": false
+      },
+      "elasticsearch": {
+        "requestedMode": "active",
+        "indexName": "rag_chunks_v1",
+        "active": true,
+        "diagnostics": {
+          "version": "milvus-elasticsearch-rrf/v1",
+          "mode": "active",
+          "status": "fused",
+          "denseCandidateCount": 0,
+          "lexicalCandidateCount": 5,
+          "fusedCandidateCount": 5
+        }
+      },
+      "pdfVisual": {
+        "requestedMode": "off",
+        "requestedVisual": false,
+        "usable": false,
+        "active": false,
+        "capabilityReason": "feature_off",
+        "evidenceCount": 0
+      },
+      "graph": {
+        "requestedMode": "active",
+        "intent": "none",
+        "planned": false,
+        "executed": false,
+        "active": false,
+        "servedEvidenceCount": 0,
+        "citedEvidenceCount": 0,
+        "availability": "unavailable-or-unpublished",
+        "evidenceCount": 0,
+        "shadowEvidenceCount": 0
+      },
+      "contextPacking": {
+        "version": "evidence-context/v2",
+        "order": "retrieval",
+        "tokenEstimate": 1574,
+        "includedEvidenceIds": [
+          "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+          "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12"
+        ],
+        "excludedEvidenceIds": [],
+        "truncated": false,
+        "requestedRolloutMode": "off",
+        "active": false,
+        "activationReason": "identifier_hybrid_unavailable",
+        "orderedReadTime": 0
+      },
+      "abstention": {
+        "mode": "shadow",
+        "version": "rag-abstention/per-lane-v1",
+        "calibrationVersion": "milvus-dense-calibration-v1",
+        "abstain": false,
+        "reason": "sufficient_evidence",
+        "qualifiedEvidenceIds": [
+          "chunk-d73543b112ccd00b3ca998cbfd755d7bde957c6dc4116c60d07c126dccb19dc2",
+          "chunk-469cc2b1066d08a2e2f1665b98ad17c0a29373786e4e3f6dd9a1a9cbca6f2a8b",
+          "chunk-9156f47e4dcac991c15aa66f7fed1f244c05e21bb26f1589c6007147c5999d43",
+          "chunk-b563c7bf774931250977ad24e4b7cdd456595090a62f95f6351442144adf4681",
+          "chunk-d244db14561af1755f6509957b62b94fdcc56b6bf085ff143c3ebc01d39e9d12"
+        ],
+        "distinctDocumentCount": 1,
+        "laneSummaries": [
+          {
+            "laneId": "dense-vector-required",
+            "kind": "hybrid",
+            "threshold": 0,
+            "total": 5,
+            "qualified": 5,
+            "maximumScore": 0.01639344262295082
+          }
+        ]
+      },
+      "milvusStats": {
+        "name": "rag_documents",
+        "rowCount": 42,
+        "embeddingDimension": 768,
+        "indexType": "IVF_FLAT",
+        "metricType": "COSINE",
+        "loaded": true
+      }
+    },
+    "queryAnalysis": {
+      "tokenization": {
+        "tokenCount": 15,
+        "avgTokenLength": 1.07,
+        "processingTime": 15,
+        "originalText": "知识库里“这个版本”的生效日期是哪天？",
+        "tokenTypes": {
+          "chinese": 16,
+          "english": 0,
+          "numbers": 0,
+          "punctuation": 3
+        }
+      },
+      "embedding": {
+        "embedding": [
+          0.06904908,
+          0.016865337,
+          -0.16704611,
+          -0.023379393,
+          -0.046183668,
+          0.029746879,
+          -0.016951751,
+          -0.03989699,
+          -0.07064567,
+          0.022656374,
+          -0.037146304,
+          0.0048007607,
+          0.014207698,
+          0.03875187,
+          0.0050761956,
+          -0.05192178,
+          0.015146344,
+          -0.044659898,
+          -0.070895,
+          0.02364857
+        ],
+        "embeddingDimension": 768,
+        "semanticAnalysis": {
+          "context": "人工智能与机器学习语境",
+          "semanticCategory": "AI技术",
+          "confidence": 0.4684,
+          "nearestConcepts": [
+            "人工智能",
+            "AI",
+            "机器学习"
+          ],
+          "categoryDistribution": {
+            "AI技术": 0.2591,
+            "技术开发": 0.1205,
+            "商业管理": 0.2127,
+            "学术研究": 0.126,
+            "日常生活": 0.0957,
+            "情感表达": 0.101,
+            "通用问答": 0.0851
+          },
+          "semanticClusters": [
+            {
+              "name": "AI技术",
+              "similarity": 0.2591,
+              "centroidDistance": 0.7409
+            },
+            {
+              "name": "商业管理",
+              "similarity": 0.2127,
+              "centroidDistance": 0.7873
+            },
+            {
+              "name": "学术研究",
+              "similarity": 0.126,
+              "centroidDistance": 0.874
+            }
+          ],
+          "intentAnalysis": {
+            "primaryIntent": "查询信息",
+            "intentConfidence": 0.5,
+            "possibleIntents": [
+              "查询信息"
+            ]
+          },
+          "vectorFeatures": {
+            "techScore": 0.4709,
+            "businessScore": 0.2533,
+            "dailyScore": 0.4934,
+            "emotionScore": 0.2666,
+            "academicScore": 0.4669,
+            "vectorMagnitude": 1,
+            "vectorEntropy": 9.1889,
+            "vectorSparsity": 0.2174,
+            "vectorKurtosis": 0.2578,
+            "informationDensity": 0.7502,
+            "semanticClarity": 0.389
+          }
+        },
+        "modelInfo": {
+          "name": "nomic-embed-text",
+          "vocabularySize": 50000,
+          "embeddingNorm": 1
+        }
+      },
+      "quality": {
+        "queryQualityScore": 0.3082,
+        "specificity": 0.0413,
+        "ambiguity": 0.6022,
+        "retrievability": 0.4413
+      }
+    },
+    "context": "[1] (score: 0.0003) (source: 重构契丹早期史.epub)\n\n仅凭个别字句当然不足以说明问题，我们需要考察奇首可汗的活动范围来证实上述判断。《太祖纪赞》称“奇首生都庵山”，都庵山的所在是须首先敲定的问题。早先的研究者受元朝史官误导，试图在中原文献所记契丹早期的活动区域内寻找，以致众说纷纭；\n晚近论者则遵循《辽史》本身的线索，逐渐接近鹄的。太祖七年（913）阿保机平定诸弟之乱的行军路线中涉及都庵山：\n《辽史》卷一《太祖纪上》，第7—8页。\n（三月）其（引者按：指剌葛）党神速姑复劫西楼，焚明王楼。上至土河，秣马休兵……夏四月戊寅，北追剌葛。己卯，次弥里，问诸弟面木叶山射鬼箭压禳……（五月）甲寅，奏擒剌葛、涅里衮阿钵于榆河，前北宰相萧实鲁、寅底石自刭不殊……壬戌，剌葛、涅里衮阿钵诣行在，以稿索自缚，牵羊望拜。上还至大岭……丙寅，至库里，以青牛白马祭天地……六月辛巳，至榆岭，以辖赖县人扫古非法残民，磔之。甲申，上登都庵山，抚其先奇首可汗遗迹，徘徊顾瞻而兴叹焉……壬辰，次狼河，获逆党雅里、弥里，生埋之铜河南轨下……庚子，次阿敦泺……秋八月己卯，幸龙眉宫，逆党二十九人。\n\n[2] (score: 0.0002) (source: 重构契丹早期史.epub)\n《旧唐书》卷一九九《契丹传》，中华书局，1975年，第5350页。\n接着来看所谓“持节十州”的原义及当时契丹分部的实际情况。现存关于窟哥归附的最原始记载见《唐会要》：“贞观二十二年十一月二十三日，契丹酋长窟哥、奚帅可度者并率其部内属。以契丹部为松漠都督，拜窟哥为持节十州诸军事、松漠都督。又以其别帅达稽部置峭落州，纥便部置弹汗州，独活部置无逢州，芬问部置羽陵州，突便部置日莲州，芮奚部置徒河州，坠斤部置万丹州，出伏部置匹黎、赤山二州，各以其酋长辱纥主为刺史，俱隶松漠焉。”\n这段文字亦见于《册府元龟》，\n惟略去具体日期，首句“契丹酋长”作“契丹帅”。从日期的确切记录看，这段文字最初的源头当为《唐太宗实录》。对于同一史事，《旧唐书·契丹传》仅称：“二十二年，窟哥等部咸请内属，乃置松漠都督府，以窟哥为左领军将军兼松漠都督府、无极县男，赐姓李氏。”\n\n[3] (score: 0.0000) (source: 重构契丹早期史.epub)\n以往研究者多据此认为地祇即青牛妪，象征契丹女性始祖，\n而述律后编造这一传说就是要将自己等同于契丹的女性始祖，为回鹘与契丹的结合提供依据。\n与此不同的是，康鹏指出在早期的传说版本中，契丹女性始祖都是比较含糊的女性形象，没有任何迹象表明青牛妪与地祇有什么瓜葛，青牛妪即地祇应当是比较晚出的说法。淳钦皇后正是通过青牛妪避路宣示自己就是新的地祇，取代了原先的旧地祇青牛妪。\n\n[4] (score: 0.0000) (source: 重构契丹早期史.epub)\n\n我曾经说过：与自然科学或社会科学相比，人文学科的成果，难以直接转化为生产力，给社会带来财富，人们或以为无用。其实，人文学科力求揭示人生的意义和价值，塑造理想的人格，指点人生趋向完美的境地。它能丰富人的精神，美化人的心灵，提升人的品德，协调人和自然的关系以及人和人的关系，促使人把自己掌握的知识和技术用到造福于人类的正道上来，这是人文无用之大用！试想，如果我们的心灵中没有诗意，我们的记忆中没有历史，我们的思考中没有哲理，我们的生活将成为什么样子？国家的强盛与否，将来不仅要看经济实力、国防实力，也要看国民的精神世界是否丰富，活得充实不充实，愉快不愉快，自在不自在，美不美。\n一个民族，如果从根本上丧失了对人文学科的热情，丧失了对人文精神的追求和坚守，这个民族就丧失了进步的精神源泉。文化是一个民族的标志，是一个民族的根，在经济全球化的大趋势中，拥有几千年文化传统的中华民族，必须自觉维护自己的根，并以开放的态度吸取世界上其他民族的优秀文化，以跟上世界的潮流。站在这样的高度看待人文学科，我们深感责任之重大与紧迫。\n\n[5] (score: 0.0000) (source: 重构契丹早期史.epub)\n\n从这个角度讲，建国以前集团来源的二元性从根本上影响乃至形塑了契丹王朝性格的二重性。",
+    "traceId": "ask-1793879510353",
+    "timestamp": "2026-11-05T11:51:51.153Z"
+  }
+}

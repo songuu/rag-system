@@ -35,6 +35,7 @@ test('prepareMiroFishSimulation reuses an existing prepared project when fingerp
     projectId: 'proj_1',
     simulationRequirement: 'simulate policy reaction',
     selectedEntityIds: ['node_1', 'node_2'],
+    graphNodes: [node('node_1'), node('node_2')],
     config,
   });
   const profiles = [profile('node_1'), profile('node_2')];
@@ -60,6 +61,21 @@ test('prepareMiroFishSimulation reuses an existing prepared project when fingerp
   assert.equal(result.already_prepared, true);
   assert.equal(result.prepare_id, 'prep_existing');
   assert.deepEqual(result.profiles, profiles);
+});
+
+test('changed graph content invalidates preparation even when entity UUIDs stay the same', () => {
+  const input = { projectId: 'project', simulationRequirement: 'requirement', selectedEntityIds: ['node_1'], config: {} };
+  assert.notEqual(createPrepareFingerprint({ ...input, graphNodes: [node('node_1')] }),
+    createPrepareFingerprint({ ...input, graphNodes: [{ ...node('node_1'), summary: 'new facts' }] }));
+});
+
+test('changing entity selection regenerates matching UUID profiles instead of reusing an old set', async () => {
+  let generated = false;
+  const result = await prepareMiroFishSimulation({ project: { ...project(), agent_profiles: [profile('old')] },
+    graphNodes: [node('new')], selectedEntityIds: ['new'],
+  }, { async generateProfiles(entities) { generated = true; return entities.map(entity => profile(entity.id)); } });
+  assert.equal(generated, true);
+  assert.deepEqual(result.profiles.map(item => item.entity_id), ['new']);
 });
 
 test('prepareMiroFishSimulation uses provided profiles and creates a fresh prepare result', async () => {

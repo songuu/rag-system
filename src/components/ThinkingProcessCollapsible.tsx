@@ -8,7 +8,7 @@ interface ThinkingStep {
   type: 'reasoning' | 'planning' | 'reflection' | 'decision' | 'tool_call';
   content: string;
   confidence?: number;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
 }
 
 interface ThinkingProcessCollapsibleProps {
@@ -30,30 +30,23 @@ export default function ThinkingProcessCollapsible({
   defaultExpanded = false,
   className = ''
 }: ThinkingProcessCollapsibleProps) {
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-  const [displayedSteps, setDisplayedSteps] = useState<ThinkingStep[]>([]);
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded || isThinking);
+  const [visibleCount, setVisibleCount] = useState(0);
+  const [thinkingRun, setThinkingRun] = useState({ thinking: isThinking, firstId: steps[0]?.id });
   const contentRef = useRef<HTMLDivElement>(null);
-  
-  // 动态显示思考步骤（打字机效果）
+  if (thinkingRun.thinking !== isThinking || (isThinking && thinkingRun.firstId !== steps[0]?.id)) {
+    setThinkingRun({ thinking: isThinking, firstId: steps[0]?.id });
+    setVisibleCount(0);
+    if (isThinking) setIsExpanded(true);
+  }
+  const displayedSteps = isThinking ? steps.slice(0, visibleCount) : steps;
+
   useEffect(() => {
-    if (isThinking) {
-      setDisplayedSteps([]);
-      setIsExpanded(true);
-    } else {
-      setDisplayedSteps(steps);
-    }
-  }, [steps, isThinking]);
-  
-  // 思考中时逐步显示
-  useEffect(() => {
-    if (isThinking && steps.length > displayedSteps.length) {
-      const timer = setTimeout(() => {
-        setDisplayedSteps(prev => [...prev, steps[prev.length]]);
-      }, 100);
-      return () => clearTimeout(timer);
-    }
-  }, [isThinking, steps, displayedSteps]);
-  
+    if (!isThinking || visibleCount >= steps.length) return;
+    const timer = setTimeout(() => setVisibleCount(count => count + 1), 100);
+    return () => clearTimeout(timer);
+  }, [isThinking, steps, visibleCount]);
+
   // 自动滚动到底部
   useEffect(() => {
     if (contentRef.current && isExpanded) {

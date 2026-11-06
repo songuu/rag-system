@@ -52,6 +52,6 @@ USER nextjs
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD node -e "const port=process.env.PORT||3000; const base=process.env.RAG_BASE_PATH||''; fetch('http://127.0.0.1:' + port + base + '/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "const port=process.env.PORT||3000; const base=process.env.RAG_BASE_PATH||''; fetch('http://127.0.0.1:' + port + base + '/api/health/live', {signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "run-rag-system.cjs"]

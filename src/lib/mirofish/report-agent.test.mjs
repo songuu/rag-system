@@ -127,10 +127,28 @@ test('uses the same safe report for semantically invalid report objects', async 
 });
 
 function createAgent(response) {
-  const agent = Object.create(ReportAgent.prototype);
-  agent.llm = { invoke: async () => ({ content: response }) };
-  return agent;
+  return new ReportAgent(undefined, { complete: async () => ({ text: response }) });
 }
+
+
+test('report chat preserves context, history and cancellation through the neutral client', async () => {
+  const controller = new AbortController();
+  const agent = new ReportAgent(undefined, { async complete(request) {
+    assert.equal(request.operation, 'mirofish.report.chat');
+    assert.equal(request.signal, controller.signal);
+    assert.match(request.messages[0].content, /标题: Report title/);
+    assert.match(request.messages[0].content, /## Overview\nContent/);
+    assert.deepEqual(request.messages.slice(1), [
+      { role: 'user', content: 'Previous' }, { role: 'assistant', content: 'Earlier answer' },
+      { role: 'user', content: 'Question' },
+    ]);
+    return { text: 'Answer' };
+  } });
+  assert.equal(await agent.chat({ title: 'Report title', summary: 'Summary',
+    sections: [{ title: 'Overview', content: 'Content' }], key_findings: ['Finding'] }, 'Question',
+  [{ role: 'user', content: 'Previous' }, { role: 'assistant', content: 'Earlier answer' }],
+  { signal: controller.signal }), 'Answer');
+});
 
 function isRelativeImport(specifier) {
   return specifier.startsWith('./') || specifier.startsWith('../');

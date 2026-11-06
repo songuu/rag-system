@@ -263,6 +263,11 @@ const CYPHER = Object.freeze({
     WHERE size(documents) = 1
     WITH snapshot, documents[0] AS document
     WHERE document.trustLevel IN $allowedTrustLevels
+      AND ($documentId IS NULL OR document.documentId = $documentId)
+      AND ($documentVersion IS NULL OR document.documentVersion = $documentVersion)
+      AND ($trustLevel IS NULL OR document.trustLevel = $trustLevel)
+      AND ($afterCreatedAt IS NULL OR snapshot.createdAt < $afterCreatedAt
+        OR (snapshot.createdAt = $afterCreatedAt AND snapshot.graphVersion > $afterGraphVersion))
       AND snapshot.status IN ['staging', 'active', 'superseded']
       AND (
         $availability = 'all'
@@ -602,6 +607,11 @@ export class Neo4jKnowledgeGraphCommandStore implements KnowledgeGraphCommandSto
             corpusId: scope.corpusId,
             graphVersion: '',
             allowedTrustLevels: [...scope.allowedTrustLevels].sort(),
+            documentId: options.documentId ?? null,
+            documentVersion: options.documentVersion ?? null,
+            trustLevel: options.trustLevel ?? null,
+            afterCreatedAt: options.after?.createdAt ?? null,
+            afterGraphVersion: options.after?.graphVersion ?? null,
             availability,
             now: this.now().toISOString(),
             limit,

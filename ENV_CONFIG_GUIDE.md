@@ -30,6 +30,28 @@ EMBEDDING_PROVIDER=siliconflow  # 可选: ollama | siliconflow | openai | custom
 | Canonical 重排 | `RERANK_PROVIDER` / `RERANK_MODEL` | 已配置 provider 且请求未关闭 reranking 时执行 optional lane；未知/未配置 provider 安全跳过 |
 | 词法检索 | `RAG_ELASTICSEARCH_MODE` | `off` / `shadow` / `active`；与 Milvus dense 并行，应用层 RRF 融合 |
 
+## Ollama 请求容量与超时
+
+同一 Node.js 进程中，指向同一 Ollama 地址的对话、向量嵌入和模型预热共享容量。
+先保持默认并发 `1`，根据实际 GPU 显存和延迟测量再调整；这些设置属于应用进程，
+不会修改 Ollama 服务端配置。
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PROVIDER_ADMISSION_OLLAMA_CONCURRENCY` | `1` | 每个 Ollama 地址的执行槽位，整数范围 1–16 |
+| `PROVIDER_ADMISSION_MAX_QUEUE` | `16` | 每个地址最多等待的请求数，整数范围 0–128；`0` 表示忙时直接拒绝 |
+| `PROVIDER_ADMISSION_WAIT_MS` | `30000` | 等待槽位的最长时间，整数范围 1–60000 ms |
+| `OLLAMA_EMBEDDING_REQUEST_TIMEOUT_MS` | `30000` | 单次向量请求的总截止时间，包含排队，整数范围 1000–90000 ms |
+
+部署 bootstrap 的文件模式和容器环境模式均保留这四个参数。向量请求关闭 SDK 自动重试，
+每次调用重新绑定当前请求的取消信号，缓存实例不会复用其他请求的信号。交互请求优先于
+后台预热和文档写入；连续调度三个交互请求后，会给已等待的后台请求一次机会。
+队列满或等待超时会返回明确错误；等待中的请求取消后不会再启动模型调用。
+
+槽位持续到响应体读完、真实取消完成或传输失败，收到响应头不会立即释放。
+该队列只在单个进程内共享；PM2 多 worker 或多容器指向同一 GPU 时，
+总并发最多是各进程配置之和，需要按整个部署的容量预算设置实例数。
+
 ## 自建 PostgreSQL 持久化
 
 活动部署只允许使用自建 PostgreSQL。新环境通过 `POSTGRES_URL` 注入 DSN，

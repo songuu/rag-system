@@ -6,6 +6,7 @@ import Link from 'next/link';
 interface HomeHeaderProps {
   vectorBackendDisabled: boolean;
   milvusConnected: boolean;
+  publicationMode?: boolean;
   showRagModes: boolean;
   useAgenticRAG: boolean;
   useAdaptiveEntityRAG: boolean;
@@ -57,11 +58,12 @@ function ModeControls({ settings, onActivate = NOOP }: { settings: HomeHeaderPro
   return <div className="flex shrink-0 flex-wrap items-center gap-2" aria-label="检索模式">
     <span className={'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium '
       + (settings.vectorBackendDisabled ? 'bg-amber-50 text-amber-700' : 'bg-purple-50 text-purple-700')}
-      title={settings.vectorBackendDisabled ? '知识库向量检索已临时关闭' : '生产环境使用受认证的 Milvus 语料库'}>
+      title={settings.publicationMode ? '查询当前已发布版本；此徽标不代表后端连通性探测'
+        : settings.vectorBackendDisabled ? '知识库向量检索已临时关闭' : '生产环境使用受认证的 Milvus 语料库'}>
       <i aria-hidden="true" className={'fas ' + (settings.vectorBackendDisabled ? 'fa-pause-circle' : 'fa-database')} />
-      {settings.vectorBackendDisabled ? '知识库维护' : 'Milvus'}
+      {settings.publicationMode ? '统一发布' : settings.vectorBackendDisabled ? '知识库维护' : 'Milvus'}
       <span aria-hidden="true" className={'h-1.5 w-1.5 rounded-full ' + (settings.vectorBackendDisabled
-        ? 'bg-amber-400' : settings.milvusConnected ? 'bg-green-400' : 'bg-red-400')} />
+        ? 'bg-amber-400' : settings.publicationMode ? 'bg-blue-400' : settings.milvusConnected ? 'bg-green-400' : 'bg-red-400')} />
     </span>
     {settings.showRagModes ? <>
       <button type="button" aria-pressed={settings.useAgenticRAG} title="启用 Agentic RAG 代理化工作流"
@@ -88,7 +90,7 @@ export default function HomeHeader(settings: HomeHeaderProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const brandRef = useRef<HTMLAnchorElement>(null);
   const focusedRegion = useRef<'desktop' | 'compact' | null>(null);
-  const activeMode = settings.vectorBackendDisabled ? '维护'
+  const activeMode = settings.publicationMode ? '统一发布' : settings.vectorBackendDisabled ? '维护'
     : settings.useAgenticRAG ? 'Agent' : settings.useAdaptiveEntityRAG ? 'Entity' : 'Milvus';
 
   function closeAndRestoreFocus() {

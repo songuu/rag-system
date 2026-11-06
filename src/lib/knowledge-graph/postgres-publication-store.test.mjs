@@ -186,6 +186,23 @@ test('activation CAS requires the matching unexpired lifecycle lease', async () 
   assert.equal(client.calls[0].values[5], operationId);
 });
 
+test('generated activation locks its validated source before pointer and outbox mutation', async () => {
+  const version = `mirofish:${'a'.repeat(64)}:19b0d243-b625-4eba-85aa-f42fda97355a`;
+  const operationId = '5bc631c8-4c86-4b87-af1f-055321563402';
+  const client = fakeClient([{ rows: [], rowCount: 0 }]);
+  const store = new PostgresKnowledgeGraphPublicationStore(client);
+  await assert.rejects(store.compareAndSetActiveWithLease(scope, version, 1, {
+    tenantId: 'tenant-a', corpusId: 'corpus-a', graphVersion: version,
+    operation: 'activate', operationId, leaseExpiresAt: '2026-09-07T01:01:00Z',
+  }), error => error.code === 'KNOWLEDGE_GRAPH_CONFLICT');
+  const sql = client.calls[0].text;
+  assert.match(sql, /for update of job, asset/i);
+  assert.match(sql, /job\.status in \('validated', 'published'\)/i);
+  assert.match(sql, /asset\.metadata->>'retrieval_enabled' is distinct from 'false'/i);
+  assert.match(sql, /select count\(\*\) from locked_sources\) = 1/i);
+  assert.match(sql, /from activated/i);
+});
+
 test('resolves a delete lease into a durable tombstone', async () => {
   const operationId = '5bc631c8-4c86-4b87-af1f-055321563402';
   const client = fakeClient([{ rows: [{ graph_version: 'graph-v1' }], rowCount: 1 }]);

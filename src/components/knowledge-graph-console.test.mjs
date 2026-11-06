@@ -27,6 +27,13 @@ test('creates durable graph snapshots from PostgreSQL document sources', () => {
   assert.match(source, /buildJob/);
 });
 
+test('selects and rebuilds the matching document version and trust level', () => {
+  assert.match(source, /documentId: sourceDocumentId, documentVersion: sourceDocumentVersion, trustLevel: sourceTrustLevel/);
+  assert.match(source, /API_ROOT \+ '\/snapshots\?' \+ params/);
+  assert.match(source, /snapshotLookupPending \|\| !!snapshotLookupError/);
+  assert.match(source, /trustLevel: source\.trustLevel \?\? 'external'/);
+});
+
 test('treats a validated build as a ready snapshot instead of polling forever', () => {
   assert.match(
     source,
@@ -88,6 +95,6 @@ test('does not render the unauthenticated client console in production', () => {
 test('uses the complete immutable identity as the snapshot React key', () => {
   assert.match(
     source,
-    /key=\{snapshot\.identity\.documentId \+ ':' \+ snapshot\.identity\.documentVersion \+ ':' \+ snapshot\.identity\.trustLevel\}/
+    /key=\{snapshot\.identity\.documentId \+ ':' \+ snapshot\.identity\.documentVersion \+ ':' \+ snapshot\.identity\.trustLevel \+ ':' \+ \(snapshot\.identity\.graphGeneration \?\? ''\)\}/
   );
 });

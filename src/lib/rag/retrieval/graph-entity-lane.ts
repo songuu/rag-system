@@ -10,7 +10,8 @@ import {
   type MiroFishGraphArtifactIdentity,
   type MiroFishGraphArtifactStore,
 } from '../../mirofish/graph-artifact-store';
-import type { RagTrustLevel } from '../../security/retrieval-scope';
+import type { RagRetrievalScope, RagTrustLevel } from '../../security/retrieval-scope';
+import { getGraphQueryAuthorityClient, readGraphQueryAuthority } from '../../knowledge-graph/query-authority';
 import {
   assertGraphRetrievalEvidence,
   KnowledgeGraphError,
@@ -28,6 +29,8 @@ import {
 export interface GraphEntityLaneOptions {
   store?: MiroFishGraphArtifactStore;
   retrievalPort?: GraphRetrievalPort;
+  readSourceAuthority?: (scope: RagRetrievalScope, identity: MiroFishGraphArtifactIdentity, graphVersion: string) => Promise<string | null>;
+  requireActivePointer?: boolean;
   defaultMaxHops?: 1 | 2;
   maxEvidence?: number;
   maxSeedNodes?: number;
@@ -176,6 +179,15 @@ export function createGraphEntityLaneHandler(
       if (options.retrievalPort) {
         const graphVersion = createMiroFishGraphVersion(identity);
         try {
+          if (options.requireActivePointer && !options.store) throw new Error('Graph active pointer requires a graph store.');
+          const pointer = options.requireActivePointer ? await options.store!.getActive(scope) : undefined;
+          if (pointer && (!pointer.identity || createMiroFishGraphVersion(pointer.identity) !== graphVersion)) {
+            throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CONFLICT', 'Graph publication changed before the query. Retry the request.');
+          }
+          const readAuthority = options.readSourceAuthority ?? ((readScope, readIdentity, version) =>
+            readGraphQueryAuthority(getGraphQueryAuthorityClient(), readScope, readIdentity, version));
+          const authority = await readAuthority(scope, identity, graphVersion);
+          if (!authority) return noGain('document_unavailable');
           const result = await options.retrievalPort.retrieve(
             normalizeGraphRetrievalRequest({
               scope,
@@ -194,6 +206,13 @@ export function createGraphEntityLaneHandler(
             })
           );
           throwIfAborted(context.signal);
+          const currentAuthority = await readAuthority(scope, identity, graphVersion);
+          const currentPointer = pointer ? await options.store!.getActive(scope) : undefined;
+          if (!currentAuthority || currentAuthority !== authority
+            || (pointer && (!currentPointer?.identity || currentPointer.revision !== pointer.revision
+              || createMiroFishGraphVersion(currentPointer.identity) !== graphVersion))) {
+            throw new KnowledgeGraphError('KNOWLEDGE_GRAPH_CONFLICT', 'Graph source changed during the query. Retry the request.');
+          }
           for (const evidence of result.evidence) {
             assertGraphRetrievalEvidence(evidence, scope);
             assertPinnedGraphEvidence(evidence, {

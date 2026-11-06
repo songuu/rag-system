@@ -32,6 +32,23 @@ const enabledOptions = {
   includePosts: true,
 };
 
+test('default profile generation preserves personality, viewpoints and typical posts', () => {
+  const profile = generator.buildEntityProfile({ ...entity, id: 'graph-uuid' }, {
+    personality_traits: ['careful'], viewpoints: { policy: 'listen' }, typical_posts: ['hello'],
+  });
+  assert.equal(profile.entity_id, 'graph-uuid');
+  assert.deepEqual(profile.personality_traits, ['careful']);
+  assert.deepEqual(profile.viewpoints, { policy: 'listen' });
+  assert.deepEqual(profile.typical_posts, ['hello']);
+});
+
+test('batch generation retains graph UUIDs even for agents with the same name', async () => {
+  const instance = Object.create(ProfileGenerator.prototype);
+  instance.llm = { invoke: async () => ({ content: '{"full_name":"Same"}' }) };
+  const profiles = await instance.generateProfiles({ entities: ['one', 'two'].map(id => ({ ...entity, id })), simulationContext: 'context' });
+  assert.deepEqual(profiles.map(profile => profile.entity_id), ['one', 'two']);
+});
+
 test('uses the strict MiroFish JSON object parser without greedy extraction or repair', () => {
   assert.deepEqual(generator.parseProfileResponse('{"full_name":"Ada"}'), {
     full_name: 'Ada',

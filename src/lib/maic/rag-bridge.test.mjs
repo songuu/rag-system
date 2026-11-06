@@ -21,6 +21,26 @@ registerHooks({
 const { mirrorMaicCourseToRagUploads } = await import('./rag-bridge.ts');
 const { createUploadPersistence } = await import('../persistence/upload-store.ts');
 
+test('MAIC bridge rejects active and invalid publication modes before opening storage', async () => {
+  const previous = process.env.RAG_UNIFIED_PUBLICATION_MODE;
+  try {
+    for (const mode of ['active', 'invalid']) {
+      process.env.RAG_UNIFIED_PUBLICATION_MODE = mode;
+      let opened = false;
+      await assert.rejects(
+        mirrorMaicCourseToRagUploads({ sourceText: 'private', sourceFilename: 'course.pptx' }, {
+          createPersistence: () => { opened = true; throw new Error('must not open'); },
+        }),
+        error => error.code === 'PUBLICATION_LEGACY_WRITE_UNAVAILABLE' && error.status === 503,
+      );
+      assert.equal(opened, false);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    else process.env.RAG_UNIFIED_PUBLICATION_MODE = previous;
+  }
+});
+
 test('MAIC bridge writes one parsed blob before recording its manifest item', async () => {
   const events = [];
   const writes = [];

@@ -1,659 +1,117 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { NativeSimulationSnapshot, SimulationActionEvent } from '@/lib/mirofish/simulation-policy';
+import type { SimulationPost,SimulationStatus } from '@/lib/mirofish/types';
+import { useMiroFishLocale } from './MiroFishLocaleProvider';
 
-interface SimulationPost {
-  id: string;
-  platform: string;
-  round: number;
-  author_name: string;
-  author_type: string;
-  action: string;
-  content: string;
-  likes: number;
-  replies_count: number;
-  reposts: number;
-  sentiment: 'positive' | 'neutral' | 'negative';
-  topics: string[];
-  timestamp: string;
-}
+interface Step3Props { simulationId:string; onComplete:()=>Promise<void>|void;onStatusChange?:(status:SimulationStatus)=>void }
+const card='rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5';
+const button='rounded-xl border border-purple-500/30 bg-purple-500/15 px-4 py-2 text-sm text-purple-200 disabled:opacity-40';
+const isActive=(status:string)=>['running','stopping','finalizing'].includes(status);
 
-interface Step3Props {
-  simulationId: string;
-  onComplete: () => void;
-}
+export default function Step3Simulation({simulationId,onComplete,onStatusChange}:Step3Props){
+ const {locale,t}=useMiroFishLocale();
+ const [snapshot,setSnapshot]=useState<NativeSimulationSnapshot|null>(null);
+ const [error,setError]=useState<string|null>(null);
+ const [busy,setBusy]=useState(false);
+ const [revision,setRevision]=useState(0);
+ const [platform,setPlatform]=useState('all');
+ const [round,setRound]=useState<number|null>(null);
+ const [tab,setTab]=useState<'posts'|'actions'|'memory'>('posts');
+ const [agent,setAgent]=useState('all');
+ const [connection,setConnection]=useState<'connecting'|'live'|'reconnecting'>('connecting');
+ const mounted=useRef(true);
+ const status=snapshot?.info.status??'loading';
+ useEffect(()=>{if(status!=='loading')onStatusChange?.(status);},[status,onStatusChange]);
+ const applySnapshot=useCallback((next:NativeSimulationSnapshot)=>setSnapshot(next),[]);
 
-interface SimulationSnapshot {
-  info: {
-    status: string;
-    current_round: number;
-    config?: { round_count?: number };
-  };
-  posts: SimulationPost[];
-  timeline: Array<{
-    stats: {
-      sentiment_distribution: { positive: number; neutral: number; negative: number };
-      hot_topics: string[];
-    };
-  }>;
-}
+ // The committed snapshot is authoritative. Polling repairs reconnect gaps and interaction counters.
+ useEffect(()=>{
+  mounted.current=true;let cancelled=false;let timer:ReturnType<typeof setTimeout>|undefined;const abort=new AbortController();
+  const load=async()=>{try{
+   const response=await fetch(`/rag-api/mirofish/simulation/${encodeURIComponent(simulationId)}?action=snapshot`,{signal:abort.signal,headers:{'Accept-Language':locale}});
+   const data=await response.json();if(!response.ok||!data.success||!data.snapshot)throw new Error(data.error||t('读取模拟失败','Unable to load simulation'));
+   if(cancelled)return;applySnapshot(data.snapshot);
+   if(isActive(data.snapshot.info.status))timer=setTimeout(load,2000);
+  }catch(cause){if(!cancelled)setError(cause instanceof Error?cause.message:t('读取模拟失败','Unable to load simulation'));}};
+  void load();return()=>{cancelled=true;mounted.current=false;abort.abort();if(timer)clearTimeout(timer);};
+ },[simulationId,locale,t,revision,applySnapshot]);
 
-const SENTIMENT_CONFIG = {
-  positive: { label: '正面', color: 'emerald', dotClass: 'bg-emerald-400', bgClass: 'bg-emerald-500/10 border-emerald-500/20', textClass: 'text-emerald-300', barClass: 'bg-emerald-500' },
-  neutral: { label: '中性', color: 'slate', dotClass: 'bg-white/40', bgClass: 'bg-white/[0.03] border-white/[0.08]', textClass: 'text-white/50', barClass: 'bg-white/30' },
-  negative: { label: '负面', color: 'rose', dotClass: 'bg-rose-400', bgClass: 'bg-rose-500/10 border-rose-500/20', textClass: 'text-rose-300', barClass: 'bg-rose-500' },
-} as const;
+ useEffect(()=>{
+  if(!isActive(status))return;
+  const events=new EventSource(`/rag-api/mirofish/simulation/${encodeURIComponent(simulationId)}/stream`);
+  events.onopen=()=>setConnection('live');
+  events.onerror=()=>setConnection('reconnecting');
+  events.onmessage=event=>{try{
+   const message=JSON.parse(event.data);setConnection('live');
+   if(message.type==='connected'&&message.data.snapshot)applySnapshot(message.data.snapshot);
+   if(message.type==='post_created'&&message.data.post)setSnapshot(previous=>previous?{...previous,posts:previous.posts.some(post=>post.id===message.data.post.id)?previous.posts:[...previous.posts,message.data.post]}:previous);
+   if(message.type==='action_executed'&&message.data.action)setSnapshot(previous=>previous?{...previous,actions:previous.actions.some(action=>action.id===message.data.action.id)?previous.actions:[...previous.actions,message.data.action]}:previous);
+   if(['simulation_complete','simulation_error','state_changed'].includes(message.type)){if(message.type==='simulation_error')setError(t('模拟运行失败，请检查模型或重试','Simulation failed. Check the model or retry.'));setRevision(value=>value+1);}
+  }catch{setConnection('reconnecting');}};
+  return()=>events.close();
+ },[simulationId,status,applySnapshot,t]);
 
-const PLATFORM_CONFIG = {
-  twitter: { label: 'Twitter', icon: '𝕏', tagClass: 'bg-blue-500/15 text-blue-300' },
-  reddit: { label: 'Reddit', icon: '▲', tagClass: 'bg-orange-500/15 text-orange-300' },
-} as const;
+ const control=async(action:'start'|'resume'|'restart'|'pause'|'stop')=>{
+  setBusy(true);setError(null);
+  try{
+   const response=await fetch(`/rag-api/mirofish/simulation/${encodeURIComponent(simulationId)}`,{method:'POST',headers:{'Content-Type':'application/json','Accept-Language':locale},body:JSON.stringify({action})});
+   const data=await response.json();if(!response.ok||!data.success)throw new Error(data.error||t('操作失败','Operation failed'));
+   if(data.simulation)setSnapshot(previous=>previous?{...previous,info:data.simulation}:previous);
+   setRevision(value=>value+1);
+  }catch(cause){setError(cause instanceof Error?cause.message:t('操作失败','Operation failed'));}
+  finally{if(mounted.current)setBusy(false);}
+ };
+ const posts=useMemo(()=>(snapshot?.posts??[]).filter(post=>(platform==='all'||post.platform===platform)&&(round===null||post.round===round)&&(agent==='all'||post.author_id===agent)),[snapshot?.posts,platform,round,agent]);
+ const actions=useMemo(()=>(snapshot?.actions??[]).filter(event=>(platform==='all'||event.platform===platform)&&(round===null||event.round===round)&&(agent==='all'||event.agentId===agent)),[snapshot?.actions,platform,round,agent]);
+ const profiles=snapshot?.info.agent_profiles??[];
+ const rounds=Array.from(new Set([...(snapshot?.posts??[]).map(post=>post.round),...(snapshot?.actions??[]).map(event=>event.round)])).sort((a,b)=>a-b);
+ const total=snapshot?.info.config.round_count??0;
+ const current=snapshot?.info.current_round??0;
+ const progress=total?Math.min(100,current/total*100):0;
+ const canReport=['completed','stopped'].includes(status)&&['idle','complete'].includes(snapshot?.projection.status??'pending');
+ const labels:Record<string,string>={loading:t('读取中','Loading'),ready:t('就绪','Ready'),running:t('运行中','Running'),paused:t('已暂停','Paused'),stopping:t('正在停止并收尾','Stopping and draining'),stopped:t('已停止','Stopped'),finalizing:t('正在提交运行记忆','Committing runtime memory'),completed:t('已完成','Completed'),failed:t('运行失败','Failed')};
+ const exportUrl=(format:string)=>`/rag-api/mirofish/simulation/${encodeURIComponent(simulationId)}?action=export&format=${format}`;
 
-function ProgressRing({ percent, size = 120, strokeWidth = 8 }: { percent: number; size?: number; strokeWidth?: number }) {
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - (percent / 100) * circumference;
-
-  return (
-    <div className="relative" style={{ width: size, height: size }}>
-      <svg className="rotate-[-90deg]" width={size} height={size} role="img" aria-label="Progress ring">
-        <title>Progress</title>
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="rgba(255,255,255,0.05)"
-          strokeWidth={strokeWidth}
-        />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          stroke="url(#progressGradient)"
-          strokeWidth={strokeWidth}
-          strokeDasharray={circumference}
-          strokeDashoffset={offset}
-          strokeLinecap="round"
-          className="transition-all duration-700 ease-out"
-        />
-        <defs>
-          <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-            <stop offset="0%" stopColor="#a855f7" />
-            <stop offset="100%" stopColor="#7c3aed" />
-          </linearGradient>
-        </defs>
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-2xl font-bold text-white">{Math.round(percent)}%</span>
-        <span className="text-[10px] text-white/40">PROGRESS</span>
-      </div>
+ return <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+  <div className="space-y-5 lg:col-span-2">
+   <div className={card}>
+    <div className="flex items-start justify-between gap-3"><div><p className="text-xs uppercase tracking-widest text-purple-400">{t('本地模拟引擎','Local simulation engine')}</p><h2 className="mt-2 font-semibold text-white">{t('模拟运行控制','Simulation controls')}</h2></div><span role="status" className="rounded-full bg-purple-500/15 px-3 py-1 text-xs text-purple-200">{labels[status]??status}</span></div>
+    <p className="mt-4 text-sm text-white/50">{t('已提交轮次','Committed rounds')} {current}/{total}</p>
+    <progress className="mt-2 h-2 w-full accent-purple-500" value={progress} max={100}>{progress}%</progress>
+    <div className="mt-4 grid grid-cols-3 gap-2 text-center">{[[t('帖子','Posts'),snapshot?.info.total_posts??0],[t('评论','Comments'),snapshot?.info.total_comments??0],[t('动作','Actions'),snapshot?.actions.length??0]].map(([label,value])=><div key={label} className="rounded-xl bg-white/[0.03] p-3"><strong className="block font-mono text-lg text-white">{value}</strong><span className="text-xs text-white/40">{label}</span></div>)}</div>
+    <div className="mt-5 flex flex-wrap gap-2">
+     {status==='ready'&&<button type="button" disabled={busy} onClick={()=>void control('start')} className={button}>{t('开始模拟','Start simulation')}</button>}
+     {['paused','failed'].includes(status)&&<button type="button" disabled={busy} onClick={()=>void control('resume')} className={button}>{t('从已提交轮次继续','Resume committed progress')}</button>}
+     {status==='running'&&<button type="button" disabled={busy} onClick={()=>void control('pause')} className={button}>{t('暂停','Pause')}</button>}
+     {['running','paused','failed'].includes(status)&&<button type="button" disabled={busy} onClick={()=>void control('stop')} className={button}>{t('停止并保留结果','Stop and keep results')}</button>}
+     {['completed','stopped','failed'].includes(status)&&<button type="button" disabled={busy} onClick={()=>void control('restart')} className={button}>{t('重新运行','Restart')}</button>}
     </div>
-  );
+    {snapshot?.recoverable&&<p className="mt-3 text-xs text-amber-200">{t('服务重启后已恢复为暂停状态，可从最后提交轮次继续。','Recovered after a service restart. Resume from the last committed round.')}</p>}
+    {isActive(status)&&<p className="mt-3 text-xs text-white/40">{connection==='live'?t('实时连接正常','Live connection active'):t('正在恢复实时连接，快照同步仍在继续','Reconnecting live updates; snapshot synchronization continues')}</p>}
+   </div>
+   <div className={card}><h3 className="text-sm font-semibold text-white">{t('运行记忆','Runtime memory')}</h3><p className="mt-2 text-xs text-white/50">{t('记忆游标','Memory cursor')}: {snapshot?.projection.projectedEventSequence??0}/{snapshot?.projection.committedEventSequence??0}</p><p className="mt-2 text-xs text-white/40">{snapshot?.projection.enabled?t('隔离图记忆已启用；完成前等待全部事件写入。','Isolated graph memory is enabled. Completion waits for all events.'):t('本次使用角色运行记忆，未开启图记忆投影。','This run uses agent runtime memory without graph projection.')}</p>{snapshot?.projection.status==='failed'&&<p role="alert" className="mt-3 text-xs text-rose-300">{t('图记忆写入失败；请继续运行以重试，完成前不能生成报告。','Graph memory failed. Resume to retry before generating a report.')}</p>}</div>
+   <div className={card}><h3 className="text-sm font-semibold text-white">{t('导出记录','Export records')}</h3><div className="mt-3 flex flex-wrap gap-2">{[['snapshot',t('完整快照 JSON','Snapshot JSON')],['actions-csv',t('行为 CSV','Action CSV')],['config',t('环境配置 JSON','Configuration JSON')],['twitter-csv',t('Twitter 人设 CSV','Twitter profiles CSV')],['reddit-json',t('Reddit 人设 JSON','Reddit profiles JSON')]].map(([format,label])=><a key={format} href={exportUrl(format)} className="rounded-lg bg-white/[0.05] px-3 py-2 text-xs text-white/60 hover:text-purple-200">{label}</a>)}</div></div>
+   {canReport&&<button type="button" disabled={busy} onClick={async()=>{setBusy(true);setError(null);try{await onComplete();}catch(cause){setError(cause instanceof Error?cause.message:t('进入报告失败','Unable to open report'));}finally{if(mounted.current)setBusy(false);}}} className="w-full rounded-xl bg-purple-600 px-4 py-3 font-semibold text-white disabled:opacity-40">{t('下一步：生成报告 →','Next: generate report →')}</button>}
+   {error&&<div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">{error}</div>}
+  </div>
+  <div className="space-y-4 lg:col-span-3">
+   <div className="grid grid-cols-2 gap-3">{(snapshot?.info.config.platforms??[]).map(value=>{const events=(snapshot?.actions??[]).filter(event=>event.platform===value);return <div key={value} className="rounded-xl border border-white/10 bg-white/[0.02] p-3"><h3 className="text-sm font-semibold text-white">{value==='twitter'?'Twitter':'Reddit'}</h3><p className="mt-2 text-xs text-white/50">{t('共享提交轮次','Shared committed rounds')}: {current}/{total}</p><p className="mt-1 text-xs text-white/40">{t('成功行为','Successful actions')}: {events.filter(event=>event.success).length}/{events.length} · {t('帖子','Posts')}: {(snapshot?.posts??[]).filter(post=>post.platform===value).length}</p></div>;})}</div>
+   <div className="flex flex-wrap gap-2">{(['posts','actions','memory'] as const).map(value=><button type="button" key={value} onClick={()=>setTab(value)} className={button+' '+(tab===value?'ring-1 ring-purple-400':'opacity-60')}>{value==='posts'?t('帖子流','Posts'):value==='actions'?t('行为记录','Actions'):t('角色记忆','Agent memory')}</button>)}</div>
+   <div className="flex flex-wrap gap-2">
+    <select aria-label={t('平台筛选','Platform filter')} value={platform} onChange={event=>setPlatform(event.target.value)} className="rounded-lg bg-[#141323] p-2 text-xs text-white"><option value="all">{t('全部平台','All platforms')}</option><option value="twitter">Twitter</option><option value="reddit">Reddit</option></select>
+    <select aria-label={t('轮次筛选','Round filter')} value={round??'all'} onChange={event=>setRound(event.target.value==='all'?null:Number(event.target.value))} className="rounded-lg bg-[#141323] p-2 text-xs text-white"><option value="all">{t('全部轮次','All rounds')}</option>{rounds.map(value=><option key={value} value={value}>R{value}</option>)}</select>
+    <select aria-label={t('角色筛选','Agent filter')} value={agent} onChange={event=>setAgent(event.target.value)} className="max-w-52 rounded-lg bg-[#141323] p-2 text-xs text-white"><option value="all">{t('全部角色','All agents')}</option>{profiles.map(profile=><option key={profile.entity_id} value={profile.entity_id}>{profile.entity_name}</option>)}</select>
+   </div>
+   <div className={card+' max-h-[720px] space-y-3 overflow-y-auto'}>
+    {tab==='posts'&&(posts.length?posts.map(post=><PostCard key={post.id} post={post}/>):<p className="py-16 text-center text-sm text-white/40">{t('暂无帖子；角色可能选择搜索、互动或不发言。','No posts yet. Agents may search, interact, or remain silent.')}</p>)}
+    {tab==='actions'&&(actions.length?actions.map(event=><ActionCard key={event.id} event={event} name={profiles.find(profile=>profile.entity_id===event.agentId)?.entity_name??event.agentId}/>):<p className="py-16 text-center text-sm text-white/40">{t('暂无符合筛选条件的行为','No matching actions')}</p>)}
+    {tab==='memory'&&profiles.filter(profile=>agent==='all'||profile.entity_id===agent).map(profile=><div key={profile.entity_id} className="rounded-xl border border-white/10 p-4"><h3 className="text-sm font-semibold text-white">{profile.entity_name}</h3><ul className="mt-2 space-y-2 text-xs text-white/50">{(snapshot?.memory[profile.entity_id]?.observations??[]).map((value,index)=><li key={index} className="whitespace-pre-wrap">{value}</li>)}</ul>{!snapshot?.memory[profile.entity_id]?.observations.length&&<p className="mt-2 text-xs text-white/30">{t('尚无运行记忆','No runtime memory yet')}</p>}</div>)}
+   </div>
+  </div>
+ </div>;
 }
+function PostCard({post}:{post:SimulationPost}){return <article className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4"><div className="flex gap-2 text-xs"><strong className="text-white">{post.author_name}</strong><span className="text-purple-300">{post.platform} · {post.action}</span><span className="ml-auto text-white/30">R{post.round}</span></div><p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-white/75">{post.content}</p><div className="mt-3 text-xs text-white/35">♥ {post.likes} · ↩ {post.replies_count} · ↻ {post.reposts} {post.topics.map(topic=>`#${topic}`).join(' ')}</div></article>;}
+function ActionCard({event,name}:{event:SimulationActionEvent;name:string}){return <article className="rounded-xl border border-white/[0.08] p-4"><div className="flex gap-2 text-xs"><strong className="text-white">{name}</strong><span className="text-purple-300">{event.platform} · {event.action}</span><span className={'ml-auto '+(event.success?'text-emerald-300':'text-rose-300')}>{event.success?'✓':'⚠'} R{event.round} · #{event.sequence}</span></div><p className="mt-2 whitespace-pre-wrap text-xs text-white/60">{event.observation||event.content||event.errorCode||event.action}</p></article>;}
 
-function AvatarCircle({ name, sentiment }: { name: string; sentiment: SimulationPost['sentiment'] }) {
-  const colors = {
-    positive: 'from-emerald-500 to-teal-500',
-    neutral: 'from-violet-500 to-purple-500',
-    negative: 'from-rose-500 to-pink-500',
-  };
-  const initial = name.charAt(0).toUpperCase();
-  return (
-    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br ${colors[sentiment]} text-xs font-bold text-white shadow-lg`}>
-      {initial}
-    </div>
-  );
-}
-
-export default function Step3Simulation({ simulationId, onComplete }: Step3Props) {
-  const [status, setStatus] = useState<string>('created');
-  const [currentRound, setCurrentRound] = useState(0);
-  const [totalRounds, setTotalRounds] = useState(0);
-  const [posts, setPosts] = useState<SimulationPost[]>([]);
-  const [activePlatform, setActivePlatform] = useState<'all' | 'twitter' | 'reddit'>('all');
-  const [activeRound, setActiveRound] = useState<number | null>(null);
-  const [sentimentDist, setSentimentDist] = useState({ positive: 0, neutral: 0, negative: 0 });
-  const [hotTopics, setHotTopics] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-
-  const applySnapshot = useCallback((snapshot: SimulationSnapshot) => {
-    setStatus(snapshot.info.status);
-    setCurrentRound(snapshot.info.current_round || 0);
-    setTotalRounds(snapshot.info.config?.round_count || 0);
-    setPosts(snapshot.posts || []);
-
-    const latestTimeline = snapshot.timeline?.at(-1);
-    if (latestTimeline?.stats) {
-      setSentimentDist(latestTimeline.stats.sentiment_distribution);
-      setHotTopics(latestTimeline.stats.hot_topics || []);
-    }
-  }, []);
-
-  // 自动滚动
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [posts]);
-
-  // 启动模拟
-  const startSimulation = async () => {
-    setError(null);
-
-    try {
-      const response = await fetch(`/rag-api/mirofish/simulation/${simulationId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'start' }),
-      });
-
-      const data = await response.json();
-      if (!data.success) throw new Error(data.error);
-
-      setStatus('running');
-      connectSSE();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '启动失败');
-    }
-  };
-
-  // 连接 SSE
-  const connectSSE = useCallback(() => {
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    const es = new EventSource(`/rag-api/mirofish/simulation/${simulationId}/stream`);
-    eventSourceRef.current = es;
-
-    es.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        switch (data.type) {
-          case 'connected':
-            if (data.data.snapshot) {
-              applySnapshot(data.data.snapshot);
-            } else {
-              setStatus(data.data.status);
-              setCurrentRound(data.data.current_round || 0);
-              setTotalRounds(data.data.total_rounds || 0);
-            }
-            break;
-
-          case 'round_start':
-            setCurrentRound(data.data.round);
-            setTotalRounds(data.data.total_rounds);
-            break;
-
-          case 'post_created':
-            if (data.data.post) {
-              setPosts(prev => [...prev, data.data.post]);
-            }
-            break;
-
-          case 'round_end':
-            if (data.data.stats) {
-              setSentimentDist(data.data.stats.sentiment_distribution);
-              setHotTopics(data.data.stats.hot_topics || []);
-            }
-            break;
-
-          case 'simulation_complete':
-            setStatus('completed');
-            es.close();
-            break;
-
-          case 'simulation_error':
-            setStatus('failed');
-            setError(data.data.error || '模拟运行失败');
-            es.close();
-            break;
-        }
-      } catch {
-        // 忽略解析错误
-      }
-    };
-
-    es.onerror = () => {
-      es.close();
-    };
-  }, [applySnapshot, simulationId]);
-
-  // 停止模拟
-  const stopSimulation = async () => {
-    try {
-      await fetch(`/rag-api/mirofish/simulation/${simulationId}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'stop' }),
-      });
-      setStatus('paused');
-      eventSourceRef.current?.close();
-    } catch {
-      // 忽略
-    }
-  };
-
-  // 清理 SSE
-  useEffect(() => {
-    return () => {
-      eventSourceRef.current?.close();
-    };
-  }, []);
-
-  // 获取初始状态
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const [response, snapshotResponse] = await Promise.all([
-          fetch(`/rag-api/mirofish/simulation/${simulationId}`),
-          fetch(`/rag-api/mirofish/simulation/${simulationId}?action=snapshot`),
-        ]);
-        const data = await response.json();
-        const snapshotData = await snapshotResponse.json();
-        if (data.success && data.simulation) {
-          if (snapshotData.success && snapshotData.snapshot) {
-            applySnapshot(snapshotData.snapshot);
-          } else {
-            setStatus(data.simulation.status);
-            setCurrentRound(data.simulation.current_round);
-            setTotalRounds(data.simulation.config?.round_count || 0);
-          }
-
-          if (data.simulation.status === 'running') {
-            connectSSE();
-          }
-        }
-      } catch {
-        // 忽略
-      }
-    };
-    fetchStatus();
-  }, [applySnapshot, simulationId, connectSSE]);
-
-  // 过滤帖子
-  const filteredPosts = useMemo(() => {
-    let result = posts;
-    if (activePlatform !== 'all') {
-      result = result.filter(p => p.platform === activePlatform);
-    }
-    if (activeRound !== null) {
-      result = result.filter(p => p.round === activeRound);
-    }
-    return result;
-  }, [posts, activePlatform, activeRound]);
-
-  // 统计数据
-  const stats = useMemo(() => {
-    const totalLikes = posts.reduce((sum, p) => sum + p.likes, 0);
-    const totalReplies = posts.reduce((sum, p) => sum + p.replies_count, 0);
-    const uniqueAuthors = new Set(posts.map(p => p.author_name)).size;
-    return { totalLikes, totalReplies, uniqueAuthors };
-  }, [posts]);
-
-  // 可用轮次列表
-  const availableRounds = useMemo(() => {
-    const rounds = new Set(posts.map(p => p.round));
-    return Array.from(rounds).sort((a, b) => a - b);
-  }, [posts]);
-
-  const progressPercent = totalRounds > 0 ? (currentRound / totalRounds) * 100 : 0;
-
-  return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-      {/* 左侧控制面板 */}
-      <div className="space-y-5 lg:col-span-2">
-        {/* 进度环 + 状态 */}
-        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <div className="text-[10px] font-semibold uppercase tracking-widest text-purple-400/70">SIMULATION</div>
-              <div className="mt-1 text-sm font-semibold text-white">模拟运行控制</div>
-            </div>
-            <span className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] font-medium ${
-              status === 'running' ? 'bg-emerald-500/15 text-emerald-300' :
-              status === 'completed' ? 'bg-purple-500/15 text-purple-300' :
-              status === 'failed' ? 'bg-rose-500/15 text-rose-300' :
-              'bg-white/[0.06] text-white/40'
-            }`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${
-                status === 'running' ? 'bg-emerald-400 animate-pulse' :
-                status === 'completed' ? 'bg-purple-400' :
-                status === 'failed' ? 'bg-rose-400' : 'bg-white/30'
-              }`} />
-              {status === 'running' ? '运行中' :
-               status === 'completed' ? '已完成' :
-               status === 'failed' ? '失败' :
-               status === 'ready' ? '就绪' :
-               status === 'paused' ? '已暂停' : '就绪'}
-            </span>
-          </div>
-
-          {/* 进度环 */}
-          <div className="flex justify-center py-4">
-            {totalRounds > 0 ? (
-              <ProgressRing percent={progressPercent} />
-            ) : (
-              <div className="relative flex h-[120px] w-[120px] items-center justify-center">
-                <div className="absolute inset-0 animate-spin rounded-full border-2 border-dashed border-purple-500/20" style={{ animationDuration: '8s' }} />
-                <div className="absolute inset-3 animate-spin rounded-full border border-dashed border-violet-500/15" style={{ animationDuration: '12s', animationDirection: 'reverse' }} />
-                <span className="text-3xl">🧪</span>
-              </div>
-            )}
-          </div>
-
-          {totalRounds > 0 && (
-            <div className="mt-2 text-center">
-              <span className="text-[11px] text-white/40">
-                第 <span className="font-mono text-white/70">{currentRound}</span> / <span className="font-mono text-white/70">{totalRounds}</span> 轮
-              </span>
-            </div>
-          )}
-
-          {/* 控制按钮 */}
-          <div className="mt-5 flex gap-3">
-            {(status === 'created' || status === 'ready' || status === 'paused') && (
-              <button
-                type="button"
-                onClick={startSimulation}
-                className="flex-1 rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 py-3 text-sm font-semibold text-white shadow-lg shadow-purple-500/20 transition-all hover:shadow-purple-500/30 hover:brightness-110 active:scale-[0.98]"
-              >
-                {status === 'paused' ? '继续模拟' : '启动模拟'}
-              </button>
-            )}
-            {status === 'running' && (
-              <button
-                type="button"
-                onClick={stopSimulation}
-                className="flex-1 rounded-xl border border-rose-500/30 bg-rose-500/10 py-3 text-sm font-semibold text-rose-300 transition-all hover:bg-rose-500/20 active:scale-[0.98]"
-              >
-                停止模拟
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* 实时统计面板 */}
-        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-          <div className="mb-4 text-[10px] font-semibold uppercase tracking-widest text-white/30">LIVE STATS</div>
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              { label: '总帖子', value: posts.length, icon: '📝' },
-              { label: '活跃Agent', value: stats.uniqueAuthors, icon: '🤖' },
-              { label: '总点赞', value: stats.totalLikes, icon: '❤️' },
-              { label: '总回复', value: stats.totalReplies, icon: '💬' },
-            ].map(item => (
-              <div
-                key={item.label}
-                className="group rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 transition-all hover:border-purple-500/20 hover:bg-purple-500/[0.04]"
-              >
-                <div className="mb-1 text-lg">{item.icon}</div>
-                <div className="text-lg font-bold text-white">{item.value}</div>
-                <div className="text-[10px] text-white/30">{item.label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 情绪分布 */}
-        {(sentimentDist.positive + sentimentDist.neutral + sentimentDist.negative) > 0 && (
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-            <div className="mb-4 text-[10px] font-semibold uppercase tracking-widest text-white/30">SENTIMENT</div>
-            <div className="space-y-3">
-              {(['positive', 'neutral', 'negative'] as const).map(key => {
-                const total = sentimentDist.positive + sentimentDist.neutral + sentimentDist.negative;
-                const pct = total > 0 ? Math.round(sentimentDist[key] / total * 100) : 0;
-                const cfg = SENTIMENT_CONFIG[key];
-                return (
-                  <div key={key}>
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className={`h-2 w-2 rounded-full ${cfg.dotClass}`} />
-                        <span className="text-[11px] text-white/50">{cfg.label}</span>
-                      </div>
-                      <span className={`text-xs font-mono font-medium ${cfg.textClass}`}>{pct}%</span>
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
-                      <div
-                        className={`h-full rounded-full ${cfg.barClass} transition-all duration-700`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* 热门话题 */}
-        {hotTopics.length > 0 && (
-          <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-5">
-            <div className="mb-3 text-[10px] font-semibold uppercase tracking-widest text-white/30">HOT TOPICS</div>
-            <div className="flex flex-wrap gap-2">
-              {hotTopics.map(topic => (
-                <span
-                  key={topic}
-                  className="rounded-lg bg-purple-500/10 px-2.5 py-1 text-[11px] font-medium text-purple-300 transition-colors hover:bg-purple-500/20"
-                >
-                  #{topic}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* 完成按钮 */}
-        {status === 'completed' && (
-          <div className="rounded-xl bg-gradient-to-r from-purple-600 to-violet-600 p-px">
-            <button
-              type="button"
-              onClick={onComplete}
-              className="w-full rounded-[11px] bg-[#0a0a1a] px-4 py-3.5 text-sm font-semibold text-white transition-all hover:bg-[#0a0a1a]/80"
-            >
-              下一步: 生成报告 →
-            </button>
-          </div>
-        )}
-
-        {/* 错误 */}
-        {error && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4">
-            <div className="flex items-start gap-2">
-              <span className="text-rose-400">⚠</span>
-              <span className="text-[12px] leading-relaxed text-rose-300">{error}</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 右侧消息流 */}
-      <div className="lg:col-span-3">
-        {/* 筛选栏 */}
-        <div className="mb-4 flex items-center gap-3">
-          {/* 平台筛选 */}
-          <div className="flex gap-1.5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-1">
-            {(['all', 'twitter', 'reddit'] as const).map(p => (
-              <button
-                type="button"
-                key={p}
-                onClick={() => setActivePlatform(p)}
-                className={`rounded-lg px-3 py-1.5 text-[11px] font-medium transition-all ${
-                  activePlatform === p
-                    ? 'bg-purple-500/20 text-purple-300 shadow-sm shadow-purple-500/10'
-                    : 'text-white/40 hover:text-white/60'
-                }`}
-              >
-                {p === 'all' ? '全部' : `${PLATFORM_CONFIG[p]?.icon || ''} ${PLATFORM_CONFIG[p]?.label || p}`}
-                {p !== 'all' && (
-                  <span className="ml-1 font-mono text-[10px] opacity-60">
-                    {posts.filter(post => post.platform === p).length}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
-
-          {/* 轮次筛选 */}
-          {availableRounds.length > 1 && (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => setActiveRound(null)}
-                className={`rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-all ${
-                  activeRound === null
-                    ? 'bg-violet-500/20 text-violet-300'
-                    : 'text-white/30 hover:text-white/50'
-                }`}
-              >
-                全轮
-              </button>
-              <div className="flex gap-1 overflow-x-auto">
-                {availableRounds.slice(-8).map(round => (
-                  <button
-                    type="button"
-                    key={`round-${round}`}
-                    onClick={() => setActiveRound(activeRound === round ? null : round)}
-                    className={`rounded-lg px-2 py-1.5 text-[10px] font-mono transition-all ${
-                      activeRound === round
-                        ? 'bg-violet-500/20 text-violet-300'
-                        : 'text-white/20 hover:text-white/40'
-                    }`}
-                  >
-                    R{round}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* 消息列表 */}
-        <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] backdrop-blur-sm">
-          <div className="h-[620px] overflow-y-auto p-4">
-            {filteredPosts.length > 0 ? (
-              <div className="space-y-3">
-                {filteredPosts.map(msg => {
-                  const sentimentCfg = SENTIMENT_CONFIG[msg.sentiment];
-                  const platformCfg = PLATFORM_CONFIG[msg.platform as keyof typeof PLATFORM_CONFIG];
-                  return (
-                    <div
-                      key={msg.id}
-                      className={`group rounded-xl border p-4 transition-all hover:scale-[1.01] hover:shadow-lg hover:shadow-black/20 ${sentimentCfg.bgClass}`}
-                    >
-                      <div className="flex items-start gap-3">
-                        <AvatarCircle name={msg.author_name} sentiment={msg.sentiment} />
-                        <div className="min-w-0 flex-1">
-                          {/* 头部信息 */}
-                          <div className="mb-1.5 flex items-center gap-2">
-                            <span className="text-sm font-semibold text-white">{msg.author_name}</span>
-                            <span className="rounded-md bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-white/30">
-                              {msg.author_type}
-                            </span>
-                            {platformCfg && (
-                              <span className={`rounded-md px-1.5 py-0.5 text-[10px] ${platformCfg.tagClass}`}>
-                                {platformCfg.icon}
-                              </span>
-                            )}
-                            {msg.action !== 'post' && (
-                              <span className="rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[10px] text-violet-300">
-                                {msg.action}
-                              </span>
-                            )}
-                            <span className="ml-auto text-[10px] font-mono text-white/20">R{msg.round}</span>
-                          </div>
-
-                          {/* 内容 */}
-                          <p className="text-[13px] leading-relaxed text-white/70">{msg.content}</p>
-
-                          {/* 底部交互数据 */}
-                          <div className="mt-3 flex items-center gap-4">
-                            <span className="flex items-center gap-1 text-[11px] text-white/25 transition-colors group-hover:text-white/40">
-                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} role="img" aria-label="Likes">
-                                <title>Likes</title>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                              </svg>
-                              {msg.likes}
-                            </span>
-                            <span className="flex items-center gap-1 text-[11px] text-white/25 transition-colors group-hover:text-white/40">
-                              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} role="img" aria-label="Replies">
-                                <title>Replies</title>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 01-.923 1.785A5.969 5.969 0 006 21c1.282 0 2.47-.402 3.445-1.087.81.22 1.668.337 2.555.337z" />
-                              </svg>
-                              {msg.replies_count}
-                            </span>
-                            {msg.reposts > 0 && (
-                              <span className="flex items-center gap-1 text-[11px] text-white/25 transition-colors group-hover:text-white/40">
-                                <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} role="img" aria-label="Reposts">
-                                  <title>Reposts</title>
-                                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" />
-                                </svg>
-                                {msg.reposts}
-                              </span>
-                            )}
-                            {msg.topics.length > 0 && (
-                              <span className="ml-auto text-[10px] text-purple-400/60">
-                                #{msg.topics[0]}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="flex h-full flex-col items-center justify-center">
-                <div className="relative mb-6">
-                  <div className="absolute inset-0 animate-spin rounded-full border-2 border-dashed border-purple-500/20" style={{ animationDuration: '10s', width: 100, height: 100, top: -10, left: -10 }} />
-                  <div className="absolute animate-spin rounded-full border border-dashed border-violet-500/10" style={{ animationDuration: '15s', animationDirection: 'reverse', width: 120, height: 120, top: -20, left: -20 }} />
-                  <span className="relative text-5xl">🌐</span>
-                </div>
-                <p className="text-sm text-white/30">启动模拟后消息将实时显示</p>
-                <p className="mt-1 text-[11px] text-white/15">Agent 将在虚拟社交平台上互动</p>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-
-        {/* 底部统计条 */}
-        {posts.length > 0 && (
-          <div className="mt-3 flex items-center justify-between rounded-xl border border-white/[0.06] bg-white/[0.02] px-5 py-3">
-            <div className="flex items-center gap-4">
-              <span className="text-[11px] text-white/30">
-                显示 <span className="font-mono text-white/50">{filteredPosts.length}</span> / {posts.length} 条
-              </span>
-              {activeRound !== null && (
-                <button
-                  type="button"
-                  onClick={() => setActiveRound(null)}
-                  className="text-[11px] text-purple-400 hover:text-purple-300"
-                >
-                  清除轮次筛选
-                </button>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              {(['positive', 'neutral', 'negative'] as const).map(key => {
-                const count = posts.filter(p => p.sentiment === key).length;
-                const cfg = SENTIMENT_CONFIG[key];
-                return (
-                  <span key={key} className="flex items-center gap-1.5">
-                    <span className={`h-1.5 w-1.5 rounded-full ${cfg.dotClass}`} />
-                    <span className="text-[10px] font-mono text-white/30">{count}</span>
-                  </span>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}

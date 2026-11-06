@@ -7,6 +7,7 @@ import path from 'node:path';
 import test, { after } from 'node:test';
 import { registerHooks } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { AIMessageChunk } from '@langchain/core/messages';
 import {
   DURABLE_FIRST_POST_DIAGNOSTIC_MARKER,
   formatDurableFirstPostDiagnostic,
@@ -233,6 +234,7 @@ const store = {
   },
   async getCollectionStats() {
     signals.stats += 1;
+    if (fixture.statisticsError) throw new Error(fixture.statisticsError);
     return { name: 'test', rowCount: fixture.searchResults.length, embeddingDimension: 3, indexType: 'test', metricType: 'COSINE', loaded: true };
   },
   createHybridSearchPort(manifest) {
@@ -270,15 +272,23 @@ const store = {
 export function getMilvusInstance() { return store; }
 `);
 const modelStubUrl = 'data:text/javascript,' + encodeURIComponent(`
+import { AIMessageChunk } from ${JSON.stringify(import.meta.resolve('@langchain/core/messages'))};
 let signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [], embeddedQueries: [] };
 let createLLMError;
 let modelAnswer = 'generated answer';
+let modelStopReason = 'stop';
+let modelStreamFixture;
 export function resetModelSignals() {
   signals = { embed: 0, generate: 0, visualGenerate: 0, prompts: [], llmCreations: [], embeddedQueries: [] };
   createLLMError = undefined;
   modelAnswer = 'generated answer';
+  modelStopReason = 'stop';
+  modelStreamFixture = undefined;
+  globalThis.askModelTransportBindings = [];
 }
+export function setModelStopReason(value) { modelStopReason = value; }
 export function setModelAnswer(value) { modelAnswer = value; }
+export function setModelStreamFixture(value) { modelStreamFixture = value; }
 export function getModelSignals() { return structuredClone(signals); }
 export function setCreateLLMError(value) { createLLMError = value; }
 export function createEmbedding() {
@@ -286,13 +296,27 @@ export function createEmbedding() {
 }
 export function createLLM(modelName, options) {
   if (createLLMError) throw new Error(createLLMError);
+  const binding = { options };
+  (globalThis.askModelTransportBindings ??= []).push(binding);
   signals.llmCreations.push({
     modelName,
     requestTimeoutMs: options?.requestTimeoutMs,
   });
-  return { withStructuredOutput() {
-    return { async invoke() { return { coverage: 'complete', evidenceNumbers: [1] }; } };
-  }, async invoke(prompt) {
+  return { async stream(prompt, invokeOptions) {
+    binding.streamSignal = invokeOptions?.signal;
+    signals.stream = (signals.stream ?? 0) + 1;
+    signals.generate += 1;
+    signals.prompts.push(prompt.map(message => message.content).join('\\n\\n'));
+    return modelStreamFixture ? modelStreamFixture(invokeOptions) : (async function* () {
+      yield new AIMessageChunk({ content: modelAnswer });
+      yield new AIMessageChunk({ content: '', response_metadata: { done_reason: modelStopReason },
+        usage_metadata: { input_tokens: 9, output_tokens: 3, total_tokens: 12 } });
+    })();
+  }, withStructuredOutput(_schema, structuredOptions) {
+    return { async invoke() { const parsed = { coverage: 'complete', evidenceNumbers: [1] };
+      return structuredOptions?.includeRaw ? { parsed, raw: { response_metadata: { done_reason: modelStopReason } } } : parsed; } };
+  }, async invoke(prompt, invokeOptions) {
+    binding.invokeSignal = invokeOptions?.signal;
     const isVisual = Array.isArray(prompt) && prompt.some(message =>
       Array.isArray(message?.content)
       && message.content.some(block => block?.type === 'image_url')
@@ -305,7 +329,7 @@ export function createLLM(modelName, options) {
     signals.prompts.push(typeof prompt === 'string' ? prompt : prompt.map(message => typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).join('\\n\\n'));
     signals.messageRoles ??= [];
     signals.messageRoles.push(Array.isArray(prompt) ? prompt.map(message => message.role) : ['user']);
-    return { content: modelAnswer };
+    return { content: modelAnswer, response_metadata: { done_reason: modelStopReason } };
   } };
 }
 `);
@@ -343,7 +367,7 @@ const moduleStubs = new Map([
   // Cold-start behavior is covered by lightweight-entry; these retrieval tests
   // must not load real provider weights before invoking their Milvus fixtures.
   ['@/lib/ollama-readiness', 'data:text/javascript,' + encodeURIComponent(`
-    export async function warmOllamaEmbeddingModel(model) { return { model, phase: 'ready' }; }
+    export async function warmOllamaEmbeddingModel(model) { globalThis.unifiedPublicationWarmCalls = (globalThis.unifiedPublicationWarmCalls ?? 0) + 1; return { model, phase: 'ready' }; }
   `)],
   ['@/lib/rag-instance', 'data:text/javascript,' + encodeURIComponent(`
     export async function getRagSystem() { throw new Error('memory fixture not configured'); }
@@ -412,6 +436,7 @@ const environmentKeys = [
   'RAG_DURABLE_WORKFLOW_RESULT_MAX_ARTIFACTS',
   'RAG_AGENTIC_RUNTIME', 'RAG_AGENTIC_RETRIEVAL_MODE', 'RAG_AGENTIC_DECISION_MODE',
   'RAG_VECTOR_BACKEND',
+  'RAG_UNIFIED_PUBLICATION_MODE',
   'RAG_SEMANTIC_ROUTER',
   'NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD',
 ];
@@ -461,7 +486,10 @@ const {
   getModelSignals,
   setCreateLLMError,
   setModelAnswer,
+  setModelStopReason,
+  setModelStreamFixture,
 } = await import('@/lib/model-config');
+const { captureAskProviderUsage, readAskProviderUsage } = await import('@/lib/rag/core/provider-usage-observer');
 const {
   FileMiroFishGraphArtifactStore,
   createMiroFishGraphArtifact,
@@ -662,6 +690,191 @@ test('durable first POST diagnostic parser rejects nonstrings without invoking c
   assert.equal(hooks, 0);
 });
 
+test('POST normal and Agentic answers bind generation-owned transport signals and output budgets', async t => {
+  t.after(() => { setScopedAgentFixture(undefined); resetModelSignals(); });
+  for (const useAgenticRAG of [false, true]) {
+    resetVectorIngestStateForTests();
+    setMilvusFixture({ searchResults: [denseResult()] });
+    setScopedAgentFixture({ answer: 'grounded answer' });
+    resetModelSignals();
+    const response = await POST(milvusAskRequest('请总结文档中的主要结论', { useAgenticRAG }));
+    assert.equal(response.status, 200);
+    const bindings = globalThis.askModelTransportBindings;
+    assert.equal(bindings.length, 1);
+    assert.equal(bindings[0].options.maxTokens, 1024);
+    assert.ok(bindings[0].options.requestSignal instanceof AbortSignal);
+    const invokeSignal = useAgenticRAG ? getScopedAgentSignals()[0].signal : bindings[0].invokeSignal;
+    assert.equal(bindings[0].options.requestSignal, invokeSignal);
+  }
+});
+
+test('POST local-dev dense retrieval skips collection statistics and reports the total as unknown', async t => {
+  const previousMode = process.env.RAG_ACCESS_MODE;
+  const previousNodeEnv = process.env.NODE_ENV;
+  t.after(() => {
+    if (previousMode === undefined) delete process.env.RAG_ACCESS_MODE;
+    else process.env.RAG_ACCESS_MODE = previousMode;
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+    setMilvusFixture({});
+    resetModelSignals();
+  });
+  process.env.RAG_ACCESS_MODE = 'local-dev';
+  process.env.NODE_ENV = 'test';
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()], statisticsError: 'statistics must not block an answer' });
+  resetModelSignals();
+  const response = await POST(milvusAskRequest('请总结文档中的主要结论'));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(getMilvusSignals().stats, 0);
+  assert.equal(getMilvusSignals().search, 1);
+  assert.equal(body.evidence.length, 1);
+  assert.equal(body.retrievalDetails.totalDocuments, null);
+  assert.equal(body.retrievalDetails.totalDocumentsStatus, 'not-collected');
+  assert.equal(Object.hasOwn(body.retrievalDetails, 'milvusStats'), false);
+});
+
+test('POST isolated dense retrieval preserves its existing scoped result count without statistics', async t => {
+  t.after(() => { setMilvusFixture({}); resetModelSignals(); });
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()], statisticsError: 'global statistics are forbidden' });
+  resetModelSignals();
+  const response = await POST(milvusAskRequest('请总结文档中的主要结论'));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(getMilvusSignals().stats, 0);
+  assert.equal(body.retrievalDetails.totalDocuments, 1);
+  assert.equal(body.retrievalDetails.totalDocumentsStatus, undefined);
+});
+
+test('POST never presents a token-limited answer as completed success', async t => {
+  t.after(() => resetModelSignals());
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  setModelStopReason('length');
+  const response = await POST(milvusAskRequest('请总结文档中的主要结论'));
+  const body = await response.json();
+  assert.equal(response.status, 502);
+  assert.equal(body.code, 'RAG_GENERATION_OUTPUT_LIMIT');
+  assert.equal(body.success, false);
+  assert.equal(body.answer, undefined);
+});
+
+test('POST ordinary SSE emits real answer chunks before completion and meters one generation', async t => {
+  t.after(() => resetModelSignals());
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  let finish;
+  const completed = new Promise(resolve => { finish = resolve; });
+  t.after(() => finish());
+  setModelStreamFixture(async function* () {
+    yield new AIMessageChunk({ content: '', additional_kwargs: { reasoning_content: 'PRIVATE_REASONING' } });
+    yield new AIMessageChunk({ content: '真实增量' });
+    await completed;
+    yield new AIMessageChunk({ content: '回答。', response_metadata: { done_reason: 'stop' },
+      usage_metadata: { input_tokens: 9, output_tokens: 3, total_tokens: 12 } });
+  });
+  let body = '';
+  const response = await captureAskProviderUsage(async () => {
+    const request = milvusAskRequest('请总结文档中的主要结论');
+    request.headers.set('accept', 'text/event-stream');
+    const response = await POST(request);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (!body.includes('event: answer_delta')) {
+      const next = await reader.read(); assert.equal(next.done, false);
+      body += decoder.decode(next.value, { stream: true });
+    }
+    assert.match(body, /真实增量/);
+    assert.doesNotMatch(body, /event: result/);
+    finish();
+    for (;;) { const next = await reader.read(); if (next.done) break; body += decoder.decode(next.value, { stream: true }); }
+    reader.releaseLock();
+    return response;
+  });
+  assert.doesNotMatch(body, /PRIVATE_REASONING/);
+  assert.match(body, /"answer":"真实增量回答。"/);
+  assert.equal(getModelSignals().stream, 1);
+  assert.equal(getModelSignals().generate, 1);
+  assert.equal(globalThis.askModelTransportBindings[0].streamSignal,
+    globalThis.askModelTransportBindings[0].options.requestSignal);
+  const usage = readAskProviderUsage(response);
+  assert.equal(usage.calls.generation, 1);
+  assert.deepEqual(usage.tokens, { measurement: 'provider', inputTokens: 9, outputTokens: 3 });
+});
+
+test('POST streamed length termination sends a failed final envelope after provisional deltas', async t => {
+  t.after(() => resetModelSignals());
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals(); setModelStopReason('length');
+  const request = milvusAskRequest('请总结文档中的主要结论');
+  request.headers.set('accept', 'text/event-stream');
+  const body = await (await POST(request)).text();
+  assert.match(body, /event: answer_delta/);
+  assert.match(body, /event: error/);
+  assert.match(body, /"status":502/);
+  assert.match(body, /RAG_GENERATION_OUTPUT_LIMIT/);
+  assert.doesNotMatch(body, /event: result/);
+  assert.doesNotMatch(body, /"answer":/);
+  assert.equal(getModelSignals().stream, 1);
+});
+
+test('POST comparison SSE keeps structured selection private and streams only the final answer', async t => {
+  t.after(() => resetModelSignals());
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  const request = milvusAskRequest('比较文档中的两种方法有什么不同');
+  request.headers.set('accept', 'text/event-stream');
+  const body = await (await POST(request)).text();
+  assert.match(body, /event: answer_delta/);
+  assert.match(body, /event: result/);
+  assert.doesNotMatch(body, /"coverage"|"evidenceNumbers"/);
+  assert.equal(getModelSignals().stream, 1);
+  assert.deepEqual(globalThis.askModelTransportBindings.map(item => item.options.maxTokens), [1024, 128]);
+});
+
+test('POST Responses output limit retains the explicit 502 error with or without partial text', async t => {
+  t.after(() => resetModelSignals());
+  resetVectorIngestStateForTests();
+  for (const text of ['partial Responses answer', '']) {
+    setMilvusFixture({ searchResults: [denseResult()] });
+    resetModelSignals();
+    setModelStreamFixture(async function* () {
+      yield new AIMessageChunk({ content: [{ type: 'text', text, index: 0 }] });
+      yield new AIMessageChunk({ content: [], response_metadata: { model_provider: 'openai',
+        status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } },
+        usage_metadata: { input_tokens: 9, output_tokens: 1024, total_tokens: 1033 } });
+    });
+    const request = milvusAskRequest('请总结文档中的主要结论');
+    request.headers.set('accept', 'text/event-stream');
+    const body = await (await POST(request)).text();
+    assert.match(body, /event: error/);
+    assert.match(body, /"status":502/);
+    assert.match(body, /RAG_GENERATION_OUTPUT_LIMIT/);
+    assert.doesNotMatch(body, /event: result/);
+    assert.doesNotMatch(body, /"answer":/);
+  }
+});
+
+test('POST comparison coverage uses a separate bounded model and rejects truncated decisions', async t => {
+  t.after(() => resetModelSignals());
+  resetVectorIngestStateForTests();
+  setMilvusFixture({ searchResults: [denseResult()] });
+  resetModelSignals();
+  setModelStopReason('length');
+  const response = await POST(milvusAskRequest('比较文档中的两种方法有什么不同'));
+  assert.equal(response.status, 502);
+  assert.equal((await response.json()).code, 'RAG_GENERATION_OUTPUT_LIMIT');
+  assert.equal(getModelSignals().generate, 0, 'a truncated decision must never start answer generation');
+  assert.deepEqual(globalThis.askModelTransportBindings.map(item => item.options.maxTokens), [1024, 128]);
+});
+
 test('POST answers a greeting without vector or model work and returns public processing stages', async () => {
   resetVectorIngestStateForTests();
   setMilvusFixture({ searchResults: [denseResult()] });
@@ -747,6 +960,65 @@ test('POST preserves knowledge work when a clock question includes document scop
   assert.equal(response.status, 200);
   assert.equal(getModelSignals().generate, 1);
   assert.equal(getMilvusSignals().search, 1);
+});
+
+test('unified publication blocks knowledge retrieval but preserves authenticated direct answers', async () => {
+  for (const mode of ['active', 'invalid', '']) {
+    process.env.RAG_UNIFIED_PUBLICATION_MODE = mode;
+    setMilvusFixture({ searchResults: [denseResult()] });
+    resetModelSignals();
+    try {
+      const request = milvusAskRequest('请总结文档中的主要结论');
+      const denied = milvusAskRequest('请总结文档中的主要结论');
+      denied.headers.delete('authorization');
+      assert.equal((await POST(denied)).status, 401);
+      const response = await POST(request);
+      const body = await response.json();
+      assert.equal(response.status, 503);
+      assert.equal(body.code, 'PUBLICATION_READ_UNAVAILABLE');
+      assert.equal(getMilvusSignals().connect, 0);
+      assert.equal(getMilvusSignals().search, 0);
+      assert.equal(getModelSignals().embed, 0);
+      assert.equal(getModelSignals().generate, 0);
+      const direct = await POST(milvusAskRequest('你好'));
+      assert.equal(direct.status, 200);
+      assert.equal((await direct.json()).conversationMode, 'direct');
+    } finally { delete process.env.RAG_UNIFIED_PUBLICATION_MODE; }
+  }
+});
+
+test('unified publication blocks legacy durable result reads and recovery', async () => {
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  try {
+    const unauthorized = durableAskStatusRequest('example-key', { includeResult: true, threadId: 'example-thread' });
+    unauthorized.headers.delete('authorization');
+    assert.equal((await GET(unauthorized)).status, 401);
+    const result = await GET(durableAskStatusRequest('example-key', { includeResult: true, threadId: 'example-thread' }));
+    assert.equal(result.status, 503);
+    assert.equal((await result.json()).code, 'PUBLICATION_READ_UNAVAILABLE');
+    const recover = await PATCH(durableAskManagementRequest({ action: 'recover', threadId: 'example-thread',
+      expectedRevision: 1, expectedGenerationId: 'generation-1' }));
+    assert.equal(recover.status, 503);
+    assert.equal((await recover.json()).code, 'PUBLICATION_READ_UNAVAILABLE');
+  } finally { delete process.env.RAG_UNIFIED_PUBLICATION_MODE; }
+});
+
+test('unified publication rejects retrieval before Ollama embedding warmup', async () => {
+  const previousProvider = process.env.EMBEDDING_PROVIDER;
+  process.env.EMBEDDING_PROVIDER = 'ollama';
+  process.env.RAG_UNIFIED_PUBLICATION_MODE = 'active';
+  globalThis.unifiedPublicationWarmCalls = 0;
+  try {
+    const response = await POST(milvusAskRequest('请总结文档中的主要结论'));
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, 'PUBLICATION_READ_UNAVAILABLE');
+    assert.equal(globalThis.unifiedPublicationWarmCalls, 0);
+  } finally {
+    if (previousProvider === undefined) delete process.env.EMBEDDING_PROVIDER;
+    else process.env.EMBEDDING_PROVIDER = previousProvider;
+    delete process.env.RAG_UNIFIED_PUBLICATION_MODE;
+    delete globalThis.unifiedPublicationWarmCalls;
+  }
 });
 
 test('POST does not treat a greeting-prefixed knowledge question as direct chat', async () => {

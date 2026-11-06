@@ -113,7 +113,12 @@ export default function SelfRAGVisualization({ onQuerySelect }: SelfRAGVisualiza
           stepsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 100);
       } else {
-        setError(data.error || 'Self-RAG 处理失败');
+        const message = typeof data.error === 'string' && data.error.trim()
+          ? data.error
+          : typeof data.finalResponse === 'string' && data.finalResponse.trim()
+            ? data.finalResponse
+            : 'Self-RAG 处理失败';
+        setError(message);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');

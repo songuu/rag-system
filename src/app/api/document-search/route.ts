@@ -26,6 +26,7 @@ import {
 } from '@/lib/rag/vector-backend';
 import { assertVectorSearchReady, VectorIndexBuildingError } from '@/lib/rag/vector-ingest-state';
 import { redactErrorForLog } from '@/lib/security/error-redaction';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import {
   REQUEST_LIMITS,
   readJsonObjectWithLimit,
@@ -57,6 +58,21 @@ export async function POST(request: NextRequest) {
       requestedCorpusId: typeof raw.corpusId === 'string' ? raw.corpusId : undefined,
       requestIdFactory: () => requestId,
     });
+    if (getUnifiedPublicationWriteBlock()) {
+      if (process.env.RAG_UNIFIED_PUBLICATION_MODE?.trim().toLowerCase() !== 'active') {
+        return failureResponse(503, 'PUBLICATION_READ_UNAVAILABLE', '统一发布检索暂不可用。', requestId);
+      }
+      // The active branch obtains a single PG-issued view and reads only its
+      // exact physical generations. Failure never falls back to legacy data.
+      const { searchPublishedDocuments } = await import('@/lib/documents/publication-search-runtime');
+      const result = await searchPublishedDocuments({ ...searchRequest, signal: request.signal,
+        scope: createRetrievalScope({ tenantId: securityContext.tenantId, corpusId: securityContext.corpusId,
+          enforceIsolation: true }) });
+      return NextResponse.json({ success: true, query: searchRequest.query, strategy: searchRequest.strategy,
+        results: presentDocumentSearchEvidence(result.evidence), count: result.evidence.length,
+        diagnostics: result.diagnostics, elapsedMs: Date.now() - startedAt, requestId },
+      { headers: { 'Cache-Control': 'no-store' } });
+    }
     if (isVectorBackendDisabled()) {
       return failureResponse(503, VECTOR_BACKEND_DISABLED_CODE, VECTOR_BACKEND_DISABLED_MESSAGE, requestId);
     }
@@ -160,6 +176,9 @@ export async function POST(request: NextRequest) {
     if (error instanceof DocumentTypeFilterUnavailableError) {
       return failureResponse(error.status, error.code, error.message, requestId);
     }
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'PUBLICATION_READ_UNAVAILABLE') {
+      return failureResponse(503, 'PUBLICATION_READ_UNAVAILABLE', '统一发布检索暂不可用。', requestId, { 'Cache-Control': 'no-store' });
+    }
     if (error instanceof Error && error.message.startsWith('Document search')) {
       return failureResponse(400, 'INVALID_DOCUMENT_SEARCH', error.message, requestId);
     }
@@ -219,6 +238,7 @@ async function retrieveLexicalEvidence(input: {
     scope: input.scope,
     documentId: input.documentId,
     documentIds: input.fileTypeDocumentIds,
+    includeHighlights: true,
   });
 }
 

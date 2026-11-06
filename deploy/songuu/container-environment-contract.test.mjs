@@ -20,13 +20,14 @@ test('container starts through the runtime environment allowlist', () => {
   assert.match(dockerfile, /CMD \["node", "run-rag-system\.cjs"\]/);
 });
 
-test('container healthcheck exercises PostgreSQL readiness', () => {
+test('container liveness does not depend on PostgreSQL or model readiness', () => {
   const dockerfile = read('Dockerfile');
   const healthcheck = dockerfile.match(/HEALTHCHECK[\s\S]*?(?=\n\nCMD)/)?.[0];
 
   assert.ok(healthcheck);
-  assert.match(healthcheck, /\/api\/health'/);
-  assert.doesNotMatch(healthcheck, /\/api\/health\/live/);
+  assert.match(healthcheck, /\/api\/health\/live'/);
+  assert.match(healthcheck, /AbortSignal\.timeout\(4000\)/);
+  assert.doesNotMatch(healthcheck, /\/api\/health'/);
 });
 
 test('compose never exposes infrastructure-only PostgreSQL values to the app', () => {

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { isSameModel } from '@/lib/model-selection';
 import {
   readJsonObjectWithLimit,
@@ -47,6 +48,8 @@ export async function POST(request: Request) {
     if (!isSameModel(embeddingModel, embedding.model, embedding.provider)) {
       if (body.reindex === true) {
         assertCapability(securityContext, 'reindex');
+        const block = getUnifiedPublicationWriteBlock();
+        if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
         const { beginEmbeddingReindex } = await import('@/lib/embedding-reindex-runtime');
         const job = beginEmbeddingReindex(embeddingModel, securityContext, {
           defaultLlmModel: llm.model,

@@ -9,6 +9,7 @@
 
 import { NextRequest } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { routeIntent, IntentClassification } from '@/lib/intent-router';
 import { executeLaneByIntent, LaneConfig, StreamEvent } from '@/lib/lane-handlers';
 
@@ -21,6 +22,8 @@ function sendEvent(controller: ReadableStreamDefaultController, event: StreamEve
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return Response.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     const body = await request.json();
     const { query, config = {} } = body;

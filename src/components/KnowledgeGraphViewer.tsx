@@ -1,12 +1,14 @@
 'use client';
 
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import { useMiroFishLocale } from './mirofish/MiroFishLocaleProvider';
+import { graphLinkOffsets, graphLinkGeometry, graphLinkHitDistance, type GraphViewEntity, type GraphViewRelation } from '@/lib/mirofish/graph-view';
 
 // ==================== 类型定义 ====================
 
 type EntityType = 'PERSON' | 'ORGANIZATION' | 'LOCATION' | 'EVENT' | 'CONCEPT' | 'PRODUCT' | 'DATE' | 'OTHER';
 
-interface Entity {
+interface Entity extends GraphViewEntity {
   id: string;
   name: string;
   type: string;
@@ -16,7 +18,7 @@ interface Entity {
   sourceChunks: string[];
 }
 
-interface Relation {
+interface Relation extends GraphViewRelation {
   id: string;
   source: string;
   target: string;
@@ -63,7 +65,8 @@ interface GraphNode {
   fixed?: boolean;
 }
 
-interface GraphLink {
+interface GraphLink extends Omit<GraphViewRelation, 'sourceChunks'> {
+  sourceChunks?: string[];
   id: string;
   source: string;
   target: string;
@@ -96,6 +99,14 @@ const ENTITY_LABELS: Record<EntityType, string> = {
   OTHER: '其他',
 };
 
+function entityColor(type: string): string {
+  const known = ENTITY_COLORS[type.toUpperCase() as EntityType];
+  if (known) return known;
+  const palette = Object.values(ENTITY_COLORS);
+  const hash = [...type].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0);
+  return palette[hash % palette.length];
+}
+
 // ==================== 组件 ====================
 
 interface KnowledgeGraphViewerProps {
@@ -111,6 +122,7 @@ export default function KnowledgeGraphViewer({
   onNodeClick,
   onLinkClick,
 }: KnowledgeGraphViewerProps) {
+  const { t } = useMiroFishLocale();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   
@@ -122,6 +134,7 @@ export default function KnowledgeGraphViewer({
   const [viewMode, setViewMode] = useState<'graph' | 'community' | 'list'>('graph');
   const [filterType, setFilterType] = useState<EntityType | 'ALL'>('ALL');
   const [searchTerm, setSearchTerm] = useState('');
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [canvasSize, setCanvasSize] = useState({ width: 900, height: 650 });
@@ -142,7 +155,7 @@ export default function KnowledgeGraphViewer({
     const updateSize = () => {
       const rect = container.getBoundingClientRect();
       setCanvasSize({
-        width: Math.max(800, rect.width),
+        width: Math.max(280, rect.width),
         height: 650,
       });
     };
@@ -156,6 +169,10 @@ export default function KnowledgeGraphViewer({
 
   // 初始化图数据
   useEffect(() => {
+    let cancelled = false;
+    // Layout initialization follows DOM measurement and can be superseded by a newer graph.
+    queueMicrotask(() => {
+      if (cancelled) return;
     if (!graph) {
       setNodes([]);
       setLinks([]);
@@ -185,7 +202,7 @@ export default function KnowledgeGraphViewer({
     });
 
     // 创建节点，按社区分布
-    const newNodes: GraphNode[] = graph.entities.map((entity, index) => {
+    const newNodes: GraphNode[] = graph.entities.map(entity => {
       const communityId = entityCommunityMap.get(entity.id);
       const communityPos = communityId 
         ? communityPositions.get(communityId) 
@@ -212,6 +229,7 @@ export default function KnowledgeGraphViewer({
     const newLinks: GraphLink[] = graph.relations
       .filter(r => entityMap.has(r.source) && entityMap.has(r.target))
       .map(relation => ({
+        ...relation,
         id: relation.id,
         source: relation.source,
         target: relation.target,
@@ -223,6 +241,8 @@ export default function KnowledgeGraphViewer({
     setNodes(newNodes);
     setLinks(newLinks);
     simulationRunning.current = true;
+    });
+    return () => { cancelled = true; };
   }, [graph, canvasSize.width, canvasSize.height]);
 
   // 力导向模拟
@@ -245,7 +265,8 @@ export default function KnowledgeGraphViewer({
       iterationCount++;
       const alpha = Math.max(0.01, 1 - iterationCount / maxIterations);
 
-      const updatedNodes = nodes.map(node => ({ ...node }));
+      setNodes(currentNodes => {
+      const updatedNodes = currentNodes.map(node => ({ ...node }));
       const updatedNodeMap = new Map(updatedNodes.map(n => [n.id, n]));
 
       // 斥力（节点间）- 增强距离
@@ -327,7 +348,8 @@ export default function KnowledgeGraphViewer({
         node.y = Math.max(padding, Math.min(canvasSize.height - padding, node.y));
       }
 
-      setNodes(updatedNodes);
+      return updatedNodes;
+      });
       animationRef.current = requestAnimationFrame(simulate);
     };
 
@@ -383,6 +405,7 @@ export default function KnowledgeGraphViewer({
     ctx.scale(zoom, zoom);
 
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const offsets = graphLinkOffsets(links);
     const filteredNodes = filterType === 'ALL' 
       ? nodes 
       : nodes.filter(n => n.type === filterType);
@@ -413,25 +436,15 @@ export default function KnowledgeGraphViewer({
       const isDimmed = searchTerm && !(matchingNodeIds.has(source.id) && matchingNodeIds.has(target.id));
 
       // 计算线的角度
-      const dx = target.x - source.x;
-      const dy = target.y - source.y;
-      const angle = Math.atan2(dy, dx);
-      const dist = Math.sqrt(dx * dx + dy * dy);
-
-      // 节点半径
-      const sourceRadius = getNodeRadius(source);
-      const targetRadius = getNodeRadius(target);
-
-      // 起点和终点（从节点边缘开始）
-      const startX = source.x + Math.cos(angle) * sourceRadius;
-      const startY = source.y + Math.sin(angle) * sourceRadius;
-      const endX = target.x - Math.cos(angle) * (targetRadius + 12);
-      const endY = target.y - Math.sin(angle) * (targetRadius + 12);
+      const curve = graphLinkGeometry(source, target, offsets.get(link.id), getNodeRadius(source), getNodeRadius(target));
+      const { x: endX, y: endY } = curve.end;
+      const angle = curve.angle;
 
       // 绘制边线
       ctx.beginPath();
-      ctx.moveTo(startX, startY);
-      ctx.lineTo(endX, endY);
+      ctx.moveTo(curve.start.x, curve.start.y);
+      if (curve.control2) ctx.bezierCurveTo(curve.control.x, curve.control.y, curve.control2.x, curve.control2.y, endX, endY);
+      else ctx.quadraticCurveTo(curve.control.x, curve.control.y, endX, endY);
       
       if (isSelected) {
         ctx.strokeStyle = '#FBBF24';
@@ -465,9 +478,9 @@ export default function KnowledgeGraphViewer({
       ctx.fill();
 
       // 绘制关系标签（高亮或选中时显示）
-      if ((isHighlighted || isSelected) && link.type) {
-        const midX = (source.x + target.x) / 2;
-        const midY = (source.y + target.y) / 2;
+      if ((showEdgeLabels || isHighlighted || isSelected) && link.type) {
+        const midX = curve.label.x;
+        const midY = curve.label.y;
         
         ctx.font = 'bold 11px system-ui, -apple-system, sans-serif';
         const textWidth = ctx.measureText(link.type).width;
@@ -501,7 +514,7 @@ export default function KnowledgeGraphViewer({
       const isDimmed = searchTerm && !matchingNodeIds.has(node.id);
       
       const radius = getNodeRadius(node);
-      const color = ENTITY_COLORS[node.type as EntityType] || ENTITY_COLORS.OTHER;
+      const color = entityColor(node.type) || ENTITY_COLORS.OTHER;
 
       // 选中/悬停光晕
       if (isSelected || isHovered || isSearchMatch) {
@@ -558,7 +571,7 @@ export default function KnowledgeGraphViewer({
     }
 
     ctx.restore();
-  }, [nodes, links, selectedNode, selectedLink, hoveredNode, filterType, searchTerm, zoom, pan, canvasSize]);
+  }, [nodes, links, selectedNode, selectedLink, hoveredNode, filterType, searchTerm, zoom, pan, canvasSize, showEdgeLabels]);
 
   // 辅助函数
   function getNodeRadius(node: GraphNode): number {
@@ -615,18 +628,14 @@ export default function KnowledgeGraphViewer({
 
     // 检查边点击
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
+    const offsets = graphLinkOffsets(links);
     for (const link of links) {
       const source = nodeMap.get(link.source);
       const target = nodeMap.get(link.target);
       if (!source || !target) continue;
 
-      const lineLen = Math.sqrt((target.x - source.x) ** 2 + (target.y - source.y) ** 2);
-      const t = Math.max(0, Math.min(1, 
-        ((x - source.x) * (target.x - source.x) + (y - source.y) * (target.y - source.y)) / (lineLen * lineLen)
-      ));
-      const nearestX = source.x + t * (target.x - source.x);
-      const nearestY = source.y + t * (target.y - source.y);
-      const dist = Math.sqrt((x - nearestX) ** 2 + (y - nearestY) ** 2);
+      const curve = graphLinkGeometry(source, target, offsets.get(link.id), getNodeRadius(source), getNodeRadius(target));
+      const dist = graphLinkHitDistance({ x, y }, curve);
 
       if (dist <= 15) {
         setSelectedLink(link);
@@ -747,8 +756,8 @@ export default function KnowledgeGraphViewer({
       <div className={`bg-slate-900 rounded-xl border border-slate-700 p-12 ${className}`}>
         <div className="text-center text-slate-400">
           <div className="text-7xl mb-6">🕸️</div>
-          <h3 className="text-2xl font-bold text-white mb-3">暂无知识图谱</h3>
-          <p className="text-slate-400">请先上传文档并执行实体抽取</p>
+          <h3 className="text-2xl font-bold text-white mb-3">{t("暂无知识图谱")}</h3>
+          <p className="text-slate-400">{t("请先上传文档并执行实体抽取")}</p>
         </div>
       </div>
     );
@@ -760,8 +769,7 @@ export default function KnowledgeGraphViewer({
       <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-slate-700 bg-slate-800/50">
         <div className="flex items-center gap-3">
           <h3 className="text-lg font-semibold text-white flex items-center gap-2">
-            <span className="text-xl">🕸️</span> 知识图谱
-          </h3>
+            <span className="text-xl">🕸️</span>{t("知识图谱")}</h3>
           <div className="flex bg-slate-700/50 rounded-lg p-0.5">
             {(['graph', 'community', 'list'] as const).map(mode => (
               <button
@@ -773,7 +781,7 @@ export default function KnowledgeGraphViewer({
                     : 'text-slate-400 hover:text-white hover:bg-slate-600/50'
                 }`}
               >
-                {mode === 'graph' ? '图谱' : mode === 'community' ? '社区' : '列表'}
+                {mode === 'graph' ? t("图谱") : mode === 'community' ? t("社区") : t("列表")}
               </button>
             ))}
           </div>
@@ -786,7 +794,7 @@ export default function KnowledgeGraphViewer({
               type="text"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              placeholder="搜索实体..."
+              placeholder={t("搜索实体...")}
               className="w-44 px-3 py-1.5 pl-9 bg-slate-700/50 border border-slate-600 rounded-lg text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
             />
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">🔍</span>
@@ -798,10 +806,10 @@ export default function KnowledgeGraphViewer({
             onChange={e => setFilterType(e.target.value as EntityType | 'ALL')}
             className="px-3 py-1.5 bg-slate-700/50 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
           >
-            <option value="ALL">全部类型</option>
+            <option value="ALL">{t("全部类型")}</option>
             {Object.entries(entityTypeStats).map(([type, count]) => (
               <option key={type} value={type}>
-                {ENTITY_LABELS[type as EntityType] || type} ({count as number})
+                {t(ENTITY_LABELS[type as EntityType] || type)} ({count as number})
               </option>
             ))}
           </select>
@@ -826,31 +834,27 @@ export default function KnowledgeGraphViewer({
           </div>
 
           {/* 重置 */}
+          <label className="flex items-center gap-1 text-xs text-slate-300"><input type="checkbox" checked={showEdgeLabels} onChange={event => setShowEdgeLabels(event.target.checked)} />{t('关系标签', 'Relation labels')}</label>
           <button
             onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
             className="px-3 py-1.5 bg-slate-700/50 text-slate-300 rounded-lg text-sm hover:bg-slate-600 border border-slate-600 transition-colors"
-          >
-            重置
-          </button>
+          >{t("重置")}</button>
         </div>
       </div>
 
       {/* 统计栏 */}
       <div className="flex items-center gap-6 px-4 py-2.5 bg-gradient-to-r from-slate-800/50 to-transparent border-b border-slate-700/50">
         <span className="text-slate-400 text-sm">
-          <span className="text-lg font-bold text-blue-400">{graph.metadata.entityCount}</span> 实体
-        </span>
+          <span className="text-lg font-bold text-blue-400">{graph.metadata.entityCount}</span>{t("实体")}</span>
         <span className="text-slate-400 text-sm">
-          <span className="text-lg font-bold text-purple-400">{graph.metadata.relationCount}</span> 关系
-        </span>
+          <span className="text-lg font-bold text-purple-400">{graph.metadata.relationCount}</span>{t("关系")}</span>
         <span className="text-slate-400 text-sm">
-          <span className="text-lg font-bold text-pink-400">{graph.metadata.communityCount}</span> 社区
-        </span>
+          <span className="text-lg font-bold text-pink-400">{graph.metadata.communityCount}</span>{t("社区")}</span>
       </div>
 
       <div className="flex">
         {/* 主内容区 */}
-        <div className="flex-1 relative" ref={containerRef}>
+        <div className="min-w-0 flex-1 relative" ref={containerRef}>
           {viewMode === 'graph' ? (
             <canvas
               ref={canvasRef}
@@ -875,11 +879,9 @@ export default function KnowledgeGraphViewer({
                     <h4 className="text-lg font-bold text-white">{community.name}</h4>
                     <div className="flex items-center gap-3 text-xs text-slate-400">
                       <span className="px-2 py-1 bg-blue-500/20 text-blue-300 rounded">
-                        {community.entities.length} 实体
-                      </span>
+                        {community.entities.length}{t("实体")}</span>
                       <span className="px-2 py-1 bg-purple-500/20 text-purple-300 rounded">
-                        {community.relations.length} 关系
-                      </span>
+                        {community.relations.length}{t("关系")}</span>
                     </div>
                   </div>
                   <p className="text-slate-300 text-sm leading-relaxed mb-4">{community.summary}</p>
@@ -901,9 +903,9 @@ export default function KnowledgeGraphViewer({
                             key={entityId}
                             className="px-2 py-1 rounded text-xs font-medium"
                             style={{ 
-                              backgroundColor: `${ENTITY_COLORS[entity.type as EntityType]}20`,
-                              color: ENTITY_COLORS[entity.type as EntityType],
-                              border: `1px solid ${ENTITY_COLORS[entity.type as EntityType]}40`
+                              backgroundColor: `${entityColor(entity.type)}20`,
+                              color: entityColor(entity.type),
+                              border: `1px solid ${entityColor(entity.type)}40`
                             }}
                           >
                             {entity.name}
@@ -912,8 +914,7 @@ export default function KnowledgeGraphViewer({
                       })}
                       {community.entities.length > 12 && (
                         <span className="px-2 py-1 text-xs text-slate-500">
-                          +{community.entities.length - 12} 更多
-                        </span>
+                          +{community.entities.length - 12}{t("更多")}</span>
                       )}
                     </div>
                   </div>
@@ -925,11 +926,11 @@ export default function KnowledgeGraphViewer({
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-slate-800 z-10">
                   <tr className="text-left text-slate-400 border-b border-slate-700">
-                    <th className="px-4 py-3 font-medium">类型</th>
-                    <th className="px-4 py-3 font-medium">名称</th>
-                    <th className="px-4 py-3 font-medium">描述</th>
-                    <th className="px-4 py-3 font-medium text-center">出现</th>
-                    <th className="px-4 py-3 font-medium text-center">关联</th>
+                    <th className="px-4 py-3 font-medium">{t("类型")}</th>
+                    <th className="px-4 py-3 font-medium">{t("名称")}</th>
+                    <th className="px-4 py-3 font-medium">{t("描述")}</th>
+                    <th className="px-4 py-3 font-medium text-center">{t("出现")}</th>
+                    <th className="px-4 py-3 font-medium text-center">{t("关联")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -959,11 +960,11 @@ export default function KnowledgeGraphViewer({
                             <span
                               className="inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium"
                               style={{ 
-                                backgroundColor: `${ENTITY_COLORS[entity.type as EntityType]}20`,
-                                color: ENTITY_COLORS[entity.type as EntityType]
+                                backgroundColor: `${entityColor(entity.type)}20`,
+                                color: entityColor(entity.type)
                               }}
                             >
-                              {ENTITY_LABELS[entity.type as EntityType] || entity.type}
+                              {t(ENTITY_LABELS[entity.type as EntityType] || entity.type)}
                             </span>
                           </td>
                           <td className="px-4 py-3 text-white font-medium">{entity.name}</td>
@@ -981,7 +982,7 @@ export default function KnowledgeGraphViewer({
 
         {/* 详情面板 */}
         {(selectedNodeInfo || selectedLink) && (
-          <div className="w-80 border-l border-slate-700 bg-gradient-to-b from-slate-800/80 to-slate-900/80 p-4 overflow-auto h-[650px]">
+          <div className="w-full 2xl:w-80 border-l border-slate-700 bg-gradient-to-b from-slate-800/80 to-slate-900/80 p-4 overflow-auto h-[650px]">
             {selectedNodeInfo && (
               <div className="space-y-4">
                 <div className="flex items-start justify-between">
@@ -989,12 +990,12 @@ export default function KnowledgeGraphViewer({
                     <span
                       className="inline-block px-2.5 py-1 rounded-full text-xs font-medium mb-2"
                       style={{ 
-                        backgroundColor: `${ENTITY_COLORS[selectedNodeInfo.entity.type as EntityType]}20`,
-                        color: ENTITY_COLORS[selectedNodeInfo.entity.type as EntityType],
-                        border: `1px solid ${ENTITY_COLORS[selectedNodeInfo.entity.type as EntityType]}40`
+                        backgroundColor: `${entityColor(selectedNodeInfo.entity.type)}20`,
+                        color: entityColor(selectedNodeInfo.entity.type),
+                        border: `1px solid ${entityColor(selectedNodeInfo.entity.type)}40`
                       }}
                     >
-                      {ENTITY_LABELS[selectedNodeInfo.entity.type as EntityType] || selectedNodeInfo.entity.type}
+                      {t(ENTITY_LABELS[selectedNodeInfo.entity.type as EntityType] || selectedNodeInfo.entity.type)}
                     </span>
                     <h4 className="text-xl font-bold text-white">
                       {selectedNodeInfo.entity.name}
@@ -1009,13 +1010,19 @@ export default function KnowledgeGraphViewer({
                 </div>
 
                 <div className="bg-slate-800/50 rounded-lg p-3">
-                  <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">描述</h5>
-                  <p className="text-slate-300 text-sm leading-relaxed">{selectedNodeInfo.entity.description || '暂无描述'}</p>
+                  <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{t("描述")}</h5>
+                  <p className="text-slate-300 text-sm leading-relaxed">{selectedNodeInfo.entity.description || t("暂无描述")}</p>
                 </div>
+                {selectedNodeInfo.entity.attributes && <dl className="space-y-1 text-xs text-slate-300">
+                  {selectedNodeInfo.entity.labels?.length ? <div><dt className="text-slate-500">{t('实体标签', 'Entity labels')}</dt><dd>{selectedNodeInfo.entity.labels.join(' · ')}</dd></div> : null}
+                  {selectedNodeInfo.entity.createdAt ? <div><dt className="text-slate-500">{t('创建时间', 'Created')}</dt><dd>{selectedNodeInfo.entity.createdAt}</dd></div> : null}
+                  {Object.entries(selectedNodeInfo.entity.attributes).map(([key, value]) => <div key={key}><dt className="text-slate-500">{key}</dt><dd className="break-words">{typeof value === 'string' ? value : JSON.stringify(value)}</dd></div>)}
+                </dl>}
+                {selectedNodeInfo.entity.sourceChunks.length > 0 && <div className="text-xs text-slate-400">{t('来源引用', 'Source references')}: {selectedNodeInfo.entity.sourceChunks.join(', ')}</div>}
 
                 {selectedNodeInfo.entity.aliases.length > 0 && (
                   <div>
-                    <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">别名</h5>
+                    <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">{t("别名")}</h5>
                     <div className="flex flex-wrap gap-1.5">
                       {selectedNodeInfo.entity.aliases.map((alias, i) => (
                         <span key={i} className="px-2 py-1 bg-slate-700 text-slate-300 text-xs rounded">
@@ -1029,17 +1036,17 @@ export default function KnowledgeGraphViewer({
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-slate-800/50 rounded-lg p-3 text-center">
                     <div className="text-2xl font-bold text-blue-400">{selectedNodeInfo.entity.mentions}</div>
-                    <div className="text-xs text-slate-500">出现次数</div>
+                    <div className="text-xs text-slate-500">{t("出现次数")}</div>
                   </div>
                   <div className="bg-slate-800/50 rounded-lg p-3 text-center">
                     <div className="text-2xl font-bold text-purple-400">{selectedNodeInfo.relatedRelations.length}</div>
-                    <div className="text-xs text-slate-500">关联数量</div>
+                    <div className="text-xs text-slate-500">{t("关联数量")}</div>
                   </div>
                 </div>
 
                 {selectedNodeInfo.community && (
                   <div>
-                    <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">所属社区</h5>
+                    <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">{t("所属社区")}</h5>
                     <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3">
                       <div className="font-medium text-purple-300 mb-1">{selectedNodeInfo.community.name}</div>
                       <p className="text-xs text-slate-400 line-clamp-2">{selectedNodeInfo.community.summary}</p>
@@ -1049,7 +1056,7 @@ export default function KnowledgeGraphViewer({
 
                 {selectedNodeInfo.relatedRelations.length > 0 && (
                   <div>
-                    <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">相关关系</h5>
+                    <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">{t("相关关系")}</h5>
                     <div className="space-y-2 max-h-52 overflow-auto pr-1">
                       {selectedNodeInfo.relatedRelations.map(relation => {
                         const isSource = relation.source === selectedNodeInfo.entity.id;
@@ -1099,7 +1106,7 @@ export default function KnowledgeGraphViewer({
               <div className="space-y-4">
                 <div className="flex items-start justify-between">
                   <div>
-                    <span className="text-xs text-slate-500">关系类型</span>
+                    <span className="text-xs text-slate-500">{t("关系类型")}</span>
                     <h4 className="text-xl font-bold text-yellow-400">{selectedLink.type}</h4>
                   </div>
                   <button
@@ -1111,9 +1118,16 @@ export default function KnowledgeGraphViewer({
                 </div>
 
                 <div className="bg-slate-800/50 rounded-lg p-3">
-                  <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">描述</h5>
-                  <p className="text-slate-300 text-sm">{selectedLink.description || '暂无描述'}</p>
+                  <h5 className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{t("描述")}</h5>
+                  <p className="text-slate-300 text-sm">{selectedLink.description || t("暂无描述")}</p>
                 </div>
+                <dl className="space-y-2 text-xs text-slate-300">
+                  {selectedLink.factType ? <div><dt className="text-slate-500">{t('事实类型', 'Fact type')}</dt><dd>{selectedLink.factType}</dd></div> : null}
+                  {[[t('创建时间', 'Created'), selectedLink.createdAt], [t('有效起始时间', 'Valid from'), selectedLink.validAt],
+                    [t('失效时间', 'Invalid from'), selectedLink.invalidAt], [t('过期时间', 'Expired'), selectedLink.expiredAt]].map(([label, value]) => value ? <div key={label}><dt className="text-slate-500">{label}</dt><dd>{value}</dd></div> : null)}
+                  {(selectedLink.episodes?.length || selectedLink.sourceChunks?.length) ? <div><dt className="text-slate-500">{t('来源引用', 'Source references')}</dt><dd className="break-words">{[...(selectedLink.episodes ?? []), ...(selectedLink.sourceChunks ?? [])].join(', ')}</dd></div> : null}
+                  {selectedLink.attributes && Object.entries(selectedLink.attributes).map(([key, value]) => <div key={key}><dt className="text-slate-500">{key}</dt><dd className="break-words">{typeof value === 'string' ? value : JSON.stringify(value)}</dd></div>)}
+                </dl>
 
                 <div className="space-y-2">
                   <div
@@ -1123,7 +1137,7 @@ export default function KnowledgeGraphViewer({
                       if (node) { setSelectedNode(node); setSelectedLink(null); }
                     }}
                   >
-                    <div className="text-xs text-slate-500 mb-1">源实体</div>
+                    <div className="text-xs text-slate-500 mb-1">{t("源实体")}</div>
                     <div className="flex items-center gap-2">
                       {(() => {
                         const entity = graph.entities.find(e => e.id === selectedLink.source);
@@ -1143,7 +1157,7 @@ export default function KnowledgeGraphViewer({
                       if (node) { setSelectedNode(node); setSelectedLink(null); }
                     }}
                   >
-                    <div className="text-xs text-slate-500 mb-1">目标实体</div>
+                    <div className="text-xs text-slate-500 mb-1">{t("目标实体")}</div>
                     <div className="flex items-center gap-2">
                       {(() => {
                         const entity = graph.entities.find(e => e.id === selectedLink.target);
@@ -1156,7 +1170,7 @@ export default function KnowledgeGraphViewer({
                 </div>
 
                 <div className="bg-slate-800/50 rounded-lg p-3 text-center">
-                  <div className="text-xs text-slate-500 mb-1">权重</div>
+                  <div className="text-xs text-slate-500 mb-1">{t("权重")}</div>
                   <div className="text-2xl font-bold text-white">{selectedLink.weight.toFixed(2)}</div>
                 </div>
               </div>
@@ -1167,7 +1181,7 @@ export default function KnowledgeGraphViewer({
 
       {/* 图例 */}
       <div className="px-4 py-3 bg-slate-800/30 border-t border-slate-700/50 flex flex-wrap items-center gap-4">
-        {Object.entries(ENTITY_COLORS).map(([type, color]) => (
+        {Object.keys(entityTypeStats).map(type => (
           <button
             key={type}
             onClick={() => setFilterType(filterType === type ? 'ALL' : type as EntityType)}
@@ -1179,9 +1193,9 @@ export default function KnowledgeGraphViewer({
           >
             <div
               className="w-3 h-3 rounded-full ring-2 ring-white/20"
-              style={{ backgroundColor: color }}
+              style={{ backgroundColor: entityColor(type) }}
             />
-            <span className="text-slate-300">{ENTITY_LABELS[type as EntityType] || type}</span>
+            <span className="text-slate-300">{t(ENTITY_LABELS[type as EntityType] || type)}</span>
           </button>
         ))}
       </div>

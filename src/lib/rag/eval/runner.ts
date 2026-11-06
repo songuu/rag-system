@@ -17,12 +17,25 @@ import type {
   RagEvalTargetResult,
 } from './types';
 import { RAG_EVAL_DATASET_SCHEMA_VERSION_V2 } from './types';
+import { evaluateRetrievalStages } from './retrieval-stage-metrics';
+import { validateExperimentContract, type RagEvalExperiment } from './experiment-contract';
+import { assessRagEvalCase, parseQualitySidecar, type QualitySidecar, type QualityContext, type SemanticJudge } from './quality-scoring';
+import { canonicalJsonSha256 } from './canonical-json';
+import { createHash } from 'node:crypto';
+import { stableStringify } from './dataset';
+import { validateEvalUsageObservation, estimateEvalGenerationCost, type EvalTokenPricing } from './usage-metering';
 
 export interface RunRagEvalOptions {
   topK?: number;
   runId?: string;
   metadata?: Record<string, unknown>;
   clock?: () => Date;
+  experiment?: RagEvalExperiment;
+  assessment?: { sidecar: QualitySidecar; context?: QualityContext; judge?: SemanticJudge; signal?: AbortSignal;
+    judgeIdentity?: { id: string; revision: string; rubricVersion: string } };
+  usagePricing?: EvalTokenPricing;
+  evaluatorImplementationSha256?: string;
+  stopOnFailure?: boolean;
 }
 
 export async function runRagEval(
@@ -33,11 +46,30 @@ export async function runRagEval(
   const dataset = parseRagEvalDataset(datasetInput);
   const topK = options.topK ?? 5;
   assertPositiveInteger(topK, 'topK');
+  if (options.evaluatorImplementationSha256 !== undefined && !/^[a-f0-9]{64}$/.test(options.evaluatorImplementationSha256)) throw new Error('[rag-eval runner] invalid evaluator implementation digest');
+  if (options.usagePricing !== undefined) estimateEvalGenerationCost({ measurement: 'unavailable' }, options.usagePricing);
+  const experiment = options.experiment === undefined ? undefined : validateExperimentContract(dataset, options.experiment);
+  if (experiment && topK !== experiment.configuration.retrieval.topK) throw new Error('[rag-eval runner] experiment topK mismatch');
+  const annotations = options.assessment === undefined ? undefined : parseQualitySidecar(options.assessment.sidecar,
+    { datasetSha256: createRagEvalDatasetHash(dataset), caseIds: dataset.cases.map(item => item.id) });
+  if (annotations) for (const item of dataset.cases) {
+    const disposition = annotations.cases[item.id]?.expectedDisposition;
+    if (disposition && ((disposition === 'answer') === item.expectedAbstain
+      || item.expectedDisposition !== undefined && disposition !== item.expectedDisposition)) {
+      throw new Error('[rag-eval runner] quality disposition contradicts dataset annotation: ' + item.id);
+    }
+  }
+  const assessmentBinding = annotations === undefined ? undefined : {
+    annotationsSha256: createHash('sha256').update(stableStringify(annotations)).digest('hex'), contextSha256: canonicalJsonSha256(options.assessment?.context ?? {}),
+    judge: options.assessment?.judge ? options.assessment.judgeIdentity ?? { id: 'unidentified', revision: 'unknown', rubricVersion: 'unknown' } : null,
+  };
   const clock = options.clock ?? (() => new Date());
   const startedAt = clock().toISOString();
   const results: RagEvalCaseResult[] = [];
+  let stopped = false;
 
   for (const evalCase of dataset.cases) {
+    if (stopped) { results.push({ caseId: evalCase.id, status: 'failed', error: '[rag-eval runner] not attempted after an earlier failed case' }); continue; }
     try {
       const targetResult = await target.run({
         evalCase: {
@@ -57,6 +89,16 @@ export async function runRagEval(
       });
       validateTargetResult(dataset, targetResult);
       const citationDetails = targetResult.citations ?? [];
+      const citationMetrics = evaluateCitations(evalCase, targetResult.evidence, citationDetails);
+      // Numbered references identify a whole passage, not an observed supporting span.
+      if (targetResult.observation?.citations === 'reference-only') {
+        citationMetrics.precision = null; citationMetrics.coverage = null; citationMetrics.meanSpanIou = null;
+      }
+      const answerMetrics = evaluateAnswer(evalCase, targetResult.answer, targetResult.abstained);
+      if (targetResult.observation?.disposition === 'unavailable') answerMetrics.abstainCorrect = null;
+      const usageObservation = targetResult.usageObservation === undefined ? undefined : validateEvalUsageObservation(targetResult.usageObservation);
+      if (usageObservation && options.usagePricing) usageObservation.costsUsd = { ...usageObservation.costsUsd,
+        generation: estimateEvalGenerationCost(usageObservation.tokens, options.usagePricing) };
       results.push({
         caseId: evalCase.id,
         status: 'completed',
@@ -69,18 +111,19 @@ export async function runRagEval(
           targetResult.evidence.map(evidence => evidence.evidenceId),
           topK
         ),
-        citations: evaluateCitations(
-          evalCase,
-          targetResult.evidence,
-          citationDetails
-        ),
+        citations: citationMetrics,
         citationDetails,
         security: evaluateSecurity(evalCase, targetResult),
-        answerMetrics: evaluateAnswer(
-          evalCase,
-          targetResult.answer,
-          targetResult.abstained
-        ),
+        answerMetrics,
+        ...(targetResult.retrievalStages === undefined ? {} : {
+          stageEvidenceIds: targetResult.retrievalStages,
+          retrievalStages: evaluateRetrievalStages(evalCase.goldEvidence, targetResult.retrievalStages, topK, evalCase.requiredEvidenceGroups, targetResult.evidence),
+        }),
+        ...(evalCase.expectedDisposition === undefined ? {} : { dispositionCorrect: targetResult.disposition === undefined
+          ? null : evalCase.expectedDisposition === targetResult.disposition }),
+        ...(targetResult.observation === undefined ? {} : { observation: targetResult.observation }),
+        ...(usageObservation === undefined ? {} : { usageObservation }),
+        ...(annotations === undefined ? {} : { quality: await assessRagEvalCase(evalCase, targetResult, annotations.cases[evalCase.id], options.assessment) }),
         usage: targetResult.usage,
         ...(targetResult.trajectory === undefined ? {} : { trajectory: targetResult.trajectory }),
         ...(targetResult.policyId === undefined
@@ -92,6 +135,7 @@ export async function runRagEval(
         ...(targetResult.traceId === undefined ? {} : { traceId: targetResult.traceId }),
       });
     } catch (error) {
+      if (options.stopOnFailure) stopped = true;
       results.push({
         caseId: evalCase.id,
         status: 'failed',
@@ -118,6 +162,10 @@ export async function runRagEval(
     },
     configuration: {
       topK,
+      ...(experiment === undefined ? {} : { experiment }),
+      ...(assessmentBinding === undefined ? {} : { assessment: assessmentBinding }),
+      ...(options.evaluatorImplementationSha256 === undefined ? {} : { evaluatorImplementationSha256: options.evaluatorImplementationSha256 }),
+      ...(options.usagePricing === undefined ? {} : { usagePricing: options.usagePricing }),
     },
     ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
     cases: results,
@@ -143,6 +191,13 @@ function validateTargetResult(
   );
   const seenEvidence = new Set<string>();
   const isV2 = dataset.schemaVersion === RAG_EVAL_DATASET_SCHEMA_VERSION_V2;
+  if (result.retrievalStages !== undefined) {
+    for (const ids of Object.values(result.retrievalStages)) {
+      if (!Array.isArray(ids) || ids.some(id => !corpusByEvidenceId.has(id)) || new Set(ids).size !== ids.length) {
+        throw new Error('[rag-eval runner] stage snapshot contains unknown or duplicate evidence');
+      }
+    }
+  }
   for (const [index, evidence] of result.evidence.entries()) {
     assertNonEmptyString(evidence.evidenceId, `evidence[${index}].evidenceId`);
     const canonicalEvidence = corpusByEvidenceId.get(evidence.evidenceId);
@@ -257,6 +312,15 @@ function assertCanonicalEvidenceMatch(
     'documentVersion',
     'trustLevel',
   ] as const) {
+    if (field === 'content' && evidence.servedSpan !== undefined) {
+      const span = evidence.servedSpan;
+      if (!Number.isInteger(span.startOffset) || !Number.isInteger(span.endOffset) || span.startOffset !== 0
+        || span.endOffset <= span.startOffset || span.endOffset > canonical.content.length
+        || canonical.content.slice(span.startOffset, span.endOffset) !== evidence.content) {
+        throw new Error('[rag-eval runner] served evidence span/content does not match canonical corpus');
+      }
+      continue;
+    }
     if (evidence[field] !== canonical[field]) {
       throw new Error(
         `[rag-eval runner] evidence[${index}].${field} does not match canonical corpus evidence ${evidence.evidenceId}`

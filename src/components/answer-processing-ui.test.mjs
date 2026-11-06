@@ -10,15 +10,16 @@ const [pageSource, messageSource, panelSource, indexedDbSource] = await Promise.
 ]);
 
 test('home page replaces the opaque thinking bubble with explicit processing stages', () => {
-  assert.match(pageSource, /createPendingAnswerProcessing\(submittedQuestion\)/);
+  assert.match(pageSource, /正在等待服务端判断处理路径/);
   assert.match(pageSource, /resolveAnswerProcessing\(data\)/);
   assert.match(pageSource, /<AnswerProcessingPanel[\s\S]*?defaultExpanded[\s\S]*?isLive/);
   assert.doesNotMatch(pageSource, /AI 正在思考\.\.\./);
 });
 
-test('direct conversation remains available without Milvus while knowledge queries stay gated', () => {
-  assert.match(pageSource, /vectorBackendDisabled && !isDirectConversation/);
-  assert.match(pageSource, /!milvusConnected && !isDirectConversation/);
+test('backend availability never overrides the server routing decision', () => {
+  const submit = pageSource.slice(pageSource.indexOf('const handleSubmit ='), pageSource.indexOf("fetch('/rag-api/ask'"));
+  assert.doesNotMatch(submit, /classifyDirectConversation|routeConversation|requiresKnowledge/);
+  assert.doesNotMatch(submit, /if\s*\(\s*(?:vectorBackendDisabled|!milvusConnected)/);
   assert.match(pageSource, /disabled=\{isLoading \|\| !input\.trim\(\)\}/);
   assert.match(pageSource, /data\.conversationMode === 'direct'/);
 });

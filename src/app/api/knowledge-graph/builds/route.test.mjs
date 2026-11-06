@@ -11,7 +11,8 @@ test('durable build route wires actor rate and database queue capacity before en
   assert.ok(permit >= 0);
   assert.ok(capacity > permit);
   assert.ok(enqueue > capacity);
-  assert.match(source, /\{ maxPendingJobs \}/);
+  assert.match(source, /maxPendingJobs, regenerate: true/);
+  assert.match(source, /INVALID_REGENERATE/);
   assert.match(source, /findDocumentSource/);
   assert.match(source, /manual-console/);
 });
@@ -21,3 +22,4 @@ test('durable build route lists PostgreSQL document sources for the console', as
   assert.match(source, /listDocumentSources/);
   assert.match(source, /projectKnowledgeGraphBuildSourceForHttp/);
 });
+

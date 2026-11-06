@@ -100,6 +100,8 @@ test('startup optimization preserves route-scoped raw-source tracing exclusions'
     '/api/ask': exclude('src/lib/rag/core', 'src/lib/rag/multimodal', 'src/lib/mirofish'),
     '/api/pipeline': exclude('src/lib/rag/multimodal'),
     '/api/document-search': exclude('src/lib/rag/core', 'src/lib/rag/multimodal'),
+    '/api/documents': exclude('src/lib/rag/multimodal'),
+    '/api/documents/publications': exclude('src/lib/rag/multimodal'),
     '/api/mirofish/graph': exclude('src/lib/mirofish'),
   });
 });

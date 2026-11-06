@@ -37,109 +37,11 @@ interface SimulationResult {
   timeline: SimulationMessage[];
 }
 
-export default function SimulationPage() {
-  const [config, setConfig] = useState<SimulationConfig>({
-    roundCount: 10,
-    postsPerRound: 5,
-    timeInterval: 3,
-    temperature: 0.7,
-    seedTopics: [],
-  });
-
-  const [seedTopicInput, setSeedTopicInput] = useState('');
-  const [simulationRunning, setSimulationRunning] = useState(false);
-  const [currentRound, setCurrentRound] = useState(0);
-  const [messages, setMessages] = useState<SimulationMessage[]>([]);
-  const [result, setResult] = useState<SimulationResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // 自动滚动到最新消息
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  // 添加种子话题
-  const addSeedTopic = () => {
-    if (!seedTopicInput.trim()) return;
-    if (config.seedTopics.includes(seedTopicInput.trim())) return;
-
-    setConfig(prev => ({
-      ...prev,
-      seedTopics: [...prev.seedTopics, seedTopicInput.trim()],
-    }));
-    setSeedTopicInput('');
-  };
-
-  // 移除种子话题
-  const removeSeedTopic = (topic: string) => {
-    setConfig(prev => ({
-      ...prev,
-      seedTopics: prev.seedTopics.filter(t => t !== topic),
-    }));
-  };
-
-  // 开始模拟
-  const startSimulation = async () => {
-    if (config.seedTopics.length === 0) {
-      setError('请至少添加一个种子话题');
-      return;
-    }
-
-    setError(null);
-    setSimulationRunning(true);
-    setCurrentRound(0);
-    setMessages([]);
-    setResult(null);
-
-    // 模拟运行
-    try {
-      for (let round = 1; round <= config.roundCount; round++) {
-        if (!simulationRunning) break;
-
-        setCurrentRound(round);
-
-        // 模拟生成消息
-        const roundMessages = generateMockMessages(round, config.postsPerRound);
-        setMessages(prev => [...prev, ...roundMessages]);
-
-        // 等待间隔
-        await new Promise(resolve =>
-          setTimeout(resolve, config.timeInterval * 1000)
-        );
-      }
-
-      // 模拟完成
-      setSimulationRunning(false);
-      setResult({
-        rounds: config.roundCount,
-        totalPosts: config.roundCount * config.postsPerRound,
-        participants: Math.floor(Math.random() * 10) + 5,
-        hotTopics: config.seedTopics.slice(0, 3),
-        sentimentDistribution: {
-          positive: Math.floor(Math.random() * 30) + 20,
-          neutral: Math.floor(Math.random() * 30) + 30,
-          negative: Math.floor(Math.random() * 20) + 20,
-        },
-        timeline: messages,
-      });
-    } catch (err) {
-      setError('模拟运行失败');
-      setSimulationRunning(false);
-    }
-  };
-
-  // 停止模拟
-  const stopSimulation = () => {
-    setSimulationRunning(false);
-  };
-
   // 生成模拟消息（模拟）
-  const generateMockMessages = (
+function generateMockMessages(
     round: number,
     count: number
-  ): SimulationMessage[] => {
+): SimulationMessage[] {
     const authors = [
       { name: '科技爱好者张三', type: '普通用户' },
       { name: '数码评测师', type: '意见领袖' },
@@ -180,10 +82,128 @@ export default function SimulationPage() {
         sentiment: sentiments[Math.floor(Math.random() * sentiments.length)],
       };
     });
+}
+
+function summarizeSimulation(config: SimulationConfig, rounds: number, timeline: SimulationMessage[]): SimulationResult {
+  return { rounds, totalPosts: timeline.length, participants: Math.floor(Math.random() * 10) + 5,
+    hotTopics: config.seedTopics.slice(0, 3), sentimentDistribution: {
+      positive: Math.floor(Math.random() * 30) + 20, neutral: Math.floor(Math.random() * 30) + 30,
+      negative: Math.floor(Math.random() * 20) + 20,
+    }, timeline };
+}
+
+function waitForSimulationInterval(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
+  });
+}
+
+export default function SimulationPage() {
+  const [config, setConfig] = useState<SimulationConfig>({
+    roundCount: 10,
+    postsPerRound: 5,
+    timeInterval: 3,
+    temperature: 0.7,
+    seedTopics: [],
+  });
+
+  const [seedTopicInput, setSeedTopicInput] = useState('');
+  const [simulationRunning, setSimulationRunning] = useState(false);
+  const [currentRound, setCurrentRound] = useState(0);
+  const [messages, setMessages] = useState<SimulationMessage[]>([]);
+  const [result, setResult] = useState<SimulationResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const simulationRequestRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    const active = simulationRequestRef.current;
+    simulationRequestRef.current = null;
+    active?.abort();
+  }, []);
+
+  // 自动滚动到最新消息
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // 添加种子话题
+  const addSeedTopic = () => {
+    if (!seedTopicInput.trim()) return;
+    if (config.seedTopics.includes(seedTopicInput.trim())) return;
+
+    setConfig(prev => ({
+      ...prev,
+      seedTopics: [...prev.seedTopics, seedTopicInput.trim()],
+    }));
+    setSeedTopicInput('');
+  };
+
+  // 移除种子话题
+  const removeSeedTopic = (topic: string) => {
+    setConfig(prev => ({
+      ...prev,
+      seedTopics: prev.seedTopics.filter(t => t !== topic),
+    }));
+  };
+
+  // 开始模拟
+  const startSimulation = async () => {
+    if (config.seedTopics.length === 0) {
+      setError('请至少添加一个种子话题');
+      return;
+    }
+
+    if (simulationRequestRef.current && !simulationRequestRef.current.signal.aborted) return;
+    const controller = new AbortController();
+    simulationRequestRef.current = controller;
+    const timeline: SimulationMessage[] = [];
+    setError(null);
+    setSimulationRunning(true);
+    setCurrentRound(0);
+    setMessages([]);
+    setResult(null);
+
+    // 模拟运行
+    try {
+      for (let round = 1; round <= config.roundCount; round++) {
+        controller.signal.throwIfAborted();
+
+        setCurrentRound(round);
+
+        // 模拟生成消息
+        const roundMessages = generateMockMessages(round, config.postsPerRound);
+        timeline.push(...roundMessages);
+        setMessages([...timeline]);
+
+        // 等待间隔
+        if (round < config.roundCount) await waitForSimulationInterval(config.timeInterval * 1000, controller.signal);
+      }
+
+      controller.signal.throwIfAborted();
+      if (simulationRequestRef.current === controller) setResult(summarizeSimulation(config, config.roundCount, timeline));
+    } catch {
+      if (!controller.signal.aborted && simulationRequestRef.current === controller) setError('模拟运行失败');
+    } finally {
+      if (simulationRequestRef.current === controller) {
+        simulationRequestRef.current = null;
+        setSimulationRunning(false);
+      }
+    }
+  };
+
+  // 停止模拟
+  const stopSimulation = () => {
+    simulationRequestRef.current?.abort();
+    setSimulationRunning(false);
   };
 
   // 重置模拟
   const resetSimulation = () => {
+    simulationRequestRef.current?.abort();
     setSimulationRunning(false);
     setCurrentRound(0);
     setMessages([]);

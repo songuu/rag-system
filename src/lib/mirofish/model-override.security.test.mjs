@@ -233,7 +233,7 @@ test('prepare HTTP boundary rejects poisoned historical model config before prov
     getProject(new NextRequest(`http://localhost/api/mirofish/project/${project.id}`), {
       params: Promise.resolve({ id: project.id }),
     }),
-    listProjects(),
+    listProjects(new NextRequest('http://localhost/api/mirofish/project')),
   ]);
   const detailPayload = await detailResponse.json();
   const listPayload = await listResponse.json();

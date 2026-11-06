@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createLegacyRagRouteResponse } from '@/lib/security/legacy-route-policy';
+import { getUnifiedPublicationWriteBlock } from '@/lib/security/unified-publication-write-guard';
 import { AgenticRAGSystem } from '@/lib/agentic-rag';
 import {
   AgenticModelUnavailableError,
@@ -90,6 +91,8 @@ async function resolveAgenticRuntimeModels(
 export async function POST(request: NextRequest) {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   try {
     const body = await request.json();
     const {
@@ -281,6 +284,8 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   const unavailable = createLegacyRagRouteResponse();
   if (unavailable) return unavailable;
+  const block = getUnifiedPublicationWriteBlock();
+  if (block) return NextResponse.json({ success: false, code: block.code, error: block.message }, { status: block.status });
   const milvusConfig = getMilvusConfig();
   return NextResponse.json({
     name: 'Agentic RAG System',

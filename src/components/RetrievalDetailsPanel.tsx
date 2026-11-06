@@ -26,7 +26,7 @@ interface RetrievalDetailsPanelProps {
     queryEmbedding?: number[];
     threshold: number;
     topK: number;
-    totalDocuments: number;
+    totalDocuments?: number | null;
     searchTime: number;
   } | null;
   queryText?: string;
@@ -420,7 +420,7 @@ export default function RetrievalDetailsPanel({
   const searchResults = retrievalDetails?.searchResults || EMPTY_SEARCH_RESULTS;
   const threshold = retrievalDetails?.threshold || 0;
   const topK = retrievalDetails?.topK || 0;
-  const totalDocuments = retrievalDetails?.totalDocuments || 0;
+  const totalDocuments = retrievalDetails?.totalDocuments ?? '未统计';
   const searchTime = retrievalDetails?.searchTime || 0;
   const displayResults = showAllResults ? searchResults : searchResults.slice(0, 5);
   
